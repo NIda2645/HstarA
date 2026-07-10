@@ -2296,6 +2296,12 @@ function handleCanvasUpdatedMessage(data){
     if(data.canvas_id !== canvas.id) return;
     const remoteUpdatedAt = Number(data.updated_at || 0);
     if(remoteUpdatedAt && remoteUpdatedAt <= Number(lastCanvasUpdatedAt || 0)) return;
+    if(localCanvasDirty || saveTimer || savingCanvasNow || saveCanvasAgain){
+        clearTimeout(remoteSyncTimer);
+        remoteSyncTimer = setTimeout(syncRemoteCanvasNow, savingCanvasNow ? 900 : 600);
+        setStatus('Saving...');
+        return;
+    }
     clearTimeout(saveTimer);
     saveTimer = null;
     localCanvasDirty = false;

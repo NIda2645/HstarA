@@ -72,7 +72,9 @@ assert.doesNotMatch(js, /document\.documentElement\.appendChild\(panel\);|host\.
 assert.doesNotMatch(js, /logicalRect \? logicalRect\.width|nodeRect\(node\)[\s\S]{0,120}const width/, 'text edit panel width should not depend on image node size');
 assert.doesNotMatch(js, /Math\.max\(220,\s*rect \? rect\.width : 260\)/, 'text edit panel width should not use zoom-scaled screen rect width');
 assert.doesNotMatch(js, /rect \? rect\.height|nodeRect\(node\)[\s\S]{0,160}const height/, 'text edit panel height should not depend on image node size');
+assert.match(css, /\.smart-text-edit-head \{[^}]*height:44px;[^}]*padding:7px 9px 7px 10px;[^}]*align-items:center;/, 'text edit panel header should reserve the same top breathing room used by the erase-text layout');
 assert.match(css, /\.smart-text-edit-head strong \{[^}]*font-size:10px/, 'text edit panel title should match the toolbar text size');
+assert.match(css, /\.smart-text-edit-tabs button \{[^}]*flex:0 0 78px;[^}]*width:78px;[^}]*min-width:78px;[^}]*height:26px;[^}]*display:inline-flex;[^}]*align-items:center;[^}]*justify-content:center;[^}]*box-sizing:border-box;[^}]*padding:0 12px;[^}]*appearance:none;/, 'modify and erase text tabs should share the same fixed button box as the erase-text tab');
 assert.doesNotMatch(css, /\.smart-text-edit-(?:head|body|field|empty|error|actions)[\s\S]{0,220}font-size:1[1-9]px/, 'text edit panel text should not exceed the toolbar text size');
 assert.match(css, /\.smart-text-edit-menu button \{[^}]*height:24px;[^}]*gap:5px;[^}]*font-size:10px;[^}]*font-weight:400;/, 'text edit dropdown actions should match smart toolbar text sizing');
 assert.match(css, /\.smart-text-edit-menu button i,\.smart-text-edit-menu button svg \{[^}]*width:12px;[^}]*height:12px;/, 'text edit dropdown icons should match smart toolbar icon sizing');

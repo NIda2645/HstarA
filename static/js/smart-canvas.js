@@ -1392,6 +1392,7 @@ function absorbImageNodeIntoSmartGroup(group, child){
     // 清掉显式尺寸，让缩略图网格按图片数自动整理排列（“放入图片自动整理”）。
     delete group.w; delete group.h;
     rerouteSmartConnections(child.id, group.id);
+    trackSmartDeletedNodeIds([child.id]);
     nodes = nodes.filter(n => n.id !== child.id);
     nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
     return true;
@@ -1414,6 +1415,7 @@ function addNodeToSmartGroup(group, child){
             if(m) scaleSmartGroupMemberToZoom(group, m, zoom);
         });
         rerouteSmartConnections(child.id, group.id);
+        trackSmartDeletedNodeIds([child.id]);
         nodes = nodes.filter(n => n.id !== child.id);
         nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
         return true;
@@ -4986,6 +4988,29 @@ let canvasSyncInFlight = false;
 let canvasSyncTimer = null;
 let canvasMetaPollTimer = null;
 let connectionLayerRaf = 0;
+let smartLocalDirty = false;
+let smartLocalRevision = 0;
+const smartDeletedNodeIds = new Set();
+function markSmartCanvasDirty(){
+    smartLocalDirty = true;
+    smartLocalRevision += 1;
+}
+function clearSmartCanvasDirtyIfCurrent(revision){
+    if(revision != null && revision !== smartLocalRevision) return false;
+    smartLocalDirty = false;
+    smartDeletedNodeIds.clear();
+    return true;
+}
+function hasPendingSmartLocalSave(){
+    return Boolean(smartLocalDirty || saveTimer);
+}
+function trackSmartDeletedNodeIds(ids){
+    (ids || []).forEach(id => {
+        const clean = String(id || '').trim();
+        if(clean && clean !== SMART_LOG_PREVIEW_NODE_ID) smartDeletedNodeIds.add(clean);
+    });
+    if(smartDeletedNodeIds.size) markSmartCanvasDirty();
+}
 function mergeSmartImageLists(localImgs, remoteImgs){
     const out = [];
     const seen = new Set();
@@ -5144,8 +5169,14 @@ function syncRunButtonState(node=selectedNode()){
     // 不再因为“画布上有任意循环/级联在跑”就全局禁用——跑循环时仍可对其他节点点生成。
     runBtn.disabled = !isSmartRunnableNode(node) || smartNodeInFlight(node) || smartCascadeIsLoopRunning(node?.id);
 }
-function mergeSmartNode(local, remote){
+function mergeSmartNode(local, remote, options={}){
     const images = mergeSmartImageLists(local.images, remote.images);
+    if(options.preferLocal){
+        const merged = {...local, images};
+        return smartNodeHasDisplayResult(merged) && (merged.pending || merged.queued || smartPendingTasks(merged).length)
+            ? completeSmartNodeWithImages(merged, images)
+            : merged;
+    }
     const localDone = smartNodeHasCompletedResult(local);
     const remoteDone = smartNodeHasCompletedResult(remote);
     const localBusy = smartNodeInFlight(local);
@@ -5167,9 +5198,10 @@ function mergeSmartNode(local, remote){
         ? completeSmartNodeWithImages(merged, images)
         : merged;
 }
-function mergeSmartNodeLists(localNodes, remoteNodes){
+function mergeSmartNodeLists(localNodes, remoteNodes, options={}){
     const localById = new Map((localNodes || []).map(n => [n.id, n]));
     const remoteById = new Map((remoteNodes || []).map(n => [n.id, n]));
+    const deletedNodeIds = options.deletedNodeIds || new Set();
     const order = [];
     const seen = new Set();
     (localNodes || []).forEach(n => { if(!seen.has(n.id)){ seen.add(n.id); order.push(n.id); } });
@@ -5178,8 +5210,8 @@ function mergeSmartNodeLists(localNodes, remoteNodes){
         const local = localById.get(id);
         const remote = remoteById.get(id);
         if(local && !remote) return local;     // 仅本地存在：保留（我新建的节点；对方删了也宁可复活也不丢结果）
-        if(remote && !local) return remote;     // 仅对方存在：加入对方新建的节点
-        return mergeSmartNode(local, remote);
+        if(remote && !local) return deletedNodeIds.has(String(id)) ? null : remote;     // 本地已删的节点不从旧快照复活
+        return mergeSmartNode(local, remote, options);
     }).filter(Boolean);
 }
 function mergeSmartConnections(localConns, remoteConns, nodeIds){
@@ -5194,10 +5226,13 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
     });
     return out;
 }
-function applyMergedServerCanvas(serverCanvas){
+function applyMergedServerCanvas(serverCanvas, options={}){
     if(!serverCanvas || !canvas) return false;
     const remoteNodes = (Array.isArray(serverCanvas.nodes) ? serverCanvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
-    const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes);
+    const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes, {
+        preferLocal: Boolean(options.preserveLocalChanges),
+        deletedNodeIds: options.preserveLocalChanges ? smartDeletedNodeIds : new Set(),
+    });
     const nodeIds = new Set(mergedNodes.map(n => n.id));
     nodes = mergedNodes;
     canvas.connections = mergeSmartConnections(canvas.connections, serverCanvas.connections, nodeIds);
@@ -5218,8 +5253,9 @@ function applyMergedServerCanvas(serverCanvas){
 }
 async function mergeReloadCanvasNow(){
     if(!canvasId) return;
-    if(dragState || selectionState){
+    if(dragState || selectionState || canvasSyncInFlight || hasPendingSmartLocalSave()){
         // 用户正在拖拽/框选，稍后再合并，别打断操作
+        if(smartLocalDirty && !saveTimer && !canvasSyncInFlight) scheduleSave();
         scheduleCanvasMergeReload(600);
         return;
     }
@@ -5238,7 +5274,10 @@ function handleCanvasUpdatedMessage(data={}){
     if(!data || data.type !== 'canvas_updated') return;
     if(!canvasId || data.canvas_id !== canvasId) return;
     if(data.client_id && data.client_id === smartClientId) return; // 自己发的，忽略
-    if(canvasSyncInFlight) return; // 我正在保存，保存完成/409 合并会处理
+    if(canvasSyncInFlight || hasPendingSmartLocalSave()){
+        scheduleCanvasMergeReload(700);
+        return;
+    }
     const remoteUpdatedAt = Number(data.updated_at || 0);
     if(remoteUpdatedAt && remoteUpdatedAt <= Number(canvas?.updated_at || 0)) return;
     scheduleCanvasMergeReload(200);
@@ -5248,7 +5287,7 @@ function startCanvasMetaPoll(){
     if(canvasMetaPollTimer) return;
     canvasMetaPollTimer = setInterval(async () => {
         if(!canvasId || !canvas) return;
-        if(canvasSyncInFlight || dragState || selectionState) return;
+        if(canvasSyncInFlight || dragState || selectionState || hasPendingSmartLocalSave()) return;
         try {
             const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}/meta`);
             if(!res.ok) return;
@@ -5813,6 +5852,7 @@ async function loadCanvas(){
         updateProviderModels();
         applyViewport();
         render();
+        clearSmartCanvasDirtyIfCurrent();
         if(cleanedDetachedInputs || cleanedCompletedState || recoveredLoopOutputs || hiddenCompletedTimers) scheduleSave();
         resumeSmartPendingTasks();
         resumeJimengPendingNodes();
@@ -5820,11 +5860,19 @@ async function loadCanvas(){
     } catch(e) { toast(tr('smart.toastCanvasFail')); }
 }
 function scheduleSave(){
+    markSmartCanvasDirty();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveCanvas, 450);
 }
 async function saveCanvas(){
     if(!canvasId || !canvas) return;
+    if(canvasSyncInFlight){
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(saveCanvas, 450);
+        return;
+    }
+    clearTimeout(saveTimer);
+    saveTimer = null;
     savePromptDraftForCurrent();
     nodes.forEach(node => {
         node.images = (node.images || []).map(img => mediaItemForStorage(stripImageGenerationMeta(img)));
@@ -5834,6 +5882,7 @@ async function saveCanvas(){
     canvas.settings = settingsForStorage(canvasDefaultSmartSettings || initialSmartSettings);
     canvas.viewport = {...viewport};
     const storageCanvas = canvasForStorage();
+    const saveRevision = smartLocalRevision;
     canvasSyncInFlight = true;
     try {
         const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}`, {
@@ -5854,13 +5903,14 @@ async function saveCanvas(){
         if(res.ok){
             const data = await res.json();
             if(data.canvas && data.canvas.updated_at) canvas.updated_at = data.canvas.updated_at;
+            clearSmartCanvasDirtyIfCurrent(saveRevision);
         } else if(res.status === 409) {
             // 冲突：别人先保存了。合并对方的状态（节点 id 合并、图片取并集，谁都不丢），
             // 然后用对方最新的 updated_at 作为基底重存，把合并结果落盘——而不是直接覆盖对方。
             const data = await res.json().catch(() => ({}));
             const serverCanvas = data.detail?.canvas;
             if(serverCanvas){
-                applyMergedServerCanvas(serverCanvas);
+                applyMergedServerCanvas(serverCanvas, {preserveLocalChanges:true});
                 nodes.forEach(node => {
                     node.images = (node.images || []).map(img => mediaItemForStorage(stripImageGenerationMeta(img)));
                     if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
@@ -11016,6 +11066,7 @@ async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='�
         outputNode.runElapsedMs = Math.max(0, outputNode.runFinishedAt - Number(outputNode.runStartedAt || outputNode.runFinishedAt));
         addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:err?.message || String(err)});
         if(!(outputNode.images || []).length){
+            trackSmartDeletedNodeIds([outputNode.id]);
             nodes = nodes.filter(n => n.id !== outputNode.id);
             canvas.connections = (canvas.connections || []).filter(c => c.from !== outputNode.id && c.to !== outputNode.id);
             selectedId = node.id;
@@ -12240,6 +12291,7 @@ function deleteNode(id){
     nodes.forEach(node => {
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
     });
+    trackSmartDeletedNodeIds(deleteIds);
     nodes = nodes.filter(node => !deleteIds.has(node.id));
     if(canvas) canvas.connections = (canvas.connections || []).filter(c => !deleteIds.has(c.from) && !deleteIds.has(c.to));
     nodes.forEach(node => {
@@ -12266,6 +12318,7 @@ function clearNodeMediaBeforeDelete(id){
     delete node.h;
     const history = historyGroupForNode(node);
     if(history){
+        trackSmartDeletedNodeIds([history.id]);
         nodes = nodes.filter(n => n.id !== history.id);
         if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== history.id && c.to !== history.id);
     }
@@ -17548,6 +17601,7 @@ function restoreFromExtraction(node, extracted){
     node.images = extracted.images.slice();
     if(Number.isFinite(Number(extracted.w))) node.w = extracted.w;
     if(Number.isFinite(Number(extracted.h))) node.h = extracted.h;
+    trackSmartDeletedNodeIds([extracted.id]);
     nodes = nodes.filter(n => n.id !== extracted.id);
     canvas.connections = (canvas.connections || []).filter(c => !(c.from === extracted.id && c.to === node.id));
     if(Array.isArray(node.inputNodeIds)){
@@ -18869,6 +18923,7 @@ async function runGeneration(){
         }
         pendingNode.pending = 0;
         if(branchNode){
+            trackSmartDeletedNodeIds([branchNode.id]);
             nodes = nodes.filter(n => n.id !== branchNode.id);
             canvas.connections = (canvas.connections || []).filter(c => c.from !== branchNode.id && c.to !== branchNode.id);
             selectedId = node.id;
@@ -19655,6 +19710,7 @@ function ungroupNode(groupId){
                 return node;
             });
         }
+        trackSmartDeletedNodeIds([groupId]);
         nodes = nodes.filter(n => n.id !== groupId);
         nodes.push(...created);
         if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== groupId && c.to !== groupId);
@@ -19697,6 +19753,7 @@ function ungroupNode(groupId){
         clearDetachedRunInputRefs(node);
         return node;
     });
+    trackSmartDeletedNodeIds([groupId]);
     nodes = nodes.filter(n => n.id !== groupId);
     nodes.push(...created);
     if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== groupId && c.to !== groupId);
@@ -19733,6 +19790,7 @@ function mergeImageNodesIntoGroup(sourceId, targetId){
             node.inputNodeIds = Array.from(new Set(node.inputNodeIds.map(id => id === source.id ? target.id : id).filter(id => id !== node.id)));
         }
     });
+    trackSmartDeletedNodeIds([source.id]);
     nodes = nodes.filter(n => n.id !== source.id);
     selectedIds = [];
     selectedId = target.id;

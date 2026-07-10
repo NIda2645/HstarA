@@ -347,14 +347,14 @@ body.smart-node-resize .smart-node-floating-menu,
 .smart-text-edit-panel { position:absolute; z-index:119; display:none; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--text); box-shadow:0 16px 38px var(--shadow); backdrop-filter:blur(18px); overflow:hidden; }
 .smart-text-edit-panel.open { display:flex; flex-direction:column; }
 .smart-text-edit-panel *,.smart-text-edit-panel button,.smart-text-edit-panel textarea { font-size:10px !important; }
-.smart-text-edit-head { height:38px; padding:0 9px 0 10px; display:flex; align-items:center; justify-content:space-between; gap:8px; border-bottom:1px solid var(--line); }
+.smart-text-edit-head { height:44px; padding:7px 9px 7px 10px; display:flex; align-items:center; justify-content:space-between; gap:8px; border-bottom:1px solid var(--line); }
 .smart-text-edit-head strong { display:block; font-size:10px; font-weight:950; line-height:1.1; }
 .smart-text-edit-head span { display:block; margin-top:2px; color:var(--faint); font-size:10px; font-weight:750; line-height:1.15; }
 .smart-text-edit-head button { width:24px; height:24px; border:0; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; background:var(--soft); color:var(--muted); cursor:pointer; }
 .smart-text-edit-head button:hover { color:#ef4444; background:rgba(239,68,68,.08); }
 .smart-text-edit-head button i,.smart-text-edit-head button svg { width:13px; height:13px; }
 .smart-text-edit-tabs { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:5px; }
-.smart-text-edit-tabs button { width:auto; min-width:64px; height:24px; padding:0 10px; border-radius:9px; border:1px solid var(--line); background:var(--card); color:var(--muted); font-size:10px; line-height:1; font-weight:400; }
+.smart-text-edit-tabs button { flex:0 0 78px; width:78px; min-width:78px; height:26px; display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box; padding:0 12px; appearance:none; -webkit-appearance:none; margin:0; border-radius:9px; border:1px solid var(--line); background:var(--card); color:var(--muted); font-family:inherit; font-size:10px; line-height:1; font-weight:400; white-space:nowrap; text-align:center; }
 .smart-text-edit-tabs button.active { background:var(--strong); border-color:var(--strong); color:var(--strong-text); }
 .smart-text-edit-tabs button:hover { color:var(--strong); background:var(--soft); }
 .smart-text-edit-tabs button.active:hover { color:var(--strong-text); background:var(--strong); }
