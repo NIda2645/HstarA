@@ -1,0 +1,450 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>软件设置</title>
+    <style>
+        :root { --bg:#f8fafc; --card:#fff; --text:#111827; --muted:#64748b; --line:#e5e7eb; --strong:#111827; --strongText:#fff; --soft:#f1f5f9; --accent:#2563eb; }
+        html.theme-dark, body.theme-dark { --bg:#0b1020; --card:#111827; --text:#f8fafc; --muted:#94a3b8; --line:#263449; --strong:#f8fafc; --strongText:#0f172a; --soft:#1e293b; --accent:#60a5fa; }
+        * { box-sizing:border-box; }
+        body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:Inter, "Microsoft YaHei", "Segoe UI", sans-serif; }
+        .page { max-width:980px; margin:0 auto; padding:42px 28px 80px; }
+        .eyebrow { color:var(--muted); font-size:12px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; }
+        h1 { margin:8px 0 10px; font-size:34px; line-height:1.1; }
+        .sub { max-width:720px; color:var(--muted); font-size:14px; line-height:1.7; }
+        .card { margin-top:26px; padding:22px; border:1px solid var(--line); border-radius:18px; background:var(--card); box-shadow:0 18px 50px rgba(15,23,42,.07); }
+        .card-title { margin:0 0 14px; font-size:17px; font-weight:900; }
+        .row { display:grid; grid-template-columns:160px 1fr; gap:18px; align-items:start; padding:16px 0; border-top:1px solid var(--line); }
+        .row:first-of-type { border-top:0; padding-top:0; }
+        .label { font-size:13px; font-weight:900; }
+        .hint { margin-top:5px; color:var(--muted); font-size:12px; line-height:1.5; }
+        .path-box, .link-box { display:flex; gap:10px; align-items:center; }
+        input { flex:1; min-width:0; height:40px; padding:0 12px; border:1px solid var(--line); border-radius:12px; background:var(--soft); color:var(--text); outline:none; font-size:13px; }
+        input:focus { border-color:var(--strong); background:var(--card); }
+        button { height:40px; padding:0 14px; border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--text); font-weight:850; cursor:pointer; white-space:nowrap; }
+        button.primary { background:var(--strong); color:var(--strongText); border-color:var(--strong); }
+        button:disabled { opacity:.55; cursor:not-allowed; }
+        .status { margin-top:12px; min-height:20px; color:var(--muted); font-size:12px; line-height:1.5; }
+        .status.ok { color:#16a34a; }
+        .status.err { color:#dc2626; }
+        .pill { display:inline-flex; align-items:center; min-height:24px; padding:4px 9px; border-radius:999px; background:var(--soft); color:var(--muted); font-size:11px; font-weight:850; line-height:1.45; }
+        .security-note { margin-top:12px; padding:12px 14px; border:1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius:14px; background:color-mix(in srgb, var(--accent) 9%, var(--card)); color:var(--muted); font-size:12px; line-height:1.65; }
+        .shortcut-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+        .shortcut-toolbar { display:flex; gap:10px; justify-content:flex-end; margin-bottom:14px; }
+        .shortcut-editor { display:grid; gap:10px; }
+        .shortcut-edit-item { display:grid; grid-template-columns:1fr 180px 76px; gap:10px; align-items:center; padding:12px 14px; border:1px solid var(--line); border-radius:14px; background:var(--soft); }
+        .shortcut-edit-item input { height:34px; text-align:center; font-weight:900; font-family:"Segoe UI", Inter, sans-serif; cursor:pointer; }
+        .shortcut-item { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:12px 14px; border:1px solid var(--line); border-radius:14px; background:var(--soft); }
+        .shortcut-name { font-size:13px; font-weight:850; }
+        .kbd { display:inline-flex; align-items:center; min-height:26px; padding:4px 9px; border:1px solid var(--line); border-bottom-width:2px; border-radius:8px; background:var(--card); color:var(--text); font-size:12px; font-weight:900; font-family:"Segoe UI", Inter, sans-serif; }
+        .about-copy { color:var(--muted); font-size:13px; line-height:1.7; }
+        .about-list { display:grid; gap:10px; margin-top:14px; }
+        @media (max-width:700px){ .page{padding:28px 16px 60px}.row{grid-template-columns:1fr}.path-box,.link-box{flex-direction:column;align-items:stretch}.shortcut-grid{grid-template-columns:1fr} }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <div class="eyebrow">Hstar</div>
+        <h1>软件设置</h1>
+        <p class="sub">管理 Hstar 的本地储存位置与局域网协作入口。协作链接只在本次启动中有效，重启软件后会自动更换。</p>
+
+        <section class="card">
+            <h2 class="card-title">本地储存</h2>
+            <div class="row">
+                <div>
+                    <div class="label">当前储存位置</div>
+                    <div class="hint">用于保存画布、资产库、输出图片和历史记录。</div>
+                </div>
+                <div><div id="currentPath" class="pill">读取中...</div></div>
+            </div>
+            <div class="row">
+                <div>
+                    <div class="label">自定义储存</div>
+                    <div class="hint">输入任意本地文件夹路径，或在桌面版中点击“选择文件夹”。</div>
+                </div>
+                <div>
+                    <div class="path-box">
+                        <input id="storageInput" placeholder="例如 D:\\Hstar Data" spellcheck="false">
+                        <button id="browseBtn" type="button">选择文件夹</button>
+                        <button id="saveBtn" class="primary" type="button">保存</button>
+                    </div>
+                    <div id="status" class="status"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2 class="card-title">本地启动与协作链接</h2>
+            <div class="row">
+                <div>
+                    <div class="label">本机链接</div>
+                    <div class="hint">当前电脑自己访问 Hstar 使用。</div>
+                </div>
+                <div>
+                    <div class="link-box">
+                        <input id="localLink" readonly value="读取中...">
+                        <button type="button" data-copy="localLink">复制</button>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div>
+                    <div class="label">局域网协作链接</div>
+                    <div class="hint">发给同一局域网内可信成员同步使用。</div>
+                </div>
+                <div>
+                    <div class="link-box">
+                        <input id="lanLink" readonly value="读取中...">
+                        <button id="refreshLinkBtn" type="button">刷新</button>
+                        <button type="button" data-copy="lanLink">复制</button>
+                    </div>
+                    <div id="linkStatus" class="status"></div>
+                    <div class="security-note">链接包含本次启动生成的临时密钥。Hstar 重启后密钥会变化，旧链接会失效；请只分享给可信设备。</div>
+                </div>
+            </div>
+        </section>
+        <section class="card">
+            <h2 class="card-title">快捷键</h2>
+            <div class="shortcut-toolbar">
+                <button id="resetShortcutBtn" type="button">恢复默认</button>
+                <button id="saveShortcutBtn" class="primary" type="button">保存快捷键</button>
+            </div>
+            <div id="shortcutEditor" class="shortcut-editor"></div>
+            <div id="shortcutStatus" class="status"></div>
+        </section>
+
+        <section class="card">
+            <h2 class="card-title">关于 Hstar</h2>
+            <div class="about-copy">Hstar 是 Windows 版 AI 无限画布工作流软件，默认以无限画布作为创作首页，支持本地服务、画布节点、资产管理与局域网协同。</div>
+            <div class="about-list">
+                <div class="pill">软件名称：Hstar</div>
+                <div id="aboutVersion" class="pill">当前版本：2026.05.31</div>
+                <div class="pill">运行平台：Windows 11</div>
+            </div>
+        </section>
+    </main>
+    <script>
+        const currentPath = document.getElementById('currentPath');
+        const storageInput = document.getElementById('storageInput');
+        const statusEl = document.getElementById('status');
+        const linkStatus = document.getElementById('linkStatus');
+        const saveBtn = document.getElementById('saveBtn');
+        const browseBtn = document.getElementById('browseBtn');
+        const localLink = document.getElementById('localLink');
+        const lanLink = document.getElementById('lanLink');
+        const refreshLinkBtn = document.getElementById('refreshLinkBtn');
+        const shortcutEditor = document.getElementById('shortcutEditor');
+        const shortcutStatus = document.getElementById('shortcutStatus');
+        const saveShortcutBtn = document.getElementById('saveShortcutBtn');
+        const resetShortcutBtn = document.getElementById('resetShortcutBtn');
+        const aboutVersion = document.getElementById('aboutVersion');
+        const SHORTCUT_STORAGE_KEY = 'hstar.software.shortcuts';
+        const DEFAULT_SHORTCUTS = Object.freeze({
+            undo:{label:'撤销', accelerator:'Ctrl+Z'},
+            copy:{label:'复制', accelerator:'Ctrl+C'},
+            paste:{label:'粘贴', accelerator:'Ctrl+V'},
+            cut:{label:'剪切', accelerator:'Ctrl+X'},
+            redo:{label:'重做', accelerator:'Ctrl+Shift+Z'},
+            selectAll:{label:'全选', accelerator:'Ctrl+A'}
+        });
+        let shortcutState = {};
+
+        function cloneShortcuts(shortcuts){
+            return Object.fromEntries(Object.entries(shortcuts || {}).map(([key, item]) => [key, {...item}]));
+        }
+        function sanitizeShortcuts(shortcuts){
+            const next = cloneShortcuts(DEFAULT_SHORTCUTS);
+            Object.entries(shortcuts || {}).forEach(([key, item]) => {
+                if(!next[key] || !item || typeof item !== 'object') return;
+                next[key] = {...next[key], accelerator:normalizeShortcut(item.accelerator || next[key].accelerator)};
+            });
+            return next;
+        }
+
+        function desktopApi(){
+            return window.aiStudio || window.parent?.aiStudio || null;
+        }
+
+        function applyTheme(theme){
+            const dark = theme === 'dark';
+            document.documentElement.classList.toggle('theme-dark', dark);
+            document.body.classList.toggle('theme-dark', dark);
+        }
+        try { applyTheme(localStorage.getItem('studio_theme') || localStorage.getItem('canvas_theme') || 'light'); } catch(e) {}
+        window.addEventListener('message', event => { if(event.data?.type === 'studio-theme') applyTheme(event.data.theme || 'light'); });
+
+        function setStatus(text, type=''){
+            statusEl.textContent = text || '';
+            statusEl.className = `status ${type}`.trim();
+        }
+        function setLinkStatus(text, type=''){
+            linkStatus.textContent = text || '';
+            linkStatus.className = `status ${type}`.trim();
+        }
+        async function loadSettings(){
+            try {
+                const data = await fetch('/api/software-settings', {cache:'no-store'}).then(r => r.json());
+                const root = data?.settings?.storage_root || '';
+                currentPath.textContent = root || '默认目录';
+                storageInput.value = root;
+            } catch(e) {
+                currentPath.textContent = '读取失败';
+                setStatus('无法读取软件设置。', 'err');
+            }
+        }
+        async function loadLinks(){
+            try {
+                const data = await fetch('/api/collaboration-link', {cache:'no-store'}).then(r => r.json());
+                localLink.value = data.local_url || '';
+                lanLink.value = data.lan_url || '';
+                setLinkStatus(data.expires || '', '');
+            } catch(e) {
+                localLink.value = '读取失败';
+                lanLink.value = '读取失败';
+                setLinkStatus('无法读取协作链接。', 'err');
+            }
+        }
+        async function refreshLinks(){
+            refreshLinkBtn.disabled = true;
+            setLinkStatus('正在刷新协作密钥...', '');
+            try {
+                const res = await fetch('/api/collaboration-link/refresh', {method:'POST', cache:'no-store'});
+                const data = await res.json().catch(() => ({}));
+                if(!res.ok) throw new Error(data.detail || '刷新协作链接失败。');
+                localLink.value = data.local_url || '';
+                lanLink.value = data.lan_url || '';
+                setLinkStatus('协作链接已刷新，旧链接已失效。', 'ok');
+            } catch(e) {
+                setLinkStatus(e.message || '刷新协作链接失败。', 'err');
+            } finally {
+                refreshLinkBtn.disabled = false;
+            }
+        }
+        async function loadAppInfo(){
+            try {
+                const data = await fetch('/api/app-info', {cache:'no-store'}).then(r => r.json());
+                const version = data?.version || '2026.05.31';
+                aboutVersion.textContent = `当前版本：${version}`;
+            } catch(e) {
+                aboutVersion.textContent = '当前版本：2026.05.31';
+            }
+        }
+        function setShortcutStatus(text, type=''){
+            shortcutStatus.textContent = text || '';
+            shortcutStatus.className = `status ${type}`.trim();
+        }
+        function prettyShortcut(value){
+            return String(value || '').replace(/\+/g, ' + ');
+        }
+        function normalizeShortcut(value){
+            const parts = String(value || '').split('+').map(part => part.trim()).filter(Boolean);
+            const mods = {Ctrl:false, Alt:false, Shift:false, Meta:false};
+            let key = '';
+            parts.forEach(part => {
+                const lower = part.toLowerCase();
+                if(lower === 'control' || lower === 'ctrl') mods.Ctrl = true;
+                else if(lower === 'alt') mods.Alt = true;
+                else if(lower === 'shift') mods.Shift = true;
+                else if(lower === 'meta' || lower === 'win' || lower === 'cmd') mods.Meta = true;
+                else key = part.length === 1 ? part.toUpperCase() : part.toUpperCase().replace(/^ESCAPE$/, 'Esc');
+            });
+            if(!key) return '';
+            return [...Object.keys(mods).filter(name => mods[name]), key].join('+');
+        }
+        function shortcutFromEvent(event){
+            event.preventDefault();
+            event.stopPropagation();
+            const key = event.key;
+            const lower = String(key || '').toLowerCase();
+            if(['control','shift','alt','meta'].includes(lower)) return '';
+            const mods = [];
+            if(event.ctrlKey || event.metaKey) mods.push('Ctrl');
+            if(event.altKey) mods.push('Alt');
+            if(event.shiftKey) mods.push('Shift');
+            let normalizedKey = key === ' ' ? 'Space' : key;
+            if(normalizedKey === '+') normalizedKey = '+';
+            else if(normalizedKey.length === 1) normalizedKey = normalizedKey.toUpperCase();
+            else normalizedKey = normalizedKey.replace(/^Escape$/i, 'Esc').toUpperCase().replace(/^F(\\d+)$/, 'F$1');
+            if(!mods.length && !/^F\d+$/.test(normalizedKey)) return '';
+            return normalizeShortcut([...mods, normalizedKey].join('+'));
+        }
+        function renderShortcuts(shortcuts){
+            shortcutState = sanitizeShortcuts(shortcuts || {});
+            shortcutEditor.innerHTML = Object.entries(shortcutState).map(([action, item]) => `
+                <div class="shortcut-edit-item" data-action="${action}">
+                    <span class="shortcut-name">${item.label || action}</span>
+                    <input readonly value="${prettyShortcut(item.accelerator)}" aria-label="${item.label || action} 快捷键">
+                    <button type="button" data-clear="${action}">清空</button>
+                </div>
+            `).join('');
+            shortcutEditor.querySelectorAll('input').forEach(input => {
+                input.addEventListener('focus', () => desktopApi()?.setShortcutCapture?.(true));
+                input.addEventListener('blur', () => desktopApi()?.setShortcutCapture?.(false));
+                input.addEventListener('keydown', event => {
+                    const action = input.closest('[data-action]')?.dataset.action;
+                    const next = shortcutFromEvent(event);
+                    if(!action || !next) return;
+                    shortcutState[action].accelerator = next;
+                    input.value = prettyShortcut(next);
+                    setShortcutStatus('快捷键已修改，点击保存后生效。');
+                });
+            });
+            shortcutEditor.querySelectorAll('[data-clear]').forEach(button => {
+                button.addEventListener('click', () => {
+                    const action = button.dataset.clear;
+                    shortcutState[action].accelerator = '';
+                    button.closest('.shortcut-edit-item').querySelector('input').value = '';
+                    setShortcutStatus('快捷键已清空，点击保存后生效。');
+                });
+            });
+        }
+        function persistShortcutsLocal(shortcuts){
+            localStorage.setItem(SHORTCUT_STORAGE_KEY, JSON.stringify(sanitizeShortcuts(shortcuts)));
+        }
+        async function loadShortcuts(){
+            const api = desktopApi();
+            if(!api?.getShortcuts){
+                let stored = null;
+                try { stored = JSON.parse(localStorage.getItem(SHORTCUT_STORAGE_KEY) || 'null'); } catch(e) { stored = null; }
+                renderShortcuts(stored && typeof stored === 'object' ? stored : cloneShortcuts(DEFAULT_SHORTCUTS));
+                setShortcutStatus(stored ? '已读取本地快捷键设置。' : '当前浏览器环境使用默认快捷键。');
+                return;
+            }
+            try {
+                renderShortcuts(await api.getShortcuts());
+                persistShortcutsLocal(shortcutState);
+            } catch(e) {
+                setShortcutStatus(e.message || '快捷键读取失败。', 'err');
+            }
+        }
+        saveShortcutBtn.onclick = async () => {
+            const api = desktopApi();
+            if(!api?.saveShortcuts){
+                try {
+                    shortcutState = sanitizeShortcuts(shortcutState);
+                    persistShortcutsLocal(shortcutState);
+                    renderShortcuts(cloneShortcuts(shortcutState));
+                    setShortcutStatus('快捷键已保存。', 'ok');
+                } catch(e) {
+                    setShortcutStatus('保存失败，请检查浏览器本地储存权限。', 'err');
+                }
+                return;
+            }
+            try {
+                renderShortcuts(await api.saveShortcuts(sanitizeShortcuts(shortcutState)));
+                persistShortcutsLocal(shortcutState);
+                setShortcutStatus('快捷键已保存。', 'ok');
+            } catch(e) {
+                setShortcutStatus(e.message || '保存失败，请检查快捷键是否冲突。', 'err');
+            }
+        };
+        resetShortcutBtn.onclick = async () => {
+            const api = desktopApi();
+            if(!api?.resetShortcuts){
+                try { localStorage.removeItem(SHORTCUT_STORAGE_KEY); } catch(e) {}
+                renderShortcuts(cloneShortcuts(DEFAULT_SHORTCUTS));
+                setShortcutStatus('已恢复默认快捷键。', 'ok');
+                return;
+            }
+            try {
+                renderShortcuts(await api.resetShortcuts());
+                persistShortcutsLocal(shortcutState);
+                setShortcutStatus('已恢复默认快捷键。', 'ok');
+            } catch(e) {
+                setShortcutStatus(e.message || '恢复失败。', 'err');
+            }
+        };
+        async function copyText(text){
+            const api = desktopApi();
+            if(api?.copyText) return api.copyText(text);
+            if(navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+            throw new Error('当前环境不支持复制。');
+        }
+        document.querySelectorAll('[data-copy]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const input = document.getElementById(btn.dataset.copy);
+                try {
+                    await copyText(input.value);
+                    setLinkStatus('链接已复制。', 'ok');
+                } catch(e) {
+                    setLinkStatus(e.message || '复制失败，请手动复制。', 'err');
+                }
+            });
+        });
+        refreshLinkBtn.addEventListener('click', refreshLinks);
+        async function saveStorageRoot(storageRoot, pendingText = '正在验证并保存...'){
+            const storage_root = String(storageRoot || '').trim();
+            if(!storage_root){ setStatus('请输入储存文件夹路径。', 'err'); return false; }
+            saveBtn.disabled = true;
+            browseBtn.disabled = true;
+            setStatus(pendingText, '');
+            try {
+                const res = await fetch('/api/software-settings/storage', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({storage_root})
+                });
+                const data = await res.json().catch(() => ({}));
+                if(!res.ok) throw new Error(data.detail || '保存失败');
+                const savedPath = data?.settings?.storage_root || storage_root;
+                currentPath.textContent = savedPath;
+                storageInput.value = savedPath;
+                setStatus(data?.settings?.message || '已迁移并保存。', 'ok');
+                return true;
+            } catch(e) {
+                setStatus(e.message || '保存失败，请确认路径可写。', 'err');
+                return false;
+            } finally {
+                saveBtn.disabled = false;
+                browseBtn.disabled = false;
+            }
+        }
+        browseBtn.onclick = async () => {
+            const api = desktopApi();
+            browseBtn.disabled = true;
+            setStatus('正在打开系统文件夹选择器...', '');
+            try {
+                if(api?.chooseStorageFolder){
+                    const picked = await api.chooseStorageFolder();
+                    if(picked){
+                        storageInput.value = picked;
+                        await saveStorageRoot(picked, '正在迁移数据到所选文件夹...');
+                    } else {
+                        setStatus('已取消选择。', '');
+                    }
+                    return;
+                }
+                const res = await fetch('/api/native/choose-folder', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({ initial_dir: storageInput.value.trim(), purpose:'storage' })
+                });
+                const data = await res.json().catch(() => ({}));
+                if(!res.ok) throw new Error(data.detail || '无法打开系统文件夹选择器。');
+                if(data.path){
+                    storageInput.value = data.path;
+                    await saveStorageRoot(data.path, '正在迁移数据到所选文件夹...');
+                } else {
+                    setStatus('已取消选择。', '');
+                }
+            } catch(e) {
+                setStatus(e.message || '无法打开系统文件夹选择器，请手动输入路径。', 'err');
+            } finally {
+                browseBtn.disabled = false;
+            }
+        };
+        saveBtn.onclick = async () => {
+            await saveStorageRoot(storageInput.value.trim());
+        };
+        loadSettings();
+        loadLinks();
+        loadAppInfo();
+        loadShortcuts();
+    </script>
+</body>
+</html>
+
+
+
+

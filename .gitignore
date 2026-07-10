@@ -1,0 +1,28 @@
+# Local secrets
+API/.env
+.env
+*.env
+
+# Python/runtime caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime output/cache
+output/
+outputs/
+static/output/
+static/outputs/
+static/assets/output/
+temp/
+tmp/
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
