@@ -34,5 +34,8 @@ build/installer/stage/
 # OS/editor noise
 .DS_Store
 Thumbs.db
+
+# Local isolated development worktrees
+.worktrees/
 .vscode/
 .idea/
