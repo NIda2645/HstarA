@@ -650,11 +650,19 @@
             }
         }
 
-        function createImageCard(data){
-            if(!data.images?.[0] || document.getElementById(`history-${data.timestamp}`)) return null;
+        function reserveHistoryCardId(data, reservedIds){
+            if(!data?.images?.[0]) return null;
+            const id = `history-${data.timestamp}`;
+            if(document.getElementById(id) || reservedIds?.has(id)) return null;
+            reservedIds?.add(id);
+            return id;
+        }
+        function createImageCard(data, reservedIds){
+            const cardId = reserveHistoryCardId(data, reservedIds);
+            if(!cardId) return null;
             const originalUrl = data.images[0];
             const card = document.createElement('div');
-            card.id = `history-${data.timestamp}`;
+            card.id = cardId;
             card.dataset.historyTs = data.timestamp;
             card.className = 'masonry-item group relative cursor-zoom-in';
             card.onclick = () => { if(document.body.classList.contains('history-bulk-selecting')) return; openLightbox(data); };
@@ -679,8 +687,9 @@
         function renderHistoryBatch(items){
             const masonry = document.getElementById('masonry');
             const fragment = document.createDocumentFragment();
+            const reservedIds = new Set();
             for(const item of items){
-                const card = createImageCard(item);
+                const card = createImageCard(item, reservedIds);
                 if(card) fragment.appendChild(card);
             }
             masonry.appendChild(fragment);

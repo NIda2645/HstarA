@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const onlineHtml = readFileSync(join(repoRoot, 'static', 'online.html'), 'utf8');
@@ -187,32 +188,40 @@ from PIL import Image
 sys.path.insert(0, os.getcwd())
 import main
 
-main.HISTORY_FILE = sys.argv[1]
+test_history_file = sys.argv[1]
 
 async def run():
-    legacy = await main.get_history_api(type="online")
-    first = await main.get_history_api(type="online", paged=True, offset=0, limit=2)
-    second = await main.get_history_api(type="online", paged=True, offset=2, limit=2)
-    clamped = await main.get_history_api(type="online", paged=True, offset=-9, limit=999)
-    with open(main.HISTORY_FILE, "w", encoding="utf-8") as file:
-        json.dump({"unexpected": "shape"}, file)
-    invalid_legacy = await main.get_history_api(type="online")
-
+    original_history_file = main.HISTORY_FILE
     original_output_dir = main.OUTPUT_DIR
     original_preview_dir = main.MEDIA_PREVIEW_DIR
-    preview = {}
+    original_remove_preview_cache = main.remove_media_preview_cache
     try:
+        main.HISTORY_FILE = test_history_file
         main.OUTPUT_DIR = sys.argv[2]
         main.MEDIA_PREVIEW_DIR = sys.argv[3]
+
+        legacy = await main.get_history_api(type="online")
+        first = await main.get_history_api(type="online", paged=True, offset=0, limit=2)
+        second = await main.get_history_api(type="online", paged=True, offset=2, limit=2)
+        clamped = await main.get_history_api(type="online", paged=True, offset=-9, limit=999)
+        with open(main.HISTORY_FILE, "w", encoding="utf-8") as file:
+            json.dump({"unexpected": "shape"}, file)
+        invalid_legacy = await main.get_history_api(type="online")
+
         os.makedirs(main.OUTPUT_DIR, exist_ok=True)
         os.makedirs(main.MEDIA_PREVIEW_DIR, exist_ok=True)
-        Image.new("RGB", (1200, 800), (24, 96, 160)).save(os.path.join(main.OUTPUT_DIR, "large.png"))
+        source_path = os.path.join(main.OUTPUT_DIR, "large.png")
+        Image.new("RGB", (1200, 800), (24, 96, 160)).save(source_path)
         Image.new("RGB", (8, 8), (160, 24, 96)).save(os.path.join(os.path.dirname(main.OUTPUT_DIR), "outside.png"))
 
         first_preview = await main.media_preview("/output/large.png", 480)
         second_preview = await main.media_preview("/output/large.png", 480)
         with Image.open(first_preview.path) as preview_image:
             preview_size = preview_image.size
+        preview_cache_paths = main.media_preview_cache_paths(source_path, 480)
+        cache_exists_before_cleanup = [os.path.exists(path) for path in preview_cache_paths]
+        main.remove_media_preview_cache(source_path, widths=(480,))
+        cache_exists_after_cleanup = [os.path.exists(path) for path in preview_cache_paths]
 
         traversal_status = None
         try:
@@ -225,10 +234,38 @@ async def run():
             "second_path": os.path.abspath(second_preview.path),
             "size": preview_size,
             "traversal_status": traversal_status,
+            "cache_paths": preview_cache_paths,
+            "cache_exists_before_cleanup": cache_exists_before_cleanup,
+            "cache_exists_after_cleanup": cache_exists_after_cleanup,
+        }
+
+        delete_timestamp = 1234.5
+        delete_source_path = os.path.join(main.OUTPUT_DIR, "delete-me.png")
+        Image.new("RGB", (32, 32), (32, 160, 96)).save(delete_source_path)
+        with open(main.HISTORY_FILE, "w", encoding="utf-8") as file:
+            json.dump([{
+                "timestamp": delete_timestamp,
+                "type": "online",
+                "images": ["/output/delete-me.png"],
+            }], file)
+
+        def failing_preview_cleanup(path, widths=(480,)):
+            raise RuntimeError("simulated preview cleanup failure")
+
+        main.remove_media_preview_cache = failing_preview_cleanup
+        delete_result = await main.delete_history(main.DeleteHistoryRequest(timestamp=delete_timestamp))
+        with open(main.HISTORY_FILE, "r", encoding="utf-8") as file:
+            remaining_history = json.load(file)
+        delete_isolation = {
+            "result": delete_result,
+            "source_exists": os.path.exists(delete_source_path),
+            "remaining_history": remaining_history,
         }
     finally:
+        main.HISTORY_FILE = original_history_file
         main.OUTPUT_DIR = original_output_dir
         main.MEDIA_PREVIEW_DIR = original_preview_dir
+        main.remove_media_preview_cache = original_remove_preview_cache
 
     print(json.dumps({
         "legacy": legacy,
@@ -237,6 +274,7 @@ async def run():
         "clamped": clamped,
         "invalid_legacy": invalid_legacy,
         "preview": preview,
+        "delete_isolation": delete_isolation,
     }))
 
 asyncio.run(run())
@@ -297,6 +335,16 @@ try {
   assert.equal(output.preview.first_path, output.preview.second_path, 'preview requests must reuse one cached file');
   assert.ok(Math.max(...output.preview.size) <= 480, 'preview dimensions must be bounded to 480px');
   assert.equal(output.preview.traversal_status, 404, 'preview traversal must be rejected');
+  assert.deepEqual(
+    output.preview.cache_paths.map((path) => path.slice(path.lastIndexOf('.'))).sort(),
+    ['.png', '.webp'],
+  );
+  assert.ok(output.preview.cache_exists_before_cleanup.some(Boolean), 'a generated 480px cache file must exist');
+  assert.deepEqual(output.preview.cache_exists_after_cleanup, [false, false]);
+
+  assert.equal(output.delete_isolation.result.success, true, 'cleanup failure must not fail history deletion');
+  assert.equal(output.delete_isolation.source_exists, false, 'cleanup failure must not retain the source image');
+  assert.deepEqual(output.delete_isolation.remaining_history, [], 'authoritative history deletion must still persist');
 
   console.log('online history pagination and media preview characterization passed');
 } finally {
@@ -316,6 +364,26 @@ const createCardSource = onlineHtml.slice(
   onlineHtml.indexOf('function createImageCard'),
   onlineHtml.indexOf('function beginHistoryMutation'),
 );
+const reservationHelperStart = onlineHtml.indexOf('function reserveHistoryCardId');
+const createCardStart = onlineHtml.indexOf('function createImageCard');
+assert.ok(reservationHelperStart >= 0, 'online archive must define reserveHistoryCardId');
+assert.ok(reservationHelperStart < createCardStart, 'reservation helper must be defined before createImageCard');
+const liveIds = new Set(['history-99']);
+const reservationHelperSource = onlineHtml.slice(reservationHelperStart, createCardStart);
+const reserveHistoryCardId = runInNewContext(
+  `(() => { ${reservationHelperSource}; return reserveHistoryCardId; })()`,
+  { document: { getElementById: (id) => (liveIds.has(id) ? { id } : null) } },
+);
+const reservedIds = new Set();
+assert.equal(reserveHistoryCardId({ timestamp: 42, images: ['/output/first.png'] }, reservedIds), 'history-42');
+assert.equal(reserveHistoryCardId({ timestamp: 42, images: ['/output/second.png'] }, reservedIds), null);
+assert.equal(reserveHistoryCardId({ timestamp: 99, images: ['/output/live.png'] }, reservedIds), null);
+assert.equal(reserveHistoryCardId({ timestamp: 7, images: [] }, reservedIds), null);
+
+assert.match(
+  createCardSource,
+  /function createImageCard\(data, reservedIds\)\s*{\s*const cardId = reserveHistoryCardId\(data, reservedIds\);\s*if\(!cardId\) return null;/,
+);
 assert.match(createCardSource, /const originalUrl = data\.images\[0\];/);
 assert.match(
   createCardSource,
@@ -326,7 +394,7 @@ assert.doesNotMatch(createCardSource, /lucide\.createIcons\(\)/);
 assert.doesNotMatch(onlineHtml, /\b(?:next|items)\.forEach\(item => renderImageCard\(item\)\)/);
 assert.match(
   createCardSource,
-  /function renderHistoryBatch\(items\)\s*{\s*const masonry = document\.getElementById\('masonry'\);\s*const fragment = document\.createDocumentFragment\(\);[\s\S]*masonry\.appendChild\(fragment\);\s*}/,
+  /function renderHistoryBatch\(items\)\s*{\s*const masonry = document\.getElementById\('masonry'\);\s*const fragment = document\.createDocumentFragment\(\);\s*const reservedIds = new Set\(\);[\s\S]*createImageCard\(item, reservedIds\)[\s\S]*masonry\.appendChild\(fragment\);\s*}/,
 );
 
 assert.match(mainPy, /def remove_media_preview_cache\(path: str, widths=\(480,\)\):/);
