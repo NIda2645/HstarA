@@ -17470,7 +17470,8 @@ async def chat_stream(payload: ChatRequest, request: Request, x_user_id: str = H
 # --- 历史记录 ---
 
 @app.get("/api/history")
-async def get_history_api(type: str = None):
+async def get_history_api(type: str = None, paged: bool = False, offset: int = 0, limit: int = 24):
+    data = []
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
@@ -17486,11 +17487,24 @@ async def get_history_api(type: str = None):
                     return 0
 
                 data.sort(key=sort_key, reverse=True)
-                return data
         except Exception as e:
             print(f"读取历史文件失败: {e}")
-            return []
-    return []
+            data = []
+    if not paged:
+        return data
+
+    offset = max(0, offset)
+    limit = max(1, min(limit, 50))
+    total = len(data)
+    items = data[offset:offset + limit]
+    next_offset = offset + len(items) if offset + len(items) < total else None
+    return {
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "next_offset": next_offset,
+        "has_more": next_offset is not None,
+    }
 
 @app.get("/api/queue_status")
 async def get_queue_status(client_id: str):
