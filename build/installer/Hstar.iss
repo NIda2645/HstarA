@@ -1,5 +1,5 @@
 #define MyAppName "Hstar"
-#define MyAppVersion "2026.07.8"
+#define MyAppVersion "2026.07.11"
 #define MyAppPublisher "Hstar"
 #define MyAppExeName "Hstar.exe"
 #define SourceRoot "stage"
@@ -14,7 +14,7 @@ DefaultDirName=D:\Hstar
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\..\..
-OutputBaseFilename=Hstar_Setup_2026.07.10
+OutputBaseFilename=Hstar_Setup_2026.07.11
 SetupIconFile={#SourceRoot}\Hstar.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
