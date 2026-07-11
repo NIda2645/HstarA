@@ -181,6 +181,8 @@ import asyncio
 import json
 import os
 import sys
+import threading
+import time
 
 from fastapi import HTTPException
 from PIL import Image
@@ -207,6 +209,47 @@ async def run():
         with open(main.HISTORY_FILE, "w", encoding="utf-8") as file:
             json.dump({"unexpected": "shape"}, file)
         invalid_legacy = await main.get_history_api(type="online")
+
+        concurrent_records = [
+            {"timestamp": 1, "type": "online", "images": ["/output/1.png"]},
+            {"timestamp": 4, "type": "online", "images": ["/output/4.png"]},
+            {"timestamp": 3, "type": "angle", "images": ["/output/3.png"]},
+            {"timestamp": 2, "type": "online", "images": ["/output/2.png"]},
+            {"timestamp": 5, "type": "online", "images": []},
+        ]
+        partial_written = threading.Event()
+        reader_started = threading.Event()
+        writer_errors = []
+
+        def rewrite_history():
+            try:
+                with main.HISTORY_LOCK:
+                    with open(main.HISTORY_FILE, "w", encoding="utf-8") as file:
+                        file.write('[{"timestamp":')
+                        file.flush()
+                        partial_written.set()
+                        if not reader_started.wait(timeout=5):
+                            raise AssertionError("history reader did not start")
+                        time.sleep(0.05)
+                        file.seek(0)
+                        file.truncate()
+                        json.dump(concurrent_records, file)
+                        file.flush()
+            except BaseException as exc:
+                writer_errors.append(repr(exc))
+                partial_written.set()
+
+        writer = threading.Thread(target=rewrite_history, daemon=True)
+        writer.start()
+        if not partial_written.wait(timeout=5):
+            raise AssertionError("history writer did not expose partial content")
+        reader_started.set()
+        concurrent_page = await main.get_history_api(type="online", paged=True, offset=0, limit=2)
+        writer.join(timeout=5)
+        if writer.is_alive():
+            raise AssertionError("history writer did not finish")
+        if writer_errors:
+            raise AssertionError(writer_errors[0])
 
         os.makedirs(main.OUTPUT_DIR, exist_ok=True)
         os.makedirs(main.MEDIA_PREVIEW_DIR, exist_ok=True)
@@ -273,6 +316,7 @@ async def run():
         "second": second,
         "clamped": clamped,
         "invalid_legacy": invalid_legacy,
+        "concurrent_page": concurrent_page,
         "preview": preview,
         "delete_isolation": delete_isolation,
     }))
@@ -331,6 +375,17 @@ try {
     { total: 3, offset: 0, next_offset: null, has_more: false },
   );
   assert.deepEqual(output.invalid_legacy, [], 'legacy read failures must still return an empty array');
+  assert.deepEqual(
+    {
+      timestamps: output.concurrent_page.items.map((item) => item.timestamp),
+      total: output.concurrent_page.total,
+      offset: output.concurrent_page.offset,
+      next_offset: output.concurrent_page.next_offset,
+      has_more: output.concurrent_page.has_more,
+    },
+    { timestamps: [4, 2], total: 3, offset: 0, next_offset: 2, has_more: true },
+    'history reads must wait for locked writers and parse their completed snapshot',
+  );
 
   assert.equal(output.preview.first_path, output.preview.second_path, 'preview requests must reuse one cached file');
   assert.ok(Math.max(...output.preview.size) <= 480, 'preview dimensions must be bounded to 480px');

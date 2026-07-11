@@ -17486,24 +17486,25 @@ async def chat_stream(payload: ChatRequest, request: Request, x_user_id: str = H
 @app.get("/api/history")
 async def get_history_api(type: str = None, paged: bool = False, offset: int = 0, limit: int = 24):
     data = []
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if type:
-                    data = [item for item in data if item.get("type", "zimage") == type]
-                data = [item for item in data if item.get("images") and len(item["images"]) > 0]
+    try:
+        with HISTORY_LOCK:
+            if os.path.exists(HISTORY_FILE):
+                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+        if type:
+            data = [item for item in data if item.get("type", "zimage") == type]
+        data = [item for item in data if item.get("images") and len(item["images"]) > 0]
 
-                def sort_key(item):
-                    ts = item.get("timestamp", 0)
-                    if isinstance(ts, (int, float)):
-                        return float(ts)
-                    return 0
+        def sort_key(item):
+            ts = item.get("timestamp", 0)
+            if isinstance(ts, (int, float)):
+                return float(ts)
+            return 0
 
-                data.sort(key=sort_key, reverse=True)
-        except Exception as e:
-            print(f"读取历史文件失败: {e}")
-            data = []
+        data.sort(key=sort_key, reverse=True)
+    except Exception as e:
+        print(f"读取历史文件失败: {e}")
+        data = []
     if not paged:
         return data
 
