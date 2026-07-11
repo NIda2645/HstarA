@@ -6339,6 +6339,20 @@ def media_preview_cache_paths(path: str, width: int):
         os.path.join(MEDIA_PREVIEW_DIR, f"{key}.png"),
     )
 
+def remove_media_preview_cache(path: str, widths=(480,)):
+    for width in widths:
+        try:
+            cache_paths = media_preview_cache_paths(path, int(width))
+        except OSError:
+            continue
+        for cache_path in cache_paths:
+            try:
+                os.remove(cache_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
 def is_video_preview_file(path: str) -> bool:
     return os.path.splitext(str(path or "").split("?", 1)[0])[1].lower() in {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv"}
 
@@ -17544,6 +17558,10 @@ async def delete_history(req: DeleteHistoryRequest):
             for img_url in target_record.get("images", []):
                 file_path = output_file_from_url(img_url)
                 if file_path and os.path.exists(file_path):
+                    try:
+                        remove_media_preview_cache(file_path, widths=(480,))
+                    except Exception:
+                        pass
                     try:
                         os.remove(file_path)
                     except Exception as e:

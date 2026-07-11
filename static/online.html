@@ -58,7 +58,7 @@
         .masonry-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:20px; }
         @media (min-width:768px){ .masonry-grid{ grid-template-columns:repeat(4,1fr); } }
         @media (max-width:640px){ .size-row{ grid-template-columns:1fr; } }
-        .masonry-item { aspect-ratio:1/1; border-radius:24px; overflow:hidden; background:#fff; border:1px solid #f1f5f9; transition:all .5s var(--easing); }
+        .masonry-item { aspect-ratio:1/1; border-radius:24px; overflow:hidden; background:#fff; border:1px solid #f1f5f9; transition:all .5s var(--easing); content-visibility:auto; contain-intrinsic-size:320px 320px; }
         .masonry-item:hover { transform:translateY(-6px); box-shadow:0 20px 40px rgba(0,0,0,.08); }
         .gallery-lightbox { background:rgba(255,255,255,.99); backdrop-filter:blur(22px) saturate(1.05); }
         @keyframes fadeIn { from{opacity:0} to{opacity:1} }
@@ -458,6 +458,9 @@
             selectedModel = next;
         }
         function escapeHtml(str){ return String(str || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
+        function historyPreviewUrl(url){
+            return `/api/media-preview?url=${encodeURIComponent(url)}&w=480`;
+        }
 
         function parseSizeValue(value){
             const match = String(value || '').trim().match(/^(\d+)\s*[xX*]\s*(\d+)$/);
@@ -647,8 +650,9 @@
             }
         }
 
-        function renderImageCard(data, isNew=false){
-            if(!data.images?.[0] || document.getElementById(`history-${data.timestamp}`)) return;
+        function createImageCard(data){
+            if(!data.images?.[0] || document.getElementById(`history-${data.timestamp}`)) return null;
+            const originalUrl = data.images[0];
             const card = document.createElement('div');
             card.id = `history-${data.timestamp}`;
             card.dataset.historyTs = data.timestamp;
@@ -656,13 +660,30 @@
             card.onclick = () => { if(document.body.classList.contains('history-bulk-selecting')) return; openLightbox(data); };
             const multi = Array.isArray(data.images) && data.images.length > 1
                 ? `<div class="absolute top-3 right-3 bg-black/60 text-white text-[10px] font-black px-2 py-0.5 rounded-full pointer-events-none">×${data.images.length}</div>` : '';
-            card.innerHTML = `<img src="${data.images[0]}" class="w-full h-full object-cover block group-hover:scale-105 transition-transform duration-1000" loading="lazy">${multi}
-                <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 p-6 flex flex-col justify-end"><p class="text-white text-[10px] font-medium line-clamp-2 uppercase tracking-wider">${data.prompt || tr('online.onlineImageFallback')}</p></div>`;
-            isNew ? document.getElementById('masonry').prepend(card) : document.getElementById('masonry').appendChild(card);
-            lucide.createIcons();
+            const prompt = data.prompt || tr('online.onlineImageFallback');
+            card.innerHTML = `<img src="${escapeHtml(historyPreviewUrl(originalUrl))}" class="w-full h-full object-cover block group-hover:scale-105 transition-transform duration-1000" loading="lazy" decoding="async" fetchpriority="low">${multi}
+                <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 p-6 flex flex-col justify-end"><p class="text-white text-[10px] font-medium line-clamp-2 uppercase tracking-wider">${escapeHtml(prompt)}</p></div>`;
+            const img = card.querySelector('img');
+            img.onerror = () => {
+                img.onerror = null;
+                img.src = originalUrl;
+            };
+            return card;
+        }
+        function renderImageCard(data, isNew=false){
+            const card = createImageCard(data);
+            if(!card) return;
+            const masonry = document.getElementById('masonry');
+            isNew ? masonry.prepend(card) : masonry.appendChild(card);
         }
         function renderHistoryBatch(items){
-            items.forEach(item => renderImageCard(item));
+            const masonry = document.getElementById('masonry');
+            const fragment = document.createDocumentFragment();
+            for(const item of items){
+                const card = createImageCard(item);
+                if(card) fragment.appendChild(card);
+            }
+            masonry.appendChild(fragment);
         }
         function beginHistoryMutation(){
             historyRevision += 1;

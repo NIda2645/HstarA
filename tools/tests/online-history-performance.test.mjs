@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const onlineHtml = readFileSync(join(repoRoot, 'static', 'online.html'), 'utf8');
 const bulkManagerJs = readFileSync(join(repoRoot, 'static', 'js', 'history-bulk-manager.js'), 'utf8');
+const mainPy = readFileSync(join(repoRoot, 'main.py'), 'utf8');
 
 assert.match(onlineHtml, /const PAGE_SIZE = 16;/);
 assert.ok(
@@ -161,6 +162,8 @@ assert.ok(python, 'No usable Python interpreter could import the application dep
 
 const tempDir = mkdtempSync(join(tmpdir(), 'hstar-online-history-'));
 const historyFile = join(tempDir, 'history.json');
+const previewOutputDir = join(tempDir, 'output');
+const previewCacheDir = join(tempDir, 'preview-cache');
 
 const records = [
   { timestamp: 1, type: 'online', images: ['/output/1.png'] },
@@ -178,6 +181,9 @@ import json
 import os
 import sys
 
+from fastapi import HTTPException
+from PIL import Image
+
 sys.path.insert(0, os.getcwd())
 import main
 
@@ -191,23 +197,61 @@ async def run():
     with open(main.HISTORY_FILE, "w", encoding="utf-8") as file:
         json.dump({"unexpected": "shape"}, file)
     invalid_legacy = await main.get_history_api(type="online")
+
+    original_output_dir = main.OUTPUT_DIR
+    original_preview_dir = main.MEDIA_PREVIEW_DIR
+    preview = {}
+    try:
+        main.OUTPUT_DIR = sys.argv[2]
+        main.MEDIA_PREVIEW_DIR = sys.argv[3]
+        os.makedirs(main.OUTPUT_DIR, exist_ok=True)
+        os.makedirs(main.MEDIA_PREVIEW_DIR, exist_ok=True)
+        Image.new("RGB", (1200, 800), (24, 96, 160)).save(os.path.join(main.OUTPUT_DIR, "large.png"))
+        Image.new("RGB", (8, 8), (160, 24, 96)).save(os.path.join(os.path.dirname(main.OUTPUT_DIR), "outside.png"))
+
+        first_preview = await main.media_preview("/output/large.png", 480)
+        second_preview = await main.media_preview("/output/large.png", 480)
+        with Image.open(first_preview.path) as preview_image:
+            preview_size = preview_image.size
+
+        traversal_status = None
+        try:
+            await main.media_preview("/output/../outside.png", 480)
+        except HTTPException as exc:
+            traversal_status = exc.status_code
+
+        preview = {
+            "first_path": os.path.abspath(first_preview.path),
+            "second_path": os.path.abspath(second_preview.path),
+            "size": preview_size,
+            "traversal_status": traversal_status,
+        }
+    finally:
+        main.OUTPUT_DIR = original_output_dir
+        main.MEDIA_PREVIEW_DIR = original_preview_dir
+
     print(json.dumps({
         "legacy": legacy,
         "first": first,
         "second": second,
         "clamped": clamped,
         "invalid_legacy": invalid_legacy,
+        "preview": preview,
     }))
 
 asyncio.run(run())
 `;
 
 try {
-  const result = spawnSync(python.command, [...python.args, '-X', 'utf8', '-c', pythonScript, historyFile], {
+  const result = spawnSync(
+    python.command,
+    [...python.args, '-X', 'utf8', '-c', pythonScript, historyFile, previewOutputDir, previewCacheDir],
+    {
     cwd: repoRoot,
     encoding: 'utf8',
     env: pythonEnv,
-  });
+    },
+  );
 
   assert.ok(!result.error, `Failed to launch Python interpreter: ${result.error?.message}`);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -250,7 +294,47 @@ try {
   );
   assert.deepEqual(output.invalid_legacy, [], 'legacy read failures must still return an empty array');
 
-  console.log('online history pagination tests passed');
+  assert.equal(output.preview.first_path, output.preview.second_path, 'preview requests must reuse one cached file');
+  assert.ok(Math.max(...output.preview.size) <= 480, 'preview dimensions must be bounded to 480px');
+  assert.equal(output.preview.traversal_status, 404, 'preview traversal must be rejected');
+
+  console.log('online history pagination and media preview characterization passed');
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }
+
+assert.match(
+  onlineHtml,
+  /function historyPreviewUrl\(url\)\s*{\s*return `\/api\/media-preview\?url=\$\{encodeURIComponent\(url\)\}&w=480`;\s*}/,
+);
+assert.match(
+  onlineHtml,
+  /\.masonry-item\s*{[^}]*content-visibility:auto;[^}]*contain-intrinsic-size:320px 320px;/,
+);
+
+const createCardSource = onlineHtml.slice(
+  onlineHtml.indexOf('function createImageCard'),
+  onlineHtml.indexOf('function beginHistoryMutation'),
+);
+assert.match(createCardSource, /const originalUrl = data\.images\[0\];/);
+assert.match(
+  createCardSource,
+  /<img src="\$\{escapeHtml\(historyPreviewUrl\(originalUrl\)\)\}"[^>]*loading="lazy"[^>]*decoding="async"[^>]*fetchpriority="low"/,
+);
+assert.match(createCardSource, /img\.onerror\s*=\s*\(\)\s*=>\s*{[\s\S]*img\.src = originalUrl;/);
+assert.doesNotMatch(createCardSource, /lucide\.createIcons\(\)/);
+assert.doesNotMatch(onlineHtml, /\b(?:next|items)\.forEach\(item => renderImageCard\(item\)\)/);
+assert.match(
+  createCardSource,
+  /function renderHistoryBatch\(items\)\s*{\s*const masonry = document\.getElementById\('masonry'\);\s*const fragment = document\.createDocumentFragment\(\);[\s\S]*masonry\.appendChild\(fragment\);\s*}/,
+);
+
+assert.match(mainPy, /def remove_media_preview_cache\(path: str, widths=\(480,\)\):/);
+const deleteHistorySource = mainPy.slice(
+  mainPy.indexOf('async def delete_history'),
+  mainPy.indexOf('# --- ModelScope', mainPy.indexOf('async def delete_history')),
+);
+assert.match(
+  deleteHistorySource,
+  /remove_media_preview_cache\(file_path, widths=\(480,\)\)[\s\S]*os\.remove\(file_path\)/,
+);
