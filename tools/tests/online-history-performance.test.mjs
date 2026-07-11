@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const onlineHtml = readFileSync(join(repoRoot, 'static', 'online.html'), 'utf8');
+const bulkManagerJs = readFileSync(join(repoRoot, 'static', 'js', 'history-bulk-manager.js'), 'utf8');
 
 assert.match(onlineHtml, /const PAGE_SIZE = 16;/);
 assert.ok(
@@ -20,6 +21,31 @@ assert.match(
   onlineHtml,
   /document\.getElementById\('loadMoreTrigger'\)\.onclick = \(\) => loadHistory\(false\)/,
 );
+assert.match(onlineHtml, /if\(renderImageCard\(result, true\)\) historyOffset \+= 1;/);
+assert.match(onlineHtml, /const historyRemovalObserver = new MutationObserver\(mutations =>/);
+assert.equal((onlineHtml.match(/new\s+MutationObserver\s*\(/g) || []).length, 1);
+assert.match(onlineHtml, /mutation\.removedNodes\.forEach\(node =>/);
+assert.match(onlineHtml, /node\.matches\('\[data-history-ts\]'\)/);
+assert.match(onlineHtml, /historyOffset = Math\.max\(0, historyOffset - removedCount\)/);
+assert.match(
+  onlineHtml,
+  /if\(res\.success\) document\.getElementById\(`history-\$\{ts\}`\)\?\.remove\(\)/,
+);
+const removalObserverSetup = "historyRemovalObserver.observe(document.getElementById('masonry'), {childList:true});";
+assert.ok(onlineHtml.includes(removalObserverSetup), 'history removals must reconcile the consumed offset');
+assert.ok(
+  onlineHtml.indexOf(removalObserverSetup) < onlineHtml.indexOf("window.HistoryBulkManager?.attach({masonry:'#masonry'})"),
+  'history removal observation must start before bulk deletion is attached',
+);
+assert.match(bulkManagerJs, /if\(res && res\.success\)\{ card\.remove\(\); return true; \}/);
+assert.match(onlineHtml, /<button\s+type="button"\s+id="loadMoreTrigger"/);
+assert.doesNotMatch(onlineHtml, /<div\s+id="loadMoreTrigger"/);
+assert.match(
+  onlineHtml,
+  /<button[^>]+id="loadMoreTrigger"[^>]+class="[^"]*\bw-full\b[^"]*\bfocus-visible:ring-2\b[^"]*"/,
+);
+assert.match(onlineHtml, /loader\.disabled = true;/);
+assert.match(onlineHtml, /finally\s*{[^}]*loader\.disabled = false;/s);
 
 const pythonEnv = {
   ...process.env,

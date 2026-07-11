@@ -207,7 +207,7 @@
         <section class="mt-32">
             <div class="flex items-center gap-6 mb-12"><h2 class="text-[11px] font-black uppercase tracking-[0.5em]" data-i18n="online.archives">Archives</h2><div class="h-px flex-1 bg-gray-100"></div></div>
             <div id="masonry" class="masonry-grid"></div>
-            <div id="loadMoreTrigger" class="py-20 text-center text-gray-300 text-[10px] font-bold uppercase tracking-widest cursor-pointer hover:text-black">Load More Archive</div>
+            <button type="button" id="loadMoreTrigger" class="block w-full py-20 text-center text-gray-300 text-[10px] font-bold uppercase tracking-widest cursor-pointer hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60">Load More Archive</button>
         </section>
     </div>
 
@@ -629,7 +629,12 @@
                     method:'POST', headers:{'Content-Type':'application/json'},
                     body:JSON.stringify(reqBody)
                 }).then(async r => { if(!r.ok) throw new Error((await r.json()).detail || '生成失败'); return r.json(); });
-                currentResult = result; out.src = result.images[0]; out.classList.remove('hidden'); dl.href = result.images[0]; dl.classList.remove('hidden'); renderImageCard(result, true);
+                currentResult = result;
+                out.src = result.images[0];
+                out.classList.remove('hidden');
+                dl.href = result.images[0];
+                dl.classList.remove('hidden');
+                if(renderImageCard(result, true)) historyOffset += 1;
             } catch(err) {
                 alert(err.message || 'Generation failed'); placeholder.classList.remove('hidden');
             } finally {
@@ -638,7 +643,7 @@
         }
 
         function renderImageCard(data, isNew=false){
-            if(!data.images?.[0] || document.getElementById(`history-${data.timestamp}`)) return;
+            if(!data.images?.[0] || document.getElementById(`history-${data.timestamp}`)) return false;
             const card = document.createElement('div');
             card.id = `history-${data.timestamp}`;
             card.dataset.historyTs = data.timestamp;
@@ -650,6 +655,7 @@
                 <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 p-6 flex flex-col justify-end"><p class="text-white text-[10px] font-medium line-clamp-2 uppercase tracking-wider">${data.prompt || tr('online.onlineImageFallback')}</p></div>`;
             isNew ? document.getElementById('masonry').prepend(card) : document.getElementById('masonry').appendChild(card);
             lucide.createIcons();
+            return true;
         }
         function renderHistoryBatch(items){
             items.forEach(item => renderImageCard(item));
@@ -658,6 +664,7 @@
             if(isLoading || (!reset && !historyHasMore)) return;
             isLoading = true;
             const loader = document.getElementById('loadMoreTrigger');
+            loader.disabled = true;
             loader.classList.remove('hidden');
             loader.setAttribute('aria-disabled', 'true');
             loader.innerText = tr('online.loadingArchives');
@@ -680,6 +687,7 @@
                 loader.innerText = tr('online.loadMore');
                 console.error('Failed to load online image history:', error);
             } finally {
+                loader.disabled = false;
                 loader.removeAttribute('aria-disabled');
                 isLoading = false;
             }
@@ -762,12 +770,24 @@
             const res = await fetch('/api/history/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({timestamp:ts})}).then(r=>r.json());
             if(res.success) document.getElementById(`history-${ts}`)?.remove();
         }
+        const historyRemovalObserver = new MutationObserver(mutations => {
+            let removedCount = 0;
+            mutations.forEach(mutation => {
+                mutation.removedNodes.forEach(node => {
+                    if(node.nodeType !== 1) return;
+                    if(node.matches('[data-history-ts]')) removedCount += 1;
+                    removedCount += node.querySelectorAll('[data-history-ts]').length;
+                });
+            });
+            historyOffset = Math.max(0, historyOffset - removedCount);
+        });
         window.onload = async () => {
             applyLanguage();
             setRatio('square');
             setResolution('1k');
             await initModels();
             await loadHistory(true);
+            historyRemovalObserver.observe(document.getElementById('masonry'), {childList:true});
             window.HistoryBulkManager?.attach({masonry:'#masonry'});
             document.getElementById('loadMoreTrigger').onclick = () => loadHistory(false);
         };
