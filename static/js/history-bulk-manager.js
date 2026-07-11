@@ -204,6 +204,8 @@
                 });
             }));
 
+            const succeeded = results.filter(result => result.status === 'fulfilled').length;
+            if(succeeded > 0) masonry.dispatchEvent(new CustomEvent('history-bulk-delete-success', {detail:{successCount:succeeded}}));
             const failed = results.filter(r => r.status === 'rejected').length;
             if(failed > 0) alert(failed + ' / ' + sel.length + ' ✗');
 

@@ -14,30 +14,56 @@ assert.ok(
   onlineHtml.includes('`/api/history?type=online&paged=1&offset=${historyOffset}&limit=${PAGE_SIZE}`'),
   'online history must request one bounded backend page',
 );
-assert.match(onlineHtml, /historyOffset = page\.next_offset/);
+assert.match(onlineHtml, /historyOffset = page\.next_offset \?\? \(page\.offset \+ items\.length\);/);
 assert.match(onlineHtml, /historyHasMore = Boolean\(page\.has_more\)/);
 assert.doesNotMatch(onlineHtml, /new\s+IntersectionObserver\s*\(/);
 assert.match(
   onlineHtml,
   /document\.getElementById\('loadMoreTrigger'\)\.onclick = \(\) => loadHistory\(false\)/,
 );
-assert.match(onlineHtml, /if\(renderImageCard\(result, true\)\) historyOffset \+= 1;/);
-assert.match(onlineHtml, /const historyRemovalObserver = new MutationObserver\(mutations =>/);
-assert.equal((onlineHtml.match(/new\s+MutationObserver\s*\(/g) || []).length, 1);
-assert.match(onlineHtml, /mutation\.removedNodes\.forEach\(node =>/);
-assert.match(onlineHtml, /node\.matches\('\[data-history-ts\]'\)/);
-assert.match(onlineHtml, /historyOffset = Math\.max\(0, historyOffset - removedCount\)/);
+assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
+assert.match(onlineHtml, /let historyRevision = 0, historyResetPending = false;/);
+assert.match(onlineHtml, /const requestRevision = historyRevision;/);
+assert.ok(
+  onlineHtml.indexOf('const requestRevision = historyRevision;')
+    < onlineHtml.indexOf('const response = await fetch(`/api/history?type=online'),
+  'history requests must capture the mutation revision before fetching',
+);
+const staleResponseGuard = 'if(requestRevision !== historyRevision){';
 assert.match(
   onlineHtml,
-  /if\(res\.success\) document\.getElementById\(`history-\$\{ts\}`\)\?\.remove\(\)/,
+  /if\(requestRevision !== historyRevision\)\s*{\s*historyResetPending = true;\s*return;\s*}/,
+  'stale history responses must be discarded',
 );
-const removalObserverSetup = "historyRemovalObserver.observe(document.getElementById('masonry'), {childList:true});";
-assert.ok(onlineHtml.includes(removalObserverSetup), 'history removals must reconcile the consumed offset');
 assert.ok(
-  onlineHtml.indexOf(removalObserverSetup) < onlineHtml.indexOf("window.HistoryBulkManager?.attach({masonry:'#masonry'})"),
-  'history removal observation must start before bulk deletion is attached',
+  onlineHtml.indexOf(staleResponseGuard) < onlineHtml.indexOf('renderHistoryBatch(items);'),
+  'stale history responses must be rejected before rendering',
 );
-assert.match(bulkManagerJs, /if\(res && res\.success\)\{ card\.remove\(\); return true; \}/);
+assert.match(
+  onlineHtml,
+  /const shouldReset = historyResetPending \|\| requestRevision !== historyRevision;[\s\S]*isLoading = false;[\s\S]*if\(shouldReset\)\{[\s\S]*historyResetPending = false;[\s\S]*loadHistory\(true\);/,
+);
+assert.match(
+  onlineHtml,
+  /function invalidateHistory\(\)\s*{\s*historyRevision \+= 1;\s*historyResetPending = true;\s*if\(!isLoading\) loadHistory\(true\);\s*}/,
+);
+assert.match(onlineHtml, /renderImageCard\(result, true\);\s*invalidateHistory\(\);/);
+assert.match(
+  onlineHtml,
+  /if\(res\.success\)\s*{\s*document\.getElementById\(`history-\$\{ts\}`\)\?\.remove\(\);\s*invalidateHistory\(\);\s*}/,
+);
+assert.match(
+  bulkManagerJs,
+  /const succeeded = results\.filter\(result => result\.status === 'fulfilled'\)\.length;/,
+);
+assert.match(
+  bulkManagerJs,
+  /if\(succeeded > 0\) masonry\.dispatchEvent\(new CustomEvent\('history-bulk-delete-success', {detail:{successCount:succeeded}}\)\);/,
+);
+assert.match(
+  onlineHtml,
+  /document\.getElementById\('masonry'\)\.addEventListener\('history-bulk-delete-success', invalidateHistory\);/,
+);
 assert.match(onlineHtml, /<button\s+type="button"\s+id="loadMoreTrigger"/);
 assert.doesNotMatch(onlineHtml, /<div\s+id="loadMoreTrigger"/);
 assert.match(

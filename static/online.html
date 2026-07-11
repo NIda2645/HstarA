@@ -267,6 +267,7 @@
         let models = {gpt:'gpt-image-2', nano:'nano-banana-pro'};
         let currentResult = null, currentLightboxData = null, isLoading = false;
         let historyOffset = 0, historyHasMore = true;
+        let historyRevision = 0, historyResetPending = false;
         const PAGE_SIZE = 16;
         const SIZE_OPTIONS = {
             square: [
@@ -634,7 +635,8 @@
                 out.classList.remove('hidden');
                 dl.href = result.images[0];
                 dl.classList.remove('hidden');
-                if(renderImageCard(result, true)) historyOffset += 1;
+                renderImageCard(result, true);
+                invalidateHistory();
             } catch(err) {
                 alert(err.message || 'Generation failed'); placeholder.classList.remove('hidden');
             } finally {
@@ -643,7 +645,7 @@
         }
 
         function renderImageCard(data, isNew=false){
-            if(!data.images?.[0] || document.getElementById(`history-${data.timestamp}`)) return false;
+            if(!data.images?.[0] || document.getElementById(`history-${data.timestamp}`)) return;
             const card = document.createElement('div');
             card.id = `history-${data.timestamp}`;
             card.dataset.historyTs = data.timestamp;
@@ -655,14 +657,24 @@
                 <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 p-6 flex flex-col justify-end"><p class="text-white text-[10px] font-medium line-clamp-2 uppercase tracking-wider">${data.prompt || tr('online.onlineImageFallback')}</p></div>`;
             isNew ? document.getElementById('masonry').prepend(card) : document.getElementById('masonry').appendChild(card);
             lucide.createIcons();
-            return true;
         }
         function renderHistoryBatch(items){
             items.forEach(item => renderImageCard(item));
         }
+        function invalidateHistory(){
+            historyRevision += 1;
+            historyResetPending = true;
+            if(!isLoading) loadHistory(true);
+        }
         async function loadHistory(reset=false){
-            if(isLoading || (!reset && !historyHasMore)) return;
+            if(isLoading){
+                if(reset) historyResetPending = true;
+                return;
+            }
+            if(!reset && !historyHasMore) return;
             isLoading = true;
+            if(reset) historyResetPending = false;
+            const requestRevision = historyRevision;
             const loader = document.getElementById('loadMoreTrigger');
             loader.disabled = true;
             loader.classList.remove('hidden');
@@ -677,8 +689,13 @@
                 const response = await fetch(`/api/history?type=online&paged=1&offset=${historyOffset}&limit=${PAGE_SIZE}`);
                 if(!response.ok) throw new Error(`History request failed with status ${response.status}`);
                 const page = await response.json();
-                renderHistoryBatch(Array.isArray(page.items) ? page.items : []);
-                historyOffset = page.next_offset;
+                if(requestRevision !== historyRevision){
+                    historyResetPending = true;
+                    return;
+                }
+                const items = Array.isArray(page.items) ? page.items : [];
+                renderHistoryBatch(items);
+                historyOffset = page.next_offset ?? (page.offset + items.length);
                 historyHasMore = Boolean(page.has_more);
                 loader.innerText = tr('online.loadMore');
                 loader.classList.toggle('hidden', !historyHasMore);
@@ -687,9 +704,14 @@
                 loader.innerText = tr('online.loadMore');
                 console.error('Failed to load online image history:', error);
             } finally {
+                const shouldReset = historyResetPending || requestRevision !== historyRevision;
                 loader.disabled = false;
                 loader.removeAttribute('aria-disabled');
                 isLoading = false;
+                if(shouldReset){
+                    historyResetPending = false;
+                    loadHistory(true);
+                }
             }
         }
         let lightboxPreview = null;
@@ -768,26 +790,18 @@
             ev.stopPropagation();
             if(!confirm(tr('online.deleteConfirm'))) return;
             const res = await fetch('/api/history/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({timestamp:ts})}).then(r=>r.json());
-            if(res.success) document.getElementById(`history-${ts}`)?.remove();
+            if(res.success){
+                document.getElementById(`history-${ts}`)?.remove();
+                invalidateHistory();
+            }
         }
-        const historyRemovalObserver = new MutationObserver(mutations => {
-            let removedCount = 0;
-            mutations.forEach(mutation => {
-                mutation.removedNodes.forEach(node => {
-                    if(node.nodeType !== 1) return;
-                    if(node.matches('[data-history-ts]')) removedCount += 1;
-                    removedCount += node.querySelectorAll('[data-history-ts]').length;
-                });
-            });
-            historyOffset = Math.max(0, historyOffset - removedCount);
-        });
         window.onload = async () => {
             applyLanguage();
             setRatio('square');
             setResolution('1k');
             await initModels();
             await loadHistory(true);
-            historyRemovalObserver.observe(document.getElementById('masonry'), {childList:true});
+            document.getElementById('masonry').addEventListener('history-bulk-delete-success', invalidateHistory);
             window.HistoryBulkManager?.attach({masonry:'#masonry'});
             document.getElementById('loadMoreTrigger').onclick = () => loadHistory(false);
         };
