@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { X } from "lucide-react";
 import { DirectorDeskShell } from "./app/layout/DirectorDeskShell";
 import { DirectorCanvas } from "./editor/canvas/DirectorCanvas";
-import { initDirectorDeskHostBridge } from "./editor/io/hostBridge";
+import { initDirectorDeskHostBridge, postDirectorDeskClose, postDirectorDeskReady } from "./editor/io/hostBridge";
 import { useDirectorStore } from "./editor/store/directorStore";
 
 function isEditableShortcutTarget(target: EventTarget | null) {
@@ -18,11 +18,11 @@ export default function App() {
 
   useEffect(() => {
     initDirectorDeskHostBridge();
-    window.parent?.postMessage({ type: "storyai:director-desk-ready" }, window.location.origin);
+    postDirectorDeskReady();
   }, []);
 
   function handleClose() {
-    window.parent?.postMessage({ type: "storyai:director-desk-close" }, window.location.origin);
+    postDirectorDeskClose();
   }
 
   useEffect(() => {

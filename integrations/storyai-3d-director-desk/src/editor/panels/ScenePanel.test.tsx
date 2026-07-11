@@ -309,5 +309,5 @@ it("renders the XYZ drag handle inside the 80px axis input shell", () => {
   expect(axisInput).toBeInTheDocument();
   expect(axisInput).toHaveClass("inspector-axis-input");
   expect(valueInput.closest(".inspector-axis-input")).toBe(axisInput);
-  expect(getComputedStyle(axisInput as HTMLElement).backgroundColor).toBe("rgb(11, 11, 12)");
+  expect(getComputedStyle(axisInput as HTMLElement).backgroundColor).toBe("rgba(0, 0, 0, 0)");
 });

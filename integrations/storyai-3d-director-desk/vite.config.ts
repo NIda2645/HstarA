@@ -2,16 +2,12 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  base: "/",
+  base: "./",
   assetsInclude: ["**/*.fbx", "**/*.obj"],
   plugins: [react()],
-  server: {
-    fs: {
-      allow: [
-        decodeURIComponent(new URL(".", import.meta.url).pathname),
-        decodeURIComponent(new URL("../模型库", import.meta.url).pathname),
-      ],
-    },
+  build: {
+    outDir: "../../static/3d-director",
+    emptyOutDir: true,
   },
   test: {
     environment: "jsdom",

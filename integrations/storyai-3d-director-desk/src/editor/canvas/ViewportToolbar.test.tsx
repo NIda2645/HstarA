@@ -386,28 +386,27 @@ it("opens the model library panel from the viewport capsule", async () => {
   expect(screen.getByRole("tab", { name: "工具配件" })).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "我的模型" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "关闭模型库" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "添加模型 自动取款机" })).toBeInTheDocument();
-  expect(screen.getByText("自动取款机")).toBeInTheDocument();
+  expect(screen.getByRole("list", { name: "模型列表" })).toBeInTheDocument();
+  expect(within(screen.getByRole("list", { name: "模型列表" })).queryByRole("button")).not.toBeInTheDocument();
+  expect(screen.queryByText("自动取款机")).not.toBeInTheDocument();
   expect(screen.queryByText("ATM")).not.toBeInTheDocument();
   expect(screen.queryByText("2 Liter")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "添加模型 自动取款机" }).querySelector("img")).toBeInTheDocument();
 });
 
-it("uses category thumbnail folders for outdoor and tools model library items", async () => {
+it("keeps outdoor and tools model library categories visible when bundled items are absent", async () => {
   const user = userEvent.setup();
   render(<ViewportToolbar />);
 
   await user.click(screen.getByRole("button", { name: "模型库" }));
   await user.click(screen.getByRole("tab", { name: "户外出行" }));
 
-  expect(screen.getByRole("button", { name: "添加模型 背包" }).querySelector("img")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "添加模型 保温瓶" }).querySelector("img")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "添加模型 鹿头骨" }).querySelector("img")).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "户外出行" })).toHaveAttribute("aria-selected", "true");
+  expect(within(screen.getByRole("list", { name: "模型列表" })).queryByRole("button")).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("tab", { name: "工具配件" }));
 
-  expect(screen.getByRole("button", { name: "添加模型 扳手" }).querySelector("img")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "添加模型 台钻" }).querySelector("img")).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "工具配件" })).toHaveAttribute("aria-selected", "true");
+  expect(within(screen.getByRole("list", { name: "模型列表" })).queryByRole("button")).not.toBeInTheDocument();
 });
 
 it("renders floating viewport menus and model library outside the frosted toolbar shell", async () => {
@@ -439,20 +438,29 @@ it("closes the model library panel from its close button", async () => {
   expect(screen.queryByRole("dialog", { name: "模型库" })).not.toBeInTheDocument();
 });
 
-it("adds a selected model library item into the viewport scene", async () => {
+it("adds a selected local model library item into the viewport scene", async () => {
   const user = userEvent.setup();
+  useDirectorStore.getState().addImportedAsset({
+    kind: "prop",
+    fileName: "chair.obj",
+    name: "本地椅子",
+    url: "blob:local-chair",
+    addToScene: false,
+    assetSource: "local",
+  });
   render(<ViewportToolbar />);
 
   await user.click(screen.getByRole("button", { name: "模型库" }));
-  await user.click(screen.getByRole("button", { name: "添加模型 自动取款机" }));
+  await user.click(screen.getByRole("tab", { name: "我的模型" }));
+  await user.click(screen.getByRole("button", { name: "添加模型 本地椅子" }));
 
   const state = useDirectorStore.getState();
-  const asset = state.project.assets.find((item) => item.fileName === "ATM_low.fbx");
-  const prop = state.project.objects.find((item) => item.name === "自动取款机");
+  const asset = state.project.assets.find((item) => item.fileName === "chair.obj");
+  const prop = state.project.objects.find((item) => item.name === "本地椅子");
 
   expect(asset?.sourceType).toBe("model");
   expect(asset?.kind).toBe("prop");
-  expect(asset?.url).toContain("ATM_low");
+  expect(asset?.url).toBe("blob:local-chair");
   expect(prop?.kind).toBe("prop");
   expect(prop?.assetRefId).toBe(asset?.id);
   expect(state.selectedObjectId).toBe(prop?.id);

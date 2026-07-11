@@ -33,7 +33,15 @@ it("notifies the host canvas when the director desk app is ready", () => {
   render(<App />);
 
   expect(postMessage).toHaveBeenCalledWith(
-    { type: "storyai:director-desk-ready" },
+    expect.objectContaining({
+      type: "storyai:director-desk-ready",
+      protocolVersion: 1,
+      sessionId: expect.any(String),
+      requestId: expect.any(String),
+      context: expect.objectContaining({
+        mode: expect.any(String),
+      }),
+    }),
     window.location.origin
   );
 
@@ -49,7 +57,15 @@ it("notifies the host canvas when the director desk close button is clicked", as
   await user.click(screen.getByRole("button", { name: "关闭" }));
 
   expect(postMessage).toHaveBeenCalledWith(
-    { type: "storyai:director-desk-close" },
+    expect.objectContaining({
+      type: "storyai:director-desk-close",
+      protocolVersion: 1,
+      sessionId: expect.any(String),
+      requestId: expect.any(String),
+      context: expect.objectContaining({
+        mode: expect.any(String),
+      }),
+    }),
     window.location.origin
   );
 

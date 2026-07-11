@@ -205,13 +205,19 @@ it("notifies the host canvas when a host-connected panorama is removed", () => {
   useDirectorStore.getState().removePanoramaAsset();
 
   expect(postMessage).toHaveBeenCalledWith(
-    {
+    expect.objectContaining({
       type: "storyai:director-desk-panorama-removed",
+      protocolVersion: 1,
+      sessionId: expect.any(String),
+      requestId: expect.any(String),
+      context: expect.objectContaining({
+        mode: expect.any(String),
+      }),
       payload: {
         edgeId: "edge-image-director",
         sourceNodeId: "node_image",
       },
-    },
+    }),
     window.location.origin
   );
 });

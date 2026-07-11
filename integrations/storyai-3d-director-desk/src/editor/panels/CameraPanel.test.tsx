@@ -311,8 +311,14 @@ it("sends a single camera capture to the host canvas when the thumbnail action i
   await user.click(screen.getByRole("button", { name: "发送到画布 机位01-截图01" }));
 
   expect(postMessage).toHaveBeenCalledWith(
-    {
+    expect.objectContaining({
       type: "storyai:director-desk-captures-sent",
+      protocolVersion: 1,
+      sessionId: expect.any(String),
+      requestId: expect.any(String),
+      context: expect.objectContaining({
+        mode: expect.any(String),
+      }),
       payload: {
         captures: [
           {
@@ -321,7 +327,7 @@ it("sends a single camera capture to the host canvas when the thumbnail action i
           },
         ],
       },
-    },
+    }),
     window.location.origin
   );
 });
@@ -372,8 +378,14 @@ it("sends all visible camera screenshots to the host canvas from the overview fo
   await user.click(screen.getByRole("button", { name: "发送到画布" }));
 
   expect(postMessage).toHaveBeenCalledWith(
-    {
+    expect.objectContaining({
       type: "storyai:director-desk-captures-sent",
+      protocolVersion: 1,
+      sessionId: expect.any(String),
+      requestId: expect.any(String),
+      context: expect.objectContaining({
+        mode: expect.any(String),
+      }),
       payload: {
         captures: [
           {
@@ -390,7 +402,7 @@ it("sends all visible camera screenshots to the host canvas from the overview fo
           },
         ],
       },
-    },
+    }),
     window.location.origin
   );
 });
