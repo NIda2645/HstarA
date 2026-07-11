@@ -387,13 +387,12 @@ it("opens the model library panel from the viewport capsule", async () => {
   expect(screen.getByRole("tab", { name: "我的模型" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "关闭模型库" })).toBeInTheDocument();
   expect(screen.getByRole("list", { name: "模型列表" })).toBeInTheDocument();
-  expect(within(screen.getByRole("list", { name: "模型列表" })).queryByRole("button")).not.toBeInTheDocument();
-  expect(screen.queryByText("自动取款机")).not.toBeInTheDocument();
+  expect(within(screen.getByRole("list", { name: "模型列表" })).getByRole("button", { name: "添加模型 自动取款机" })).toBeInTheDocument();
   expect(screen.queryByText("ATM")).not.toBeInTheDocument();
   expect(screen.queryByText("2 Liter")).not.toBeInTheDocument();
 });
 
-it("keeps outdoor and tools model library categories visible when bundled items are absent", async () => {
+it("keeps outdoor and tools model library categories visible with bundled items", async () => {
   const user = userEvent.setup();
   render(<ViewportToolbar />);
 
@@ -401,12 +400,12 @@ it("keeps outdoor and tools model library categories visible when bundled items 
   await user.click(screen.getByRole("tab", { name: "户外出行" }));
 
   expect(screen.getByRole("tab", { name: "户外出行" })).toHaveAttribute("aria-selected", "true");
-  expect(within(screen.getByRole("list", { name: "模型列表" })).queryByRole("button")).not.toBeInTheDocument();
+  expect(within(screen.getByRole("list", { name: "模型列表" })).getByRole("button", { name: "添加模型 保温瓶" })).toBeInTheDocument();
 
   await user.click(screen.getByRole("tab", { name: "工具配件" }));
 
   expect(screen.getByRole("tab", { name: "工具配件" })).toHaveAttribute("aria-selected", "true");
-  expect(within(screen.getByRole("list", { name: "模型列表" })).queryByRole("button")).not.toBeInTheDocument();
+  expect(within(screen.getByRole("list", { name: "模型列表" })).getByRole("button", { name: "添加模型 台钻" })).toBeInTheDocument();
 });
 
 it("renders floating viewport menus and model library outside the frosted toolbar shell", async () => {

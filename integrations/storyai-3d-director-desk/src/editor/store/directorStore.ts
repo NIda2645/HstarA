@@ -137,6 +137,7 @@ export interface DirectorActions {
   pasteClipboardObjects: () => void;
   undo: () => void;
   openScopedScene: (scopeId: string | null | undefined) => void;
+  resetCurrentScene: () => void;
   replaceProject: (project: DirectorProject) => void;
   saveLatestSnapshot: () => void;
   restoreLatestSnapshot: () => void;
@@ -2023,6 +2024,21 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
 
       set({
         ...runtimeState,
+        clipboard: currentState.clipboard,
+        clipboardPasteCount: currentState.clipboardPasteCount,
+        undoStack: [],
+      });
+      writePersistedDirectorState(snapshot);
+    },
+    resetCurrentScene: () => {
+      const currentState = get() as DirectorRuntimeState;
+      const snapshot = createInitialDirectorState({
+        includePersistedLocalAssets: true,
+        includePersistedScene: false,
+      });
+
+      set({
+        ...createRuntimeStateFromPersistedState(snapshot),
         clipboard: currentState.clipboard,
         clipboardPasteCount: currentState.clipboardPasteCount,
         undoStack: [],

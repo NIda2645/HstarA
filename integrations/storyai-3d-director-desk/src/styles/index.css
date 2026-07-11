@@ -139,6 +139,13 @@ textarea:focus-visible {
   line-height: 22px;
 }
 
+.top-bar-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .top-bar-left,
 .top-bar-center,
 .top-bar-actions {
@@ -175,6 +182,111 @@ textarea:focus-visible {
   border-color: rgb(var(--border-rgb) / 0.72);
   background: rgb(var(--surface-rgb) / 0.82);
   color: rgb(var(--text-rgb));
+}
+
+.top-bar-reset-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border: 1px solid rgb(var(--border-rgb) / 0.34);
+  border-radius: 8px;
+  padding: 0;
+  color: rgb(var(--text-muted-rgb));
+  background: rgb(var(--surface-rgb) / 0.55);
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.top-bar-reset-button:hover,
+.top-bar-reset-button:focus-visible {
+  border-color: rgb(var(--accent-rgb) / 0.34);
+  color: rgb(var(--text-rgb));
+  background: rgb(var(--surface-hover-rgb) / 0.8);
+}
+
+.director-reset-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(var(--overlay-rgb) / 0.38);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.director-reset-dialog {
+  display: grid;
+  gap: 14px;
+  width: min(320px, calc(100vw - 40px));
+  border: 1px solid rgb(var(--border-rgb) / 0.42);
+  border-radius: 8px;
+  padding: 18px;
+  color: rgb(var(--text-rgb));
+  background: rgb(var(--panel-rgb));
+  box-shadow: var(--ui-shadow-panel);
+  font-family: "PingFang SC", "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.director-reset-dialog h2,
+.director-reset-dialog p {
+  margin: 0;
+}
+
+.director-reset-dialog h2 {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 21px;
+}
+
+.director-reset-dialog p {
+  color: rgb(var(--text-muted-rgb));
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.director-reset-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.director-reset-dialog-button {
+  min-width: 72px;
+  height: 34px;
+  border: 1px solid rgb(var(--border-rgb) / 0.42);
+  border-radius: 8px;
+  padding: 0 14px;
+  color: rgb(var(--text-muted-rgb));
+  background: rgb(var(--surface-rgb) / 0.62);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 17px;
+}
+
+.director-reset-dialog-button:hover,
+.director-reset-dialog-button:focus-visible {
+  border-color: rgb(var(--border-rgb) / 0.72);
+  color: rgb(var(--text-rgb));
+  background: rgb(var(--surface-hover-rgb) / 0.82);
+}
+
+.director-reset-dialog-confirm {
+  border-color: rgb(var(--accent-rgb) / 0.42);
+  color: rgb(255 255 255);
+  background: rgb(var(--accent-rgb));
+}
+
+.director-reset-dialog-confirm:hover,
+.director-reset-dialog-confirm:focus-visible {
+  border-color: rgb(var(--accent-rgb) / 0.5);
+  color: rgb(255 255 255);
+  background: rgb(var(--accent-rgb) / 0.88);
 }
 
 .ui-panel,
@@ -1121,6 +1233,22 @@ textarea:focus-visible {
   display: grid;
   gap: 12px;
   margin: 0;
+}
+
+.inspector-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.inspector-section-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
 }
 
 .scene-inspector .inspector-section {
@@ -2849,6 +2977,18 @@ textarea:focus-visible {
   background: rgb(var(--panel-rgb));
 }
 
+.camera-capture-overview-footer .camera-capture-bulk-actions {
+  display: contents;
+}
+
+.camera-capture-title-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
 .camera-capture-current-button,
 .camera-capture-clear-all,
 .camera-capture-send-all {
@@ -2872,6 +3012,23 @@ textarea:focus-visible {
   line-height: 17px;
   background: transparent;
   box-shadow: none;
+}
+
+.camera-capture-title-actions .camera-capture-clear-all,
+.camera-capture-title-actions .camera-capture-send-all {
+  width: auto;
+  min-width: 70px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.camera-capture-title-actions .camera-capture-clear-all svg,
+.camera-capture-title-actions .camera-capture-send-all svg {
+  width: 12px;
+  height: 12px;
 }
 
 .camera-capture-current-button {
@@ -2901,6 +3058,17 @@ textarea:focus-visible {
   background: transparent;
   box-shadow: none;
   transform: none;
+}
+
+.right-sidebar .right-inspector .camera-capture-title-actions button.camera-capture-clear-all,
+.right-sidebar .right-inspector .camera-capture-title-actions button.camera-capture-send-all {
+  padding: 0 8px;
+}
+
+.camera-capture-clear-all:disabled,
+.camera-capture-send-all:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .camera-capture-current-button:hover,
@@ -3247,5 +3415,48 @@ textarea:focus-visible {
 
   .viewport-toolbar {
     max-width: calc(100% - 32px);
+  }
+}
+
+@media (max-width: 560px) {
+  .top-bar {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 6px;
+    min-height: 56px;
+    padding: 0 8px;
+  }
+
+  .top-bar-title {
+    font-size: 14px;
+    line-height: 20px;
+    white-space: nowrap;
+  }
+
+  .top-bar-title-wrap {
+    gap: 6px;
+  }
+
+  .top-bar-reset-button {
+    width: 26px;
+    height: 26px;
+    min-width: 26px;
+  }
+
+  .mode-toggle {
+    width: min(176px, 100%);
+    height: 40px;
+  }
+
+  .mode-toggle-button {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    height: 32px;
+    font-size: 12px;
+    line-height: 17px;
+  }
+
+  .left-sidebar {
+    display: none;
   }
 }

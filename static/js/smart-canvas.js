@@ -128,6 +128,58 @@ let promptTemplateGroupEditMode = false;
 let promptPresetDeleteArmed = false;
 let createMenuPoint = {x:0, y:0};
 let createMenuGroupId = '';
+const DIRECTOR_3D_NODE_TYPE = 'director-3d';
+const DIRECTOR_3D_LABEL = '3D导演台';
+const DIRECTOR_SCENE_STORAGE_KEY_PREFIX = 'storyai-3d-director-desk-demo:';
+const DIRECTOR_STANDALONE_HANDOFF_PREFIX = 'hstar-director-standalone-handoff:';
+let directorStandaloneHandoffQueue = [];
+function directorSceneKeyForNode(node){
+    if(!node || node.type !== DIRECTOR_3D_NODE_TYPE) return '';
+    const sceneKey = typeof node.sceneKey === 'string' ? node.sceneKey.trim() : '';
+    if(sceneKey) return sceneKey;
+    const protocol = window.HstarDirectorProtocol;
+    const currentCanvasId = canvasId || 'unsaved';
+    return protocol?.createSceneKey?.('smart', currentCanvasId, node.id) || `director:smart:${currentCanvasId}:${node.id}`;
+}
+function removeDirectorSceneStorageForNode(node){
+    const sceneKey = directorSceneKeyForNode(node);
+    if(!sceneKey || sceneKey === 'director:standalone') return;
+    try {
+        localStorage.removeItem(`${DIRECTOR_SCENE_STORAGE_KEY_PREFIX}${sceneKey}`);
+    } catch(e) {}
+}
+function normalizeDirectorHandoffCanvasType(value){
+    return String(value || '').trim().toLowerCase().includes('smart') ? 'smart' : 'classic';
+}
+function directorStandaloneHandoffKey(type='smart', id=canvasId){
+    return `${DIRECTOR_STANDALONE_HANDOFF_PREFIX}${normalizeDirectorHandoffCanvasType(type)}:${String(id || '').trim()}`;
+}
+function directorStandaloneTargetMatchesSmart(data){
+    if(!data || data.type !== 'hstar-director-standalone-captures') return false;
+    const targetType = normalizeDirectorHandoffCanvasType(data.targetCanvasType || 'smart');
+    if(targetType !== 'smart') return false;
+    const targetCanvasId = String(data.targetCanvasId || '').trim();
+    return !targetCanvasId || !canvasId || targetCanvasId === canvasId;
+}
+function queueDirectorStandaloneHandoff(data){
+    if(!data || data.type !== 'hstar-director-standalone-captures') return;
+    const requestId = String(data.requestId || '').trim();
+    if(requestId && directorStandaloneHandoffQueue.some(item => item?.requestId === requestId)) return;
+    directorStandaloneHandoffQueue.push(data);
+}
+function readDirectorStandaloneStorageHandoff(){
+    const key = directorStandaloneHandoffKey('smart');
+    try {
+        const raw = sessionStorage.getItem(key);
+        if(!raw) return null;
+        sessionStorage.removeItem(key);
+        const data = JSON.parse(raw);
+        return data && data.type === 'hstar-director-standalone-captures' ? data : null;
+    } catch(e) {
+        try { sessionStorage.removeItem(key); } catch(_) {}
+        return null;
+    }
+}
 let nodeClipboard = null;
 let imageClickTimer = null;
 let suppressImageClickUntil = 0;
@@ -997,6 +1049,9 @@ function clearVolcengineSelectionOutsideVolcengine(target=settings){
 }
 function isSmartImageNode(node){
     return Boolean(node && (node.type === 'smart-image' || !node.type));
+}
+function isDirector3DNode(node){
+    return Boolean(node && node.type === DIRECTOR_3D_NODE_TYPE);
 }
 function isSmartGroupNode(node){
     return Boolean(node && node.type === 'smart-group');
@@ -1885,6 +1940,16 @@ function imageLayout(images, scale=1, node=null){
             rows:1,
             width:Math.round(Number(node.w) || 290),
             height:Math.round(Math.min(Number(node.h) || 218, 218)),
+            thumb:96,
+            single:true
+        };
+    }
+    if(node?.type === DIRECTOR_3D_NODE_TYPE){
+        return {
+            cols:1,
+            rows:1,
+            width:Math.round(Number(node.w) || 320),
+            height:Math.round(Number(node.h) || 220),
             thumb:96,
             single:true
         };
@@ -5852,6 +5917,7 @@ async function loadCanvas(){
         updateProviderModels();
         applyViewport();
         render();
+        await drainDirectorStandaloneHandoffs();
         clearSmartCanvasDirtyIfCurrent();
         if(cleanedDetachedInputs || cleanedCompletedState || recoveredLoopOutputs || hiddenCompletedTimers) scheduleSave();
         resumeSmartPendingTasks();
@@ -9154,6 +9220,30 @@ function createSmartGroupNode(x, y, options={}){
     scheduleSave();
     return node;
 }
+function createDirector3DNode(x, y, options={}){
+    if(!options.skipUndo) pushUndo();
+    const id = uid('director');
+    const protocol = window.HstarDirectorProtocol;
+    const sceneKey = protocol?.createSceneKey
+        ? protocol.createSceneKey('smart', canvasId || 'unsaved', id)
+        : `director:smart:${canvasId || 'unsaved'}:${id}`;
+    const node = {
+        id,
+        type:'director-3d',
+        x,
+        y,
+        w:320,
+        h:220,
+        title:DIRECTOR_3D_LABEL,
+        sceneKey,
+        created_at:Date.now()
+    };
+    nodes.push(node);
+    if(options.select !== false) selectedId = node.id;
+    render();
+    scheduleSave();
+    return node;
+}
 function cloneSmartNode(node, dx=0, dy=0){
     const copy = JSON.parse(JSON.stringify(node));
     copy.id = uid(
@@ -10395,6 +10485,12 @@ function nodeBodyHtml(node, layout){
     if(node.type === 'smart-controller') return smartControllerBodyHtml(node);
     if(node.type === 'smart-prompt') return promptNodeBodyHtml(node);
     if(node.type === 'smart-loop') return smartLoopBodyHtml(node);
+    if(node.type === DIRECTOR_3D_NODE_TYPE){
+        if(window.HstarSmartDirectorAdapter && typeof window.HstarSmartDirectorAdapter.renderDirectorNode === 'function'){
+            return window.HstarSmartDirectorAdapter.renderDirectorNode(node, {layout});
+        }
+        return `<div class="director-node-card"><div class="director-node-title">${escapeHtml(DIRECTOR_3D_LABEL)}</div><div class="director-node-status">Director adapter loading</div></div>`;
+    }
     const imgs = (node.images || []).map(imageForDisplay);
     if(node.jimengPending && node.jimengPending.submitId && imgs.length === 0){
         return jimengPendingBodyHtml(node, layout);
@@ -11225,7 +11321,8 @@ function render(){
         .sort((a, b) => (isSmartGroupNode(a) ? 0 : 1) - (isSmartGroupNode(b) ? 0 : 1))
         .map(node => {
         const imgs = node.images || [];
-        const title = node.type === 'smart-controller' ? '综合控制器' : node.type === 'smart-group' ? (node.title === '万能分组' ? '智能分组' : (node.title || '智能分组')) : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : escapeHtml(tr('smart.createImportNode')));
+        const isDirector = node.type === DIRECTOR_3D_NODE_TYPE;
+        const title = isDirector ? (node.title || DIRECTOR_3D_LABEL) : node.type === 'smart-controller' ? '综合控制器' : node.type === 'smart-group' ? (node.title === '万能分组' ? '智能分组' : (node.title || '智能分组')) : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : escapeHtml(tr('smart.createImportNode')));
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
         const isPrompt = node.type === 'smart-prompt';
@@ -11233,7 +11330,7 @@ function render(){
         const isController = node.type === 'smart-controller';
         const isSmartGroup = node.type === 'smart-group';
         const isCompactMember = isSmartGroupCompactMember(node);
-        const isImageNode = node.type === 'smart-image' || !node.type;
+        const isImageNode = !isDirector && (node.type === 'smart-image' || !node.type);
         const isJimengPending = Boolean(node.jimengPending && node.jimengPending.submitId && imgs.length === 0);
         const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending && !isJimengPending);
         const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued && !isJimengPending;
@@ -11242,8 +11339,8 @@ function render(){
         const isPending = ((node.pending || isQueued || isJimengPending) && imgs.length === 0);
         const body = nodeBodyHtml(node, layout);
         const deleteBtn = isGroup ? '' : `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
-        const hint = isSmartGroup ? '双击添加 · 拖入归组 · 选中后生成' : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
-        const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isController ? 'controller-node smart-controller-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
+        const hint = isDirector ? '连接一张图片作为全景，打开导演台布景' : isSmartGroup ? '双击添加 · 拖入归组 · 选中后生成' : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
+        const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isController ? 'controller-node smart-controller-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isDirector ? 'director-3d-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
             <div class="node-head"><div class="node-title">${title}</div><div class="node-actions">${deleteBtn}</div></div>
             ${!isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button></div>` : ''}
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
@@ -11251,7 +11348,7 @@ function render(){
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="拖动移出分组"></div>' : ''}
             <div class="node-hint">${hint}</div>
-            ${imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isController || isSmartGroup ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isController || isSmartGroup || isDirector ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
             <div class="node-port port-out" data-port="out" title="output"></div>
         </div>`;
@@ -11899,6 +11996,19 @@ function bindNodeEvents(){
         if(nodeForControls?.type === 'smart-prompt') bindPromptNodeControls(el, nodeForControls);
         if(nodeForControls?.type === 'smart-loop') bindLoopNodeControls(el, nodeForControls);
         if(nodeForControls?.type === 'smart-controller') bindSmartControllerNodeControls(el, nodeForControls);
+        if(nodeForControls?.type === DIRECTOR_3D_NODE_TYPE) {
+            el.querySelectorAll('[data-director-open]').forEach(btn => {
+                btn.addEventListener('mousedown', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }, true);
+                btn.addEventListener('click', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.HstarSmartDirectorAdapter?.openDirectorNode?.(id);
+                });
+            });
+        }
         if(nodeForControls?.type === 'smart-group') {
             el.ondblclick = e => {
                 e.preventDefault();
@@ -12248,6 +12358,13 @@ function canAutoConnectDraggedNode(sourceNode, targetNode){
     if(!sourceNode || !targetNode || sourceNode.id === targetNode.id) return false;
     if(isHistoryGroupNode(sourceNode) || isHistoryGroupNode(targetNode)) return false;
     if(isSmartGroupNode(targetNode)) return false;
+    if(sourceNode.type === DIRECTOR_3D_NODE_TYPE || targetNode.type === DIRECTOR_3D_NODE_TYPE){
+        return window.HstarSmartDirectorAdapter?.canConnect?.(sourceNode, targetNode, {
+            kind:'input',
+            connections:canvas?.connections || [],
+            inputNodes:inputNodesFor(targetNode)
+        }) === true;
+    }
     if(isSmartImageNode(sourceNode)) return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt';
     if(sourceNode.type === 'smart-prompt') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop';
     if(sourceNode.type === 'smart-loop') return isSmartImageNode(targetNode);
@@ -12290,6 +12407,9 @@ function deleteNode(id){
     const deleteIds = new Set([id]);
     nodes.forEach(node => {
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
+    });
+    nodes.forEach(node => {
+        if(deleteIds.has(node.id)) removeDirectorSceneStorageForNode(node);
     });
     trackSmartDeletedNodeIds(deleteIds);
     nodes = nodes.filter(node => !deleteIds.has(node.id));
@@ -16436,6 +16556,18 @@ function stripImageGenerationMeta(img){
 }
 function addConnection(fromId, toId, kind='flow'){
     if(!fromId || !toId || fromId === toId) return;
+    const from = nodes.find(n => n.id === fromId);
+    const to = nodes.find(n => n.id === toId);
+    if(from?.type === 'director-3d' || to?.type === 'director-3d'){
+        const allowed = window.HstarSmartDirectorAdapter
+            && typeof window.HstarSmartDirectorAdapter.canConnect === 'function'
+            && window.HstarSmartDirectorAdapter.canConnect(from, to, {
+            kind,
+            connections:canvas?.connections || [],
+            inputNodes:inputNodesFor(to)
+        }) === true;
+        if(!allowed) return;
+    }
     canvas.connections = canvas.connections || [];
     if(canvas.connections.some(c => c.from === fromId && c.to === toId && (c.kind || 'flow') === kind)) return;
     canvas.connections.push({from:fromId, to:toId, kind});
@@ -16444,6 +16576,26 @@ function connectInputNode(fromId, toId){
     const from = nodes.find(n => n.id === fromId);
     const to = nodes.find(n => n.id === toId);
     if(!from || !to || from.id === to.id) return false;
+    if(from.type === 'director-3d' || to.type === 'director-3d'){
+        const allowed = window.HstarSmartDirectorAdapter
+            && typeof window.HstarSmartDirectorAdapter.canConnect === 'function'
+            && window.HstarSmartDirectorAdapter.canConnect(from, to, {
+            kind:'input',
+            connections:canvas?.connections || [],
+            inputNodes:inputNodesFor(to)
+        }) === true;
+        if(!allowed) return false;
+        if(to.type === 'director-3d'){
+            canvas.connections = (canvas.connections || []).filter(conn => !(conn.to === to.id && (conn.kind || 'flow') === 'input'));
+            to.inputNodeIds = [from.id];
+            addConnection(from.id, to.id, 'input');
+            window.HstarSmartDirectorAdapter?.syncDirectorPanorama?.(to);
+            return true;
+        }
+        to.inputNodeIds = Array.from(new Set([...(to.inputNodeIds || []), from.id]));
+        addConnection(from.id, to.id, 'input');
+        return true;
+    }
     if(to.type === 'smart-controller') return false;
     if(from.type === 'smart-controller'){
         to.inputNodeIds = Array.from(new Set([...(to.inputNodeIds || []), from.id]));
@@ -17595,6 +17747,167 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     delete pendingNode._selectAfterRunId;
     if(activeComposerSubject?.id && selectedId === activeComposerSubject.id) lastComposerNodeId = `${selectedId}:node`;
     selectedImage = {nodeId:'', index:-1};
+}
+function directorNodeById(nodeOrId){
+    const id = typeof nodeOrId === 'string' ? nodeOrId : nodeOrId?.id;
+    return nodes.find(n => n.id === id && n.type === DIRECTOR_3D_NODE_TYPE) || null;
+}
+function directorContextForNode(nodeOrId){
+    const node = directorNodeById(nodeOrId);
+    if(!node) return null;
+    if(!node.sceneKey){
+        const protocol = window.HstarDirectorProtocol;
+        node.sceneKey = protocol?.createSceneKey
+            ? protocol.createSceneKey('smart', canvasId || 'unsaved', node.id)
+            : `director:smart:${canvasId || 'unsaved'}:${node.id}`;
+    }
+    return {
+        mode:'node',
+        canvasType:'smart',
+        canvasId,
+        nodeId:node.id,
+        sceneKey:node.sceneKey,
+        instanceId:node.sceneKey,
+        frameId:window.frameElement?.id || 'frame-canvas'
+    };
+}
+function directorInputImagesForNode(nodeOrId){
+    const node = directorNodeById(nodeOrId);
+    if(!node) return [];
+    return inputImagesFor(node)
+        .filter(img => img?.url && mediaKindForItem(img) === 'image')
+        .slice(0, 1)
+        .map((img, index) => ({
+            ...img,
+            role:img.role || `image_${index + 1}`,
+            imageUrl:displayMediaUrl(img)
+        }));
+}
+async function importDirectorCapturesAsGroup({originNodeId, captures, requestId}={}){
+    const source = directorNodeById(originNodeId);
+    const items = (captures || []).map((capture, index) => stripImageGenerationMeta({
+        url:capture?.url || capture?.dataUrl || capture?.imageUrl || '',
+        name:capture?.name || capture?.fileName || `director-capture-${index + 1}.png`,
+        kind:'image',
+        directorCapture:true,
+        directorRequestId:requestId || ''
+    })).filter(item => item.url);
+    if(originNodeId && !source) throw new Error('Director node is no longer available');
+    if(!items.length) throw new Error('Director captures must contain at least one image');
+    if(!source){
+        const output = createImageNodeAt(viewportCenter(), items, {select:true});
+        output.directorSourceId = '';
+        output.directorRequestId = requestId || '';
+        output.sourceType = DIRECTOR_3D_NODE_TYPE;
+        selectedId = output.id;
+        selectedIds = [];
+        selectedImage = {nodeId:'', index:-1};
+        render();
+        scheduleSave();
+        await saveCanvas();
+        return output;
+    }
+    pushUndo();
+    const meta = {
+        sourceNodeId:source.id,
+        directorRequestId:requestId || '',
+        sourceType:DIRECTOR_3D_NODE_TYPE
+    };
+    const output = createPendingOutputFromSource(source, items.length, meta, {selectOutput:true});
+    output.directorSourceId = source.id;
+    output.directorRequestId = requestId || '';
+    finalizePendingNode(output, items, meta, 'image');
+    output.directorSourceId = source.id;
+    output.directorRequestId = requestId || '';
+    selectedId = output.id;
+    selectedIds = [];
+    selectedImage = {nodeId:'', index:-1};
+    render();
+    scheduleSave();
+    await saveCanvas();
+    return output;
+}
+async function importDirectorStandaloneHandoff(data){
+    if(!directorStandaloneTargetMatchesSmart(data)) return false;
+    if(!canvas?.id || !window.HstarSmartDirectorAdapter?.importDirectorCaptures){
+        queueDirectorStandaloneHandoff(data);
+        return true;
+    }
+    await window.HstarSmartDirectorAdapter.importDirectorCaptures({
+        originNodeId:data.originNodeId || '',
+        requestId:data.requestId || '',
+        captures:data.captures || []
+    });
+    return true;
+}
+async function drainDirectorStandaloneHandoffs(){
+    const stored = readDirectorStandaloneStorageHandoff();
+    if(stored) queueDirectorStandaloneHandoff(stored);
+    const queue = directorStandaloneHandoffQueue.splice(0);
+    for(const item of queue){
+        await importDirectorStandaloneHandoff(item).catch(error => {
+            console.error('[HstarSmartDirector] queued standalone import failed', error);
+            toast(error?.message || '3D导演台导入失败');
+        });
+    }
+}
+function removeDirectorPanorama({nodeId, edgeId, sourceNodeId}={}){
+    const node = directorNodeById(nodeId);
+    if(!node) return false;
+    const before = (canvas?.connections || []).length;
+    canvas.connections = (canvas?.connections || []).filter(conn => {
+        if(conn.to !== node.id || (conn.kind || 'flow') !== 'input') return true;
+        if(edgeId && conn.id && conn.id !== edgeId) return true;
+        if(sourceNodeId && conn.from !== sourceNodeId) return true;
+        return false;
+    });
+    node.inputNodeIds = [];
+    const changed = before !== (canvas?.connections || []).length;
+    if(changed){
+        render();
+        scheduleSave();
+    }
+    return changed;
+}
+function syncDirectorPanorama(nodeOrId){
+    const node = directorNodeById(nodeOrId);
+    const adapter = window.HstarSmartDirectorAdapter;
+    if(node && adapter?.syncDirectorPanorama) adapter.syncDirectorPanorama(node);
+}
+window.HstarSmartCanvasDirectorHooks = {
+    getNode:id => nodes.find(n => n.id === id) || null,
+    contextForNode:directorContextForNode,
+    inputImagesForNode:directorInputImagesForNode,
+    importDirectorCapturesAsGroup,
+    removeDirectorPanorama,
+    saveCanvas,
+    toast
+};
+function handleSmartDirectorHostMessage(event){
+    const data = event?.data || {};
+    if(data.type !== 'hstar-director-captures' && data.type !== 'hstar-director-standalone-captures') return false;
+    if(event.origin && event.origin !== location.origin) return true;
+    const context = data.context || {};
+    const targetType = data.targetCanvasType || context.canvasType || 'smart';
+    if(targetType !== 'smart') return true;
+    const targetCanvasId = data.targetCanvasId || context.canvasId || canvasId;
+    if(targetCanvasId && canvasId && targetCanvasId !== canvasId) return true;
+    if(data.type === 'hstar-director-standalone-captures' && (!canvas?.id || !window.HstarSmartDirectorAdapter?.importDirectorCaptures)){
+        queueDirectorStandaloneHandoff(data);
+        return true;
+    }
+    const originNodeId = context.nodeId || data.originNodeId || '';
+    if(window.HstarSmartDirectorAdapter && typeof window.HstarSmartDirectorAdapter.importDirectorCaptures === 'function'){
+        window.HstarSmartDirectorAdapter.importDirectorCaptures({
+            originNodeId,
+            requestId:data.requestId || '',
+            captures:data.captures || []
+        }).catch(error => {
+            console.error('[HstarSmartDirector] capture import failed', error);
+            toast(error?.message || '3D导演台导入失败');
+        });
+    }
+    return true;
 }
 function restoreFromExtraction(node, extracted){
     if(!node || !extracted) return;
@@ -19843,7 +20156,7 @@ function openCreateMenu(event, options={}){
     createMenuPoint = screenToWorld(event);
     createMenuGroupId = options.groupId || '';
     const w = 500;
-    const h = 114;
+    const h = 222;
     const left = Math.max(14, Math.min(window.innerWidth - w - 14, event.clientX + 8));
     const top = Math.max(14, Math.min(window.innerHeight - h - 14, event.clientY + 8));
     createMenu.style.left = `${left}px`;
@@ -19869,6 +20182,7 @@ function createNodeFromMenu(type){
     if(type === 'prompt') created = createPromptNode(p.x - 158, p.y - 97);
     else if(type === 'loop') created = createLoopNode(p.x - 135, p.y - 95);
     else if(type === 'controller') created = createControllerNode(p.x - 150, p.y - 113);
+    else if(type === 'director-3d') created = createDirector3DNode(p.x - 160, p.y - 110);
     else created = createImageNodeAt(p);
     createMenuGroupId = groupId;
     addCreatedNodeToMenuGroup(created);
@@ -21311,6 +21625,7 @@ window.addEventListener('focus', () => {
 });
 window.addEventListener('message', event => {
     if(event.origin && event.origin !== location.origin) return;
+    if(handleSmartDirectorHostMessage(event)) return;
     if(event.data?.type === 'studio-theme') applyTheme(event.data.theme || 'light');
     if(event.data?.type === 'providers-changed' || event.data?.type === 'workflows-changed' || event.data?.type === 'comfy-instances-changed') refreshSmartConfigFromSettings();
     if(event.data?.type === 'asset_library_updated') handleAssetLibraryUpdatedMessage(event.data);

@@ -58,4 +58,5 @@
         createEnvelope,
         validateEnvelope
     });
+    window.dispatchEvent?.(new CustomEvent('hstar-director-protocol-ready'));
 })();

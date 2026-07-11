@@ -220,6 +220,26 @@ vi.mock("./SceneRoot", () => ({
 
 import App from "../../App";
 import { createInitialDirectorState, useDirectorStore } from "../store/directorStore";
+import { getViewportChromeLayout } from "./DirectorCanvas";
+
+it("matches viewport safe areas to the sidebars visible at each responsive breakpoint", () => {
+  expect(getViewportChromeLayout(1200, false)).toEqual({
+    safeAreaInsets: { left: 220, right: 300, top: 0, bottom: 0 },
+    gizmoRightOffset: 320,
+  });
+  expect(getViewportChromeLayout(800, false)).toEqual({
+    safeAreaInsets: { left: 220, right: 0, top: 0, bottom: 0 },
+    gizmoRightOffset: 20,
+  });
+  expect(getViewportChromeLayout(500, false)).toEqual({
+    safeAreaInsets: { left: 0, right: 0, top: 0, bottom: 0 },
+    gizmoRightOffset: 20,
+  });
+  expect(getViewportChromeLayout(1200, true)).toEqual({
+    safeAreaInsets: { left: 0, right: 0, top: 0, bottom: 0 },
+    gizmoRightOffset: 20,
+  });
+});
 
 it("renders a live R3F viewport and director scene controls", () => {
   render(<App />);

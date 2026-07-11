@@ -14,6 +14,10 @@ python/Lib/
 python/Scripts/
 python/pyvenv.cfg
 
+# Node/runtime caches
+node_modules/
+integrations/storyai-3d-director-desk/node_modules/.vite/
+
 # Local runtime output/cache
 output/
 outputs/
@@ -23,6 +27,9 @@ static/assets/output/
 temp/
 tmp/
 *.log
+
+# Installer staging output
+build/installer/stage/
 
 # OS/editor noise
 .DS_Store

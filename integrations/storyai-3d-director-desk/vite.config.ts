@@ -5,9 +5,17 @@ export default defineConfig({
   base: "./",
   assetsInclude: ["**/*.fbx", "**/*.obj"],
   plugins: [react()],
+  esbuild: {
+    drop: ["console", "debugger"],
+  },
   build: {
     outDir: "../../static/3d-director",
     emptyOutDir: true,
+  },
+  server: {
+    fs: {
+      allow: [".."],
+    },
   },
   test: {
     environment: "jsdom",

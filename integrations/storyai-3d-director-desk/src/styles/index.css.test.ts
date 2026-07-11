@@ -13,6 +13,13 @@ it("uses the StoryAI theme tokens instead of the temporary demo palette", () => 
   expect(css).toMatch(/\.ui-field:focus,\s*[\r\n]+\s*\.ui-field:focus-visible,\s*[\r\n]+\s*\.panel-card:not\(\.right-inspector\)\s*input:not\(\[type="range"\]\):not\(\[type="checkbox"\]\):not\(\[type="color"\]\):focus,\s*[\r\n]+\s*\.panel-card:not\(\.right-inspector\)\s*input:not\(\[type="range"\]\):not\(\[type="checkbox"\]\):not\(\[type="color"\]\):focus-visible,\s*[\r\n]+\s*\.panel-card:not\(\.right-inspector\)\s*select:focus,\s*[\r\n]+\s*\.panel-card:not\(\.right-inspector\)\s*select:focus-visible,\s*[\r\n]+\s*\.panel-card:not\(\.right-inspector\)\s*textarea:focus,\s*[\r\n]+\s*\.panel-card:not\(\.right-inspector\)\s*textarea:focus-visible\s*\{[\s\S]*?outline:\s*none;[\s\S]*?box-shadow:\s*0 0 0 1px rgb\(var\(--accent-rgb\) \/ 0\.45\);/);
 });
 
+it("keeps the director viewport usable at narrow embedded widths", () => {
+  const css = readFileSync("src/styles/index.css", "utf8");
+
+  expect(css).toMatch(/@media \(max-width: 560px\)\s*\{[\s\S]*?\.top-bar-title\s*\{[\s\S]*?white-space:\s*nowrap;/);
+  expect(css).toMatch(/@media \(max-width: 560px\)\s*\{[\s\S]*?\.left-sidebar\s*\{[\s\S]*?display:\s*none;/);
+});
+
 it("paints a dark first frame before React and theme messages initialize", () => {
   const css = readFileSync("src/styles/index.css", "utf8");
   const html = readFileSync("index.html", "utf8");

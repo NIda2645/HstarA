@@ -11,4 +11,7 @@ assert.match(main, /uvicorn\.run\(app,[\s\S]*port=resolve_server_port\(\)/, 'uvi
 const runBat = readFileSync('run.bat', 'utf8');
 assert.doesNotMatch(runBat, /HSTAR_PORT=5000/, 'development run.bat should not force installed-app port 5000');
 
+const requirements = readFileSync('requirements.txt', 'utf8');
+assert.match(requirements, /^websockets\b/m, 'server dependencies should include WebSocket protocol support for Uvicorn');
+
 console.log('server port environment tests passed');

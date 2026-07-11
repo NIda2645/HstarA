@@ -20,8 +20,9 @@
     <script src="/static/vendor/js/lucide.js?v=2026.07.8.1783470418"></script>
     <script src="/static/js/theme.js?v=2026.07.8.1783470418"></script>
     <script src="/static/js/touch-mouse.js?v=2026.07.8.1783470418"></script>
-    <script src="/static/js/i18n.js?v=2026.07.8.1783567610"></script>
+    <script src="/static/js/i18n.js?v=2026.07.8.1783749136"></script>
     <link rel="stylesheet" href="/static/css/canvas.css?v=2026.07.8.1783599154">
+    <link rel="stylesheet" href="/static/css/director-canvas.css?v=2026.07.8.1783770293">
     <link rel="stylesheet" href="/static/css/theme.css?v=2026.07.8.1783470418">
 </head>
 <body>
@@ -49,6 +50,7 @@
                     <button class="tool-btn" onclick="addRhNode()"><i data-lucide="workflow" class="w-4 h-4"></i><span data-i18n="canvas.rhGenerate">RH生成</span></button>
                     <button class="tool-btn" onclick="addComfyNode()"><i data-lucide="workflow" class="w-4 h-4"></i>ComfyUI</button>
                     <button class="tool-btn" onclick="addLTXDirectorNode()"><i data-lucide="film" class="w-4 h-4"></i><span data-i18n="canvas.ltxDirector">LTX Director</span></button>
+                    <button class="tool-btn" onclick="addDirector3DNode()"><i data-lucide="box" class="w-4 h-4"></i><span>3D&#23548;&#28436;&#21488;</span></button>
                     <button class="tool-btn" onclick="addOutputNode()"><i data-lucide="circle-dot" class="w-4 h-4"></i>Output</button>
                     <button class="tool-btn" onclick="groupSelectedImages()"><i data-lucide="group" class="w-4 h-4"></i><span data-i18n="canvas.group">分组</span></button>
                 </div>
@@ -79,6 +81,7 @@
                 <button class="menu-btn" onclick="menuAdd('rh')"><i data-lucide="workflow" class="w-4 h-4"></i><span data-i18n="canvas.rhGenerate">RH生成</span></button>
                 <button class="menu-btn" onclick="menuAdd('comfy')"><i data-lucide="workflow" class="w-4 h-4"></i><span data-i18n="canvas.comfyGenerate">ComfyUI 生成</span></button>
                 <button class="menu-btn" onclick="menuAdd('ltxDirector')"><i data-lucide="film" class="w-4 h-4"></i><span data-i18n="canvas.ltxDirector">LTX Director</span></button>
+                <button class="menu-btn" onclick="menuAdd('director-3d')"><i data-lucide="box" class="w-4 h-4"></i><span>3D&#23548;&#28436;&#21488;</span></button>
                 <button class="menu-btn" onclick="menuAdd('output')"><i data-lucide="circle-dot" class="w-4 h-4"></i>Output</button>
             </div>
             <div id="linkCreateMenu" class="create-menu"></div>
@@ -366,6 +369,8 @@
     </div>
 
     <script src="/static/js/ltx-director-timeline.js?v=2026.07.8.1783470418"></script>
-    <script src="/static/js/canvas.js?v=2026.07.8.1783683264"></script>
+<script src="/static/js/director-protocol.js?v=2026.07.8.1783754586"></script>
+    <script src="/static/js/canvas.js?v=2026.07.8.1783765042"></script>
+    <script src="/static/js/canvas-director.js?v=2026.07.8.1783774296"></script>
 </body>
 </html>

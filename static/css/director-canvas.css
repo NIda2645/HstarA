@@ -1,0 +1,181 @@
+.director-node-body {
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    min-height:128px;
+}
+.director-node-status {
+    display:grid;
+    grid-template-columns:1fr;
+    gap:7px;
+    padding:10px;
+    border:1px solid var(--line);
+    border-radius:14px;
+    background:var(--soft);
+    color:var(--muted);
+    font-size:11px;
+    font-weight:750;
+}
+.director-node-status strong {
+    color:var(--text);
+    font-size:12px;
+    font-weight:850;
+}
+.director-node-panorama {
+    display:flex;
+    align-items:center;
+    gap:7px;
+    min-height:26px;
+}
+.director-node-panorama i,
+.director-node-panorama svg {
+    width:14px;
+    height:14px;
+    color:var(--strong);
+    flex:0 0 auto;
+}
+.director-node-action {
+    height:36px;
+    width:100%;
+    border-radius:14px;
+    border:1.5px solid var(--strong);
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    background:var(--card-solid);
+    color:var(--strong);
+    font-size:11px;
+    font-weight:850;
+    cursor:pointer;
+    transition:background .15s ease, color .15s ease, transform .15s ease;
+}
+.director-node-action:hover {
+    background:var(--strong);
+    color:var(--strong-text);
+    transform:translateY(-1px);
+}
+.director-node-action i,
+.director-node-action svg {
+    width:15px;
+    height:15px;
+}
+.director-node-hint {
+    color:var(--muted);
+    font-size:10.5px;
+    line-height:1.45;
+}
+body.theme-dark .director-node-status {
+    background:rgba(15,23,42,.38);
+}
+
+.image-node.director-3d-node {
+    background:transparent;
+    border:0;
+    box-shadow:none;
+    min-height:0;
+    overflow:visible;
+}
+.image-node.director-3d-node:hover,
+.image-node.director-3d-node.selected {
+    box-shadow:none;
+}
+.image-node.director-3d-node .node-body {
+    width:100%;
+    height:100%;
+    min-height:0;
+    padding:0;
+    display:block;
+    overflow:visible;
+}
+.smart-director-node-card {
+    width:100%;
+    height:100%;
+    min-height:0;
+    box-sizing:border-box;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    padding:14px;
+    border-radius:18px;
+    border:1px solid var(--line);
+    background:var(--panel);
+    color:var(--text);
+    box-shadow:0 20px 56px var(--shadow);
+    backdrop-filter:blur(20px);
+    overflow:hidden;
+}
+.smart-director-node-card .director-node-kicker {
+    color:var(--faint);
+    font-size:10px;
+    font-weight:950;
+    line-height:1;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.smart-director-node-card .director-node-title {
+    color:var(--text);
+    font-size:15px;
+    font-weight:950;
+    line-height:1.2;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.smart-director-node-card .director-node-status {
+    min-height:38px;
+    display:flex;
+    align-items:center;
+    gap:7px;
+    padding:9px 10px;
+    border:1px solid var(--line);
+    border-radius:13px;
+    background:var(--soft);
+    color:var(--muted);
+    font-size:11px;
+    font-weight:850;
+    line-height:1.25;
+}
+.smart-director-node-card .director-node-actions {
+    margin-top:auto;
+    display:flex;
+    min-width:0;
+}
+.smart-director-node-card .director-node-open {
+    width:100%;
+    height:38px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    padding:0 12px;
+    border-radius:13px;
+    border:1px solid var(--line);
+    background:var(--card);
+    color:var(--text);
+    font-size:12px;
+    font-weight:900;
+    line-height:1;
+    white-space:nowrap;
+    cursor:pointer;
+    transition:background .15s ease, color .15s ease, border-color .15s ease, transform .15s ease;
+}
+.smart-director-node-card .director-node-open:hover {
+    transform:translateY(-1px);
+    border-color:var(--strong);
+    background:var(--strong);
+    color:var(--strong-text);
+}
+.smart-director-node-card .director-node-open i,
+.smart-director-node-card .director-node-open svg {
+    width:16px !important;
+    height:16px !important;
+    flex:0 0 auto;
+}
+.theme-dark .smart-director-node-card {
+    background:var(--panel);
+    border-color:var(--line);
+}

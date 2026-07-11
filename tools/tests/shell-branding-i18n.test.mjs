@@ -13,7 +13,7 @@ assert.match(html, /<span class="side-pill-text">(?:更多设置|&#26356;&#22810
 assert.doesNotMatch(html, /data-i18n="common\.moreSettings"/, 'more settings should not leak the i18n key when cached bundles are stale');
 assert.match(common, /"common\.moreSettings"\s*:\s*\{\s*zh:\s*"更多设置"/, 'common.moreSettings must register Chinese text');
 assert.match(common, /"common\.comfyuiSettings"\s*:\s*\{\s*zh:\s*"工作流设置"/, 'common.comfyuiSettings must register Chinese text');
-assert.match(i18n, /VERSION = '2026\.06\.18\.1'/, 'i18n cache version should be bumped after shell label fixes');
+assert.match(i18n, /VERSION = '2026\.07\.8\.1783745035'/, 'i18n cache version should be bumped after shell label fixes');
 assert.match(apiSettings, /const VOLCENGINE_LOGO_SVG = `[\s\S]*volcengine-inline-brand[\s\S]*火山引擎[\s\S]*<svg/, 'Volcengine provider card should embed its HstarA logo and text inline');
 assert.doesNotMatch(apiSettings, /volcengine-theme-(?:light|dark)\.svg/, 'Volcengine provider card should not depend on external SVG image files that can render as broken images');
 assert.match(apiSettingsCss, /\.provider-card-banner \.volcengine-inline-brand\s*\{[\s\S]*height:24px[\s\S]*max-width:142px[\s\S]*font-size:16px[\s\S]*white-space:nowrap[\s\S]*\}/, 'Volcengine provider card should constrain the inline brand text like HstarB');

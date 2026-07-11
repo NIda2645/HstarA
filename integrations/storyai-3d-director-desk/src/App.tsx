@@ -1,6 +1,6 @@
 import "./styles/index.css";
-import { useEffect } from "react";
-import { X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { RotateCcw, X } from "lucide-react";
 import { DirectorDeskShell } from "./app/layout/DirectorDeskShell";
 import { DirectorCanvas } from "./editor/canvas/DirectorCanvas";
 import { initDirectorDeskHostBridge, postDirectorDeskClose, postDirectorDeskReady } from "./editor/io/hostBridge";
@@ -13,8 +13,10 @@ function isEditableShortcutTarget(target: EventTarget | null) {
 }
 
 export default function App() {
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const viewMode = useDirectorStore((state) => state.viewMode);
   const setViewMode = useDirectorStore((state) => state.setViewMode);
+  const resetCurrentScene = useDirectorStore((state) => state.resetCurrentScene);
 
   useEffect(() => {
     initDirectorDeskHostBridge();
@@ -23,6 +25,11 @@ export default function App() {
 
   function handleClose() {
     postDirectorDeskClose();
+  }
+
+  function handleConfirmReset() {
+    resetCurrentScene();
+    setIsResetDialogOpen(false);
   }
 
   useEffect(() => {
@@ -60,7 +67,18 @@ export default function App() {
     <div className="app-shell">
       <header className="top-bar">
         <div className="top-bar-left">
-          <h1 className="top-bar-title">3D导演台</h1>
+          <div className="top-bar-title-wrap">
+            <h1 className="top-bar-title">3D导演台</h1>
+            <button
+              className="top-bar-reset-button"
+              type="button"
+              aria-label="复位3D导演台"
+              title="复位3D导演台"
+              onClick={() => setIsResetDialogOpen(true)}
+            >
+              <RotateCcw aria-hidden="true" size={15} strokeWidth={1.9} />
+            </button>
+          </div>
         </div>
         <div className="top-bar-center">
           <div className="mode-toggle ui-segmented" role="group" aria-label="视角切换">
@@ -97,6 +115,35 @@ export default function App() {
       <DirectorDeskShell>
         <DirectorCanvas />
       </DirectorDeskShell>
+      {isResetDialogOpen ? (
+        <div className="director-reset-dialog-backdrop" role="presentation">
+          <section
+            className="director-reset-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="director-reset-dialog-title"
+          >
+            <h2 id="director-reset-dialog-title">复位3D导演台</h2>
+            <p>是否确认重置3D导演台？</p>
+            <div className="director-reset-dialog-actions">
+              <button
+                className="director-reset-dialog-button"
+                type="button"
+                onClick={() => setIsResetDialogOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                className="director-reset-dialog-button director-reset-dialog-confirm"
+                type="button"
+                onClick={handleConfirmReset}
+              >
+                确认
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

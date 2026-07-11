@@ -276,6 +276,13 @@ it("keeps the camera capture section visible at the bottom of the properties tab
   render(<CameraPanel />);
 
   expect(screen.getByRole("heading", { name: "相机截图" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "删除全部" })).toHaveClass("camera-capture-clear-all");
+  expect(screen.getByRole("button", { name: "发送全部" })).toHaveClass(
+    "camera-capture-send-all",
+    "viewport-toolbar-crowd-confirm"
+  );
+  expect(screen.getByRole("button", { name: "删除全部" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "发送全部" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "当前机位截图" })).toHaveClass("camera-capture-current-button");
   expect(screen.getByTestId("camera-current-capture-icon")).toBeInTheDocument();
 });
@@ -349,12 +356,12 @@ it("shows all camera screenshots grouped by camera in the screenshots tab", asyn
   expect(within(firstGroup).getByText("机位01-截图02")).toBeInTheDocument();
   expect(within(secondGroup).getByRole("heading", { name: "机位02截图" })).toBeInTheDocument();
   expect(within(secondGroup).getByText("机位02-截图01")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "清空全部" })).toHaveClass("camera-capture-clear-all");
-  expect(screen.getByRole("button", { name: "发送到画布" })).toHaveClass(
+  expect(screen.getByRole("button", { name: "删除全部" })).toHaveClass("camera-capture-clear-all");
+  expect(screen.getByRole("button", { name: "发送全部" })).toHaveClass(
     "camera-capture-send-all",
     "viewport-toolbar-crowd-confirm"
   );
-  expect(screen.getByRole("button", { name: "发送到画布" })).not.toHaveClass("is-hover-state");
+  expect(screen.getByRole("button", { name: "发送全部" })).not.toHaveClass("is-hover-state");
   expect(screen.getByTestId("camera-capture-clear-icon")).toBeInTheDocument();
   expect(screen.getByTestId("camera-capture-send-icon")).toBeInTheDocument();
 
@@ -375,7 +382,7 @@ it("sends all visible camera screenshots to the host canvas from the overview fo
   render(<CameraPanel />);
 
   await user.click(screen.getByRole("button", { name: "摄像机截图" }));
-  await user.click(screen.getByRole("button", { name: "发送到画布" }));
+  await user.click(screen.getByRole("button", { name: "发送全部" }));
 
   expect(postMessage).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -414,7 +421,7 @@ it("clears every camera screenshot from the screenshots tab and shows the empty 
   render(<CameraPanel />);
 
   await user.click(screen.getByRole("button", { name: "摄像机截图" }));
-  await user.click(screen.getByRole("button", { name: "清空全部" }));
+  await user.click(screen.getByRole("button", { name: "删除全部" }));
 
   expect(screen.queryByText("机位01-截图01")).not.toBeInTheDocument();
   const emptyState = screen.getByRole("status", { name: "暂无摄像机截图" });

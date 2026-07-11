@@ -496,6 +496,38 @@ it("keeps persisted director scenes isolated per canvas card instance", () => {
   expect(useDirectorStore.getState().project.scene.backgroundColor).toBe("#303640");
 });
 
+it("resets only the currently scoped director scene to the initial state", () => {
+  useDirectorStore.getState().openScopedScene("node_director_reset_a");
+  useDirectorStore.getState().setViewportAspectRatio("16:9");
+  useDirectorStore.getState().setViewportRuleOfThirdsEnabled(true);
+  useDirectorStore.getState().addPresetCharacter("female");
+  useDirectorStore.getState().addCameraCaptures("cam_1", ["data:image/png;base64,reset-a"]);
+  useDirectorStore.getState().updateScene({ backgroundColor: "#151515" });
+
+  useDirectorStore.getState().openScopedScene("node_director_reset_b");
+  useDirectorStore.getState().updateScene({ backgroundColor: "#303640" });
+
+  useDirectorStore.getState().openScopedScene("node_director_reset_a");
+  useDirectorStore.getState().resetCurrentScene();
+
+  const resetState = useDirectorStore.getState();
+  const resetSnapshot = JSON.parse(localStorage.getItem("storyai-3d-director-desk-demo:node_director_reset_a") ?? "{}");
+
+  expect(resetState.viewportAspectRatio).toBe("auto");
+  expect(resetState.viewportRuleOfThirdsEnabled).toBe(false);
+  expect(resetState.project.scene.backgroundColor).toBe("#000000");
+  expect(resetState.project.objects).toHaveLength(2);
+  expect(resetState.project.cameras).toHaveLength(1);
+  expect(resetState.project.cameras[0]?.captures).toEqual([]);
+  expect(resetSnapshot.viewportAspectRatio).toBe("auto");
+  expect(resetSnapshot.project?.scene?.backgroundColor).toBe("#000000");
+  expect(resetSnapshot.project?.objects).toHaveLength(2);
+
+  useDirectorStore.getState().openScopedScene("node_director_reset_b");
+
+  expect(useDirectorStore.getState().project.scene.backgroundColor).toBe("#303640");
+});
+
 it("hydrates the initial state from the persisted director scene snapshot", () => {
   localStorage.setItem(
     "storyai-3d-director-desk-demo",

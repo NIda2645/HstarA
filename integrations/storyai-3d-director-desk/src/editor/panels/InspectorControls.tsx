@@ -538,10 +538,23 @@ export function InspectorColorField({
   );
 }
 
-export function InspectorSection({ title, className, children }: { title: string; className?: string; children: ReactNode }) {
+export function InspectorSection({
+  title,
+  className,
+  actions,
+  children,
+}: {
+  title: string;
+  className?: string;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <section className={`inspector-section${className ? ` ${className}` : ""}`}>
-      <h3>{title}</h3>
+      <div className="inspector-section-heading">
+        <h3>{title}</h3>
+        {actions ? <div className="inspector-section-actions">{actions}</div> : null}
+      </div>
       {children}
     </section>
   );

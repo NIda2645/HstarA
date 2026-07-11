@@ -7,6 +7,100 @@ function trf(key, values={}){
 function langIsEn(){ return window.StudioI18n?.lang?.() === 'en'; }
 const CANVAS_UPLOAD_MAX = 20;
 const CANVAS_REFERENCE_IMAGE_MAX = 20;
+const DIRECTOR_SCENE_STORAGE_KEY_PREFIX = 'storyai-3d-director-desk-demo:';
+const DIRECTOR_STANDALONE_HANDOFF_PREFIX = 'hstar-director-standalone-handoff:';
+let directorStandaloneHandoffQueue = [];
+function currentClassicDirectorCanvasId(){
+    try {
+        return canvas?.id || new URLSearchParams(window.location.search).get('id') || 'unsaved';
+    } catch(e) {
+        return canvas?.id || 'unsaved';
+    }
+}
+function directorSceneKeyForNode(node){
+    if(!node || node.type !== 'director-3d') return '';
+    const sceneKey = typeof node.sceneKey === 'string' ? node.sceneKey.trim() : '';
+    if(sceneKey) return sceneKey;
+    const protocol = window.HstarDirectorProtocol;
+    const canvasId = currentClassicDirectorCanvasId();
+    return protocol?.createSceneKey?.('classic', canvasId, node.id) || `director:classic:${canvasId}:${node.id}`;
+}
+function removeDirectorSceneStorageForNode(node){
+    const sceneKey = directorSceneKeyForNode(node);
+    if(!sceneKey || sceneKey === 'director:standalone') return;
+    try {
+        localStorage.removeItem(`${DIRECTOR_SCENE_STORAGE_KEY_PREFIX}${sceneKey}`);
+    } catch(e) {}
+}
+function normalizeDirectorHandoffCanvasType(value){
+    return String(value || '').trim().toLowerCase().includes('smart') ? 'smart' : 'classic';
+}
+function directorStandaloneHandoffKey(canvasType='classic', id=currentClassicDirectorCanvasId()){
+    return `${DIRECTOR_STANDALONE_HANDOFF_PREFIX}${normalizeDirectorHandoffCanvasType(canvasType)}:${String(id || '').trim()}`;
+}
+function directorStandaloneTargetMatchesClassic(data){
+    if(!data || data.type !== 'hstar-director-standalone-captures') return false;
+    const targetType = normalizeDirectorHandoffCanvasType(data.targetCanvasType || 'classic');
+    if(targetType !== 'classic') return false;
+    const targetCanvasId = String(data.targetCanvasId || '').trim();
+    const currentId = String(currentClassicDirectorCanvasId() || '').trim();
+    return !targetCanvasId || !currentId || targetCanvasId === currentId;
+}
+function queueDirectorStandaloneHandoff(data){
+    if(!data || data.type !== 'hstar-director-standalone-captures') return;
+    const requestId = String(data.requestId || '').trim();
+    if(requestId && directorStandaloneHandoffQueue.some(item => item?.requestId === requestId)) return;
+    directorStandaloneHandoffQueue.push(data);
+}
+async function importDirectorStandaloneHandoff(data){
+    if(!directorStandaloneTargetMatchesClassic(data)) return false;
+    if(!canvas?.id || !window.HstarClassicDirectorAdapter?.importDirectorCaptures){
+        queueDirectorStandaloneHandoff(data);
+        return true;
+    }
+    await window.HstarClassicDirectorAdapter.importDirectorCaptures({
+        requestId:data.requestId || '',
+        originNodeId:data.originNodeId || '',
+        captures:data.captures || []
+    });
+    return true;
+}
+function readDirectorStandaloneStorageHandoff(){
+    const key = directorStandaloneHandoffKey('classic');
+    try {
+        const raw = sessionStorage.getItem(key);
+        if(!raw) return null;
+        sessionStorage.removeItem(key);
+        const data = JSON.parse(raw);
+        return data && data.type === 'hstar-director-standalone-captures' ? data : null;
+    } catch(e) {
+        try { sessionStorage.removeItem(key); } catch(_) {}
+        return null;
+    }
+}
+async function drainDirectorStandaloneHandoffs(){
+    const stored = readDirectorStandaloneStorageHandoff();
+    if(stored) queueDirectorStandaloneHandoff(stored);
+    const queue = directorStandaloneHandoffQueue.splice(0);
+    for(const item of queue){
+        await importDirectorStandaloneHandoff(item).catch(error => {
+            console.error('[HstarClassicDirector] queued standalone import failed', error);
+            alert(error?.message || '3D导演台截图导入失败');
+        });
+    }
+}
+function handleDirectorStandaloneHandoffEvent(event){
+    const data = event?.data || {};
+    if(data.type !== 'hstar-director-standalone-captures') return false;
+    if(event.origin && event.origin !== location.origin) return true;
+    if(!directorStandaloneTargetMatchesClassic(data)) return true;
+    event.stopImmediatePropagation?.();
+    importDirectorStandaloneHandoff(data).catch(error => {
+        console.error('[HstarClassicDirector] standalone import failed', error);
+        alert(error?.message || '3D导演台截图导入失败');
+    });
+    return true;
+}
 function actionFailed(labelKey, detail=''){
     const label = tr(labelKey);
     return langIsEn() ? `${label} failed${detail ? `: ${detail}` : ''}` : `${label}失败${detail ? `：${detail}` : ''}`;
@@ -214,6 +308,7 @@ async function refreshCanvasConfigFromSettings(){
 }
 window.addEventListener('message', event => {
     if(event.origin && event.origin !== location.origin) return;
+    if(handleDirectorStandaloneHandoffEvent(event)) return;
     if(event.data?.type === 'studio-lang') applyLanguage(event.data.lang);
     if(event.data?.type === 'canvas_updated') handleCanvasUpdatedMessage(event.data);
     if(event.data?.type === 'providers-changed' || event.data?.type === 'workflows-changed' || event.data?.type === 'comfy-instances-changed'){
@@ -2155,6 +2250,7 @@ async function openCanvas(id){
         resumeCanvasImageTasks();
         startCanvasRemotePolling();
         setStatus('Ready');
+        await drainDirectorStandaloneHandoffs();
     } catch(e) {
         openingCanvasId = '';
         renderCanvasList();
@@ -3264,6 +3360,20 @@ function addOutputNode(point){
     const p = point || defaultPoint(260, 0);
     return addNode({id:uid('out'), type:'output', x:p.x, y:p.y, images:[]});
 }
+function addDirector3DNode(point){
+    const p = point || defaultPoint(140, 0);
+    const id = uid('director3d');
+    const protocol = window.HstarDirectorProtocol;
+    const canvasId = canvas?.id || new URLSearchParams(window.location.search).get('id') || 'unsaved';
+    const sceneKey = protocol?.createSceneKey?.('classic', canvasId, id) || `director:classic:${canvasId}:${id}`;
+    return addNode({id, type:'director-3d', x:p.x, y:p.y, w:320, h:230, sceneKey});
+}
+function openDirector3DNode(nodeId){
+    return window.HstarClassicDirectorAdapter?.openDirectorNode?.(nodeId);
+}
+function importDirector3DCaptures(payload){
+    return window.HstarClassicDirectorAdapter?.importDirectorCaptures?.(payload);
+}
 function openCreateMenu(clientX, clientY){
     menuPoint = screenToWorld(clientX, clientY);
     closeLinkCreateMenu();
@@ -3288,6 +3398,7 @@ function linkCreateOptions(state){
                 {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
                 {type:'rh', label:tr('canvas.rhGenerate'), icon:'workflow'},
                 {type:'ltxDirector', label:tr('canvas.ltxDirector'), icon:'film'},
+                {type:'director-3d', label:'3D导演台', icon:'box'},
                 {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'},
                 ...(node.type === 'output' ? [] : [{type:'llm', label:'LLM', icon:'message-square-text'}])
             ];
@@ -3665,6 +3776,7 @@ function createNodeByType(type, point){
     if(type === 'rh') return addRhNode(point);
     if(type === 'comfy') return addComfyNode(point);
     if(type === 'ltxDirector') return addLTXDirectorNode(point);
+    if(type === 'director-3d') return addDirector3DNode(point);
     if(type === 'output') return addOutputNode(point);
     return null;
 }
@@ -3681,6 +3793,7 @@ function menuAdd(type){
     if(type === 'rh') addRhNode(menuPoint);
     if(type === 'comfy') addComfyNode(menuPoint);
     if(type === 'ltxDirector') addLTXDirectorNode(menuPoint);
+    if(type === 'director-3d') addDirector3DNode(menuPoint);
     if(type === 'output') addOutputNode(menuPoint);
 }
 function mediaKindForUpload(file){
@@ -8754,13 +8867,14 @@ function renderNode(node){
         refreshSelectionVisuals();
     };
     el.oncontextmenu = e => {
-    if(!CANVAS_GENERATOR_TYPES.includes(node.type) && node.type !== 'output') return;
+    if(!CANVAS_GENERATOR_TYPES.includes(node.type) && node.type !== 'output' && node.type !== 'director-3d') return;
         e.preventDefault();
         e.stopPropagation();
         if(node.type === 'output') openOutputNodeMenu(node.id, e.clientX, e.clientY);
+        else if(node.type === 'director-3d') return;
         else openGeneratorNodeMenu(node.id, e.clientX, e.clientY);
     };
-    const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'controller' ? '\u7efc\u5408\u63a7\u5236\u5668' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : tr('canvas.apiGenerate');
+    const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'controller' ? '\u7efc\u5408\u63a7\u5236\u5668' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'director-3d' ? '3D导演台' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : tr('canvas.apiGenerate');
     const displayTitle = node.type === 'image' && node.url ? nodeTitleForMedia(node) : title;
     // 失败徽章只在一键运行模式中显示，单节点失败已通过 alert 提示
     const showStatus = ['generator','msgen','comfy','ltxDirector','llm','video','rh'].includes(node.type) && node.runStatus
@@ -8922,6 +9036,11 @@ function renderNode(node){
     if(node.type === 'rh') body.appendChild(renderRhBody(node));
     if(node.type === 'comfy') body.appendChild(renderComfyBody(node));
     if(node.type === 'ltxDirector') body.appendChild(renderLTXDirectorBody(node));
+    if(node.type === 'director-3d') {
+        const directorBody = window.HstarClassicDirectorAdapter?.renderDirectorNode?.(node);
+        if(directorBody) body.appendChild(directorBody);
+        else body.innerHTML = `<div class="director-node-body"><button class="director-node-action" type="button" onclick="openDirector3DNode('${node.id}')"><i data-lucide="box"></i><span>打开3D导演台</span></button></div>`;
+    }
     if(node.type === 'output') {
         const pendingHtml = (node._pending || []).map(p =>
             renderPendingOutput(p)
@@ -8941,8 +9060,8 @@ function renderNode(node){
         if(e.button !== 0 || !isNodeDragSurface(e.target)) return;
         startNodeDrag(e, node);
     };
-    const canInput = ['generator','comfy','ltxDirector','output','llm','msgen','video','rh'].includes(node.type) || (node.type === 'loop' && (node.imageInput || node.showPrompt));
-    const canOutput = ['image','prompt','controller','loop','group','promptGroup','generator','comfy','ltxDirector','llm','msgen','video','rh','output'].includes(node.type);
+    const canInput = ['generator','comfy','ltxDirector','director-3d','output','llm','msgen','video','rh'].includes(node.type) || (node.type === 'loop' && (node.imageInput || node.showPrompt));
+    const canOutput = ['image','prompt','controller','loop','group','promptGroup','generator','comfy','ltxDirector','director-3d','llm','msgen','video','rh','output'].includes(node.type);
     if(canInput) el.insertAdjacentHTML('beforeend', `<div class="port in" title="${tr('canvas.connectHere')}"></div>`);
     if(canOutput) el.insertAdjacentHTML('beforeend', `<div class="port out" title="${tr('canvas.dragConnect')}"></div>`);
     el.insertAdjacentHTML('beforeend', `<div class="resize-handle" title="${tr('canvas.resize')}"></div>`);
@@ -9118,6 +9237,7 @@ function defaultNodeSize(type){
     if(type === 'rh') return {w:430, h:0};
     if(type === 'comfy') return {w:420, h:460};
     if(type === 'ltxDirector') return {w:1000, h:800};
+    if(type === 'director-3d') return {w:320, h:230};
     if(type === 'output') return {w:460, h:0};
     return {w:260, h:0};
 }
@@ -14877,7 +14997,9 @@ async function runLLMChat(nodeId){
 function deleteNode(id, event){
     event?.stopPropagation();
     pushUndo();
-    destroyLTXEditor(nodes.find(n => n.id === id));
+    const node = nodes.find(n => n.id === id);
+    removeDirectorSceneStorageForNode(node);
+    destroyLTXEditor(node);
     nodes = nodes.filter(n => n.id !== id);
     connections = connections.filter(c => c.from !== id && c.to !== id);
     selected.delete(id);
@@ -17201,6 +17323,9 @@ function canConnect(fromId, toId){
     const from = nodes.find(n => n.id === fromId);
     const to = nodes.find(n => n.id === toId);
     if(!from || !to) return false;
+    if(from.type === 'director-3d' || to.type === 'director-3d'){
+        return Boolean(window.HstarClassicDirectorAdapter?.canConnect?.(from, to));
+    }
     if(CANVAS_GENERATOR_TYPES.includes(from.type)){
         if(to.type === 'output') return true;
         if(CANVAS_MEDIA_OUTPUT_TYPES.includes(from.type) && CANVAS_GENERATOR_TYPES.includes(to.type)){

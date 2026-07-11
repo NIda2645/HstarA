@@ -39,6 +39,8 @@ const GIZMO_AXIS_HIT_SIZE = 15;
 const LEFT_PANEL_WIDTH = 220;
 const RIGHT_PANEL_WIDTH = 300;
 const GIZMO_EDGE_PADDING = 20;
+const HIDE_RIGHT_PANEL_MAX_WIDTH = 920;
+const HIDE_LEFT_PANEL_MAX_WIDTH = 560;
 const HIDE_FROM_VIEWPORT_CAPTURE_KEY = "hideFromViewportCapture";
 const CAPTURE_LABEL_FONT_SIZE = 12;
 const CAPTURE_LABEL_HORIZONTAL_PADDING = 10;
@@ -64,6 +66,32 @@ type ViewportCaptureLabel = {
   worldPosition: Vector3;
 };
 type ViewportCaptureFrameRect = NonNullable<ReturnType<typeof getViewportAspectFrameRect>>;
+
+export function getViewportChromeLayout(viewportWidth: number, panelsCollapsed: boolean) {
+  if (panelsCollapsed || viewportWidth <= HIDE_LEFT_PANEL_MAX_WIDTH) {
+    return {
+      safeAreaInsets: { left: 0, right: 0, top: 0, bottom: 0 } satisfies ViewportSafeAreaInsets,
+      gizmoRightOffset: GIZMO_EDGE_PADDING,
+    };
+  }
+
+  if (viewportWidth <= HIDE_RIGHT_PANEL_MAX_WIDTH) {
+    return {
+      safeAreaInsets: {
+        left: Math.min(LEFT_PANEL_WIDTH, viewportWidth * 0.28),
+        right: 0,
+        top: 0,
+        bottom: 0,
+      } satisfies ViewportSafeAreaInsets,
+      gizmoRightOffset: GIZMO_EDGE_PADDING,
+    };
+  }
+
+  return {
+    safeAreaInsets: { left: LEFT_PANEL_WIDTH, right: RIGHT_PANEL_WIDTH, top: 0, bottom: 0 } satisfies ViewportSafeAreaInsets,
+    gizmoRightOffset: RIGHT_PANEL_WIDTH + GIZMO_EDGE_PADDING,
+  };
+}
 
 export function shouldRenderViewportGrid(hasPanorama: boolean, snapToGrid: boolean) {
   return true;
@@ -596,6 +624,9 @@ export function DirectorCanvas() {
   const viewportCameraSnapshotRef = useRef<CameraShotSnapshot>(DEFAULT_DIRECTOR_VIEW_SNAPSHOT);
   const [directorViewSnapshot, setDirectorViewSnapshot] = useState(DEFAULT_DIRECTOR_VIEW_SNAPSHOT);
   const [toolbarHeight, setToolbarHeight] = useState(DEFAULT_VIEWPORT_TOOLBAR_HEIGHT);
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === "undefined" ? HIDE_RIGHT_PANEL_MAX_WIDTH + 1 : window.innerWidth
+  );
   const hasPanorama = Boolean(panoramaAssetId);
   const panoramaAsset = assets.find((item) => item.id === panoramaAssetId);
   const showViewportGrid = shouldRenderViewportGrid(hasPanorama, sceneSettings.snapToGrid);
@@ -607,10 +638,17 @@ export function DirectorCanvas() {
   const setViewportRuleOfThirdsEnabled = useDirectorStore((state) => state.setViewportRuleOfThirdsEnabled);
   const visibleViewportSnapshot =
     viewMode === "camera" && activeCameraView ? activeCameraView : directorViewSnapshot;
-  const viewportSafeAreaInsets: ViewportSafeAreaInsets = viewportPanelsCollapsed
-    ? { left: 0, right: 0, top: 0, bottom: 0 }
-    : { left: LEFT_PANEL_WIDTH, right: RIGHT_PANEL_WIDTH, top: 0, bottom: 0 };
-  const gizmoRightOffset = viewportPanelsCollapsed ? GIZMO_EDGE_PADDING : RIGHT_PANEL_WIDTH + GIZMO_EDGE_PADDING;
+  const { safeAreaInsets: viewportSafeAreaInsets, gizmoRightOffset } = getViewportChromeLayout(
+    viewportWidth,
+    viewportPanelsCollapsed
+  );
+
+  useLayoutEffect(() => {
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth);
+    updateViewportWidth();
+    window.addEventListener("resize", updateViewportWidth);
+    return () => window.removeEventListener("resize", updateViewportWidth);
+  }, []);
 
   useLayoutEffect(() => {
     const element = toolbarRef.current;

@@ -193,6 +193,31 @@ export function CameraPanel() {
     setViewerCapture(null);
   }
 
+  function renderCaptureBulkActions(className = "camera-capture-bulk-actions") {
+    return (
+      <div className={className}>
+        <button
+          className="camera-capture-clear-all"
+          disabled={!hasAnyCameraCapture}
+          type="button"
+          onClick={handleClearAllCaptures}
+        >
+          <Trash2 aria-hidden="true" data-testid="camera-capture-clear-icon" size={14} strokeWidth={1.9} />
+          <span>删除全部</span>
+        </button>
+        <button
+          className="camera-capture-send-all viewport-toolbar-crowd-confirm"
+          disabled={!hasAnyCameraCapture}
+          type="button"
+          onClick={sendAllCapturesToCanvas}
+        >
+          <Send aria-hidden="true" data-testid="camera-capture-send-icon" size={14} strokeWidth={1.9} />
+          <span>发送全部</span>
+        </button>
+      </div>
+    );
+  }
+
   function handleViewerZoom(direction: "in" | "out") {
     updateViewerScale((current) => current + (direction === "in" ? VIEWER_ZOOM_STEP : -VIEWER_ZOOM_STEP));
   }
@@ -372,20 +397,7 @@ export function CameraPanel() {
     }
 
     return (
-      <div className="camera-capture-overview-footer">
-        <button className="camera-capture-clear-all" type="button" onClick={handleClearAllCaptures}>
-          <Trash2 aria-hidden="true" data-testid="camera-capture-clear-icon" size={14} strokeWidth={1.9} />
-          <span>清空全部</span>
-        </button>
-        <button
-          className="camera-capture-send-all viewport-toolbar-crowd-confirm"
-          type="button"
-          onClick={sendAllCapturesToCanvas}
-        >
-          <Send aria-hidden="true" data-testid="camera-capture-send-icon" size={14} strokeWidth={1.9} />
-          <span>发送到画布</span>
-        </button>
-      </div>
+      <div className="camera-capture-overview-footer">{renderCaptureBulkActions()}</div>
     );
   }
 
@@ -582,7 +594,11 @@ export function CameraPanel() {
             value={currentCamera.fov}
             onValueChange={(value) => updateCamera(currentCamera.id, { fov: Number(value) })}
           />
-          <InspectorSection title="相机截图" className="camera-capture-section">
+          <InspectorSection
+            title="相机截图"
+            className="camera-capture-section"
+            actions={renderCaptureBulkActions("camera-capture-title-actions")}
+          >
             <button
               className="camera-capture-current-button"
               type="button"

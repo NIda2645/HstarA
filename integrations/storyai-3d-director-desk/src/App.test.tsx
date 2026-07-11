@@ -72,6 +72,37 @@ it("notifies the host canvas when the director desk close button is clicked", as
   postMessage.mockRestore();
 });
 
+it("asks for confirmation before resetting the current director desk", async () => {
+  const user = userEvent.setup();
+
+  act(() => {
+    useDirectorStore.getState().setViewportAspectRatio("16:9");
+    useDirectorStore.getState().addPresetCharacter("female");
+    useDirectorStore.getState().updateScene({ backgroundColor: "#151515" });
+  });
+
+  render(<App />);
+
+  await user.click(screen.getByRole("button", { name: "复位3D导演台" }));
+
+  expect(screen.getByRole("dialog", { name: "复位3D导演台" })).toBeInTheDocument();
+  expect(screen.getByText("是否确认重置3D导演台？")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "取消" }));
+
+  expect(screen.queryByRole("dialog", { name: "复位3D导演台" })).not.toBeInTheDocument();
+  expect(useDirectorStore.getState().viewportAspectRatio).toBe("16:9");
+  expect(useDirectorStore.getState().project.scene.backgroundColor).toBe("#151515");
+
+  await user.click(screen.getByRole("button", { name: "复位3D导演台" }));
+  await user.click(screen.getByRole("button", { name: "确认" }));
+
+  expect(screen.queryByRole("dialog", { name: "复位3D导演台" })).not.toBeInTheDocument();
+  expect(useDirectorStore.getState().viewportAspectRatio).toBe("auto");
+  expect(useDirectorStore.getState().project.scene.backgroundColor).toBe("#000000");
+  expect(useDirectorStore.getState().project.objects).toHaveLength(2);
+});
+
 it("uses a full-width director desk frame instead of floating card columns", () => {
   const { container } = render(<App />);
   const shell = container.querySelector(".director-shell.director-shell-fullbleed");
