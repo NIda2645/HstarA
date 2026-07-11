@@ -1,8 +1,38 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+const pythonEnv = {
+  ...process.env,
+  PYTHONIOENCODING: 'utf-8',
+  PYTHONUTF8: '1',
+};
+
+const bundledCandidates = process.platform === 'win32'
+  ? [join(repoRoot, 'python', 'python.exe')]
+  : [join(repoRoot, 'python', 'bin', 'python3'), join(repoRoot, 'python', 'bin', 'python')];
+const fallbackCandidates = process.platform === 'win32'
+  ? [{ command: 'py', args: ['-3'] }, { command: 'python', args: [] }]
+  : [{ command: 'python3', args: [] }, { command: 'python', args: [] }];
+const pythonCandidates = [
+  ...bundledCandidates.filter(existsSync).map((command) => ({ command, args: [] })),
+  ...fallbackCandidates,
+];
+
+const python = pythonCandidates.find(({ command, args }) => {
+  const probe = spawnSync(
+    command,
+    [...args, '-X', 'utf8', '-c', 'import fastapi, httpx, PIL, pydantic, requests'],
+    { cwd: repoRoot, encoding: 'utf8', env: pythonEnv },
+  );
+  return !probe.error && probe.status === 0;
+});
+
+assert.ok(python, 'No usable Python interpreter could import the application dependencies');
 
 const tempDir = mkdtempSync(join(tmpdir(), 'hstar-online-history-'));
 const historyFile = join(tempDir, 'history.json');
@@ -20,8 +50,10 @@ writeFileSync(historyFile, JSON.stringify(records), 'utf8');
 const pythonScript = String.raw`
 import asyncio
 import json
+import os
 import sys
 
+sys.path.insert(0, os.getcwd())
 import main
 
 main.HISTORY_FILE = sys.argv[1]
@@ -46,13 +78,13 @@ asyncio.run(run())
 `;
 
 try {
-  const python = process.platform === 'win32' ? 'py' : 'python3';
-  const pythonArgs = process.platform === 'win32' ? ['-3'] : [];
-  const result = spawnSync(python, [...pythonArgs, '-c', pythonScript, historyFile], {
-    cwd: new URL('../..', import.meta.url),
+  const result = spawnSync(python.command, [...python.args, '-X', 'utf8', '-c', pythonScript, historyFile], {
+    cwd: repoRoot,
     encoding: 'utf8',
+    env: pythonEnv,
   });
 
+  assert.ok(!result.error, `Failed to launch Python interpreter: ${result.error?.message}`);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const output = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
 
