@@ -1,0 +1,127 @@
+.director-host-frame {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #0b0b0c;
+}
+
+.director-target-picker {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.42);
+    z-index: 10000;
+}
+
+.director-target-picker.is-open {
+    display: flex;
+}
+
+.director-target-panel {
+    width: min(680px, 100%);
+    max-height: min(720px, calc(100vh - 48px));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    background: #141416;
+    color: #f6f6f6;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.director-target-head,
+.director-target-new,
+.director-target-list {
+    padding: 14px;
+}
+
+.director-target-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.director-target-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.director-target-close,
+.director-target-button {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    color: inherit;
+    cursor: pointer;
+}
+
+.director-target-close {
+    width: 30px;
+    height: 30px;
+    line-height: 28px;
+    font-size: 18px;
+}
+
+.director-target-new {
+    display: grid;
+    grid-template-columns: 1fr 120px auto;
+    gap: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.director-target-input,
+.director-target-select {
+    min-height: 34px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    color: inherit;
+    padding: 0 10px;
+}
+
+.director-target-button {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: 13px;
+}
+
+.director-target-list {
+    overflow: auto;
+    display: grid;
+    gap: 8px;
+}
+
+.director-target-row {
+    width: 100%;
+    display: grid;
+    gap: 4px;
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    color: inherit;
+    cursor: pointer;
+}
+
+.director-target-row-title {
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.director-target-row-meta {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.66);
+}
+
+@media (max-width: 720px) {
+    .director-target-new {
+        grid-template-columns: 1fr;
+    }
+}
