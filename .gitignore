@@ -10,6 +10,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+python/Lib/
+python/Scripts/
+python/pyvenv.cfg
 
 # Local runtime output/cache
 output/
