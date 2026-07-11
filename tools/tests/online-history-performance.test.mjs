@@ -22,7 +22,29 @@ assert.match(
   /document\.getElementById\('loadMoreTrigger'\)\.onclick = \(\) => loadHistory\(false\)/,
 );
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
-assert.match(onlineHtml, /let historyRevision = 0, historyResetPending = false;/);
+assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
+assert.match(onlineHtml, /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;/);
+assert.match(
+  onlineHtml,
+  /function beginHistoryMutation\(\)\s*{\s*historyRevision \+= 1;\s*historyMutationDepth \+= 1;\s*}/,
+);
+assert.match(
+  onlineHtml,
+  /function queueHistoryLoad\(reset\)\s*{\s*if\(queuedHistoryLoad === null \|\| reset\) queuedHistoryLoad = reset;\s*}/,
+);
+assert.match(
+  onlineHtml,
+  /function runQueuedHistoryLoad\(\)\s*{\s*if\(historyMutationDepth > 0 \|\| isLoading \|\| queuedHistoryLoad === null\) return;\s*const reset = queuedHistoryLoad;\s*queuedHistoryLoad = null;\s*loadHistory\(reset\);\s*}/,
+);
+assert.match(
+  onlineHtml,
+  /function finishHistoryMutation\(offsetDelta=0\)\s*{\s*historyOffset = Math\.max\(0, historyOffset \+ offsetDelta\);\s*historyMutationDepth = Math\.max\(0, historyMutationDepth - 1\);\s*if\(historyMutationDepth === 0\) runQueuedHistoryLoad\(\);\s*}/,
+);
+assert.match(
+  onlineHtml,
+  /if\(historyMutationDepth > 0\)\s*{\s*queueHistoryLoad\(reset\);\s*return;\s*}/,
+  'history GETs must queue while mutations are in flight',
+);
 assert.match(onlineHtml, /const requestRevision = historyRevision;/);
 assert.ok(
   onlineHtml.indexOf('const requestRevision = historyRevision;')
@@ -32,8 +54,8 @@ assert.ok(
 const staleResponseGuard = 'if(requestRevision !== historyRevision){';
 assert.match(
   onlineHtml,
-  /if\(requestRevision !== historyRevision\)\s*{\s*historyResetPending = true;\s*return;\s*}/,
-  'stale history responses must be discarded',
+  /if\(requestRevision !== historyRevision\)\s*{\s*queueHistoryLoad\(reset\);\s*return;\s*}/,
+  'stale history responses must queue the same request mode',
 );
 assert.ok(
   onlineHtml.indexOf(staleResponseGuard) < onlineHtml.indexOf('renderHistoryBatch(items);'),
@@ -41,29 +63,65 @@ assert.ok(
 );
 assert.match(
   onlineHtml,
-  /const shouldReset = historyResetPending \|\| requestRevision !== historyRevision;[\s\S]*isLoading = false;[\s\S]*if\(shouldReset\)\{[\s\S]*historyResetPending = false;[\s\S]*loadHistory\(true\);/,
+  /finally\s*{\s*if\(requestRevision !== historyRevision\) queueHistoryLoad\(reset\);[\s\S]*isLoading = false;\s*runQueuedHistoryLoad\(\);/,
+);
+
+const generationSource = onlineHtml.slice(
+  onlineHtml.indexOf('async function submitImage()'),
+  onlineHtml.indexOf('function renderImageCard'),
+);
+assert.ok(
+  generationSource.indexOf('beginHistoryMutation();') < generationSource.indexOf("fetch('/api/online-image'"),
+  'generation must begin its mutation before POSTing',
+);
+assert.match(generationSource, /let historyDelta = 0;[\s\S]*renderImageCard\(result, true\);\s*historyDelta = 1;/);
+assert.match(generationSource, /finally\s*{\s*finishHistoryMutation\(historyDelta\);/);
+assert.doesNotMatch(generationSource, /loadHistory\(true\)|masonry[^\n]*innerHTML/);
+
+const singleDeleteSource = onlineHtml.slice(
+  onlineHtml.indexOf('async function deleteHistoryItem'),
+  onlineHtml.indexOf('window.onload'),
+);
+assert.ok(
+  singleDeleteSource.indexOf('beginHistoryMutation();') < singleDeleteSource.indexOf("fetch('/api/history/delete'"),
+  'single deletion must begin its mutation before POSTing',
 );
 assert.match(
-  onlineHtml,
-  /function invalidateHistory\(\)\s*{\s*historyRevision \+= 1;\s*historyResetPending = true;\s*if\(!isLoading\) loadHistory\(true\);\s*}/,
+  singleDeleteSource,
+  /let historyDelta = 0;[\s\S]*if\(card\)\s*{\s*card\.remove\(\);\s*historyDelta = -1;\s*}/,
 );
-assert.match(onlineHtml, /renderImageCard\(result, true\);\s*invalidateHistory\(\);/);
+assert.match(singleDeleteSource, /finally\s*{\s*finishHistoryMutation\(historyDelta\);\s*}/);
+assert.doesNotMatch(singleDeleteSource, /loadHistory\(true\)|masonry[^\n]*innerHTML/);
+
+const bulkStartEvent = "masonry.dispatchEvent(new CustomEvent('history-bulk-delete-start'));";
+const bulkRequests = 'const results = await Promise.allSettled';
+const bulkUiDecision = 'if(selectedCards().length === 0 && cards().length === 0){ exit(); }';
+const bulkFinishEvent = "masonry.dispatchEvent(new CustomEvent('history-bulk-delete-finish', {detail:{successCount}}));";
+assert.ok(bulkManagerJs.indexOf(bulkStartEvent) < bulkManagerJs.indexOf(bulkRequests));
+assert.ok(bulkManagerJs.indexOf(bulkFinishEvent) > bulkManagerJs.indexOf(bulkUiDecision));
+assert.match(bulkManagerJs, /let successCount = 0;\s*masonry\.dispatchEvent\(new CustomEvent\('history-bulk-delete-start'\)\);\s*try\s*{/);
 assert.match(
-  onlineHtml,
-  /if\(res\.success\)\s*{\s*document\.getElementById\(`history-\$\{ts\}`\)\?\.remove\(\);\s*invalidateHistory\(\);\s*}/,
+  bulkManagerJs,
+  /successCount = results\.filter\(result => result\.status === 'fulfilled'\)\.length;/,
 );
 assert.match(
   bulkManagerJs,
-  /const succeeded = results\.filter\(result => result\.status === 'fulfilled'\)\.length;/,
+  /finally\s*{\s*masonry\.dispatchEvent\(new CustomEvent\('history-bulk-delete-finish', {detail:{successCount}}\)\);\s*}/,
 );
+assert.doesNotMatch(bulkManagerJs, /history-bulk-delete-success/);
 assert.match(
-  bulkManagerJs,
-  /if\(succeeded > 0\) masonry\.dispatchEvent\(new CustomEvent\('history-bulk-delete-success', {detail:{successCount:succeeded}}\)\);/,
+  onlineHtml,
+  /masonry\.addEventListener\('history-bulk-delete-start', beginHistoryMutation\);/,
 );
 assert.match(
   onlineHtml,
-  /document\.getElementById\('masonry'\)\.addEventListener\('history-bulk-delete-success', invalidateHistory\);/,
+  /masonry\.addEventListener\('history-bulk-delete-finish', event =>\s*{\s*const successCount = Number\(event\.detail\?\.successCount\) \|\| 0;\s*finishHistoryMutation\(-successCount\);\s*}\);/,
 );
+const bulkListenerSource = onlineHtml.slice(
+  onlineHtml.indexOf("masonry.addEventListener('history-bulk-delete-start'"),
+  onlineHtml.indexOf("window.HistoryBulkManager?.attach({masonry:'#masonry'})"),
+);
+assert.doesNotMatch(bulkListenerSource, /loadHistory\(true\)|innerHTML/);
 assert.match(onlineHtml, /<button\s+type="button"\s+id="loadMoreTrigger"/);
 assert.doesNotMatch(onlineHtml, /<div\s+id="loadMoreTrigger"/);
 assert.match(

@@ -192,26 +192,31 @@
             deleteBtn.disabled = true;
             deleteLabel.textContent = tr('bulk.deleting');
 
-            const results = await Promise.allSettled(sel.map(card => {
-                const ts = card.dataset.historyTs;
-                return fetch('/api/history/delete', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ timestamp: ts })
-                }).then(r => r.json()).then(res => {
-                    if(res && res.success){ card.remove(); return true; }
-                    throw new Error('delete failed');
-                });
-            }));
+            let successCount = 0;
+            masonry.dispatchEvent(new CustomEvent('history-bulk-delete-start'));
+            try {
+                const results = await Promise.allSettled(sel.map(card => {
+                    const ts = card.dataset.historyTs;
+                    return fetch('/api/history/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ timestamp: ts })
+                    }).then(r => r.json()).then(res => {
+                        if(res && res.success){ card.remove(); return true; }
+                        throw new Error('delete failed');
+                    });
+                }));
 
-            const succeeded = results.filter(result => result.status === 'fulfilled').length;
-            if(succeeded > 0) masonry.dispatchEvent(new CustomEvent('history-bulk-delete-success', {detail:{successCount:succeeded}}));
-            const failed = results.filter(r => r.status === 'rejected').length;
-            if(failed > 0) alert(failed + ' / ' + sel.length + ' ✗');
+                successCount = results.filter(result => result.status === 'fulfilled').length;
+                const failed = results.filter(r => r.status === 'rejected').length;
+                if(failed > 0) alert(failed + ' / ' + sel.length + ' ✗');
 
-            refreshLabels();
-            if(selectedCards().length === 0 && cards().length === 0){ exit(); }
-            else { deleteBtn.disabled = selectedCards().length === 0; deleteLabel.textContent = tr('bulk.deleteSelected'); }
+                refreshLabels();
+                if(selectedCards().length === 0 && cards().length === 0){ exit(); }
+                else { deleteBtn.disabled = selectedCards().length === 0; deleteLabel.textContent = tr('bulk.deleteSelected'); }
+            } finally {
+                masonry.dispatchEvent(new CustomEvent('history-bulk-delete-finish', {detail:{successCount}}));
+            }
         }
         deleteBtn.addEventListener('click', doDelete);
 

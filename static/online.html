@@ -267,7 +267,7 @@
         let models = {gpt:'gpt-image-2', nano:'nano-banana-pro'};
         let currentResult = null, currentLightboxData = null, isLoading = false;
         let historyOffset = 0, historyHasMore = true;
-        let historyRevision = 0, historyResetPending = false;
+        let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;
         const PAGE_SIZE = 16;
         const SIZE_OPTIONS = {
             square: [
@@ -623,6 +623,8 @@
             if(!prompt){ alert(tr('online.promptRequired')); return; }
             const btn = document.getElementById('genBtn'), loader = document.getElementById('loader'), placeholder = document.getElementById('placeholder'), out = document.getElementById('outputImg'), dl = document.getElementById('downloadBtn');
             btn.disabled = true; placeholder.classList.add('hidden'); out.classList.add('hidden'); dl.classList.add('hidden'); loader.classList.remove('hidden');
+            let historyDelta = 0;
+            beginHistoryMutation();
             try {
                 const reqBody = { prompt, provider_id:provider, model:selectedModel, size:currentSize(), n:outputCount, reference_images:Object.values(refs).filter(Boolean) };
                 if(QUALITY_PROTOCOLS.has(providerProtocol(provider))) reqBody.quality = quality;
@@ -636,10 +638,11 @@
                 dl.href = result.images[0];
                 dl.classList.remove('hidden');
                 renderImageCard(result, true);
-                invalidateHistory();
+                historyDelta = 1;
             } catch(err) {
                 alert(err.message || 'Generation failed'); placeholder.classList.remove('hidden');
             } finally {
+                finishHistoryMutation(historyDelta);
                 loader.classList.add('hidden'); btn.disabled = false;
             }
         }
@@ -661,19 +664,34 @@
         function renderHistoryBatch(items){
             items.forEach(item => renderImageCard(item));
         }
-        function invalidateHistory(){
+        function beginHistoryMutation(){
             historyRevision += 1;
-            historyResetPending = true;
-            if(!isLoading) loadHistory(true);
+            historyMutationDepth += 1;
+        }
+        function queueHistoryLoad(reset){
+            if(queuedHistoryLoad === null || reset) queuedHistoryLoad = reset;
+        }
+        function runQueuedHistoryLoad(){
+            if(historyMutationDepth > 0 || isLoading || queuedHistoryLoad === null) return;
+            const reset = queuedHistoryLoad;
+            queuedHistoryLoad = null;
+            loadHistory(reset);
+        }
+        function finishHistoryMutation(offsetDelta=0){
+            historyOffset = Math.max(0, historyOffset + offsetDelta);
+            historyMutationDepth = Math.max(0, historyMutationDepth - 1);
+            if(historyMutationDepth === 0) runQueuedHistoryLoad();
         }
         async function loadHistory(reset=false){
+            if(historyMutationDepth > 0){
+                queueHistoryLoad(reset);
+                return;
+            }
             if(isLoading){
-                if(reset) historyResetPending = true;
                 return;
             }
             if(!reset && !historyHasMore) return;
             isLoading = true;
-            if(reset) historyResetPending = false;
             const requestRevision = historyRevision;
             const loader = document.getElementById('loadMoreTrigger');
             loader.disabled = true;
@@ -690,7 +708,7 @@
                 if(!response.ok) throw new Error(`History request failed with status ${response.status}`);
                 const page = await response.json();
                 if(requestRevision !== historyRevision){
-                    historyResetPending = true;
+                    queueHistoryLoad(reset);
                     return;
                 }
                 const items = Array.isArray(page.items) ? page.items : [];
@@ -704,14 +722,11 @@
                 loader.innerText = tr('online.loadMore');
                 console.error('Failed to load online image history:', error);
             } finally {
-                const shouldReset = historyResetPending || requestRevision !== historyRevision;
+                if(requestRevision !== historyRevision) queueHistoryLoad(reset);
                 loader.disabled = false;
                 loader.removeAttribute('aria-disabled');
                 isLoading = false;
-                if(shouldReset){
-                    historyResetPending = false;
-                    loadHistory(true);
-                }
+                runQueuedHistoryLoad();
             }
         }
         let lightboxPreview = null;
@@ -789,10 +804,19 @@
         async function deleteHistoryItem(ts, ev){
             ev.stopPropagation();
             if(!confirm(tr('online.deleteConfirm'))) return;
-            const res = await fetch('/api/history/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({timestamp:ts})}).then(r=>r.json());
-            if(res.success){
-                document.getElementById(`history-${ts}`)?.remove();
-                invalidateHistory();
+            let historyDelta = 0;
+            beginHistoryMutation();
+            try {
+                const res = await fetch('/api/history/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({timestamp:ts})}).then(r=>r.json());
+                if(res.success){
+                    const card = document.getElementById(`history-${ts}`);
+                    if(card){
+                        card.remove();
+                        historyDelta = -1;
+                    }
+                }
+            } finally {
+                finishHistoryMutation(historyDelta);
             }
         }
         window.onload = async () => {
@@ -801,7 +825,12 @@
             setResolution('1k');
             await initModels();
             await loadHistory(true);
-            document.getElementById('masonry').addEventListener('history-bulk-delete-success', invalidateHistory);
+            const masonry = document.getElementById('masonry');
+            masonry.addEventListener('history-bulk-delete-start', beginHistoryMutation);
+            masonry.addEventListener('history-bulk-delete-finish', event => {
+                const successCount = Number(event.detail?.successCount) || 0;
+                finishHistoryMutation(-successCount);
+            });
             window.HistoryBulkManager?.attach({masonry:'#masonry'});
             document.getElementById('loadMoreTrigger').onclick = () => loadHistory(false);
         };
