@@ -1,11 +1,26 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+const onlineHtml = readFileSync(join(repoRoot, 'static', 'online.html'), 'utf8');
+
+assert.match(onlineHtml, /const PAGE_SIZE = 16;/);
+assert.ok(
+  onlineHtml.includes('`/api/history?type=online&paged=1&offset=${historyOffset}&limit=${PAGE_SIZE}`'),
+  'online history must request one bounded backend page',
+);
+assert.match(onlineHtml, /historyOffset = page\.next_offset/);
+assert.match(onlineHtml, /historyHasMore = Boolean\(page\.has_more\)/);
+assert.doesNotMatch(onlineHtml, /new\s+IntersectionObserver\s*\(/);
+assert.match(
+  onlineHtml,
+  /document\.getElementById\('loadMoreTrigger'\)\.onclick = \(\) => loadHistory\(false\)/,
+);
+
 const pythonEnv = {
   ...process.env,
   PYTHONIOENCODING: 'utf-8',

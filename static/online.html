@@ -265,8 +265,9 @@
         let quality = 'auto';
         let outputCount = 1;
         let models = {gpt:'gpt-image-2', nano:'nano-banana-pro'};
-        let allHistory = [], currentIndex = 0, currentResult = null, currentLightboxData = null, isLoading = false;
-        const PAGE_SIZE = 24;
+        let currentResult = null, currentLightboxData = null, isLoading = false;
+        let historyOffset = 0, historyHasMore = true;
+        const PAGE_SIZE = 16;
         const SIZE_OPTIONS = {
             square: [
                 ['1024x1024', '1k'],
@@ -650,14 +651,38 @@
             isNew ? document.getElementById('masonry').prepend(card) : document.getElementById('masonry').appendChild(card);
             lucide.createIcons();
         }
-        async function loadHistory(page=0){
-            if(isLoading) return; isLoading = true;
+        function renderHistoryBatch(items){
+            items.forEach(item => renderImageCard(item));
+        }
+        async function loadHistory(reset=false){
+            if(isLoading || (!reset && !historyHasMore)) return;
+            isLoading = true;
             const loader = document.getElementById('loadMoreTrigger');
-            if(page === 0){ loader.innerText = tr('online.loadingArchives'); allHistory = await fetch('/api/history?type=online').then(r=>r.json()); document.getElementById('masonry').innerHTML=''; currentIndex=0; }
-            const next = allHistory.slice(currentIndex, currentIndex + PAGE_SIZE);
-            next.forEach(item => renderImageCard(item)); currentIndex += next.length;
-            loader.classList.toggle('hidden', currentIndex >= allHistory.length);
-            loader.innerText = tr('online.loadMore'); isLoading = false;
+            loader.classList.remove('hidden');
+            loader.setAttribute('aria-disabled', 'true');
+            loader.innerText = tr('online.loadingArchives');
+            try {
+                if(reset){
+                    historyOffset = 0;
+                    historyHasMore = true;
+                    document.getElementById('masonry').innerHTML = '';
+                }
+                const response = await fetch(`/api/history?type=online&paged=1&offset=${historyOffset}&limit=${PAGE_SIZE}`);
+                if(!response.ok) throw new Error(`History request failed with status ${response.status}`);
+                const page = await response.json();
+                renderHistoryBatch(Array.isArray(page.items) ? page.items : []);
+                historyOffset = page.next_offset;
+                historyHasMore = Boolean(page.has_more);
+                loader.innerText = tr('online.loadMore');
+                loader.classList.toggle('hidden', !historyHasMore);
+            } catch(error) {
+                loader.classList.remove('hidden');
+                loader.innerText = tr('online.loadMore');
+                console.error('Failed to load online image history:', error);
+            } finally {
+                loader.removeAttribute('aria-disabled');
+                isLoading = false;
+            }
         }
         let lightboxPreview = null;
         function ensureLightboxPreview(){
@@ -737,8 +762,15 @@
             const res = await fetch('/api/history/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({timestamp:ts})}).then(r=>r.json());
             if(res.success) document.getElementById(`history-${ts}`)?.remove();
         }
-        const observer = new IntersectionObserver(entries => { if(entries[0].isIntersecting && currentIndex < allHistory.length) loadHistory(1); }, {threshold:.1});
-        window.onload = async () => { applyLanguage(); setRatio('square'); setResolution('1k'); await initModels(); await loadHistory(0); window.HistoryBulkManager?.attach({masonry:'#masonry'}); observer.observe(document.getElementById('loadMoreTrigger')); document.getElementById('loadMoreTrigger').onclick = () => loadHistory(1); };
+        window.onload = async () => {
+            applyLanguage();
+            setRatio('square');
+            setResolution('1k');
+            await initModels();
+            await loadHistory(true);
+            window.HistoryBulkManager?.attach({masonry:'#masonry'});
+            document.getElementById('loadMoreTrigger').onclick = () => loadHistory(false);
+        };
     </script>
 </body>
 </html>
