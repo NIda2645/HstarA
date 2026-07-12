@@ -40,6 +40,12 @@ assert.match(js, /isController \? 'controller-node smart-controller-node' : ''/,
 assert.match(js, /if\(nodeForControls\?\.type === 'smart-controller'\) bindSmartControllerNodeControls/, 'smart controller node controls should be bound');
 assert.match(js, /if\(to\.type === 'smart-controller'\) return false/, 'smart controller should not accept input links');
 assert.match(js, /if\(from\.type === 'smart-controller'\)[\s\S]*addConnection\(from\.id, to\.id, 'input'\)/, 'smart controller should feed downstream nodes as input directives');
+const activePromptStart = js.indexOf('function activeControllerPromptsForGeneration');
+const activePromptEnd = js.indexOf('function activeMaterialDirectiveForMarkers', activePromptStart);
+assert.ok(activePromptStart >= 0 && activePromptEnd > activePromptStart, 'smart controller prompt selection block should exist');
+const activePromptSection = js.slice(activePromptStart, activePromptEnd);
+assert.match(activePromptSection, /upstreamControllerPromptsForTarget\(targetNode, sources, graph\)/, 'smart controller prompts should be selected from the target upstream chain');
+assert.doesNotMatch(activePromptSection, /nodes\.filter\(/, 'smart controller prompts must not fall back to an unconnected canvas-wide controller');
 assert.match(js, /if\(node\.type === 'smart-controller'\) return smartControllerPrompt\(node\)/, 'smart controller text should resolve to controller directives');
 assert.match(js, /input\?\.type === 'smart-controller'/, 'smart controller should be accepted as prompt input');
 assert.match(js, /smartControllerDirectivesForNodeInput\(node, smartControllerGraph\(\)\)/, 'build prompt should inject upstream smart controller directives');

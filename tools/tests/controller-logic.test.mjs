@@ -75,6 +75,53 @@ Object.assign(sandbox, {nodes: graph.nodes, connections: graph.connections});
 const panelTargets = sandbox.__exports.materialMarkerTargetsForController(controller);
 assert.equal(panelTargets[0]?.label, '图1标记1 米色方抱枕');
 
+const isolatedGen = { id: 'gen-isolated', type: 'generator' };
+const isolatedControllerGraph = {
+  nodes: [controller, prompt, isolatedGen],
+  connections: [
+    { from: 'prompt1', to: 'gen-isolated' },
+  ],
+};
+Object.assign(sandbox, {
+  nodes: isolatedControllerGraph.nodes,
+  connections: isolatedControllerGraph.connections,
+});
+const isolatedControllerPrompt = sandbox.__exports.generationPromptWithControllerDirectives([
+  { id: 'prompt1', type: 'prompt', prompt: prompt.text, refs: [] },
+], isolatedControllerGraph, isolatedGen);
+assert.match(isolatedControllerPrompt, /替换标记1材质/, 'unrelated generation should preserve its own prompt');
+assert.doesNotMatch(
+  isolatedControllerPrompt,
+  /Controller Directive|Camera Controller|Material Controller/,
+  'an enabled but unconnected controller must not enter an unrelated generation request',
+);
+
+const disabledController = {
+  id: 'ctrl-disabled',
+  type: 'controller',
+  controller: sandbox.__exports.defaultControllerState(),
+};
+const disabledControllerGraph = {
+  nodes: [disabledController, prompt, isolatedGen],
+  connections: [
+    { from: 'ctrl-disabled', to: 'gen-isolated' },
+    { from: 'prompt1', to: 'gen-isolated' },
+  ],
+};
+Object.assign(sandbox, {
+  nodes: disabledControllerGraph.nodes,
+  connections: disabledControllerGraph.connections,
+});
+const disabledControllerPrompt = sandbox.__exports.generationPromptWithControllerDirectives([
+  { id: 'prompt1', type: 'prompt', prompt: prompt.text, refs: [] },
+  sandbox.__exports.controllerSourceFromNode(disabledController, disabledControllerGraph),
+], disabledControllerGraph, isolatedGen);
+assert.doesNotMatch(
+  disabledControllerPrompt,
+  /Controller Directive|Camera Controller|Angle Controller|Lighting Controller|Material Controller/,
+  'a connected controller with every section disabled must not enter the generation request',
+);
+
 const chainedGen = { id: 'gen2', type: 'generator' };
 const chainedGraph = {
   nodes: [controller, image, prompt, gen, { id: 'out1', type: 'output', images: [{ url: '/assets/gen1.png' }] }, chainedGen],

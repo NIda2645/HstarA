@@ -6565,8 +6565,6 @@ function activeControllerPromptsForGeneration(targetNode, sources=[], graph=null
     if(directPrompts.length) return [];
     const upstreamPrompts = upstreamControllerPromptsForTarget(targetNode, sources, graph);
     if(upstreamPrompts.length) return upstreamPrompts;
-    const activeControllers = nodes.filter(n => n?.type === 'smart-controller' && controllerHasActiveEffects(n));
-    if(activeControllers.length === 1) return [controllerPrompt(activeControllers[0])].filter(Boolean);
     return [];
 }
 function activeMaterialDirectiveForMarkers(sources=[]){
