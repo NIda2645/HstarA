@@ -861,7 +861,7 @@
                 historyAutoLoadArmed = false;
                 loadHistory(false);
             }, {rootMargin:'0px 0px 320px 0px', threshold:0});
-            historyAutoObserver.observe(document.getElementById('historyLoadSentinel'));
+            syncHistoryAutoObserver();
         }
         window.onload = async () => {
             applyLanguage();

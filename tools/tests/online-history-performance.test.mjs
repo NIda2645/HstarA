@@ -31,10 +31,24 @@ assert.match(
 assert.match(onlineHtml, /if\(!historyAutoLoadArmed \|\| isLoading \|\| !historyHasMore\) return;/);
 assert.match(onlineHtml, /historyAutoLoadArmed = false;\s*loadHistory\(false\);/);
 assert.match(onlineHtml, /rootMargin:\s*'0px 0px 320px 0px'/);
-assert.match(
-  onlineHtml,
-  /historyAutoObserver\.observe\(document\.getElementById\('historyLoadSentinel'\)\)/,
+const syncHistoryAutoObserverSource = onlineHtml.slice(
+  onlineHtml.indexOf('function syncHistoryAutoObserver()'),
+  onlineHtml.indexOf('function setupHistoryAutoLoad()'),
 );
+assert.match(
+  syncHistoryAutoObserverSource,
+  /const sentinel = document\.getElementById\('historyLoadSentinel'\);\s*if\(historyHasMore\) historyAutoObserver\.observe\(sentinel\);\s*else historyAutoObserver\.unobserve\(sentinel\);/,
+);
+const setupHistoryAutoLoadSource = onlineHtml.slice(
+  onlineHtml.indexOf('function setupHistoryAutoLoad()'),
+  onlineHtml.indexOf('window.onload'),
+);
+assert.match(
+  setupHistoryAutoLoadSource,
+  /historyAutoObserver = new IntersectionObserver[\s\S]*\);\s*syncHistoryAutoObserver\(\);\s*}/,
+  'setup must delegate initial sentinel registration after constructing the observer',
+);
+assert.doesNotMatch(setupHistoryAutoLoadSource, /historyAutoObserver\.(?:observe|unobserve)\(/);
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
 assert.match(onlineHtml, /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;/);
