@@ -507,7 +507,8 @@ function noOutputClassicRunFixture(functionName) {
   const node = { id: `${functionName}-owner`, type: isRh ? 'rh' : 'generator', x: 10, y: 20, count: 1, running: false };
   const nodes = [node];
   const waitSettlement = deferred();
-  const counters = { handoff: 0, log: 0, modal: 0, save: 0 };
+  const timerCallbacks = [];
+  const counters = { handoff: 0, log: 0, merge: 0, modal: 0, refresh: 0, save: 0 };
   let waitStarted = false;
   const globals = {
     nodes,
@@ -518,16 +519,19 @@ function noOutputClassicRunFixture(functionName) {
     generatorSizeForRun: async () => '1024x1024',
     normalizedImageQuality: () => '',
     nowMs: () => 1000,
-    setTimeout: () => 0,
+    setTimeout: callback => {
+      timerCallbacks.push(callback);
+      return timerCallbacks.length;
+    },
     createCanvasImageTask: async () => ({ task_id: `${functionName}-canvas-task` }),
     waitCanvasImageTaskResult: () => {
       waitStarted = true;
       return waitSettlement.promise;
     },
     requestMetaFromResult: () => ({}),
-    mergeGeneratedOutputs() {},
+    mergeGeneratedOutputs: () => { counters.merge += 1; },
     addGenerationLog: () => { counters.log += 1; },
-    refreshRunNodes() {},
+    refreshRunNodes: () => { counters.refresh += 1; },
     scheduleSave: () => { counters.save += 1; },
     handoffCanvasNoOutputJimengTask: (...args) => {
       counters.handoff += 1;
@@ -563,7 +567,16 @@ function noOutputClassicRunFixture(functionName) {
   }
   const runFunction = exportedFunction(functionSource(canvasSource, functionName), functionName, globals);
   const run = isRh ? runFunction(node) : runFunction(node.id);
-  return { counters, node, run, waitSettlement, waitStarted: () => waitStarted };
+  return {
+    counters,
+    node,
+    nodes,
+    run,
+    snapshot: () => ({ counters: { ...counters }, node: JSON.stringify(node) }),
+    timerCallbacks,
+    waitSettlement,
+    waitStarted: () => waitStarted,
+  };
 }
 
 for (const functionName of ['runGenerator', 'runRhModelNode']) {
@@ -583,6 +596,149 @@ for (const functionName of ['runGenerator', 'runRhModelNode']) {
   assert.equal(fixture.counters.handoff, 1, `${functionName} must hand no-output Jimeng into durable recovery state`);
   assert.equal(fixture.counters.log, 0, `${functionName} no-output Jimeng must not add a generic failure log`);
   assert.equal(fixture.counters.modal, 0, `${functionName} no-output Jimeng must not show a generic failure modal`);
+}
+
+for (const functionName of ['runGenerator', 'runRhModelNode']) {
+  const fixture = noOutputClassicRunFixture(functionName);
+  for (let index = 0; index < 10 && !fixture.waitStarted(); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  assert.equal(fixture.waitStarted(), true, `${functionName} stale-success fixture must reach its deferred waiter`);
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  fixture.waitSettlement.resolve({ images: [`/${functionName}-late-success.png`] });
+  await fixture.run;
+  assert.deepEqual(fixture.snapshot(), baseline, `${functionName} must ignore late no-output success after exact owner deletion`);
+  assert.equal(fixture.nodes.length, 0, `${functionName} late no-output success must not resurrect its owner`);
+}
+
+for (const functionName of ['runGenerator', 'runRhModelNode']) {
+  const fixture = noOutputClassicRunFixture(functionName);
+  for (let index = 0; index < 10 && !fixture.waitStarted(); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  assert.equal(fixture.timerCallbacks.length, 1, `${functionName} must register one delayed running-state release`);
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  fixture.timerCallbacks[0]();
+  assert.deepEqual(fixture.snapshot(), baseline, `${functionName} delayed running-state release must ignore a deleted exact owner`);
+  fixture.waitSettlement.reject(new Error('cleanup after stale timeout probe'));
+  await fixture.run;
+}
+
+async function runMixedNoOutputClassicFixture(functionName) {
+  const isRh = functionName === 'runRhModelNode';
+  const node = { id: `${functionName}-mixed-owner`, type: isRh ? 'rh' : 'generator', x: 10, y: 20, count: 3, running: false };
+  const nodes = [node];
+  const connections = [];
+  const taskIds = ['mixed-task-1', 'mixed-task-2', 'mixed-task-3'];
+  const settlements = new Map(taskIds.map(taskId => [taskId, deferred()]));
+  const waitCalls = [];
+  const pollCalls = [];
+  let createIndex = 0;
+  let uidIndex = 0;
+  let saveCalls = 0;
+  const source = [
+    functionSource(canvasSource, 'handoffCanvasJimengTask'),
+    functionSource(canvasSource, 'handoffCanvasNoOutputJimengTask'),
+    functionSource(canvasSource, functionName),
+  ].join('\n');
+  const globals = {
+    nodes,
+    connections,
+    cascadeTargetIdFromOptions: () => '',
+    imageRefsOnly: refs => refs,
+    outputForNode: () => null,
+    runSnapshot: () => ({ node: { id: node.id }, refs: [] }),
+    generatorSizeForRun: async () => '1024x1024',
+    normalizedImageQuality: () => '',
+    nowMs: () => 1200,
+    setTimeout: () => 0,
+    createCanvasImageTask: async () => ({ task_id: taskIds[createIndex++] }),
+    waitCanvasImageTaskResult: taskId => {
+      waitCalls.push(taskId);
+      return settlements.get(taskId).promise;
+    },
+    requestMetaFromResult: result => ({ marker: result.marker || '' }),
+    uid: prefix => `${prefix}-mixed-${++uidIndex}`,
+    makePendingForRun: (id, run, owner, options, taskOptions) => ({ id, run, ...options, ...taskOptions }),
+    findPendingTask: taskId => {
+      for (const out of nodes.filter(item => item.type === 'output')) {
+        const pending = (out._pending || []).find(item => item.canvasTaskId === taskId);
+        if (pending) return { out, pending };
+      }
+      return null;
+    },
+    appendOutputImages: (out, images) => { out.images = [...(out.images || []), ...images]; },
+    mergeGeneratedOutputs: (owner, outputs, append) => {
+      owner.generatedOutputs = append ? [...(owner.generatedOutputs || []), ...outputs] : outputs.slice();
+    },
+    addGenerationLog() {},
+    refreshRunNodes() {},
+    scheduleSave: () => { saveCalls += 1; },
+    saveCanvas: async () => {},
+    pollCanvasImageTask: taskId => {
+      pollCalls.push(taskId);
+      return Promise.resolve('running');
+    },
+    canvasRunOwnerIsCurrent: (owner, out) => nodes.includes(owner) && (!out || nodes.includes(out)),
+    pendingById: (out, id) => out?._pending?.find(item => item.id === id),
+    collectRunMetas: () => [],
+    isCascadeAbortError: () => false,
+    tr: key => key,
+    showErrorModal() {},
+    cascadeAbortError: message => new Error(message),
+    cascadeStopMessage: () => 'stopped',
+  };
+  if (isRh) {
+    Object.assign(globals, {
+      rhSelectedEntryRef: () => ({ id: 'rh-model' }),
+      rhMediaSources: () => ({ prompt: 'rh mixed prompt', refs: [] }),
+      alert() {},
+    });
+  } else {
+    Object.assign(globals, {
+      orderedSources: (_owner, sources) => sources,
+      generatorSources: () => [],
+      generationPromptWithMarkerDirectives: () => 'generator mixed prompt',
+      alert() {},
+      resolveImageProviderId: value => value,
+      resolveImageModel: value => value,
+    });
+  }
+  const runFunction = exportedFunction(source, functionName, globals);
+  const run = isRh ? runFunction(node) : runFunction(node.id);
+  for (let index = 0; index < 10 && !waitCalls.includes(taskIds[0]); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  settlements.get(taskIds[0]).resolve({ images: ['/mixed-completed.png'], marker: 'completed' });
+  for (let index = 0; index < 10 && !waitCalls.includes(taskIds[1]); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  settlements.get(taskIds[1]).reject(Object.assign(new Error('mixed task queued remotely'), {
+    jimengPending: true,
+    submitId: 'mixed-submit-2',
+    kind: 'image',
+    canvasTaskId: taskIds[1],
+    taskData: { status: 'jimeng_pending', submit_id: 'mixed-submit-2', kind: 'image', message: 'mixed task queued remotely' },
+  }));
+  await run;
+  return { connections, node, nodes, pollCalls, saveCalls, taskIds, waitCalls };
+}
+
+for (const functionName of ['runGenerator', 'runRhModelNode']) {
+  const fixture = await runMixedNoOutputClassicFixture(functionName);
+  const out = fixture.nodes.find(node => node.type === 'output');
+  assert.ok(out, `${functionName} mixed Jimeng handoff must create a durable output owner`);
+  assert.deepEqual(out.images, ['/mixed-completed.png'], `${functionName} mixed Jimeng handoff must preserve completed outputs`);
+  assert.deepEqual(Array.from(out._pending, task => task.canvasTaskId), fixture.taskIds.slice(1), `${functionName} mixed Jimeng handoff must persist every unfinished canvas task ID`);
+  assert.equal(out._pending[0].recoverTaskId, 'mixed-submit-2', `${functionName} mixed Jimeng handoff must retain the Jimeng submit ID`);
+  assert.equal(out._pending[1].failed, undefined, `${functionName} mixed Jimeng handoff must keep the remaining task pollable`);
+  assert.deepEqual(Array.from(fixture.node.generatedOutputs || []), ['/mixed-completed.png'], `${functionName} mixed Jimeng handoff must preserve completed generator outputs`);
+  assert.deepEqual(fixture.waitCalls, fixture.taskIds.slice(0, 2), `${functionName} mixed Jimeng handoff must not wait the remaining task twice`);
+  assert.deepEqual(fixture.pollCalls, [fixture.taskIds[2]], `${functionName} mixed Jimeng handoff must start the remaining task exactly once`);
+  assert.equal(fixture.connections.some(connection => connection.from === fixture.node.id && connection.to === out.id), true, `${functionName} mixed Jimeng handoff must connect its durable output owner`);
+  assert.ok(fixture.saveCalls >= 1, `${functionName} mixed Jimeng handoff must schedule durable persistence`);
 }
 
 {
@@ -1213,6 +1369,146 @@ for (const settlement of ['resolve', 'reject']) {
   await run;
   assert.deepEqual(fixture.snapshot(), baseline, `smart direct late ${settlement} must not mutate, log, save, render, or toast after deletion`);
   assert.equal(fixture.nodes.length, 0, `smart direct late ${settlement} must not resurrect its node`);
+}
+
+function smartComfyLateSuccessFixture(functionName, result) {
+  const generation = deferred();
+  const node = { id: `${functionName}-owner`, type: 'smart-image', images: [], pending: 1, running: true };
+  const nodes = [node];
+  const counters = { clear: 0, connect: 0, create: 0, finalize: 0, queue: 0, save: 0 };
+  let generationStarted = false;
+  const globals = {
+    nodes,
+    settings: { comfyMode: 'text', width: 1024, height: 1024, enhanceStrength: 0.5 },
+    smartClientId: 'smart-comfy-client',
+    runQueuedSmartComfyGenerate: () => {
+      counters.queue += 1;
+      generationStarted = true;
+      return generation.promise;
+    },
+    comfyNameForRef: async () => 'uploaded-ref.png',
+    tr: key => key,
+    finalizePendingNode: () => { counters.finalize += 1; },
+    createNode: () => {
+      counters.create += 1;
+      return { id: 'created-after-delete' };
+    },
+    nodeRect: () => ({ width: 240 }),
+    attachRunMeta() {},
+    addConnection: () => { counters.connect += 1; },
+    clearPromptInput: () => { counters.clear += 1; },
+    scheduleSave: () => { counters.save += 1; },
+  };
+  const helper = exportedFunction([
+    functionSource(smartCanvasSource, 'smartComfyRunOwnerIsCurrent'),
+    functionSource(smartCanvasSource, functionName),
+  ].join('\n'), functionName, globals);
+  const run = functionName === 'runComfyText'
+    ? helper(node, 'late comfy text', node, { sourceNodeId: node.id })
+    : functionName === 'runComfyEnhance'
+      ? helper(node, [{ url: '/ref.png' }], node, { sourceNodeId: node.id })
+      : helper(node, 'late comfy edit', [{ url: '/ref.png' }], node, { sourceNodeId: node.id });
+  return {
+    counters,
+    generation,
+    generationStarted: () => generationStarted,
+    node,
+    nodes,
+    result,
+    run,
+    snapshot: () => ({ counters: { ...counters }, node: JSON.stringify(node) }),
+  };
+}
+
+for (const functionName of ['runComfyText', 'runComfyEnhance', 'runComfyEdit']) {
+  const fixture = smartComfyLateSuccessFixture(functionName, { outputs: [`/${functionName}-late.png`] });
+  for (let index = 0; index < 10 && !fixture.generationStarted(); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  assert.equal(fixture.generationStarted(), true, `${functionName} deletion probe must reach deferred Comfy generation`);
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  fixture.generation.resolve(fixture.result);
+  await fixture.run;
+  assert.deepEqual(fixture.snapshot(), baseline, `${functionName} must not finalize, create, connect, clear, or save after late success deletion`);
+}
+
+function smartCustomComfyLateSuccessFixture(result) {
+  const generation = deferred();
+  const node = { id: 'runComfyGeneration-custom-owner', type: 'smart-image', images: [], pending: 1, running: true };
+  const nodes = [node];
+  const counters = { clear: 0, connect: 0, create: 0, finalize: 0, queue: 0, save: 0 };
+  let generationStarted = false;
+  const runComfyGeneration = exportedFunction([
+    functionSource(smartCanvasSource, 'smartComfyRunOwnerIsCurrent'),
+    functionSource(smartCanvasSource, 'runComfyGeneration'),
+  ].join('\n'), 'runComfyGeneration', {
+    nodes,
+    settings: { comfyMode: 'custom', comfyWorkflow: 'mixed-media-workflow', comfyParams: {} },
+    comfyWorkflows: [],
+    smartClientId: 'smart-comfy-client',
+    imageRefsOnly: refs => refs.filter(ref => ref.kind === 'image'),
+    videoRefsOnly: refs => refs.filter(ref => ref.kind === 'video'),
+    audioRefsOnly: refs => refs.filter(ref => ref.kind === 'audio'),
+    fetch: async () => ({ ok: true, json: async () => ({ config: { fields: [] } }), text: async () => '' }),
+    comfyFieldKind: field => field.kind,
+    smartComfyRandomActive: () => false,
+    smartComfyRandomValue: () => 0,
+    comfyParamsFromWorkflowValues: () => ({}),
+    runQueuedSmartComfyGenerate: () => {
+      counters.queue += 1;
+      generationStarted = true;
+      return generation.promise;
+    },
+    resultMediaUrls: data => data.images || data.videos || data.audios || data.texts || [],
+    mediaKindForUrls: (_urls, fallback) => fallback,
+    tr: key => key,
+    finalizePendingNode: () => { counters.finalize += 1; },
+    createNode: () => {
+      counters.create += 1;
+      return { id: 'created-after-delete' };
+    },
+    nodeRect: () => ({ width: 240 }),
+    attachRunMeta() {},
+    addConnection: () => { counters.connect += 1; },
+    clearPromptInput: () => { counters.clear += 1; },
+    scheduleSave: () => { counters.save += 1; },
+    comfyNameForRef: async () => 'unused.png',
+  });
+  const run = runComfyGeneration(node, 'late custom comfy', [], node, { sourceNodeId: node.id });
+  return {
+    counters,
+    generation,
+    generationStarted: () => generationStarted,
+    node,
+    nodes,
+    result,
+    run,
+    snapshot: () => ({ counters: { ...counters }, node: JSON.stringify(node) }),
+  };
+}
+
+for (const result of [
+  { images: ['/late-custom-image.png'] },
+  { videos: ['/late-custom-video.mp4'] },
+  { audios: ['/late-custom-audio.mp3'] },
+]) {
+  const fixture = smartCustomComfyLateSuccessFixture(result);
+  for (let index = 0; index < 10 && !fixture.generationStarted(); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  assert.equal(fixture.generationStarted(), true, 'custom Comfy deletion probe must reach deferred generation');
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  fixture.generation.resolve(fixture.result);
+  await fixture.run;
+  assert.deepEqual(fixture.snapshot(), baseline, 'custom Comfy image/video/audio success must have no side effects after exact owner deletion');
+}
+
+{
+  const deletedNode = { id: 'deleted-live-smart-node' };
+  const liveSmartNode = exportedFunction(functionSource(smartCanvasSource, 'liveSmartNode'), 'liveSmartNode', { nodes: [] });
+  assert.equal(liveSmartNode(deletedNode), null, 'liveSmartNode must not fall back to a deleted object when no exact current node exists');
 }
 
 function smartJimengManualQueryFixture() {

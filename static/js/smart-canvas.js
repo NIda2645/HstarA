@@ -5106,8 +5106,8 @@ function smartNodeHasCompletedResult(node){
     return !node?.jimengPending && !smartPendingTasks(node).length && !Number(node?.pending || 0) && !node?.queued;
 }
 function liveSmartNode(node){
-    if(!node?.id) return node;
-    return nodes.find(n => n.id === node.id) || node;
+    if(!node?.id) return node || null;
+    return nodes.find(n => n.id === node.id) || null;
 }
 function clearSmartNodeBusyState(node){
     if(!node) return node;
@@ -17720,6 +17720,7 @@ function extractCurrentImagesToSource(node, meta=null){
 function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     if(!pendingNode) return;
     pendingNode = liveSmartNode(pendingNode);
+    if(!pendingNode) return;
     const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
     const imgs = cleanHistoryImages(urls.map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
@@ -17932,6 +17933,7 @@ function restoreSourceVisualState(node, state){
 function finishLoopTargetPreviewState(node){
     if(!node) return;
     node = liveSmartNode(node);
+    if(!node) return;
     markSmartNodeComplete(node);
     if((node.images || []).some(img => img?.url)){
         node.title = node.images.length > 1 ? 'Group' : 'Image';
@@ -18335,6 +18337,7 @@ function ensureHistoryGroupForNode(node){
 function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=null, options={}){
     if(!node || !additions?.length) return [];
     node = liveSmartNode(node);
+    if(!node) return [];
     const beforeRight = (Number(node.x) || 0) + nodeRect(node).width;
     const existing = cleanHistoryImages(node.images || []);
     const next = cleanHistoryImages(additions);
@@ -18366,6 +18369,7 @@ function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=nul
 function appendOutputsToNode(node, additions, kind='image', options={}){
     if(!node || !additions?.length) return [];
     node = liveSmartNode(node);
+    if(!node) return [];
     const beforeRight = (Number(node.x) || 0) + nodeRect(node).width;
     const existing = cleanHistoryImages(node.images || []);
     const seen = new Set(existing.map(img => `${img.kind || ''}|${img.url || ''}`));
@@ -18685,6 +18689,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
 async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, ctx){
     if(!loopNode || !rootNode || !outputSlot) return [];
     outputSlot = liveSmartNode(outputSlot);
+    if(!outputSlot) return [];
     const previousSettings = cloneSmartSettings(settings);
     const edgeKey = `${rootNode.id}->${outputSlot.id}`;
     const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(rootNode) || {})}, ctx);
@@ -18767,10 +18772,12 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true}));
             }).filter(item => item.url);
             outputSlot = liveSmartNode(outputSlot);
+            if(!outputSlot) return [];
             outputSlot.images = nonPreviewOutputImages(outputSlot.images);
             replaceOutputsToNodeWithHistory(outputSlot, additions, result.kind, meta, {skipShift:Boolean(ctx?.nodeId)});
         }
         outputSlot = liveSmartNode(outputSlot);
+        if(!outputSlot) return [];
         markSmartNodeComplete(outputSlot, meta);
         clearSourceBusyStateIfDownstreamDone(rootNode);
         if(runPath?.states) {
@@ -19474,7 +19481,11 @@ async function urlToBase64(url){
     });
 }
 function sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
+function smartComfyRunOwnerIsCurrent(node, pendingNode=null){
+    return Boolean(node && nodes.includes(node) && (!pendingNode || nodes.includes(pendingNode)));
+}
 async function runComfyGeneration(node, prompt, refs, pendingNode, meta){
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     const allRefs = refs || [];
     refs = imageRefsOnly(allRefs);
     const mode = settings.comfyMode || 'text';
@@ -19487,6 +19498,7 @@ async function runComfyGeneration(node, prompt, refs, pendingNode, meta){
         if(!r.ok) throw new Error(await r.text());
         return r.json();
     });
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     const fields = wf.config?.fields || [];
     const values = {};
     fields.filter(f => comfyFieldKind(f) === 'prompt').forEach((field, index) => {
@@ -19494,12 +19506,18 @@ async function runComfyGeneration(node, prompt, refs, pendingNode, meta){
     });
     const assignMediaFields = async (mediaFields, mediaRefs) => {
         for(let i = 0; i < mediaFields.length && i < mediaRefs.length; i++){
-            values[mediaFields[i].id] = await comfyNameForRef(mediaRefs[i]);
+            const name = await comfyNameForRef(mediaRefs[i]);
+            if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return false;
+            values[mediaFields[i].id] = name;
         }
+        return true;
     };
-    await assignMediaFields(fields.filter(f => comfyFieldKind(f) === 'image'), refs);
-    await assignMediaFields(fields.filter(f => comfyFieldKind(f) === 'video'), videoRefsOnly(allRefs));
-    await assignMediaFields(fields.filter(f => comfyFieldKind(f) === 'audio'), audioRefsOnly(allRefs));
+    if(!await assignMediaFields(fields.filter(f => comfyFieldKind(f) === 'image'), refs)) return;
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
+    if(!await assignMediaFields(fields.filter(f => comfyFieldKind(f) === 'video'), videoRefsOnly(allRefs))) return;
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
+    if(!await assignMediaFields(fields.filter(f => comfyFieldKind(f) === 'audio'), audioRefsOnly(allRefs))) return;
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     fields.filter(f => comfyFieldKind(f) === 'setting').forEach(field => {
         if(comfyRandomEnabledField(field) && smartComfyRandomActive(field.id)){
             values[field.id] = smartComfyRandomValue(field);
@@ -19508,6 +19526,7 @@ async function runComfyGeneration(node, prompt, refs, pendingNode, meta){
         }
     });
     const result = await runQueuedSmartComfyGenerate({prompt, workflow_json:workflowName, params:comfyParamsFromWorkflowValues(wf.config || {fields:[]}, values), type:'workflow-custom', client_id:smartClientId});
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     const urls = resultMediaUrls(result);
     if(!urls.length) throw new Error(tr('smart.errComfyNoImages'));
     const kind = mediaKindForUrls(urls, result.videos?.length ? 'video' : result.audios?.length ? 'audio' : result.texts?.length ? 'text' : 'image');
@@ -19526,7 +19545,9 @@ async function runComfyGeneration(node, prompt, refs, pendingNode, meta){
     scheduleSave();
 }
 async function runComfyText(node, prompt, pendingNode, meta){
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     const data = await runQueuedSmartComfyGenerate({prompt, width:Number(settings.width || 1024), height:Number(settings.height || 1024), workflow_json:'Z-Image.json', type:'zimage', client_id:smartClientId});
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     const out = data.outputs || data.images || [];
     if(!out.length) throw new Error(tr('smart.errComfyNoImages'));
     if(pendingNode){
@@ -19540,9 +19561,12 @@ async function runComfyText(node, prompt, pendingNode, meta){
     scheduleSave();
 }
 async function runComfyEnhance(node, refs, pendingNode, meta){
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     if(!refs.length) throw new Error(tr('smart.errEnhanceNeedRefs'));
     const inputName = await comfyNameForRef(refs[0]);
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     const data = await runQueuedSmartComfyGenerate({workflow_json:'Z-Image-Enhance.json', type:'enhance', params:{"15":{image:inputName},"204":{value:Number(settings.enhanceStrength ?? 0.5)}}, client_id:smartClientId});
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     const out = data.outputs || data.images || [];
     if(!out.length) throw new Error(tr('smart.errComfyNoImages'));
     if(pendingNode){
@@ -19555,10 +19579,16 @@ async function runComfyEnhance(node, refs, pendingNode, meta){
     scheduleSave();
 }
 async function runComfyEdit(node, prompt, refs, pendingNode, meta){
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     if(!refs.length) throw new Error(tr('smart.errEditNeedRefs'));
     const names = [];
-    for(const ref of refs.slice(0, 3)) names.push(await comfyNameForRef(ref));
+    for(const ref of refs.slice(0, 3)){
+        const name = await comfyNameForRef(ref);
+        if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
+        names.push(name);
+    }
     const data = await runQueuedSmartComfyGenerate({prompt, workflow_json:'Flux2-Klein.json', type:'klein', params:{"168":{text:prompt},"158":{noise_seed:Math.floor(Math.random()*1000000)},"278":{image:names[0] || ""},"270":{image:names[1] || ""},"292":{image:names[2] || ""},"313":{value:Boolean(names[1])},"314":{value:Boolean(names[2])}}, client_id:smartClientId});
+    if(!smartComfyRunOwnerIsCurrent(node, pendingNode)) return;
     const out = data.outputs || data.images || [];
     if(!out.length) throw new Error(tr('smart.errComfyNoImages'));
     if(pendingNode){

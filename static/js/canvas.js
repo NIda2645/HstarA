@@ -12936,25 +12936,39 @@ async function runRhModelNode(node, opts={}){
         size:await generatorSizeForRun(node, refs),
         reference_images:refs.slice(0, (typeof CANVAS_REFERENCE_IMAGE_MAX !== 'undefined' ? CANVAS_REFERENCE_IMAGE_MAX : 20))
     };
+    if(!nodes.includes(node) || (out && !nodes.includes(out))) return;
     const quality = normalizedImageQuality(node.quality);
     if(quality) payload.quality = quality;
     let pendingIds = [];
+    let taskInfos = [];
+    let noOutputCompletedResults = [];
+    let noOutputTaskIndex = 0;
     const startedAt = nowMs();
     if(!opts.cascade){
         node.running = true;
         refreshRunNodes(node, out);
-        setTimeout(() => { node.running = false; refreshRunNodes(node, out); }, 2000);
+        setTimeout(() => {
+            if(!nodes.includes(node) || (out && !nodes.includes(out))) return;
+            node.running = false;
+            refreshRunNodes(node, out);
+        }, 2000);
     }
     try {
-        const taskInfos = await Promise.all(Array.from({length:count}, () => createCanvasImageTask(payload, {cascadeTargetId})));
+        taskInfos = await Promise.all(Array.from({length:count}, () => createCanvasImageTask(payload, {cascadeTargetId})));
+        if(!nodes.includes(node) || (out && !nodes.includes(out))) return;
         if(!out){
             let outputs = [];
-            for(const task of taskInfos){
+            for(let index = 0; index < taskInfos.length; index++){
+                noOutputTaskIndex = index;
+                const task = taskInfos[index];
                 const result = await waitCanvasImageTaskResult(task.task_id, {cascadeTargetId});
+                if(!nodes.includes(node) || (out && !nodes.includes(out))) return;
+                noOutputCompletedResults.push(result);
                 outputs.push(...(result.images || []));
                 run.request = requestMetaFromResult(result);
             }
             if(!outputs.length) throw new Error(tr('canvas.generationFailed'));
+            if(!nodes.includes(node) || (out && !nodes.includes(out))) return;
             mergeGeneratedOutputs(node, outputs, Boolean(opts.cascade));
             addGenerationLog({run, outputs, runMs:nowMs() - startedAt});
             node.runStatus = 'done';
@@ -12989,7 +13003,11 @@ async function runRhModelNode(node, opts={}){
             providerId:payload.provider_id,
             model:payload.model,
             appendGenerated:Boolean(opts.cascade),
-            dx:500
+            completedResults:noOutputCompletedResults,
+            dx:500,
+            failedTaskIndex:noOutputTaskIndex,
+            startedAt,
+            taskInfos
         })) return;
         if(!canvasRunOwnerIsCurrent(node, out)) return;
         const remainingPending = pendingIds.map(id => pendingById(out, id)).filter(Boolean);
@@ -13513,26 +13531,40 @@ async function runGenerator(genId, opts={}){
         size:await generatorSizeForRun(gen, refs),
         reference_images:refs.slice(0, (typeof CANVAS_REFERENCE_IMAGE_MAX !== 'undefined' ? CANVAS_REFERENCE_IMAGE_MAX : 20))
     };
+    if(!nodes.includes(gen) || (out && !nodes.includes(out))) return;
     const quality = normalizedImageQuality(gen.quality);
     if(quality) payload.quality = quality;
     let pendingIds = [];
+    let taskInfos = [];
+    let noOutputCompletedResults = [];
+    let noOutputTaskIndex = 0;
     const startedAt = nowMs();
     if(!opts.cascade){
         gen.running = true;
         refreshRunNodes(gen, out);
         // API 支持并发：2s 后即可再次点击，任务仍由 pending 卡片继续追踪
-        setTimeout(() => { gen.running = false; refreshRunNodes(gen, out); }, 2000);
+        setTimeout(() => {
+            if(!nodes.includes(gen) || (out && !nodes.includes(out))) return;
+            gen.running = false;
+            refreshRunNodes(gen, out);
+        }, 2000);
     }
     try {
-        const taskInfos = await Promise.all(Array.from({length:count}, () => createCanvasImageTask(payload, {cascadeTargetId})));
+        taskInfos = await Promise.all(Array.from({length:count}, () => createCanvasImageTask(payload, {cascadeTargetId})));
+        if(!nodes.includes(gen) || (out && !nodes.includes(out))) return;
         if(!out){
             let outputs = [];
-            for(const task of taskInfos){
+            for(let index = 0; index < taskInfos.length; index++){
+                noOutputTaskIndex = index;
+                const task = taskInfos[index];
                 const result = await waitCanvasImageTaskResult(task.task_id, {cascadeTargetId});
+                if(!nodes.includes(gen) || (out && !nodes.includes(out))) return;
+                noOutputCompletedResults.push(result);
                 outputs.push(...(result.images || []));
                 run.request = requestMetaFromResult(result);
             }
             if(!outputs.length) throw new Error(tr('canvas.generationFailed'));
+            if(!nodes.includes(gen) || (out && !nodes.includes(out))) return;
             mergeGeneratedOutputs(gen, outputs, Boolean(opts.cascade));
             addGenerationLog({run, outputs, runMs:nowMs() - startedAt});
             gen.runStatus = 'done';
@@ -13567,7 +13599,11 @@ async function runGenerator(genId, opts={}){
             providerId:payload.provider_id,
             model:payload.model,
             appendGenerated:Boolean(opts.cascade),
-            dx:460
+            completedResults:noOutputCompletedResults,
+            dx:460,
+            failedTaskIndex:noOutputTaskIndex,
+            startedAt,
+            taskInfos
         })) return;
         if(!canvasRunOwnerIsCurrent(gen, out)) return;
         const remainingPending = pendingIds.map(id => pendingById(out, id)).filter(Boolean);
@@ -15606,6 +15642,12 @@ function canvasJimengPendingError(taskData={}, canvasTaskId=''){
 }
 function handoffCanvasNoOutputJimengTask(node, run, error, options={}){
     if(!node || !nodes.includes(node) || !error?.jimengPending || !error?.submitId || !error?.canvasTaskId) return false;
+    const tracksWholeRun = Array.isArray(options.taskInfos) && options.taskInfos.length > 0;
+    const taskInfos = tracksWholeRun ? options.taskInfos : [{task_id:error.canvasTaskId}];
+    let failedTaskIndex = Number.isInteger(options.failedTaskIndex) ? options.failedTaskIndex : taskInfos.findIndex(task => task?.task_id === error.canvasTaskId);
+    if(failedTaskIndex < 0) failedTaskIndex = 0;
+    const unfinishedTasks = taskInfos.slice(failedTaskIndex).filter(task => task?.task_id);
+    if(!unfinishedTasks.some(task => task.task_id === error.canvasTaskId)) return false;
     const out = {
         id:uid('out'),
         type:'output',
@@ -15615,19 +15657,17 @@ function handoffCanvasNoOutputJimengTask(node, run, error, options={}){
         _pending:[]
     };
     const connection = {id:uid('c'), from:node.id, to:out.id};
-    const pendingId = uid('p');
-    const pending = makePendingForRun(pendingId, run, node, {
+    out._pending = unfinishedTasks.map(task => makePendingForRun(uid('p'), run, node, {
         refs:options.refs || [],
         requestSize:options.requestSize,
         cascadeTargetId:options.cascadeTargetId || ''
     }, {
-        canvasTaskId:error.canvasTaskId,
+        canvasTaskId:task.task_id,
         canvasTaskType:'online-image',
         providerId:options.providerId || '',
         model:options.model || '',
-        appendGenerated:Boolean(options.appendGenerated)
-    });
-    out._pending.push(pending);
+        appendGenerated:tracksWholeRun ? true : Boolean(options.appendGenerated)
+    }));
     nodes.push(out);
     connections.push(connection);
     const handedOff = handoffCanvasJimengTask(error.canvasTaskId, error.taskData || {
@@ -15636,10 +15676,30 @@ function handoffCanvasNoOutputJimengTask(node, run, error, options={}){
         kind:error.kind || 'image',
         message:error.message || ''
     });
-    if(handedOff) return true;
-    nodes = nodes.filter(item => item !== out);
-    connections = connections.filter(item => item !== connection);
-    return false;
+    if(!handedOff){
+        nodes = nodes.filter(item => item !== out);
+        connections = connections.filter(item => item !== connection);
+        return false;
+    }
+    const completedResults = Array.isArray(options.completedResults) ? options.completedResults : [];
+    const completedOutputs = completedResults.flatMap(result => result?.images || []).filter(Boolean);
+    if(tracksWholeRun){
+        if(completedResults.length) run.request = requestMetaFromResult(completedResults[completedResults.length - 1]);
+        mergeGeneratedOutputs(node, completedOutputs, Boolean(options.appendGenerated));
+    }
+    if(completedOutputs.length){
+        const runMs = nowMs() - Number(options.startedAt || nowMs());
+        appendOutputImages(out, completedOutputs, options.refs?.[0], completedOutputs.map(() => ({runMs, run})));
+        addGenerationLog({run, outputs:completedOutputs, runMs});
+    }
+    unfinishedTasks
+        .filter(task => task.task_id !== error.canvasTaskId)
+        .forEach(task => { void pollCanvasImageTask(task.task_id, {cascadeTargetId:options.cascadeTargetId || ''}); });
+    if(tracksWholeRun){
+        refreshRunNodes(node, out);
+        scheduleSave();
+    }
+    return true;
 }
 function currentRecoverPendingOutput(pendingId, pending){
     const out = findOutputByPendingId(pendingId);
