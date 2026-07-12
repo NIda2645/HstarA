@@ -7340,7 +7340,7 @@ function activeControllerPromptsForGeneration(targetNode, sources=[], graph=null
 }
 function activeMaterialDirectiveForMarkers(sources=[]){
     const direct = (sources || []).find(src => src?.type === 'controller');
-    const ctrl = direct ? nodes.find(n => n.id === direct.id) : nodes.find(n => n?.type === 'controller' && controllerHasActiveEffects(n));
+    const ctrl = direct ? nodes.find(n => n.id === direct.id) : null;
     if(!ctrl) return '';
     const state = ensureControllerState(ctrl);
     if(!state.enabled?.material) return '';

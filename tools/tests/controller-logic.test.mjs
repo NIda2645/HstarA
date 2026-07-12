@@ -96,6 +96,33 @@ assert.doesNotMatch(
   'an enabled but unconnected controller must not enter an unrelated generation request',
 );
 
+Object.assign(sandbox, {
+  nodes: [controller, image, prompt, isolatedGen],
+  connections: [
+    { from: 'img1', to: 'gen-isolated' },
+    { from: 'prompt1', to: 'gen-isolated' },
+  ],
+});
+const isolatedMarkedImagePrompt = sandbox.__exports.generationPromptWithControllerDirectives(isolatedGen, [
+  { id: 'prompt1', type: 'prompt', prompt: prompt.text, refs: [] },
+  {
+    id: 'img1',
+    type: 'image',
+    prompt: '',
+    refs: [{ name: image.name, markers: [{ label: '米色方抱枕', xPct: 25, yPct: 50 }] }],
+  },
+]);
+assert.match(
+  isolatedMarkedImagePrompt,
+  /图1标记1=米色方抱枕/,
+  'an isolated marked image should preserve its marker metadata',
+);
+assert.doesNotMatch(
+  isolatedMarkedImagePrompt,
+  /oak wood texture|Material Controller|MATERIAL TARGET LOCK/,
+  'an isolated marked image must not inherit material settings from an unconnected controller',
+);
+
 const disabledController = {
   id: 'ctrl-disabled',
   type: 'controller',

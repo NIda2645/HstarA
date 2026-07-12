@@ -46,6 +46,11 @@ assert.ok(activePromptStart >= 0 && activePromptEnd > activePromptStart, 'smart 
 const activePromptSection = js.slice(activePromptStart, activePromptEnd);
 assert.match(activePromptSection, /upstreamControllerPromptsForTarget\(targetNode, sources, graph\)/, 'smart controller prompts should be selected from the target upstream chain');
 assert.doesNotMatch(activePromptSection, /nodes\.filter\(/, 'smart controller prompts must not fall back to an unconnected canvas-wide controller');
+const activeMaterialStart = js.indexOf('function activeMaterialDirectiveForMarkers');
+const activeMaterialEnd = js.indexOf('function markerReferenceDirective', activeMaterialStart);
+assert.ok(activeMaterialStart >= 0 && activeMaterialEnd > activeMaterialStart, 'smart controller material marker selection block should exist');
+const activeMaterialSection = js.slice(activeMaterialStart, activeMaterialEnd);
+assert.doesNotMatch(activeMaterialSection, /:\s*nodes\.find\(/, 'smart controller marker materials must not fall back to an unconnected canvas-wide controller');
 assert.match(js, /if\(node\.type === 'smart-controller'\) return smartControllerPrompt\(node\)/, 'smart controller text should resolve to controller directives');
 assert.match(js, /input\?\.type === 'smart-controller'/, 'smart controller should be accepted as prompt input');
 assert.match(js, /smartControllerDirectivesForNodeInput\(node, smartControllerGraph\(\)\)/, 'build prompt should inject upstream smart controller directives');
