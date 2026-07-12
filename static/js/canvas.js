@@ -3307,7 +3307,9 @@ async function runMsGenNode(nodeId, opts={}){
         appendOutputImages(out, outputUrls, refs[0], metas);
         mergeGeneratedOutputs(node, outputUrls, Boolean(opts.cascade));
         addGenerationLog({run, outputs:outputUrls, runMs:Math.max(...metas.map(m => m.runMs || 0), 0)});
-        node.runStatus = 'done'; node.runError = '';
+        if(!hasRemainingPendingTasksForRun(run)){
+            node.runStatus = 'done'; node.runError = '';
+        }
         refreshRunNodes(node, out);
         scheduleSave();
     } catch(err){
@@ -12884,8 +12886,10 @@ async function runRhNode(nodeId, opts={}){
         appendOutputImages(out, outputs, media.refs[0], [meta]);
         mergeGeneratedOutputs(node, outputs, Boolean(opts.cascade));
         addGenerationLog({run, outputs, runMs:meta.runMs || 0});
-        node.runStatus = 'done';
-        node.runError = '';
+        if(!hasRemainingPendingTasksForRun(run)){
+            node.runStatus = 'done';
+            node.runError = '';
+        }
         refreshRunNodes(node, out);
         scheduleSave();
     } catch(err) {
@@ -13669,7 +13673,9 @@ async function runGeneratorLegacy(genId, opts={}){
         appendOutputImages(out, images, refs[0], metas);
         mergeGeneratedOutputs(gen, images, Boolean(opts.cascade));
         addGenerationLog({run, outputs:images, runMs:Math.max(...metas.map(m => m.runMs || 0), 0)});
-        gen.runStatus = 'done'; gen.runError = '';
+        if(!hasRemainingPendingTasksForRun(run)){
+            gen.runStatus = 'done'; gen.runError = '';
+        }
         refreshRunNodes(gen, out);
         scheduleSave();
     } catch(err) {
@@ -13737,7 +13743,9 @@ async function runVideoNode(nodeId, opts={}){
         appendOutputImages(out, outputUrls, refs[0], [{...meta, kind:'video'}]);
         mergeGeneratedOutputs(node, outputUrls, Boolean(opts.cascade));
         addGenerationLog({run, outputs:outputUrls, runMs:meta.runMs || 0});
-        node.runStatus = 'done'; node.runError = '';
+        if(!hasRemainingPendingTasksForRun(run)){
+            node.runStatus = 'done'; node.runError = '';
+        }
         refreshRunNodes(node, out);
         scheduleSave();
     } catch(err) {
@@ -14386,8 +14394,10 @@ async function runLTXDirectorNode(nodeId, opts={}){
         appendOutputImages(out, outputs, refs[0], [meta]);
         mergeGeneratedOutputs(node, outputs, Boolean(opts.cascade));
         addGenerationLog({run, outputs, runMs:meta.runMs || 0});
-        node.runStatus = 'done';
-        node.runError = '';
+        if(!hasRemainingPendingTasksForRun(run)){
+            node.runStatus = 'done';
+            node.runError = '';
+        }
         refreshRunNodes(node, out);
         scheduleSave();
     } catch(err) {
@@ -14552,7 +14562,9 @@ async function runComfyNode(nodeId, opts={}){
         appendOutputImages(out, images, refs[0], [meta]);
         mergeGeneratedOutputs(node, images, Boolean(opts.cascade));
         addGenerationLog({run, outputs:images, runMs:meta.runMs || 0});
-        node.runStatus = 'done'; node.runError = '';
+        if(!hasRemainingPendingTasksForRun(run)){
+            node.runStatus = 'done'; node.runError = '';
+        }
         refreshRunNodes(node, out);
         scheduleSave();
     } catch(err) {
@@ -15559,8 +15571,8 @@ function findPendingTask(taskId){
     }
     return null;
 }
-function hasRemainingPendingTasksForRun(pending){
-    const run = pending?.run || {};
+function hasRemainingPendingTasksForRun(pendingOrRun){
+    const run = pendingOrRun?.run || pendingOrRun || {};
     const nodeId = run?.node?.id;
     if(!nodeId) return false;
     const runId = String(run.runId || '');

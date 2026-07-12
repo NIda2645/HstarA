@@ -911,6 +911,122 @@ for (const functionName of ['runGenerator', 'runRhModelNode']) {
   assert.equal(existingRun.runId, 'existing-run-id', 'pending creation must preserve an existing run identity');
 }
 
+async function legacyOverlapFixture({ currentRunId = '', persistedRunId = '', resume = false } = {}) {
+  const generator = {
+    id: 'legacy-overlap-generator',
+    type: 'generator',
+    count: 1,
+    running: false,
+    runStatus: 'queued',
+    runError: '',
+  };
+  const currentRun = { node: { id: generator.id }, refs: [] };
+  if (currentRunId) currentRun.runId = currentRunId;
+  const persistedRun = { node: { id: generator.id }, refs: [] };
+  if (persistedRunId) persistedRun.runId = persistedRunId;
+  const persistedPending = JSON.parse(JSON.stringify({
+    id: 'legacy-persisted-pending',
+    canvasTaskId: 'legacy-persisted-task',
+    canvasTaskType: 'online-image',
+    canvasTaskStatus: 'queued',
+    startedAt: 800,
+    run: persistedRun,
+  }));
+  const out = { id: 'legacy-overlap-output', type: 'output', _pending: [persistedPending], images: [] };
+  const nodes = [generator, out];
+  const resumedTaskIds = [];
+  if (resume) {
+    const resumeCanvasImageTasks = exportedFunction(
+      functionSource(canvasSource, 'resumeCanvasImageTasks'),
+      'resumeCanvasImageTasks',
+      {
+        nodes,
+        pollCanvasImageTask: taskId => resumedTaskIds.push(taskId),
+      },
+    );
+    resumeCanvasImageTasks();
+  }
+  const counters = { append: 0, log: 0, merge: 0, refresh: 0, save: 0 };
+  const source = [
+    pendingRunCompletionSource,
+    functionSource(canvasSource, 'runGeneratorLegacy'),
+  ].join('\n');
+  const runGeneratorLegacy = exportedFunction(source, 'runGeneratorLegacy', {
+    nodes,
+    orderedSources: () => [{ prompt: 'legacy prompt', refs: [] }],
+    generatorSources: () => [],
+    generationPromptWithMarkerDirectives: () => 'legacy prompt',
+    imageRefsOnly: refs => refs,
+    tr: key => key,
+    outputForNode: () => out,
+    uid: prefix => `${prefix}_legacy_current`,
+    runSnapshot: () => currentRun,
+    generatorSizeForRun: async () => '1024x1024',
+    makePendingForRun: (id, run) => ({ id, startedAt: 900, run }),
+    refreshRunNodes: () => { counters.refresh += 1; },
+    setTimeout: () => 1,
+    resolveImageProviderId: value => value,
+    resolveImageModel: value => value,
+    normalizedImageQuality: () => '',
+    fetch: async () => ({ ok: true, json: async () => ({ images: ['/legacy-current.png'] }) }),
+    responseErrorMessage: async () => 'legacy failed',
+    collectRunMetas: () => [{ runMs: 300, run: currentRun }],
+    requestMetaFromResult: () => ({}),
+    appendOutputImages: () => { counters.append += 1; },
+    mergeGeneratedOutputs: () => { counters.merge += 1; },
+    addGenerationLog: () => { counters.log += 1; },
+    scheduleSave: () => { counters.save += 1; },
+    showErrorModal() {},
+  });
+
+  await runGeneratorLegacy(generator.id);
+  return { counters, generator, out, persistedPending, resumedTaskIds };
+}
+
+{
+  const fixture = await legacyOverlapFixture({ currentRunId: 'legacy-shared-run', persistedRunId: 'legacy-shared-run' });
+  assert.equal(fixture.generator.runStatus, 'queued', 'runGeneratorLegacy must not mark done while its own run still has a pending task');
+  assert.deepEqual(Array.from(fixture.out._pending), [fixture.persistedPending], 'runGeneratorLegacy must preserve the overlapping pending owner');
+  assert.deepEqual(fixture.counters, { append: 1, log: 1, merge: 1, refresh: 2, save: 1 }, 'runGeneratorLegacy must process its completed output exactly once');
+}
+
+{
+  const fixture = await legacyOverlapFixture({ currentRunId: 'legacy-current-run', persistedRunId: 'legacy-resumed-run', resume: true });
+  assert.deepEqual(fixture.resumedTaskIds, ['legacy-persisted-task'], 'persisted distinct-run tasks must remain resumable');
+  assert.equal(fixture.persistedPending.run.runId, 'legacy-resumed-run', 'resume must preserve the persisted run identity');
+  assert.equal(fixture.generator.runStatus, 'done', 'a persisted distinct run must not block runGeneratorLegacy completion');
+  assert.deepEqual(Array.from(fixture.out._pending), [fixture.persistedPending], 'distinct resumed pending ownership must remain intact');
+}
+
+{
+  const fixture = await legacyOverlapFixture();
+  assert.equal(fixture.generator.runStatus, 'queued', 'id-less legacy pending records must retain conservative same-generator blocking');
+  assert.deepEqual(Array.from(fixture.out._pending), [fixture.persistedPending], 'id-less legacy overlap must preserve its pending owner');
+}
+
+for (const [functionName, runArgument] of [
+  ['runMsGenNode', 'run'],
+  ['runRhNode', 'run'],
+  ['runGeneratorLegacy', 'run'],
+  ['runVideoNode', 'run'],
+  ['runLTXDirectorNode', 'run'],
+  ['runComfyNode', 'run'],
+  ['completeRecoverPendingOutput', 'pending'],
+  ['completeCanvasImageTask', 'pending'],
+]) {
+  const source = functionSource(canvasSource, functionName);
+  assert.ok(
+    source.includes(`hasRemainingPendingTasksForRun(${runArgument})`),
+    `${functionName} must gate done state through run-scoped pending ownership`,
+  );
+}
+
+assert.equal(
+  /runStatus\s*=\s*['"]done['"]/.test(smartCanvasSource),
+  false,
+  'smart canvas must not contain an unaudited runStatus done-setting path',
+);
+
 {
   const activeCanvasTaskPolls = new Set();
   let fetchCalls = 0;
