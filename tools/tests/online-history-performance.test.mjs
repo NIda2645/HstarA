@@ -24,7 +24,14 @@ assert.match(onlineHtml, /id="historyLoadSentinel"/);
 assert.match(onlineHtml, /id="historyLoadStatus"[^>]+role="status"[^>]+aria-live="polite"/);
 assert.match(onlineHtml, /let historyAutoLoadArmed = false, historyAutoObserver = null;/);
 assert.match(onlineHtml, /let historyAutoEntrySeen = false, historyAutoInitialPending = false;/);
-assert.match(onlineHtml, /let historyAutoTouchStartX = null, historyAutoTouchStartY = null;/);
+assert.match(
+  onlineHtml,
+  /let historyAutoTouchIdentifier = null, historyAutoTouchStartX = null, historyAutoTouchStartY = null, historyAutoTouchAttempted = false;/,
+);
+assert.match(
+  onlineHtml,
+  /let historyAutoWheelAttempted = false, historyAutoWheelReleaseTimer = null;/,
+);
 assert.match(
   onlineHtml,
   /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null, queuedHistorySource = 'default';/,
@@ -45,7 +52,7 @@ assert.match(
 );
 assert.match(
   historyAutoHandlersSource,
-  /function isHistoryAutoIntentBlocked\(event\)[\s\S]*function handleHistoryAutoKeydown\(event\)\s*{\s*if\(isHistoryAutoIntentBlocked\(event\)\) return;[\s\S]*return requestInitialHistoryAutoLoad\(\);/,
+  /function isHistoryAutoIntentBlocked\(event\)[\s\S]*function handleHistoryAutoKeydown\(event\)\s*{\s*if\(event\.repeat \|\| isHistoryAutoIntentBlocked\(event\)\) return;[\s\S]*return requestInitialHistoryAutoLoad\(\);/,
 );
 assert.match(
   historyAutoHandlersSource,
@@ -58,6 +65,7 @@ assert.match(
 assert.match(historyAutoHandlersSource, /function handleHistoryAutoPointerIntent\(event\)/);
 assert.match(historyAutoHandlersSource, /function handleHistoryAutoTouchStart\(event\)/);
 assert.match(historyAutoHandlersSource, /function resetHistoryAutoTouchIntent\(\)/);
+assert.match(historyAutoHandlersSource, /function releaseHistoryAutoWheelIntent\(\)/);
 const syncHistoryAutoObserverSource = onlineHtml.slice(
   onlineHtml.indexOf('function syncHistoryAutoObserver()'),
   onlineHtml.indexOf('function setupHistoryAutoLoad()'),
@@ -96,10 +104,19 @@ function createHistoryAutoHarness(loadOutcomes=['loaded']){
     let historyAutoLoadArmed = false;
     let historyAutoEntrySeen = false;
     let historyAutoInitialPending = false;
-    let historyAutoTouchStartX = null, historyAutoTouchStartY = null;
+    let historyAutoTouchIdentifier = null, historyAutoTouchStartX = null, historyAutoTouchStartY = null, historyAutoTouchAttempted = false;
+    let historyAutoWheelAttempted = false, historyAutoWheelReleaseTimer = null;
     let isLoading = false;
     let historyHasMore = true;
     let historyMutationDepth = 0;
+    let nextTimerId = 0;
+    const activeTimers = new Set();
+    function setTimeout(){
+      const timerId = ++nextTimerId;
+      activeTimers.add(timerId);
+      return timerId;
+    }
+    function clearTimeout(timerId){ activeTimers.delete(timerId); }
     const requests = [];
     const outcomes = ${JSON.stringify(loadOutcomes)};
     async function loadHistory(reset, source='default'){
@@ -123,13 +140,18 @@ function createHistoryAutoHarness(loadOutcomes=['loaded']){
       pointer: event => handleHistoryAutoPointerIntent(event),
       touchStart: event => handleHistoryAutoTouchStart(event),
       touchEnd: () => resetHistoryAutoTouchIntent(),
+      wheelIdle: () => releaseHistoryAutoWheelIntent(),
       requestCount: () => requests.length,
       lastRequest: () => requests.at(-1),
       isArmed: () => historyAutoLoadArmed,
       isEntrySeen: () => historyAutoEntrySeen,
       isInitialPending: () => historyAutoInitialPending,
+      touchIdentifier: () => historyAutoTouchIdentifier,
       touchStartX: () => historyAutoTouchStartX,
       touchStartY: () => historyAutoTouchStartY,
+      touchAttempted: () => historyAutoTouchAttempted,
+      wheelAttempted: () => historyAutoWheelAttempted,
+      activeTimerCount: () => activeTimers.size,
       setLoading: value => { isLoading = value; },
       setHasMore: value => { historyHasMore = value; },
       setMutationDepth: value => { historyMutationDepth = value; },
@@ -200,6 +222,7 @@ function historyAutoControlTarget(controlSelector){
   };
 }
 
+const bodyIntentTarget = {closest: () => null};
 const guardedKeydownAutoLoad = createHistoryAutoHarness();
 guardedKeydownAutoLoad.handle([{isIntersecting:true}]);
 await guardedKeydownAutoLoad.keydown({
@@ -255,6 +278,16 @@ await unmodifiedSpaceAutoLoad.keydown({
 assert.equal(unmodifiedSpaceAutoLoad.requestCount(), 1, 'unmodified Space must load one pending page');
 assert.equal(unmodifiedSpaceAutoLoad.isInitialPending(), false);
 
+const heldKeyAutoLoad = createHistoryAutoHarness(['failed', 'loaded']);
+heldKeyAutoLoad.handle([{isIntersecting:true}]);
+await heldKeyAutoLoad.keydown({key:'PageDown', repeat:false, target:bodyIntentTarget});
+await heldKeyAutoLoad.keydown({key:'PageDown', repeat:true, target:bodyIntentTarget});
+assert.equal(heldKeyAutoLoad.requestCount(), 1, 'held PageDown must make only one failed attempt');
+assert.equal(heldKeyAutoLoad.isInitialPending(), true, 'held-key repeats must not consume retryable pending state');
+await heldKeyAutoLoad.keydown({key:'PageDown', repeat:false, target:bodyIntentTarget});
+assert.equal(heldKeyAutoLoad.requestCount(), 2, 'a fresh PageDown keydown may retry after failure');
+assert.equal(heldKeyAutoLoad.isInitialPending(), false);
+
 const retryableInitialAutoLoad = createHistoryAutoHarness(['failed', 'loaded']);
 retryableInitialAutoLoad.handle([{isIntersecting:true}]);
 assert.equal(await retryableInitialAutoLoad.request(), 'failed');
@@ -273,7 +306,6 @@ await mutationGuardedInitialAutoLoad.request();
 assert.equal(mutationGuardedInitialAutoLoad.requestCount(), 0, 'active mutations must block initial intent requests');
 assert.equal(mutationGuardedInitialAutoLoad.isInitialPending(), true);
 
-const bodyIntentTarget = {closest: () => null};
 const wheelAutoLoad = createHistoryAutoHarness();
 wheelAutoLoad.handle([{isIntersecting:true}]);
 await wheelAutoLoad.pointer({type:'wheel', deltaY:-40, deltaX:0, target:bodyIntentTarget});
@@ -288,17 +320,31 @@ await wheelAutoLoad.pointer({type:'wheel', deltaY:40, deltaX:5, target:bodyInten
 assert.equal(wheelAutoLoad.requestCount(), 1, 'downward body wheel must attempt one pending page');
 assert.equal(wheelAutoLoad.isInitialPending(), false);
 
+const wheelGestureAutoLoad = createHistoryAutoHarness(['failed', 'loaded']);
+wheelGestureAutoLoad.handle([{isIntersecting:true}]);
+await wheelGestureAutoLoad.pointer({type:'wheel', deltaY:40, deltaX:0, target:bodyIntentTarget});
+await wheelGestureAutoLoad.pointer({type:'wheel', deltaY:50, deltaX:0, target:bodyIntentTarget});
+assert.equal(wheelGestureAutoLoad.requestCount(), 1, 'one wheel burst must make only one failed attempt');
+assert.equal(wheelGestureAutoLoad.wheelAttempted(), true);
+assert.equal(wheelGestureAutoLoad.activeTimerCount(), 1, 'wheel events must refresh one idle-release timer');
+wheelGestureAutoLoad.wheelIdle();
+assert.equal(wheelGestureAutoLoad.wheelAttempted(), false, 'wheel inactivity must release the burst latch');
+assert.equal(wheelGestureAutoLoad.activeTimerCount(), 0, 'wheel release must clear its timer');
+await wheelGestureAutoLoad.pointer({type:'wheel', deltaY:40, deltaX:0, target:bodyIntentTarget});
+assert.equal(wheelGestureAutoLoad.requestCount(), 2, 'a fresh wheel gesture may retry after failure');
+assert.equal(wheelGestureAutoLoad.isInitialPending(), false);
+
 const touchAutoLoad = createHistoryAutoHarness();
 touchAutoLoad.handle([{isIntersecting:true}]);
-touchAutoLoad.touchStart({touches:[{clientX:100, clientY:100}]});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:120}], target:bodyIntentTarget});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:100}], target:bodyIntentTarget});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:200, clientY:99}], target:bodyIntentTarget});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:80}], target:bodyIntentTarget});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], ctrlKey:true, target:bodyIntentTarget});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], shiftKey:true, target:bodyIntentTarget});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], defaultPrevented:true, target:bodyIntentTarget});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], target:historyAutoControlTarget('button')});
+touchAutoLoad.touchStart({touches:[{identifier:1, clientX:100, clientY:100}]});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientX:100, clientY:120}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientX:100, clientY:100}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientX:200, clientY:99}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientY:80}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientX:100, clientY:80}], ctrlKey:true, target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientX:100, clientY:80}], shiftKey:true, target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientX:100, clientY:80}], defaultPrevented:true, target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientX:100, clientY:80}], target:historyAutoControlTarget('button')});
 assert.equal(
   touchAutoLoad.requestCount(),
   0,
@@ -306,25 +352,63 @@ assert.equal(
 );
 assert.equal(touchAutoLoad.isInitialPending(), true);
 touchAutoLoad.touchEnd();
+assert.equal(touchAutoLoad.touchIdentifier(), null, 'touchend must reset touch identity');
 assert.equal(touchAutoLoad.touchStartX(), null, 'touchend must reset horizontal touch state');
 assert.equal(touchAutoLoad.touchStartY(), null, 'touchend must reset touch intent state');
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], target:bodyIntentTarget});
+assert.equal(touchAutoLoad.touchAttempted(), false, 'touchend must release the gesture latch');
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:1, clientX:100, clientY:80}], target:bodyIntentTarget});
 assert.equal(touchAutoLoad.requestCount(), 0, 'touchmove without an active start must be ignored');
-touchAutoLoad.touchStart({touches:[{clientX:100, clientY:100}]});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:120, clientY:80}], target:bodyIntentTarget});
+touchAutoLoad.touchStart({touches:[{identifier:2, clientX:100, clientY:100}]});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:2, clientX:120, clientY:80}], target:bodyIntentTarget});
 assert.equal(touchAutoLoad.requestCount(), 0, 'equal diagonal upward movement must be ignored');
 assert.equal(touchAutoLoad.isInitialPending(), true);
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:110, clientY:80}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{identifier:2, clientX:110, clientY:80}], target:bodyIntentTarget});
 assert.equal(touchAutoLoad.requestCount(), 1, 'vertical-dominant upward finger movement must attempt one pending page');
 assert.equal(touchAutoLoad.isInitialPending(), false);
 
+const multiTouchAutoLoad = createHistoryAutoHarness();
+multiTouchAutoLoad.handle([{isIntersecting:true}]);
+multiTouchAutoLoad.touchStart({touches:[
+  {identifier:10, clientX:100, clientY:100},
+  {identifier:11, clientX:200, clientY:100},
+]});
+await multiTouchAutoLoad.pointer({type:'touchmove', touches:[
+  {identifier:10, clientX:100, clientY:60},
+  {identifier:11, clientX:200, clientY:140},
+], target:bodyIntentTarget});
+assert.equal(multiTouchAutoLoad.requestCount(), 0, 'two-finger pinch must not request history');
+assert.equal(multiTouchAutoLoad.touchIdentifier(), null, 'multi-touch must invalidate touch identity');
+
+const changedTouchAutoLoad = createHistoryAutoHarness();
+changedTouchAutoLoad.handle([{isIntersecting:true}]);
+changedTouchAutoLoad.touchStart({touches:[{identifier:20, clientX:100, clientY:100}]});
+await changedTouchAutoLoad.pointer({type:'touchmove', touches:[{identifier:21, clientX:100, clientY:60}], target:bodyIntentTarget});
+assert.equal(changedTouchAutoLoad.requestCount(), 0, 'a changed touch identifier must not request history');
+assert.equal(changedTouchAutoLoad.touchIdentifier(), null, 'identifier mismatch must invalidate the gesture');
+
+const touchGestureAutoLoad = createHistoryAutoHarness(['failed', 'loaded']);
+touchGestureAutoLoad.handle([{isIntersecting:true}]);
+touchGestureAutoLoad.touchStart({touches:[{identifier:30, clientX:100, clientY:100}]});
+await touchGestureAutoLoad.pointer({type:'touchmove', touches:[{identifier:30, clientX:98, clientY:70}], target:bodyIntentTarget});
+await touchGestureAutoLoad.pointer({type:'touchmove', touches:[{identifier:30, clientX:96, clientY:50}], target:bodyIntentTarget});
+assert.equal(touchGestureAutoLoad.requestCount(), 1, 'one touch gesture must make only one failed attempt');
+assert.equal(touchGestureAutoLoad.touchAttempted(), true);
+assert.equal(touchGestureAutoLoad.isInitialPending(), true);
+touchGestureAutoLoad.touchEnd();
+touchGestureAutoLoad.touchStart({touches:[{identifier:31, clientX:100, clientY:100}]});
+await touchGestureAutoLoad.pointer({type:'touchmove', touches:[{identifier:31, clientX:100, clientY:60}], target:bodyIntentTarget});
+assert.equal(touchGestureAutoLoad.requestCount(), 2, 'a new one-finger vertical gesture may retry after failure');
+assert.equal(touchGestureAutoLoad.isInitialPending(), false);
+
 const cancelledTouchAutoLoad = createHistoryAutoHarness();
 cancelledTouchAutoLoad.handle([{isIntersecting:true}]);
-cancelledTouchAutoLoad.touchStart({touches:[{clientX:100, clientY:100}]});
+cancelledTouchAutoLoad.touchStart({touches:[{identifier:40, clientX:100, clientY:100}]});
 cancelledTouchAutoLoad.touchEnd();
+assert.equal(cancelledTouchAutoLoad.touchIdentifier(), null);
 assert.equal(cancelledTouchAutoLoad.touchStartX(), null);
 assert.equal(cancelledTouchAutoLoad.touchStartY(), null);
-await cancelledTouchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], target:bodyIntentTarget});
+assert.equal(cancelledTouchAutoLoad.touchAttempted(), false);
+await cancelledTouchAutoLoad.pointer({type:'touchmove', touches:[{identifier:40, clientX:100, clientY:80}], target:bodyIntentTarget});
 assert.equal(cancelledTouchAutoLoad.requestCount(), 0, 'touchcancel reset must prevent stale directional intent');
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
