@@ -38,6 +38,10 @@ assert.match(
   historyAutoHandlersSource,
   /function requestInitialHistoryAutoLoad\(\)\s*{\s*if\(!historyAutoInitialPending \|\| isLoading \|\| !historyHasMore\) return;\s*historyAutoInitialPending = false;\s*loadHistory\(false\);\s*}/,
 );
+assert.match(
+  historyAutoHandlersSource,
+  /function handleHistoryAutoKeydown\(event\)\s*{\s*if\(event\.defaultPrevented \|\| event\.altKey \|\| event\.ctrlKey \|\| event\.metaKey\) return;\s*if\(event\.target\?\.closest\?\.\('input, textarea, select, button, a, \[contenteditable="true"\]'\)\) return;\s*if\(\['PageDown','End','ArrowDown'\]\.includes\(event\.key\) \|\| event\.key === ' ' \|\| event\.code === 'Space'\)\s*{\s*requestInitialHistoryAutoLoad\(\);\s*}\s*}/,
+);
 const syncHistoryAutoObserverSource = onlineHtml.slice(
   onlineHtml.indexOf('function syncHistoryAutoObserver()'),
   onlineHtml.indexOf('function setupHistoryAutoLoad()'),
@@ -64,11 +68,8 @@ assert.match(
   setupHistoryAutoLoadSource,
   /window\.addEventListener\('touchmove', requestInitialHistoryAutoLoad, {passive:true}\);/,
 );
-assert.match(
-  setupHistoryAutoLoadSource,
-  /\['PageDown','End','ArrowDown'\]\.includes\(event\.key\) \|\| event\.code === 'Space'/,
-);
-assert.match(setupHistoryAutoLoadSource, /requestInitialHistoryAutoLoad\(\);/);
+assert.match(setupHistoryAutoLoadSource, /window\.addEventListener\('keydown', handleHistoryAutoKeydown\);/);
+assert.doesNotMatch(setupHistoryAutoLoadSource, /window\.addEventListener\('keydown', event =>/);
 
 function createHistoryAutoHarness(){
   return runInNewContext(`(() => {
@@ -83,6 +84,7 @@ function createHistoryAutoHarness(){
     return {
       handle: entries => handleHistoryAutoIntersections(entries),
       request: () => requestInitialHistoryAutoLoad(),
+      keydown: event => handleHistoryAutoKeydown(event),
       requestCount: () => requests.length,
       lastRequest: () => requests.at(-1),
       isArmed: () => historyAutoLoadArmed,
@@ -150,6 +152,53 @@ guardedIntersectionAutoLoad.setHasMore(false);
 guardedIntersectionAutoLoad.handle([{isIntersecting:true}]);
 assert.equal(guardedIntersectionAutoLoad.requestCount(), 0, 'exhausted history must block armed intersection requests');
 assert.equal(guardedIntersectionAutoLoad.isArmed(), true);
+
+function historyAutoControlTarget(controlSelector){
+  return {
+    closest: selector => selector.split(', ').includes(controlSelector) ? {controlSelector} : null,
+  };
+}
+
+const guardedKeydownAutoLoad = createHistoryAutoHarness();
+guardedKeydownAutoLoad.handle([{isIntersecting:true}]);
+guardedKeydownAutoLoad.keydown({
+  key: ' ',
+  code: 'Space',
+  target: historyAutoControlTarget('textarea'),
+});
+assert.equal(guardedKeydownAutoLoad.requestCount(), 0, 'Space in a textarea must not load history');
+assert.equal(guardedKeydownAutoLoad.isInitialPending(), true, 'ignored textarea input must preserve pending');
+guardedKeydownAutoLoad.keydown({
+  key: 'ArrowDown',
+  target: historyAutoControlTarget('select'),
+});
+assert.equal(guardedKeydownAutoLoad.requestCount(), 0, 'ArrowDown in a select must not load history');
+assert.equal(guardedKeydownAutoLoad.isInitialPending(), true);
+for(const modifier of ['altKey', 'ctrlKey', 'metaKey']){
+  guardedKeydownAutoLoad.keydown({
+    key: 'PageDown',
+    [modifier]: true,
+    target: {closest: () => null},
+  });
+}
+guardedKeydownAutoLoad.keydown({
+  key: 'End',
+  defaultPrevented: true,
+  target: {closest: () => null},
+});
+assert.equal(guardedKeydownAutoLoad.requestCount(), 0, 'modified and prevented keys must not load history');
+assert.equal(guardedKeydownAutoLoad.isInitialPending(), true);
+guardedKeydownAutoLoad.keydown({
+  key: 'PageDown',
+  target: {closest: () => null},
+});
+assert.equal(guardedKeydownAutoLoad.requestCount(), 1, 'document PageDown must load one pending page');
+assert.equal(guardedKeydownAutoLoad.isInitialPending(), false);
+guardedKeydownAutoLoad.keydown({
+  key: 'PageDown',
+  target: {},
+});
+assert.equal(guardedKeydownAutoLoad.requestCount(), 1, 'repeated document intent must remain one-shot');
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
 assert.match(onlineHtml, /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;/);

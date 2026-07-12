@@ -868,6 +868,13 @@
             historyAutoInitialPending = false;
             loadHistory(false);
         }
+        function handleHistoryAutoKeydown(event){
+            if(event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+            if(event.target?.closest?.('input, textarea, select, button, a, [contenteditable="true"]')) return;
+            if(['PageDown','End','ArrowDown'].includes(event.key) || event.key === ' ' || event.code === 'Space'){
+                requestInitialHistoryAutoLoad();
+            }
+        }
         function syncHistoryAutoObserver(){
             if(!historyAutoObserver) return;
             const sentinel = document.getElementById('historyLoadSentinel');
@@ -878,11 +885,7 @@
             historyAutoObserver = new IntersectionObserver(handleHistoryAutoIntersections, {rootMargin:'0px 0px 320px 0px', threshold:0});
             window.addEventListener('wheel', requestInitialHistoryAutoLoad, {passive:true});
             window.addEventListener('touchmove', requestInitialHistoryAutoLoad, {passive:true});
-            window.addEventListener('keydown', event => {
-                if(['PageDown','End','ArrowDown'].includes(event.key) || event.code === 'Space'){
-                    requestInitialHistoryAutoLoad();
-                }
-            });
+            window.addEventListener('keydown', handleHistoryAutoKeydown);
             syncHistoryAutoObserver();
         }
         window.onload = async () => {
