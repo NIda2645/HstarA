@@ -15720,9 +15720,13 @@ function completeRecoverPendingOutput(out, pending, result){
     const gen = nodes.find(n => n.id === meta.run?.node?.id);
     if(gen){
         mergeGeneratedOutputs(gen, images, Boolean(pending.appendGenerated));
-        gen.runStatus = 'done';
-        gen.runError = '';
-        gen.running = false;
+        const hasRemainingTasks = nodes.some(node => node.type === 'output'
+            && (node._pending || []).some(item => item?.run?.node?.id === gen.id));
+        if(!hasRemainingTasks){
+            gen.runStatus = 'done';
+            gen.runError = '';
+            gen.running = false;
+        }
     }
     addGenerationLog({run:meta.run, outputs:images, runMs:meta.runMs || 0});
     refreshRunNodes(gen, out);
@@ -15872,9 +15876,13 @@ function completeCanvasImageTask(taskId, result){
     const gen = nodes.find(n => n.id === meta.run?.node?.id);
     if(gen){
         mergeGeneratedOutputs(gen, images, Boolean(pending.appendGenerated));
-        gen.runStatus = 'done';
-        gen.runError = '';
-        gen.running = false;
+        const hasRemainingTasks = nodes.some(node => node.type === 'output'
+            && (node._pending || []).some(item => item?.run?.node?.id === gen.id));
+        if(!hasRemainingTasks){
+            gen.runStatus = 'done';
+            gen.runError = '';
+            gen.running = false;
+        }
     }
     addGenerationLog({run:meta.run, outputs:images, runMs:meta.runMs || 0});
     refreshRunNodes(gen, out);

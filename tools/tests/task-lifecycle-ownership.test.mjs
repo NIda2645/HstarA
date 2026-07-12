@@ -742,6 +742,90 @@ for (const functionName of ['runGenerator', 'runRhModelNode']) {
 }
 
 {
+  const run = { node: { id: 'mixed-completion-generator' }, refs: [] };
+  const recoverable = {
+    id: 'mixed-recoverable-pending',
+    canvasTaskId: 'mixed-recoverable-task',
+    failed: true,
+    recoverTaskId: 'mixed-recoverable-submit',
+    canvasTaskStatus: 'jimeng_pending',
+    startedAt: 900,
+    run,
+  };
+  const later = {
+    id: 'mixed-later-pending',
+    canvasTaskId: 'mixed-later-task',
+    appendGenerated: true,
+    startedAt: 900,
+    run,
+  };
+  const out = { id: 'mixed-completion-output', type: 'output', _pending: [recoverable, later], images: [] };
+  const generator = { id: 'mixed-completion-generator', running: false, runStatus: 'queued', runError: '' };
+  const nodes = [generator, out];
+  const counters = { append: 0, log: 0, merge: 0, refresh: 0, save: 0 };
+  const source = [
+    functionSource(canvasSource, 'completeRecoverPendingOutput'),
+    functionSource(canvasSource, 'completeCanvasImageTask'),
+  ].join('\n');
+  const completed = evaluatedFunctions(source, ['completeRecoverPendingOutput', 'completeCanvasImageTask'], {
+    nodes,
+    findPendingTask: taskId => {
+      const pending = out._pending.find(item => item.canvasTaskId === taskId);
+      return pending ? { out, pending } : null;
+    },
+    nowMs: () => 1200,
+    requestMetaFromResult: () => ({}),
+    appendOutputImages: () => { counters.append += 1; },
+    mergeGeneratedOutputs: () => { counters.merge += 1; },
+    addGenerationLog: () => { counters.log += 1; },
+    refreshRunNodes: () => { counters.refresh += 1; },
+    scheduleSave: () => { counters.save += 1; },
+  }).exports;
+
+  completed.completeCanvasImageTask(later.canvasTaskId, { images: ['/mixed-later-success.png'] });
+  assert.equal(generator.runStatus, 'queued', 'later task success must not mark the generator done while a recoverable task remains');
+  assert.equal(generator.running, false, 'later task success must preserve the queued generator running state');
+  assert.deepEqual(out._pending, [recoverable], 'later task success must retain the recoverable pending owner');
+  assert.deepEqual(counters, { append: 1, log: 1, merge: 1, refresh: 1, save: 1 }, 'later task success must append, merge, log, refresh, and save exactly once');
+
+  completed.completeCanvasImageTask(later.canvasTaskId, { images: ['/duplicate-later-success.png'] });
+  assert.deepEqual(counters, { append: 1, log: 1, merge: 1, refresh: 1, save: 1 }, 'duplicate later completion must not duplicate output or logs');
+
+  completed.completeRecoverPendingOutput(out, recoverable, { images: ['/mixed-recovered-success.png'] });
+  assert.equal(generator.runStatus, 'done', 'the generator may become done after the final recoverable task completes');
+  assert.equal(generator.running, false, 'final completion must leave the generator stopped');
+  assert.equal(out._pending.length, 0, 'final recovery completion must release the last pending owner');
+  assert.deepEqual(counters, { append: 2, log: 2, merge: 2, refresh: 2, save: 2 }, 'each distinct task completion must produce exactly one output and log');
+}
+
+{
+  const run = { node: { id: 'single-completion-generator' }, refs: [] };
+  const pending = { id: 'single-completion-pending', canvasTaskId: 'single-completion-task', startedAt: 900, run };
+  const out = { id: 'single-completion-output', type: 'output', _pending: [pending], images: [] };
+  const generator = { id: 'single-completion-generator', running: true, runStatus: 'running', runError: 'old error' };
+  const nodes = [generator, out];
+  let logCalls = 0;
+  const completeCanvasImageTask = exportedFunction(functionSource(canvasSource, 'completeCanvasImageTask'), 'completeCanvasImageTask', {
+    nodes,
+    findPendingTask: () => ({ out, pending }),
+    nowMs: () => 1200,
+    requestMetaFromResult: () => ({}),
+    appendOutputImages() {},
+    mergeGeneratedOutputs() {},
+    addGenerationLog: () => { logCalls += 1; },
+    refreshRunNodes() {},
+    scheduleSave() {},
+  });
+
+  completeCanvasImageTask(pending.canvasTaskId, { images: ['/single-success.png'] });
+  assert.equal(generator.runStatus, 'done', 'single-task completion must preserve existing done behavior');
+  assert.equal(generator.runError, '', 'single-task completion must clear its previous error');
+  assert.equal(generator.running, false, 'single-task completion must stop the generator');
+  assert.equal(out._pending.length, 0, 'single-task completion must release pending ownership');
+  assert.equal(logCalls, 1, 'single-task completion must log exactly once');
+}
+
+{
   const activeCanvasTaskPolls = new Set();
   let fetchCalls = 0;
   const pollCanvasImageTask = exportedFunction(ordinaryPollSource, 'pollCanvasImageTask', {
