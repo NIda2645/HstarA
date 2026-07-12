@@ -6692,7 +6692,8 @@ function markerReferenceDirectiveForController(sources=[], graph=null){
     const graphNodes = graph?.nodes || (typeof nodes !== 'undefined' ? nodes : []);
     const direct = (sources || []).find(src => src?.type === 'controller');
     const ctrl = direct ? graphNodes.find(n => n.id === direct.id) : null;
-    const mat = ctrl ? ensureControllerState(ctrl).material : null;
+    const state = ctrl ? ensureControllerState(ctrl) : null;
+    const mat = state?.enabled?.material === true ? state.material : null;
     const material = mat ? (mat.selected || []).map((id,i) => { const item = materialById(id); return item ? `材质${i + 1}：${item.label}，${item.prompt}` : ''; }).filter(Boolean).join('；') : '';
     if(!lines.length && !material) return '';
     return ['[标记点位映射]','以下标记是精确编辑锚点。提示词或材质控制器引用“图1标记1”时，只作用于对应坐标附近的整体物体，不要影响未标记区域。',...lines,material ? `材质控制器可引用材料：${mat.markerTarget ? `${material}；当前材质目标锁定：${mat.markerTarget}` : material}。` : ''].filter(Boolean).join('\n');

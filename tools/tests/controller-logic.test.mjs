@@ -102,9 +102,10 @@ const disabledController = {
   controller: sandbox.__exports.defaultControllerState(),
 };
 const disabledControllerGraph = {
-  nodes: [disabledController, prompt, isolatedGen],
+  nodes: [disabledController, image, prompt, isolatedGen],
   connections: [
     { from: 'ctrl-disabled', to: 'gen-isolated' },
+    { from: 'img1', to: 'gen-isolated' },
     { from: 'prompt1', to: 'gen-isolated' },
   ],
 };
@@ -114,11 +115,17 @@ Object.assign(sandbox, {
 });
 const disabledControllerPrompt = sandbox.__exports.generationPromptWithControllerDirectives([
   { id: 'prompt1', type: 'prompt', prompt: prompt.text, refs: [] },
+  { id: 'img1', type: 'image', prompt: '', refs: [{ name: image.name, markers: image.markers }] },
   sandbox.__exports.controllerSourceFromNode(disabledController, disabledControllerGraph),
 ], disabledControllerGraph, isolatedGen);
+assert.match(
+  disabledControllerPrompt,
+  /图1标记1=米色方抱枕/,
+  'a disabled controller must not suppress marker metadata from a connected image',
+);
 assert.doesNotMatch(
   disabledControllerPrompt,
-  /Controller Directive|Camera Controller|Angle Controller|Lighting Controller|Material Controller/,
+  /Controller Directive|Camera Controller|Angle Controller|Lighting Controller|Material Controller|材质控制器可引用材料|oak wood texture|MATERIAL TARGET LOCK/,
   'a connected controller with every section disabled must not enter the generation request',
 );
 
