@@ -12982,6 +12982,15 @@ async function runRhModelNode(node, opts={}){
         if(statuses.includes('aborted')) throw cascadeAbortError(cascadeStopMessage());
         if(statuses.includes('failed')) throw new Error(node.runError || tr('canvas.generationFailed'));
     } catch(err) {
+        if(!out && err?.jimengPending && handoffCanvasNoOutputJimengTask(node, run, err, {
+            refs,
+            requestSize:payload.size,
+            cascadeTargetId,
+            providerId:payload.provider_id,
+            model:payload.model,
+            appendGenerated:Boolean(opts.cascade),
+            dx:500
+        })) return;
         if(!canvasRunOwnerIsCurrent(node, out)) return;
         const remainingPending = pendingIds.map(id => pendingById(out, id)).filter(Boolean);
         const removableIds = remainingPending.filter(p => !(p.failed && p.recoverTaskId)).map(p => p.id);
@@ -13551,6 +13560,15 @@ async function runGenerator(genId, opts={}){
         if(statuses.includes('aborted')) throw cascadeAbortError(cascadeStopMessage());
         if(statuses.includes('failed')) throw new Error(gen.runError || tr('canvas.generationFailed'));
     } catch(err) {
+        if(!out && err?.jimengPending && handoffCanvasNoOutputJimengTask(gen, run, err, {
+            refs,
+            requestSize:payload.size,
+            cascadeTargetId,
+            providerId:payload.provider_id,
+            model:payload.model,
+            appendGenerated:Boolean(opts.cascade),
+            dx:460
+        })) return;
         if(!canvasRunOwnerIsCurrent(gen, out)) return;
         const remainingPending = pendingIds.map(id => pendingById(out, id)).filter(Boolean);
         const removableIds = remainingPending.filter(p => !(p.failed && p.recoverTaskId)).map(p => p.id);
@@ -15575,14 +15593,53 @@ function handoffCanvasJimengTask(taskId, taskData={}){
     scheduleSave();
     return true;
 }
-function canvasJimengPendingError(taskData={}){
+function canvasJimengPendingError(taskData={}, canvasTaskId=''){
     const submitId = String(taskData?.submit_id || '');
     const message = taskData?.message || tr('canvas.generationFailed');
     const error = new Error(submitId ? `${message} (submit_id: ${submitId})` : message);
     error.jimengPending = true;
     error.submitId = submitId;
     error.kind = taskData?.kind || 'image';
+    error.canvasTaskId = canvasTaskId;
+    error.taskData = taskData;
     return error;
+}
+function handoffCanvasNoOutputJimengTask(node, run, error, options={}){
+    if(!node || !nodes.includes(node) || !error?.jimengPending || !error?.submitId || !error?.canvasTaskId) return false;
+    const out = {
+        id:uid('out'),
+        type:'output',
+        x:Number(node.x || 0) + Number(options.dx || 460),
+        y:Number(node.y || 0),
+        images:[],
+        _pending:[]
+    };
+    const connection = {id:uid('c'), from:node.id, to:out.id};
+    const pendingId = uid('p');
+    const pending = makePendingForRun(pendingId, run, node, {
+        refs:options.refs || [],
+        requestSize:options.requestSize,
+        cascadeTargetId:options.cascadeTargetId || ''
+    }, {
+        canvasTaskId:error.canvasTaskId,
+        canvasTaskType:'online-image',
+        providerId:options.providerId || '',
+        model:options.model || '',
+        appendGenerated:Boolean(options.appendGenerated)
+    });
+    out._pending.push(pending);
+    nodes.push(out);
+    connections.push(connection);
+    const handedOff = handoffCanvasJimengTask(error.canvasTaskId, error.taskData || {
+        status:'jimeng_pending',
+        submit_id:error.submitId,
+        kind:error.kind || 'image',
+        message:error.message || ''
+    });
+    if(handedOff) return true;
+    nodes = nodes.filter(item => item !== out);
+    connections = connections.filter(item => item !== connection);
+    return false;
 }
 function currentRecoverPendingOutput(pendingId, pending){
     const out = findOutputByPendingId(pendingId);
@@ -15735,7 +15792,7 @@ async function waitCanvasImageTaskResult(taskId, options={}){
         }
         const data = await res.json();
         if(data.status === 'succeeded') return data.result || {};
-        if(data.status === 'jimeng_pending') throw canvasJimengPendingError(data);
+        if(data.status === 'jimeng_pending') throw canvasJimengPendingError(data, taskId);
         if(data.status === 'failed') throw new Error(data.error || tr('canvas.generationFailed'));
         await sleep(1800);
     }

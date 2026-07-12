@@ -19083,6 +19083,9 @@ function runSmartCascadeFromLoop(loopId){
     selectedImage = {nodeId:'', index:-1};
     runSmartCascade(tail);
 }
+function smartDirectRunOwnerIsCurrent(node, pendingNode){
+    return Boolean(node && pendingNode && nodes.includes(node) && nodes.includes(pendingNode));
+}
 async function runGeneration(){
     const node = selectedNode();
     const request = buildPromptRequest(node, null, true, smartLoopContext);
@@ -19165,6 +19168,7 @@ async function runGeneration(){
     try {
         if(settings.engine === 'comfy'){
             await runComfyGeneration(pendingNode, prompt, refs, pendingNode, pendingMeta);
+            if(!smartDirectRunOwnerIsCurrent(node, pendingNode)){ settings = previousSettings; return; }
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
             addSmartGenerationLog({run:runLog, outputs:pendingNode.images || [], runMs:nowMs() - runLogStart});
             settings = previousSettings;
@@ -19172,6 +19176,7 @@ async function runGeneration(){
         }
         if(isApiLikeEngine(settings.engine) && settings.apiKind === 'video'){
             const outVideos = await runApiVideoGeneration(prompt, refs);
+            if(!smartDirectRunOwnerIsCurrent(node, pendingNode)){ settings = previousSettings; return; }
             if(!outVideos.length) throw new Error(tr('smart.errNoOutVideos'));
             finalizePendingNode(pendingNode, outVideos, pendingMeta, 'video');
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
@@ -19189,6 +19194,7 @@ async function runGeneration(){
                 : settings.engine === 'modelscope'
                 ? await runModelscopeGeneration(prompt, refs)
                 : await runApiGeneration(prompt, refs);
+        if(!smartDirectRunOwnerIsCurrent(node, pendingNode)){ settings = previousSettings; return; }
         if(isApiLikeEngine(settings.engine) || rhModelMode){
             const taskIds = Array.isArray(outImages?.taskIds) ? outImages.taskIds : [];
             if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
@@ -19200,7 +19206,9 @@ async function runGeneration(){
             render();
             scheduleSave();
             await saveCanvas();
+            if(!smartDirectRunOwnerIsCurrent(node, pendingNode)){ settings = previousSettings; return; }
             await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart});
+            if(!smartDirectRunOwnerIsCurrent(node, pendingNode)){ settings = previousSettings; return; }
             if(pendingNode.jimengPending || smartRecoverableImageTask(pendingNode)){
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                 clearPromptInput({preserveDraft:true});
@@ -19227,6 +19235,7 @@ async function runGeneration(){
         scheduleSave();
     } catch(e) {
         settings = previousSettings;
+        if(!smartDirectRunOwnerIsCurrent(node, pendingNode)) return;
         if(handleJimengPendingSignal(pendingNode, e)){
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
             delete pendingNode._runMetaTargetId;
@@ -19252,11 +19261,13 @@ async function runGeneration(){
         if(!e?.smartGenerationLogged) addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
         toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
     } finally {
-        if(!apiConcurrentRun){
-            clearNodeRunningState(pendingNode);
-            syncRunButtonState();
+        if(smartDirectRunOwnerIsCurrent(node, pendingNode)){
+            if(!apiConcurrentRun){
+                clearNodeRunningState(pendingNode);
+                syncRunButtonState();
+            }
+            render();
         }
-        render();
     }
 }
 async function runPromptLLMNode(nodeId){
@@ -19582,6 +19593,41 @@ function smartPendingTasks(node){
     if(!node || !Array.isArray(node.pendingTasks)) return [];
     return node.pendingTasks.filter(task => task && task.taskId);
 }
+function currentSmartJimengQueryOwner(nodeId, owner, submitId){
+    const current = nodes.find(node => node.id === nodeId);
+    return current === owner && current?.jimengPending?.submitId === submitId ? current : null;
+}
+function currentSmartImageQueryOwner(nodeId, owner, localTaskId, ownerTask, recoverTaskId=''){
+    const current = nodes.find(node => node.id === nodeId);
+    const currentTask = current ? smartPendingTasks(current).find(task => task.taskId === localTaskId) : null;
+    return current === owner && currentTask === ownerTask && (!recoverTaskId || currentTask.recoverTaskId === recoverTaskId)
+        ? {node:current, task:currentTask}
+        : null;
+}
+function terminalizeSmartRecoveryTask(node, task, message, recoverTaskId=''){
+    if(!node || !task) return false;
+    const current = currentSmartImageQueryOwner(node.id, node, task.taskId, task, recoverTaskId);
+    if(!current) return false;
+    const error = message || tr('smart.errRunFailed');
+    task.failed = true;
+    task.querying = false;
+    task.recoverTaskId = '';
+    task.canvasTaskStatus = 'failed';
+    task.error = error;
+    node.pendingTasks = smartPendingTasks(node).filter(item => item !== task);
+    node.pending = Math.max(0, Number(node.pending || 0) - 1);
+    node.runStatus = 'failed';
+    node.runError = error;
+    if(!node.pending && smartPendingTasks(node).length === 0){
+        delete node.pendingTasks;
+        node.running = false;
+        if(!(node.images || []).length){
+            delete node.w;
+            delete node.h;
+        }
+    }
+    return true;
+}
 class JimengPendingSignal extends Error {
     constructor(info){
         const data = info || {};
@@ -19708,11 +19754,16 @@ async function queryJimengNow(nodeId){
     render();
     try {
         const data = await fetchJimengQuery(submitId, kind);
-        applyJimengQueryResult(node, data);
+        const current = currentSmartJimengQueryOwner(nodeId, node, submitId);
+        if(!current) return;
+        applyJimengQueryResult(current, data);
     } catch(e){
+        if(!currentSmartJimengQueryOwner(nodeId, node, submitId)) return;
         toast((e.message || '查询失败').slice(0, 160));
     } finally {
-        if(node.jimengPending) node.jimengPending.querying = false;
+        const current = currentSmartJimengQueryOwner(nodeId, node, submitId);
+        if(!current) return;
+        if(current.jimengPending) current.jimengPending.querying = false;
         render();
     }
 }
@@ -19744,27 +19795,44 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
     render();
     try {
         const data = await fetchImageTaskQuery(providerIdForSmartTask(node, task), recoverTaskId);
+        const current = currentSmartImageQueryOwner(nodeId, node, localTaskId, task, recoverTaskId);
+        if(!current) return;
+        const currentNode = current.node;
+        const currentTask = current.task;
         if(data.status === 'succeeded'){
-            task.failed = false;
-            task.querying = false;
-            finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data)), task.kind || 'image');
+            currentTask.failed = false;
+            currentTask.querying = false;
+            finalizeSmartPendingTask(currentNode, currentTask.taskId, resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data)), currentTask.kind || 'image');
             render();
             scheduleSave();
             return;
         }
         if(data.status === 'failed'){
-            task.error = data.error || tr('smart.errRunFailed');
-            toast(task.error.slice(0, 160));
+            const message = data.error || tr('smart.errRunFailed');
+            terminalizeSmartRecoveryTask(currentNode, currentTask, message, recoverTaskId);
+            addSmartGenerationLog({
+                run:{nodeId:currentNode.id, nodeType:currentNode.type || 'smart-image', kind:currentTask.kind || 'image', settings:currentNode.runSettings || {}, prompt:currentNode.runModelPrompt || currentNode.runPrompt || ''},
+                outputs:[],
+                runMs:Math.max(0, nowMs() - Number(currentNode.runStartedAt || nowMs())),
+                error:message
+            });
+            toast(message.slice(0, 160));
+            render();
+            scheduleSave();
+            return;
         } else {
-            task.error = data.message || '任务仍在生成中，请稍后再查询';
-            toast(task.error);
+            currentTask.error = data.message || '任务仍在生成中，请稍后再查询';
+            toast(currentTask.error);
         }
     } catch(e){
-        task.error = e.message || '查询失败';
-        toast(task.error.slice(0, 160));
+        const current = currentSmartImageQueryOwner(nodeId, node, localTaskId, task, recoverTaskId);
+        if(!current) return;
+        current.task.error = e.message || '查询失败';
+        toast(current.task.error.slice(0, 160));
     } finally {
-        const latest = smartPendingTasks(node).find(item => item.taskId === localTaskId);
-        if(latest) latest.querying = false;
+        const current = currentSmartImageQueryOwner(nodeId, node, localTaskId, task, recoverTaskId);
+        if(!current) return;
+        current.task.querying = false;
         render();
         scheduleSave();
     }

@@ -447,6 +447,145 @@ for (const [functionName, ownerName] of [['runRhModelNode', 'node'], ['runGenera
 }
 
 {
+  const generator = { id: 'classic-no-output-owner', x: 20, y: 30, running: true, runStatus: 'running' };
+  const nodes = [generator];
+  const connections = [];
+  let uidIndex = 0;
+  let saveCalls = 0;
+  const source = [
+    functionSource(canvasSource, 'handoffCanvasJimengTask'),
+    functionSource(canvasSource, 'handoffCanvasNoOutputJimengTask'),
+  ].join('\n');
+  const handoffCanvasNoOutputJimengTask = exportedFunction(source, 'handoffCanvasNoOutputJimengTask', {
+    nodes,
+    connections,
+    uid: prefix => `${prefix}-${++uidIndex}`,
+    makePendingForRun: (id, run, node, options, taskOptions) => ({ id, run, ...options, ...taskOptions }),
+    findPendingTask: taskId => {
+      for (const out of nodes.filter(node => node.type === 'output')) {
+        const pending = (out._pending || []).find(item => item.canvasTaskId === taskId);
+        if (pending) return { out, pending };
+      }
+      return null;
+    },
+    tr: key => key,
+    refreshRunNodes() {},
+    scheduleSave: () => { saveCalls += 1; },
+  });
+  const error = Object.assign(new Error('queued remotely'), {
+    jimengPending: true,
+    submitId: 'jimeng-no-output-durable',
+    kind: 'image',
+    canvasTaskId: 'canvas-no-output-durable',
+    taskData: {
+      status: 'jimeng_pending',
+      submit_id: 'jimeng-no-output-durable',
+      kind: 'image',
+      message: 'queued remotely',
+    },
+  });
+
+  assert.equal(handoffCanvasNoOutputJimengTask(generator, { node: { id: generator.id } }, error, {
+    refs: [],
+    requestSize: '1024x1024',
+    providerId: 'runninghub',
+    model: 'rh-model',
+    dx: 500,
+  }), true, 'classic no-output Jimeng must create a durable recovery owner');
+  const out = nodes.find(node => node.type === 'output');
+  assert.ok(out, 'classic no-output Jimeng must create an output node for recovery UI ownership');
+  assert.equal(connections.some(connection => connection.from === generator.id && connection.to === out.id), true, 'classic no-output recovery output must remain connected to its generator');
+  assert.equal(out._pending.length, 1, 'classic no-output recovery output must own one pending record');
+  assert.equal(out._pending[0].recoverTaskId, 'jimeng-no-output-durable', 'classic no-output recovery must persist the Jimeng submit ID');
+  assert.equal(out._pending[0].canvasTaskStatus, 'jimeng_pending', 'classic no-output recovery must retain Jimeng status');
+  assert.equal(generator.runStatus, 'queued', 'classic no-output recovery must leave its generator queued');
+  assert.equal(saveCalls, 1, 'classic no-output recovery must persist the new output and pending record');
+}
+
+function noOutputClassicRunFixture(functionName) {
+  const isRh = functionName === 'runRhModelNode';
+  const node = { id: `${functionName}-owner`, type: isRh ? 'rh' : 'generator', x: 10, y: 20, count: 1, running: false };
+  const nodes = [node];
+  const waitSettlement = deferred();
+  const counters = { handoff: 0, log: 0, modal: 0, save: 0 };
+  let waitStarted = false;
+  const globals = {
+    nodes,
+    cascadeTargetIdFromOptions: () => '',
+    imageRefsOnly: refs => refs,
+    outputForNode: () => null,
+    runSnapshot: () => ({ node: { id: node.id } }),
+    generatorSizeForRun: async () => '1024x1024',
+    normalizedImageQuality: () => '',
+    nowMs: () => 1000,
+    setTimeout: () => 0,
+    createCanvasImageTask: async () => ({ task_id: `${functionName}-canvas-task` }),
+    waitCanvasImageTaskResult: () => {
+      waitStarted = true;
+      return waitSettlement.promise;
+    },
+    requestMetaFromResult: () => ({}),
+    mergeGeneratedOutputs() {},
+    addGenerationLog: () => { counters.log += 1; },
+    refreshRunNodes() {},
+    scheduleSave: () => { counters.save += 1; },
+    handoffCanvasNoOutputJimengTask: (...args) => {
+      counters.handoff += 1;
+      counters.handoffArgs = args;
+      return true;
+    },
+    canvasRunOwnerIsCurrent: owner => nodes.includes(owner),
+    pendingById: () => null,
+    collectRunMetas: () => [],
+    isCascadeAbortError: () => false,
+    tr: key => key,
+    showErrorModal: () => { counters.modal += 1; },
+    saveCanvas: async () => {},
+    pollCanvasImageTask: async () => 'missing',
+    cascadeAbortError: message => new Error(message),
+    cascadeStopMessage: () => 'stopped',
+  };
+  if (isRh) {
+    Object.assign(globals, {
+      rhSelectedEntryRef: () => ({ id: 'rh-model' }),
+      rhMediaSources: () => ({ prompt: 'rh prompt', refs: [] }),
+      alert() {},
+    });
+  } else {
+    Object.assign(globals, {
+      orderedSources: (_owner, sources) => sources,
+      generatorSources: () => [],
+      generationPromptWithMarkerDirectives: () => 'generator prompt',
+      alert() {},
+      resolveImageProviderId: value => value,
+      resolveImageModel: value => value,
+    });
+  }
+  const runFunction = exportedFunction(functionSource(canvasSource, functionName), functionName, globals);
+  const run = isRh ? runFunction(node) : runFunction(node.id);
+  return { counters, node, run, waitSettlement, waitStarted: () => waitStarted };
+}
+
+for (const functionName of ['runGenerator', 'runRhModelNode']) {
+  const fixture = noOutputClassicRunFixture(functionName);
+  for (let index = 0; index < 10 && !fixture.waitStarted(); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  assert.equal(fixture.waitStarted(), true, `${functionName} no-output fixture must reach its deferred waiter`);
+  fixture.waitSettlement.reject(Object.assign(new Error('queued remotely'), {
+    jimengPending: true,
+    submitId: `${functionName}-submit`,
+    kind: 'image',
+    canvasTaskId: `${functionName}-canvas-task`,
+    taskData: { status: 'jimeng_pending', submit_id: `${functionName}-submit`, kind: 'image', message: 'queued remotely' },
+  }));
+  await fixture.run;
+  assert.equal(fixture.counters.handoff, 1, `${functionName} must hand no-output Jimeng into durable recovery state`);
+  assert.equal(fixture.counters.log, 0, `${functionName} no-output Jimeng must not add a generic failure log`);
+  assert.equal(fixture.counters.modal, 0, `${functionName} no-output Jimeng must not show a generic failure modal`);
+}
+
+{
   const activeCanvasTaskPolls = new Set();
   let fetchCalls = 0;
   const pollCanvasImageTask = exportedFunction(ordinaryPollSource, 'pollCanvasImageTask', {
@@ -979,6 +1118,267 @@ function smartPollFixture() {
   fixture.fetchResponse.reject(new Error('smart transport failed'));
   await assert.rejects(poll, /smart transport failed/, 'smart polling must reject with the transport error');
   assert.equal(fixture.activeSmartTaskPolls.has('smart-rejected'), false, 'rejected smart tasks must release active poll ownership');
+}
+
+function smartDirectGenerationFixture() {
+  const generation = deferred();
+  const node = { id: 'smart-direct-owner', type: 'smart-image', images: [], running: false };
+  const nodes = [node];
+  const counters = { log: 0, render: 0, save: 0, toast: 0 };
+  let generationStarted = false;
+  const settings = { engine: 'api', apiKind: 'image', count: 1, provider_id: 'provider-a', model: 'model-a' };
+  const runGeneration = exportedFunction([
+    functionSource(smartCanvasSource, 'smartDirectRunOwnerIsCurrent'),
+    functionSource(smartCanvasSource, 'runGeneration'),
+  ].join('\n'), 'runGeneration', {
+    nodes,
+    selectedNode: () => node,
+    buildPromptRequest: () => ({ prompt: 'smart direct prompt', refs: [], displayPrompt: 'smart direct prompt' }),
+    smartLoopContext: null,
+    smartNodeInFlight: () => false,
+    settings,
+    cloneSmartSettings: value => ({ ...(value || {}) }),
+    smartSettingsForNode: () => null,
+    smartRunNeedsPrompt: () => true,
+    toast: () => { counters.toast += 1; },
+    tr: key => key,
+    snapshotRunMeta: () => ({ sourceNodeId: node.id, settings: { ...settings }, createdAt: 1000 }),
+    smartRunSnapshot: () => ({ nodeId: node.id, nodeType: node.type, kind: 'image', settings: { ...settings }, prompt: 'smart direct prompt', refs: [] }),
+    rememberRecentSmartSettings() {},
+    nowMs: () => 1000,
+    isApiLikeEngine: engine => engine === 'api',
+    isSmartGroupNode: () => false,
+    isSmartImageNode: () => true,
+    imagesForNode: target => target.images || [],
+    smartImageUsesWorkflowInput: () => false,
+    pushUndo() {},
+    undoSuppressed: false,
+    stripRunInputMeta: value => value,
+    createPendingOutputFromSource: () => null,
+    pendingBoxSize: () => ({ w: 240, h: 180 }),
+    attachRunMeta() {},
+    coolNodeRunningState() {},
+    syncRunButtonState() {},
+    render: () => { counters.render += 1; },
+    runApiGeneration: () => {
+      generationStarted = true;
+      return generation.promise;
+    },
+    runningHubSelectedModel: () => null,
+    runningHubModelApiSettings: value => value,
+    runRunningHubGeneration: async () => [],
+    runModelscopeGeneration: async () => [],
+    scheduleSave: () => { counters.save += 1; },
+    saveCanvas: async () => {},
+    resumeSmartPendingNode: async () => {},
+    smartRecoverableImageTask: () => null,
+    restoreSourceVisualState() {},
+    clearPromptInput() {},
+    addSmartGenerationLog: () => { counters.log += 1; },
+    finalizePendingNode() {},
+    handleJimengPendingSignal: () => false,
+    trackSmartDeletedNodeIds() {},
+    canvas: { connections: [] },
+    selectedId: node.id,
+    restoreFromExtraction() {},
+    clearNodeRunningState() {},
+  });
+  return {
+    counters,
+    generation,
+    generationStarted: () => generationStarted,
+    node,
+    nodes,
+    runGeneration,
+    snapshot() {
+      return { counters: { ...counters }, node: JSON.stringify(node) };
+    },
+  };
+}
+
+for (const settlement of ['resolve', 'reject']) {
+  const fixture = smartDirectGenerationFixture();
+  const run = fixture.runGeneration();
+  for (let index = 0; index < 10 && !fixture.generationStarted(); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  assert.equal(fixture.generationStarted(), true, `smart direct ${settlement} fixture must reach deferred generation`);
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  if (settlement === 'resolve') {
+    fixture.generation.resolve({ taskIds: ['smart-direct-task'], providerId: 'provider-a', model: 'model-a' });
+  } else {
+    fixture.generation.reject(new Error('late smart direct failure'));
+  }
+  await run;
+  assert.deepEqual(fixture.snapshot(), baseline, `smart direct late ${settlement} must not mutate, log, save, render, or toast after deletion`);
+  assert.equal(fixture.nodes.length, 0, `smart direct late ${settlement} must not resurrect its node`);
+}
+
+function smartJimengManualQueryFixture() {
+  const response = deferred();
+  const node = {
+    id: 'smart-jimeng-query-owner',
+    jimengPending: { submitId: 'smart-jimeng-submit', kind: 'image', querying: false },
+  };
+  const nodes = [node];
+  const counters = { apply: 0, render: 0, save: 0, toast: 0 };
+  const queryJimengNow = exportedFunction(functionSource(smartCanvasSource, 'queryJimengNow'), 'queryJimengNow', {
+    nodes,
+    fetchJimengQuery: () => response.promise,
+    currentSmartJimengQueryOwner: (nodeId, owner, submitId) => {
+      const current = nodes.find(item => item.id === nodeId);
+      return current === owner && current?.jimengPending?.submitId === submitId ? current : null;
+    },
+    applyJimengQueryResult: (owner, data) => {
+      counters.apply += 1;
+      owner.lastResult = data.status;
+    },
+    toast: () => { counters.toast += 1; },
+    render: () => { counters.render += 1; },
+  });
+  return {
+    counters,
+    node,
+    nodes,
+    queryJimengNow,
+    response,
+    snapshot: () => ({ counters: { ...counters }, node: JSON.stringify(node) }),
+  };
+}
+
+for (const settlement of ['succeeded', 'pending', 'failed', 'rejected']) {
+  const fixture = smartJimengManualQueryFixture();
+  const query = fixture.queryJimengNow(fixture.node.id);
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  if (settlement === 'rejected') fixture.response.reject(new Error('late Jimeng query rejection'));
+  else fixture.response.resolve({ status: settlement, urls: ['/late.png'], error: 'late failure' });
+  await query;
+  assert.deepEqual(fixture.snapshot(), baseline, `deleted Jimeng query owner must ignore late ${settlement} settlement`);
+  assert.equal(fixture.nodes.length, 0, `late Jimeng ${settlement} must not resurrect its owner`);
+}
+
+function smartOrdinaryManualQueryFixture() {
+  const response = deferred();
+  const task = {
+    taskId: 'smart-local-recovery-task',
+    recoverTaskId: 'smart-upstream-recovery-task',
+    failed: true,
+    querying: false,
+    kind: 'image',
+  };
+  const node = { id: 'smart-recovery-query-owner', pendingTasks: [task], pending: 1, running: false, images: [] };
+  const nodes = [node];
+  const counters = { finalize: 0, render: 0, save: 0, terminal: 0, toast: 0, log: 0, fetch: 0 };
+  const querySmartImageTaskNow = exportedFunction(functionSource(smartCanvasSource, 'querySmartImageTaskNow'), 'querySmartImageTaskNow', {
+    nodes,
+    smartPendingTasks: owner => (Array.isArray(owner?.pendingTasks) ? owner.pendingTasks : []),
+    smartRecoverableImageTask: owner => owner?.pendingTasks?.find(item => item.failed && item.recoverTaskId) || null,
+    extractUpstreamTaskId: () => '',
+    toast: () => { counters.toast += 1; },
+    render: () => { counters.render += 1; },
+    fetchImageTaskQuery: () => {
+      counters.fetch = (counters.fetch || 0) + 1;
+      return response.promise;
+    },
+    providerIdForSmartTask: () => 'provider-a',
+    currentSmartImageQueryOwner: (nodeId, owner, localTaskId, ownerTask) => {
+      const current = nodes.find(item => item.id === nodeId);
+      const currentTask = current?.pendingTasks?.find(item => item.taskId === localTaskId);
+      return current === owner && currentTask === ownerTask ? { node: current, task: currentTask } : null;
+    },
+    finalizeSmartPendingTask: () => { counters.finalize += 1; },
+    resultMediaUrls: value => value,
+    terminalizeSmartRecoveryTask: (owner, ownerTask, message) => {
+      counters.terminal += 1;
+      ownerTask.failed = true;
+      ownerTask.querying = false;
+      ownerTask.recoverTaskId = '';
+      ownerTask.error = message;
+      owner.pendingTasks = owner.pendingTasks.filter(item => item !== ownerTask);
+      owner.pending = 0;
+      return true;
+    },
+    addSmartGenerationLog: () => { counters.log += 1; },
+    nowMs: () => 1000,
+    tr: key => key,
+    scheduleSave: () => { counters.save += 1; },
+  });
+  return {
+    counters,
+    node,
+    nodes,
+    querySmartImageTaskNow,
+    response,
+    snapshot: () => ({ counters: { ...counters }, node: JSON.stringify(node), task: JSON.stringify(task) }),
+    task,
+  };
+}
+
+for (const settlement of ['succeeded', 'pending', 'failed', 'rejected']) {
+  const fixture = smartOrdinaryManualQueryFixture();
+  const query = fixture.querySmartImageTaskNow(fixture.node.id, fixture.task.taskId);
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  if (settlement === 'rejected') fixture.response.reject(new Error('late ordinary recovery rejection'));
+  else fixture.response.resolve({ status: settlement, images: ['/late.png'], error: 'late failure', message: 'still pending' });
+  await query;
+  assert.deepEqual(fixture.snapshot(), baseline, `deleted ordinary recovery owner must ignore late ${settlement} settlement`);
+  assert.equal(fixture.nodes.length, 0, `late ordinary recovery ${settlement} must not resurrect its owner`);
+}
+
+{
+  const fixture = smartOrdinaryManualQueryFixture();
+  fixture.response.resolve({ status: 'failed', error: 'terminal smart recovery failure' });
+  await fixture.querySmartImageTaskNow(fixture.node.id, fixture.task.taskId);
+  assert.equal(fixture.counters.terminal, 1, 'terminal smart recovery must be finalized exactly once');
+  assert.equal(fixture.counters.log, 1, 'terminal smart recovery must add one terminal generation log');
+  assert.equal(fixture.counters.toast, 1, 'terminal smart recovery must report its failure once');
+  assert.equal(fixture.task.recoverTaskId, '', 'terminal smart recovery must clear its upstream task ID');
+  assert.equal(fixture.task.querying, false, 'terminal smart recovery must clear query ownership');
+  assert.equal(fixture.node.pendingTasks.length, 0, 'terminal smart recovery must remove its pending task');
+  assert.equal(fixture.node.pending, 0, 'terminal smart recovery must release pending ownership');
+  const fetchCalls = fixture.counters.fetch || 0;
+  await fixture.querySmartImageTaskNow(fixture.node.id, fixture.task.taskId);
+  assert.equal(fixture.counters.fetch || 0, fetchCalls, 'terminal smart recovery must not be queryable again');
+}
+
+{
+  const response = Promise.resolve({ status: 'failed', error: 'production terminal recovery failure' });
+  const task = { taskId: 'production-terminal-task', recoverTaskId: 'production-upstream-task', failed: true, querying: false, kind: 'image' };
+  const node = { id: 'production-terminal-owner', type: 'smart-image', pendingTasks: [task], pending: 1, running: false, images: [] };
+  const nodes = [node];
+  let logCalls = 0;
+  const source = [
+    functionSource(smartCanvasSource, 'smartPendingTasks'),
+    functionSource(smartCanvasSource, 'currentSmartImageQueryOwner'),
+    functionSource(smartCanvasSource, 'terminalizeSmartRecoveryTask'),
+    functionSource(smartCanvasSource, 'querySmartImageTaskNow'),
+  ].join('\n');
+  const querySmartImageTaskNow = exportedFunction(source, 'querySmartImageTaskNow', {
+    nodes,
+    smartRecoverableImageTask: owner => owner?.pendingTasks?.find(item => item.failed && item.recoverTaskId) || null,
+    extractUpstreamTaskId: () => '',
+    fetchImageTaskQuery: () => response,
+    providerIdForSmartTask: () => 'provider-a',
+    resultMediaUrls: value => value,
+    addSmartGenerationLog: () => { logCalls += 1; },
+    nowMs: () => 1200,
+    toast() {},
+    render() {},
+    tr: key => key,
+    scheduleSave() {},
+  });
+
+  await querySmartImageTaskNow(node.id, task.taskId);
+  assert.equal('pendingTasks' in node, false, 'the production smart terminalizer must remove the failed recovery task');
+  assert.equal(task.recoverTaskId, '', 'the production smart terminalizer must clear the recovery ID');
+  assert.equal(task.querying, false, 'the production smart terminalizer must clear query ownership');
+  assert.equal(node.pending, 0, 'the production smart terminalizer must clear pending count');
+  assert.equal(node.running, false, 'the production smart terminalizer must stop the node');
+  assert.equal(node.runStatus, 'failed', 'the production smart terminalizer must mark the node failed');
+  assert.equal(logCalls, 1, 'the production smart terminalizer path must log the terminal failure once');
 }
 
 const smartResumeSource = [
