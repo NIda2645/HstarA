@@ -269,7 +269,7 @@
         let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;
         let historyAutoLoadArmed = false, historyAutoObserver = null;
         let historyAutoEntrySeen = false, historyAutoInitialPending = false;
-        let historyAutoTouchStartY = null;
+        let historyAutoTouchStartX = null, historyAutoTouchStartY = null;
         const PAGE_SIZE = 16;
         const SIZE_OPTIONS = {
             square: [
@@ -870,7 +870,12 @@
             }
         }
         async function requestInitialHistoryAutoLoad(){
-            if(!historyAutoInitialPending || isLoading || historyMutationDepth > 0 || !historyHasMore) return;
+            if(!historyAutoInitialPending) return;
+            if(!historyHasMore){
+                historyAutoInitialPending = false;
+                return 'exhausted';
+            }
+            if(isLoading || historyMutationDepth > 0) return;
             const outcome = await loadHistory(false);
             if(['loaded','queued','exhausted'].includes(outcome)) historyAutoInitialPending = false;
             return outcome;
@@ -892,15 +897,23 @@
                 return requestInitialHistoryAutoLoad();
             }
             if(event.type === 'touchmove'){
-                const currentY = event.touches?.[0]?.clientY;
-                if(historyAutoTouchStartY === null || currentY === undefined || currentY >= historyAutoTouchStartY) return;
+                const touch = event.touches?.[0];
+                const currentX = touch?.clientX;
+                const currentY = touch?.clientY;
+                if(historyAutoTouchStartX === null || historyAutoTouchStartY === null || currentX === undefined || currentY === undefined) return;
+                const deltaX = currentX - historyAutoTouchStartX;
+                const deltaY = currentY - historyAutoTouchStartY;
+                if(deltaY >= 0 || Math.abs(deltaY) < Math.abs(deltaX)) return;
                 return requestInitialHistoryAutoLoad();
             }
         }
         function handleHistoryAutoTouchStart(event){
-            historyAutoTouchStartY = event.touches?.[0]?.clientY ?? null;
+            const touch = event.touches?.[0];
+            historyAutoTouchStartX = touch?.clientX ?? null;
+            historyAutoTouchStartY = touch?.clientY ?? null;
         }
         function resetHistoryAutoTouchIntent(){
+            historyAutoTouchStartX = null;
             historyAutoTouchStartY = null;
         }
         function syncHistoryAutoObserver(){

@@ -24,7 +24,7 @@ assert.match(onlineHtml, /id="historyLoadSentinel"/);
 assert.match(onlineHtml, /id="historyLoadStatus"[^>]+role="status"[^>]+aria-live="polite"/);
 assert.match(onlineHtml, /let historyAutoLoadArmed = false, historyAutoObserver = null;/);
 assert.match(onlineHtml, /let historyAutoEntrySeen = false, historyAutoInitialPending = false;/);
-assert.match(onlineHtml, /let historyAutoTouchStartY = null;/);
+assert.match(onlineHtml, /let historyAutoTouchStartX = null, historyAutoTouchStartY = null;/);
 assert.equal((onlineHtml.match(/new\s+IntersectionObserver\s*\(/g) || []).length, 1);
 assert.match(onlineHtml, /rootMargin:\s*'0px 0px 320px 0px'/);
 const historyAutoHandlersStart = onlineHtml.indexOf('function handleHistoryAutoIntersections(entries)');
@@ -37,7 +37,7 @@ const historyAutoHandlersSource = onlineHtml.slice(historyAutoHandlersStart, his
 assert.match(historyAutoHandlersSource, /for\(const entry of entries\)/);
 assert.match(
   historyAutoHandlersSource,
-  /async function requestInitialHistoryAutoLoad\(\)\s*{\s*if\(!historyAutoInitialPending \|\| isLoading \|\| historyMutationDepth > 0 \|\| !historyHasMore\) return;\s*const outcome = await loadHistory\(false\);\s*if\(\['loaded','queued','exhausted'\]\.includes\(outcome\)\) historyAutoInitialPending = false;\s*return outcome;\s*}/,
+  /async function requestInitialHistoryAutoLoad\(\)\s*{\s*if\(!historyAutoInitialPending\) return;\s*if\(!historyHasMore\)\s*{\s*historyAutoInitialPending = false;\s*return 'exhausted';\s*}\s*if\(isLoading \|\| historyMutationDepth > 0\) return;\s*const outcome = await loadHistory\(false\);\s*if\(\['loaded','queued','exhausted'\]\.includes\(outcome\)\) historyAutoInitialPending = false;\s*return outcome;\s*}/,
 );
 assert.match(
   historyAutoHandlersSource,
@@ -92,7 +92,7 @@ function createHistoryAutoHarness(loadOutcomes=['loaded']){
     let historyAutoLoadArmed = false;
     let historyAutoEntrySeen = false;
     let historyAutoInitialPending = false;
-    let historyAutoTouchStartY = null;
+    let historyAutoTouchStartX = null, historyAutoTouchStartY = null;
     let isLoading = false;
     let historyHasMore = true;
     let historyMutationDepth = 0;
@@ -115,6 +115,7 @@ function createHistoryAutoHarness(loadOutcomes=['loaded']){
       isArmed: () => historyAutoLoadArmed,
       isEntrySeen: () => historyAutoEntrySeen,
       isInitialPending: () => historyAutoInitialPending,
+      touchStartX: () => historyAutoTouchStartX,
       touchStartY: () => historyAutoTouchStartY,
       setLoading: value => { isLoading = value; },
       setHasMore: value => { historyHasMore = value; },
@@ -164,9 +165,9 @@ assert.equal(guardedIntentAutoLoad.requestCount(), 0, 'loading must block initia
 assert.equal(guardedIntentAutoLoad.isInitialPending(), true);
 guardedIntentAutoLoad.setLoading(false);
 guardedIntentAutoLoad.setHasMore(false);
-await guardedIntentAutoLoad.request();
+assert.equal(await guardedIntentAutoLoad.request(), 'exhausted');
 assert.equal(guardedIntentAutoLoad.requestCount(), 0, 'exhausted history must block initial intent requests');
-assert.equal(guardedIntentAutoLoad.isInitialPending(), true);
+assert.equal(guardedIntentAutoLoad.isInitialPending(), false, 'exhausted history must consume initial pending');
 
 const guardedIntersectionAutoLoad = createHistoryAutoHarness();
 guardedIntersectionAutoLoad.handle([{isIntersecting:false}]);
@@ -283,25 +284,38 @@ assert.equal(wheelAutoLoad.isInitialPending(), false);
 
 const touchAutoLoad = createHistoryAutoHarness();
 touchAutoLoad.handle([{isIntersecting:true}]);
-touchAutoLoad.touchStart({touches:[{clientY:100}]});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:120}], target:bodyIntentTarget});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:100}], target:bodyIntentTarget});
-assert.equal(touchAutoLoad.requestCount(), 0, 'downward and non-directional touch gestures must be ignored');
+touchAutoLoad.touchStart({touches:[{clientX:100, clientY:100}]});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:120}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:100}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:200, clientY:99}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:80}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], ctrlKey:true, target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], shiftKey:true, target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], defaultPrevented:true, target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], target:historyAutoControlTarget('button')});
+assert.equal(
+  touchAutoLoad.requestCount(),
+  0,
+  'downward, non-directional, horizontal, missing-coordinate, modified, prevented, and control touch gestures must be ignored',
+);
 assert.equal(touchAutoLoad.isInitialPending(), true);
 touchAutoLoad.touchEnd();
+assert.equal(touchAutoLoad.touchStartX(), null, 'touchend must reset horizontal touch state');
 assert.equal(touchAutoLoad.touchStartY(), null, 'touchend must reset touch intent state');
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:80}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], target:bodyIntentTarget});
 assert.equal(touchAutoLoad.requestCount(), 0, 'touchmove without an active start must be ignored');
-touchAutoLoad.touchStart({touches:[{clientY:100}]});
-await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:80}], target:bodyIntentTarget});
-assert.equal(touchAutoLoad.requestCount(), 1, 'upward finger movement must attempt one pending page');
+touchAutoLoad.touchStart({touches:[{clientX:100, clientY:100}]});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:110, clientY:80}], target:bodyIntentTarget});
+assert.equal(touchAutoLoad.requestCount(), 1, 'vertical-dominant upward finger movement must attempt one pending page');
 assert.equal(touchAutoLoad.isInitialPending(), false);
 
 const cancelledTouchAutoLoad = createHistoryAutoHarness();
 cancelledTouchAutoLoad.handle([{isIntersecting:true}]);
-cancelledTouchAutoLoad.touchStart({touches:[{clientY:100}]});
+cancelledTouchAutoLoad.touchStart({touches:[{clientX:100, clientY:100}]});
 cancelledTouchAutoLoad.touchEnd();
-await cancelledTouchAutoLoad.pointer({type:'touchmove', touches:[{clientY:80}], target:bodyIntentTarget});
+assert.equal(cancelledTouchAutoLoad.touchStartX(), null);
+assert.equal(cancelledTouchAutoLoad.touchStartY(), null);
+await cancelledTouchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], target:bodyIntentTarget});
 assert.equal(cancelledTouchAutoLoad.requestCount(), 0, 'touchcancel reset must prevent stale directional intent');
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
