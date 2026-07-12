@@ -25,6 +25,10 @@ assert.match(onlineHtml, /id="historyLoadStatus"[^>]+role="status"[^>]+aria-live
 assert.match(onlineHtml, /let historyAutoLoadArmed = false, historyAutoObserver = null;/);
 assert.match(onlineHtml, /let historyAutoEntrySeen = false, historyAutoInitialPending = false;/);
 assert.match(onlineHtml, /let historyAutoTouchStartX = null, historyAutoTouchStartY = null;/);
+assert.match(
+  onlineHtml,
+  /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null, queuedHistorySource = 'default';/,
+);
 assert.equal((onlineHtml.match(/new\s+IntersectionObserver\s*\(/g) || []).length, 1);
 assert.match(onlineHtml, /rootMargin:\s*'0px 0px 320px 0px'/);
 const historyAutoHandlersStart = onlineHtml.indexOf('function handleHistoryAutoIntersections(entries)');
@@ -37,7 +41,7 @@ const historyAutoHandlersSource = onlineHtml.slice(historyAutoHandlersStart, his
 assert.match(historyAutoHandlersSource, /for\(const entry of entries\)/);
 assert.match(
   historyAutoHandlersSource,
-  /async function requestInitialHistoryAutoLoad\(\)\s*{\s*if\(!historyAutoInitialPending\) return;\s*if\(!historyHasMore\)\s*{\s*historyAutoInitialPending = false;\s*return 'exhausted';\s*}\s*if\(isLoading \|\| historyMutationDepth > 0\) return;\s*const outcome = await loadHistory\(false\);\s*if\(\['loaded','queued','exhausted'\]\.includes\(outcome\)\) historyAutoInitialPending = false;\s*return outcome;\s*}/,
+  /async function requestInitialHistoryAutoLoad\(\)\s*{\s*if\(!historyAutoInitialPending \|\| isLoading \|\| historyMutationDepth > 0\) return;\s*return loadHistory\(false, 'initial'\);\s*}/,
 );
 assert.match(
   historyAutoHandlersSource,
@@ -98,9 +102,18 @@ function createHistoryAutoHarness(loadOutcomes=['loaded']){
     let historyMutationDepth = 0;
     const requests = [];
     const outcomes = ${JSON.stringify(loadOutcomes)};
-    async function loadHistory(reset){
+    async function loadHistory(reset, source='default'){
+      if(!reset && !historyHasMore){
+        if(source === 'initial') historyAutoInitialPending = false;
+        return 'exhausted';
+      }
       requests.push(reset);
-      return outcomes.length ? outcomes.shift() : 'loaded';
+      const outcome = outcomes.length ? outcomes.shift() : 'loaded';
+      if(source === 'initial'){
+        if(outcome === 'loaded') historyAutoInitialPending = false;
+        else if(outcome === 'failed') historyAutoInitialPending = true;
+      }
+      return outcome;
     }
     ${historyAutoHandlersSource}
     return {
@@ -253,13 +266,6 @@ assert.equal(retryableInitialAutoLoad.isInitialPending(), false, 'successful ret
 await retryableInitialAutoLoad.request();
 assert.equal(retryableInitialAutoLoad.requestCount(), 2, 'consumed retry must remain one-shot');
 
-const queuedInitialAutoLoad = createHistoryAutoHarness(['queued']);
-queuedInitialAutoLoad.handle([{isIntersecting:true}]);
-assert.equal(await queuedInitialAutoLoad.request(), 'queued');
-assert.equal(queuedInitialAutoLoad.isInitialPending(), false, 'queued retry must consume pending');
-await queuedInitialAutoLoad.request();
-assert.equal(queuedInitialAutoLoad.requestCount(), 1, 'queued retry must not permit an extra page intent');
-
 const mutationGuardedInitialAutoLoad = createHistoryAutoHarness();
 mutationGuardedInitialAutoLoad.handle([{isIntersecting:true}]);
 mutationGuardedInitialAutoLoad.setMutationDepth(1);
@@ -322,38 +328,46 @@ await cancelledTouchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, c
 assert.equal(cancelledTouchAutoLoad.requestCount(), 0, 'touchcancel reset must prevent stale directional intent');
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
-assert.match(onlineHtml, /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;/);
 assert.match(
   onlineHtml,
   /function beginHistoryMutation\(\)\s*{\s*historyRevision \+= 1;\s*historyMutationDepth \+= 1;\s*}/,
 );
 assert.match(
   onlineHtml,
-  /function queueHistoryLoad\(reset\)\s*{\s*if\(queuedHistoryLoad === null \|\| reset\) queuedHistoryLoad = reset;\s*}/,
+  /function queueHistoryLoad\(reset, source='default'\)\s*{\s*if\(queuedHistoryLoad === null \|\| reset\) queuedHistoryLoad = reset;\s*if\(source === 'initial'\) queuedHistorySource = 'initial';\s*}/,
 );
 assert.match(
   onlineHtml,
-  /function runQueuedHistoryLoad\(\)\s*{\s*if\(historyMutationDepth > 0 \|\| isLoading \|\| queuedHistoryLoad === null\) return;\s*const reset = queuedHistoryLoad;\s*queuedHistoryLoad = null;\s*loadHistory\(reset\);\s*}/,
+  /function runQueuedHistoryLoad\(\)\s*{\s*if\(historyMutationDepth > 0 \|\| isLoading \|\| queuedHistoryLoad === null\) return;\s*const reset = queuedHistoryLoad;\s*const source = queuedHistorySource;\s*queuedHistoryLoad = null;\s*queuedHistorySource = 'default';\s*loadHistory\(reset, source\);\s*}/,
 );
 assert.match(
   onlineHtml,
   /function finishHistoryMutation\(offsetDelta=0\)\s*{\s*historyOffset = Math\.max\(0, historyOffset \+ offsetDelta\);\s*historyMutationDepth = Math\.max\(0, historyMutationDepth - 1\);\s*if\(historyMutationDepth === 0\) runQueuedHistoryLoad\(\);\s*}/,
 );
 const loadHistorySource = onlineHtml.slice(
-  onlineHtml.indexOf('async function loadHistory(reset=false)'),
+  onlineHtml.indexOf("async function loadHistory(reset=false, source='default')"),
   onlineHtml.indexOf('let lightboxPreview = null'),
 );
+assert.ok(loadHistorySource.length > 0, 'loadHistory must accept an explicit source');
 assert.match(
   loadHistorySource,
-  /if\(historyMutationDepth > 0\)\s*{\s*queueHistoryLoad\(reset\);\s*return 'queued';\s*}/,
+  /if\(historyMutationDepth > 0\)\s*{\s*queueHistoryLoad\(reset, source\);\s*return 'queued';\s*}/,
   'history GETs must queue while mutations are in flight',
 );
 assert.match(loadHistorySource, /if\(isLoading\) return 'busy';/);
-assert.match(loadHistorySource, /if\(!reset && !historyHasMore\) return 'exhausted';/);
 assert.match(loadHistorySource, /let outcome = 'failed';/);
 assert.match(loadHistorySource, /outcome = 'loaded';/);
 assert.match(loadHistorySource, /return outcome;\s*}/);
 assert.match(loadHistorySource, /const requestRevision = historyRevision;/);
+assert.equal((loadHistorySource.match(/queueHistoryLoad\(reset, source\)/g) || []).length, 3);
+assert.match(
+  loadHistorySource,
+  /if\(!reset && !historyHasMore\)\s*{\s*if\(source === 'initial'\) historyAutoInitialPending = false;\s*return 'exhausted';\s*}/,
+);
+assert.match(
+  loadHistorySource,
+  /if\(source === 'initial'\)\s*{\s*if\(outcome === 'loaded'\) historyAutoInitialPending = false;\s*else if\(outcome === 'failed'\) historyAutoInitialPending = true;\s*}/,
+);
 assert.ok(
   onlineHtml.indexOf('const requestRevision = historyRevision;')
     < onlineHtml.indexOf('const response = await fetch(`/api/history?type=online'),
@@ -362,7 +376,7 @@ assert.ok(
 const staleResponseGuard = 'if(requestRevision !== historyRevision){';
 assert.match(
   loadHistorySource,
-  /if\(requestRevision !== historyRevision\)\s*{\s*queueHistoryLoad\(reset\);\s*outcome = 'queued';\s*}\s*else\s*{/,
+  /if\(requestRevision !== historyRevision\)\s*{\s*queueHistoryLoad\(reset, source\);\s*outcome = 'queued';\s*}\s*else\s*{/,
   'stale history responses must queue the same request mode',
 );
 assert.ok(
@@ -371,8 +385,104 @@ assert.ok(
 );
 assert.match(
   loadHistorySource,
-  /finally\s*{\s*if\(requestRevision !== historyRevision\)\s*{\s*queueHistoryLoad\(reset\);\s*outcome = 'queued';\s*}[\s\S]*isLoading = false;\s*runQueuedHistoryLoad\(\);/,
+  /finally\s*{\s*if\(requestRevision !== historyRevision\)\s*{\s*queueHistoryLoad\(reset, source\);\s*outcome = 'queued';\s*}[\s\S]*isLoading = false;\s*runQueuedHistoryLoad\(\);/,
 );
+
+const historyQueueLoadSource = onlineHtml.slice(
+  onlineHtml.indexOf("function queueHistoryLoad(reset, source='default')"),
+  onlineHtml.indexOf('let lightboxPreview = null'),
+);
+const requestInitialHistorySource = historyAutoHandlersSource.slice(
+  historyAutoHandlersSource.indexOf('async function requestInitialHistoryAutoLoad()'),
+  historyAutoHandlersSource.indexOf('function isHistoryAutoIntentBlocked(event)'),
+);
+
+function createHistoryOriginHarness(fetchPlans=[]){
+  return runInNewContext(`(() => {
+    let historyOffset = 0, historyHasMore = true;
+    let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null, queuedHistorySource = 'default';
+    let historyAutoInitialPending = true;
+    let isLoading = false;
+    const PAGE_SIZE = 16;
+    const plans = ${JSON.stringify(fetchPlans)};
+    const fetches = [];
+    const loadCalls = [];
+    const diagnostics = [];
+    const status = {
+      textContent: '',
+      classList: {add(){}, remove(){}},
+    };
+    const masonry = {innerHTML: ''};
+    const document = {getElementById: id => id === 'historyLoadStatus' ? status : masonry};
+    const console = {error: (...args) => diagnostics.push(args)};
+    function tr(key){ return key; }
+    function renderHistoryBatch(){}
+    function syncHistoryAutoObserver(){}
+    async function fetch(){
+      const plan = plans.shift();
+      fetches.push(plan);
+      if(plan === 'stale'){
+        historyRevision += 1;
+        return {
+          ok: true,
+          json: async () => ({items:[], offset:0, next_offset:0, has_more:true}),
+        };
+      }
+      if(plan === 'failed') return {ok:false, status:503};
+      return {
+        ok: true,
+        json: async () => ({items:[], offset:0, next_offset:0, has_more:true}),
+      };
+    }
+    ${historyQueueLoadSource}
+    const productionLoadHistory = loadHistory;
+    loadHistory = async function(reset=false, source='default'){
+      loadCalls.push({reset, source});
+      return productionLoadHistory(reset, source);
+    };
+    ${requestInitialHistorySource}
+    return {
+      request: () => requestInitialHistoryAutoLoad(),
+      queue: (reset, source) => queueHistoryLoad(reset, source),
+      fetchCount: () => fetches.length,
+      loadSources: () => loadCalls.map(call => call.source).join(','),
+      pending: () => historyAutoInitialPending,
+      queuedReset: () => queuedHistoryLoad,
+      queuedSource: () => queuedHistorySource,
+      loading: () => isLoading,
+      diagnosticCount: () => diagnostics.length,
+    };
+  })()`);
+}
+
+async function flushHistoryAutoMicrotasks(){
+  for(let index = 0; index < 12; index += 1) await Promise.resolve();
+}
+
+const queueDominanceHarness = createHistoryOriginHarness();
+queueDominanceHarness.queue(false, 'default');
+queueDominanceHarness.queue(false, 'initial');
+queueDominanceHarness.queue(true, 'default');
+assert.equal(queueDominanceHarness.queuedReset(), true, 'reset requests must retain queue dominance');
+assert.equal(queueDominanceHarness.queuedSource(), 'initial', 'initial source must retain queue dominance');
+
+const staleInitialHarness = createHistoryOriginHarness(['stale', 'failed', 'loaded']);
+assert.equal(await staleInitialHarness.request(), 'queued');
+await flushHistoryAutoMicrotasks();
+assert.equal(staleInitialHarness.fetchCount(), 2, 'stale initial load must launch one detached queued retry');
+assert.equal(staleInitialHarness.loadSources(), 'initial,initial', 'detached retry must retain initial source');
+assert.equal(staleInitialHarness.pending(), true, 'failed detached initial retry must restore pending');
+assert.equal(staleInitialHarness.queuedReset(), null);
+assert.equal(staleInitialHarness.queuedSource(), 'default');
+assert.equal(staleInitialHarness.loading(), false);
+assert.equal(staleInitialHarness.diagnosticCount(), 1);
+assert.equal(await staleInitialHarness.request(), 'loaded');
+await flushHistoryAutoMicrotasks();
+assert.equal(staleInitialHarness.fetchCount(), 3, 'second user intent must perform exactly one new request');
+assert.equal(staleInitialHarness.loadSources(), 'initial,initial,initial');
+assert.equal(staleInitialHarness.pending(), false, 'successful user retry must consume pending');
+await staleInitialHarness.request();
+assert.equal(staleInitialHarness.fetchCount(), 3, 'consumed pending must not issue an extra request');
 
 const generationSource = onlineHtml.slice(
   onlineHtml.indexOf('async function submitImage()'),

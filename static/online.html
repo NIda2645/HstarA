@@ -266,7 +266,7 @@
         let models = {gpt:'gpt-image-2', nano:'nano-banana-pro'};
         let currentResult = null, currentLightboxData = null, isLoading = false;
         let historyOffset = 0, historyHasMore = true;
-        let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;
+        let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null, queuedHistorySource = 'default';
         let historyAutoLoadArmed = false, historyAutoObserver = null;
         let historyAutoEntrySeen = false, historyAutoInitialPending = false;
         let historyAutoTouchStartX = null, historyAutoTouchStartY = null;
@@ -700,27 +700,33 @@
             historyRevision += 1;
             historyMutationDepth += 1;
         }
-        function queueHistoryLoad(reset){
+        function queueHistoryLoad(reset, source='default'){
             if(queuedHistoryLoad === null || reset) queuedHistoryLoad = reset;
+            if(source === 'initial') queuedHistorySource = 'initial';
         }
         function runQueuedHistoryLoad(){
             if(historyMutationDepth > 0 || isLoading || queuedHistoryLoad === null) return;
             const reset = queuedHistoryLoad;
+            const source = queuedHistorySource;
             queuedHistoryLoad = null;
-            loadHistory(reset);
+            queuedHistorySource = 'default';
+            loadHistory(reset, source);
         }
         function finishHistoryMutation(offsetDelta=0){
             historyOffset = Math.max(0, historyOffset + offsetDelta);
             historyMutationDepth = Math.max(0, historyMutationDepth - 1);
             if(historyMutationDepth === 0) runQueuedHistoryLoad();
         }
-        async function loadHistory(reset=false){
+        async function loadHistory(reset=false, source='default'){
             if(historyMutationDepth > 0){
-                queueHistoryLoad(reset);
+                queueHistoryLoad(reset, source);
                 return 'queued';
             }
             if(isLoading) return 'busy';
-            if(!reset && !historyHasMore) return 'exhausted';
+            if(!reset && !historyHasMore){
+                if(source === 'initial') historyAutoInitialPending = false;
+                return 'exhausted';
+            }
             isLoading = true;
             const requestRevision = historyRevision;
             const status = document.getElementById('historyLoadStatus');
@@ -737,7 +743,7 @@
                 if(!response.ok) throw new Error(`History request failed with status ${response.status}`);
                 const page = await response.json();
                 if(requestRevision !== historyRevision){
-                    queueHistoryLoad(reset);
+                    queueHistoryLoad(reset, source);
                     outcome = 'queued';
                 } else {
                     const items = Array.isArray(page.items) ? page.items : [];
@@ -751,13 +757,17 @@
                 console.error('Failed to load online image history:', error);
             } finally {
                 if(requestRevision !== historyRevision){
-                    queueHistoryLoad(reset);
+                    queueHistoryLoad(reset, source);
                     outcome = 'queued';
                 }
                 status.classList.add('hidden');
                 status.textContent = '';
                 isLoading = false;
                 runQueuedHistoryLoad();
+            }
+            if(source === 'initial'){
+                if(outcome === 'loaded') historyAutoInitialPending = false;
+                else if(outcome === 'failed') historyAutoInitialPending = true;
             }
             return outcome;
         }
@@ -870,15 +880,8 @@
             }
         }
         async function requestInitialHistoryAutoLoad(){
-            if(!historyAutoInitialPending) return;
-            if(!historyHasMore){
-                historyAutoInitialPending = false;
-                return 'exhausted';
-            }
-            if(isLoading || historyMutationDepth > 0) return;
-            const outcome = await loadHistory(false);
-            if(['loaded','queued','exhausted'].includes(outcome)) historyAutoInitialPending = false;
-            return outcome;
+            if(!historyAutoInitialPending || isLoading || historyMutationDepth > 0) return;
+            return loadHistory(false, 'initial');
         }
         function isHistoryAutoIntentBlocked(event){
             return event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
