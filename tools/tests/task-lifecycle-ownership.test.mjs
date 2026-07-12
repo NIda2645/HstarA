@@ -307,6 +307,7 @@ assert.equal(
 );
 
 const ordinaryPollSource = functionSource(canvasSource, 'pollCanvasImageTask');
+const pendingRunCompletionSource = functionSource(canvasSource, 'hasRemainingPendingTasksForRun');
 
 {
   const generator = { id: 'deleted-generator' };
@@ -764,6 +765,7 @@ for (const functionName of ['runGenerator', 'runRhModelNode']) {
   const nodes = [generator, out];
   const counters = { append: 0, log: 0, merge: 0, refresh: 0, save: 0 };
   const source = [
+    pendingRunCompletionSource,
     functionSource(canvasSource, 'completeRecoverPendingOutput'),
     functionSource(canvasSource, 'completeCanvasImageTask'),
   ].join('\n');
@@ -805,7 +807,7 @@ for (const functionName of ['runGenerator', 'runRhModelNode']) {
   const generator = { id: 'single-completion-generator', running: true, runStatus: 'running', runError: 'old error' };
   const nodes = [generator, out];
   let logCalls = 0;
-  const completeCanvasImageTask = exportedFunction(functionSource(canvasSource, 'completeCanvasImageTask'), 'completeCanvasImageTask', {
+  const completeCanvasImageTask = exportedFunction(`${pendingRunCompletionSource}\n${functionSource(canvasSource, 'completeCanvasImageTask')}`, 'completeCanvasImageTask', {
     nodes,
     findPendingTask: () => ({ out, pending }),
     nowMs: () => 1200,
@@ -823,6 +825,90 @@ for (const functionName of ['runGenerator', 'runRhModelNode']) {
   assert.equal(generator.running, false, 'single-task completion must stop the generator');
   assert.equal(out._pending.length, 0, 'single-task completion must release pending ownership');
   assert.equal(logCalls, 1, 'single-task completion must log exactly once');
+}
+
+{
+  const firstRun = JSON.parse(JSON.stringify({ runId: 'overlap-run-a', node: { id: 'overlap-generator' }, refs: [] }));
+  const secondRun = JSON.parse(JSON.stringify({ runId: 'overlap-run-b', node: { id: 'overlap-generator' }, refs: [] }));
+  const firstPending = {
+    id: 'overlap-pending-a',
+    canvasTaskId: 'overlap-task-a',
+    startedAt: 900,
+    run: firstRun,
+  };
+  const secondPending = {
+    id: 'overlap-pending-b',
+    canvasTaskId: 'overlap-task-b',
+    canvasTaskStatus: 'queued',
+    startedAt: 900,
+    run: secondRun,
+  };
+  const firstOut = { id: 'overlap-output-a', type: 'output', _pending: [firstPending], images: [] };
+  const secondOut = { id: 'overlap-output-b', type: 'output', _pending: [secondPending], images: [] };
+  const generator = { id: 'overlap-generator', running: false, runStatus: 'queued', runError: '' };
+  const nodes = [generator, firstOut, secondOut];
+  const counters = { append: 0, log: 0, merge: 0, refresh: 0, save: 0 };
+  const completeCanvasImageTask = exportedFunction(`${pendingRunCompletionSource}\n${functionSource(canvasSource, 'completeCanvasImageTask')}`, 'completeCanvasImageTask', {
+    nodes,
+    findPendingTask: taskId => {
+      for (const out of [firstOut, secondOut]) {
+        const pending = out._pending.find(item => item.canvasTaskId === taskId);
+        if (pending) return { out, pending };
+      }
+      return null;
+    },
+    nowMs: () => 1200,
+    requestMetaFromResult: () => ({}),
+    appendOutputImages: () => { counters.append += 1; },
+    mergeGeneratedOutputs: () => { counters.merge += 1; },
+    addGenerationLog: () => { counters.log += 1; },
+    refreshRunNodes: () => { counters.refresh += 1; },
+    scheduleSave: () => { counters.save += 1; },
+  });
+
+  completeCanvasImageTask(firstPending.canvasTaskId, { images: ['/overlap-a.png'] });
+  assert.equal(generator.runStatus, 'done', 'a run must become done when its own final task resolves despite another run on the generator');
+  assert.equal(firstOut._pending.length, 0, 'the completed run must release its pending owner');
+  assert.deepEqual(secondOut._pending, [secondPending], 'completion must preserve the distinct queued run');
+  assert.equal(secondPending.canvasTaskStatus, 'queued', 'the distinct run must remain queued until its own completion');
+  assert.deepEqual(counters, { append: 1, log: 1, merge: 1, refresh: 1, save: 1 }, 'the first overlapping run must complete exactly once');
+
+  completeCanvasImageTask(firstPending.canvasTaskId, { images: ['/overlap-a-duplicate.png'] });
+  assert.deepEqual(counters, { append: 1, log: 1, merge: 1, refresh: 1, save: 1 }, 'duplicate overlapping completion must not duplicate output or logs');
+
+  generator.runStatus = 'queued';
+  completeCanvasImageTask(secondPending.canvasTaskId, { images: ['/overlap-b.png'] });
+  assert.equal(generator.runStatus, 'done', 'the second run must become done after its own final task completes');
+  assert.equal(secondOut._pending.length, 0, 'the second run must release its pending owner');
+  assert.deepEqual(counters, { append: 2, log: 2, merge: 2, refresh: 2, save: 2 }, 'each overlapping run must complete exactly once');
+}
+
+{
+  let runSequence = 0;
+  const source = [
+    functionSource(canvasSource, 'runSnapshot'),
+    functionSource(canvasSource, 'makePending'),
+  ].join('\n');
+  const created = evaluatedFunctions(source, ['runSnapshot', 'makePending'], {
+    uid: prefix => `${prefix}_${++runSequence}`,
+    nowMs: () => 1200,
+  }).exports;
+
+  const firstRun = created.runSnapshot({ id: 'run-id-generator', type: 'generator' }, 'first prompt');
+  const secondRun = created.runSnapshot({ id: 'run-id-generator', type: 'generator' }, 'second prompt');
+  assert.equal(firstRun.runId, 'run_1', 'runSnapshot must assign a durable run identity');
+  assert.equal(secondRun.runId, 'run_2', 'overlapping snapshots must receive distinct run identities');
+
+  const suppliedRun = { node: { id: 'run-id-generator' }, refs: [] };
+  const firstPending = created.makePending('pending-created-a', suppliedRun);
+  const secondPending = created.makePending('pending-created-b', suppliedRun);
+  assert.equal(suppliedRun.runId, 'run_3', 'pending creation must backfill a stable run identity when callers do not supply one');
+  assert.equal(firstPending.run.runId, suppliedRun.runId, 'the first pending record must persist the backfilled run identity');
+  assert.equal(secondPending.run.runId, suppliedRun.runId, 'pending records from the same run object must share its identity');
+
+  const existingRun = { runId: 'existing-run-id', node: { id: 'run-id-generator' }, refs: [] };
+  created.makePending('pending-existing-id', existingRun);
+  assert.equal(existingRun.runId, 'existing-run-id', 'pending creation must preserve an existing run identity');
 }
 
 {
@@ -1084,6 +1170,7 @@ function recoveryQueryFixture() {
   };
   const source = [
     functionSource(canvasSource, 'currentRecoverPendingOutput'),
+    pendingRunCompletionSource,
     functionSource(canvasSource, 'completeRecoverPendingOutput'),
     functionSource(canvasSource, 'failRecoverPendingOutput'),
     functionSource(canvasSource, 'queryRecoverPendingOutput'),
@@ -1186,7 +1273,7 @@ function recoveryQueryFixture() {
   let appendCalls = 0;
   let logCalls = 0;
   let saveCalls = 0;
-  const sources = `${ordinaryPollSource}\n${functionSource(canvasSource, 'completeCanvasImageTask')}`;
+  const sources = `${ordinaryPollSource}\n${pendingRunCompletionSource}\n${functionSource(canvasSource, 'completeCanvasImageTask')}`;
   const { pollCanvasImageTask } = evaluatedFunctions(
     sources,
     ['pollCanvasImageTask', 'completeCanvasImageTask'],

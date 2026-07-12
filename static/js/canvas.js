@@ -15315,6 +15315,7 @@ function runSnapshot(node, prompt, refs=[]){
     delete clone.runError;
     delete clone.inputs;
     return {
+        runId:uid('run'),
         nodeType: node?.type || '',
         node: clone,
         prompt: prompt || '',
@@ -15499,6 +15500,7 @@ function closeCanvasLog(){
 window.openCanvasLog = openCanvasLog;
 window.closeCanvasLog = closeCanvasLog;
 function makePending(id, run, task={}){
+    if(run && typeof run === 'object' && !run.runId) run.runId = uid('run');
     return {id, startedAt:nowMs(), run, ...task};
 }
 function makePendingForRun(id, run, node, options={}, task={}){
@@ -15556,6 +15558,16 @@ function findPendingTask(taskId){
         if(pending) return {out, pending};
     }
     return null;
+}
+function hasRemainingPendingTasksForRun(pending){
+    const run = pending?.run || {};
+    const nodeId = run?.node?.id;
+    if(!nodeId) return false;
+    const runId = String(run.runId || '');
+    return nodes.some(node => node.type === 'output' && (node._pending || []).some(item => {
+        if(item?.run?.node?.id !== nodeId) return false;
+        return runId ? String(item?.run?.runId || '') === runId : true;
+    }));
 }
 async function createCanvasImageTask(payload, options={}){
     const res = await cascadeFetch('/api/canvas-image-tasks', {
@@ -15720,9 +15732,7 @@ function completeRecoverPendingOutput(out, pending, result){
     const gen = nodes.find(n => n.id === meta.run?.node?.id);
     if(gen){
         mergeGeneratedOutputs(gen, images, Boolean(pending.appendGenerated));
-        const hasRemainingTasks = nodes.some(node => node.type === 'output'
-            && (node._pending || []).some(item => item?.run?.node?.id === gen.id));
-        if(!hasRemainingTasks){
+        if(!hasRemainingPendingTasksForRun(pending)){
             gen.runStatus = 'done';
             gen.runError = '';
             gen.running = false;
@@ -15876,9 +15886,7 @@ function completeCanvasImageTask(taskId, result){
     const gen = nodes.find(n => n.id === meta.run?.node?.id);
     if(gen){
         mergeGeneratedOutputs(gen, images, Boolean(pending.appendGenerated));
-        const hasRemainingTasks = nodes.some(node => node.type === 'output'
-            && (node._pending || []).some(item => item?.run?.node?.id === gen.id));
-        if(!hasRemainingTasks){
+        if(!hasRemainingPendingTasksForRun(pending)){
             gen.runStatus = 'done';
             gen.runError = '';
             gen.running = false;
