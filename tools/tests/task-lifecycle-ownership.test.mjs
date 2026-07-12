@@ -953,6 +953,7 @@ async function legacyOverlapFixture({ currentRunId = '', persistedRunId = '', re
   ].join('\n');
   const runGeneratorLegacy = exportedFunction(source, 'runGeneratorLegacy', {
     nodes,
+    canvasRunOwnerIsCurrent: (owner, output) => nodes.includes(owner) && (!output || nodes.includes(output)),
     orderedSources: () => [{ prompt: 'legacy prompt', refs: [] }],
     generatorSources: () => [],
     generationPromptWithMarkerDirectives: () => 'legacy prompt',
@@ -1002,6 +1003,379 @@ async function legacyOverlapFixture({ currentRunId = '', persistedRunId = '', re
   const fixture = await legacyOverlapFixture();
   assert.equal(fixture.generator.runStatus, 'queued', 'id-less legacy pending records must retain conservative same-generator blocking');
   assert.deepEqual(Array.from(fixture.out._pending), [fixture.persistedPending], 'id-less legacy overlap must preserve its pending owner');
+}
+
+{
+  const fixture = await legacyOverlapFixture({ currentRunId: 'legacy-current-with-id' });
+  assert.equal(fixture.generator.runStatus, 'queued', 'an id-less persisted pending record must conservatively block a current identified run');
+  assert.deepEqual(Array.from(fixture.out._pending), [fixture.persistedPending], 'mixed-version overlap must preserve the id-less pending owner');
+}
+
+function classicPendingSettlementFixture(functionName) {
+  const typeByFunction = {
+    runMsGenNode: 'msgen',
+    runRhNode: 'rh',
+    runGeneratorLegacy: 'generator',
+    runVideoNode: 'video',
+    runLTXDirectorNode: 'ltxDirector',
+    runComfyNode: 'comfy',
+  };
+  const node = {
+    id: `${functionName}-stale-owner`,
+    type: typeByFunction[functionName],
+    count: 1,
+    running: false,
+    runStatus: 'running',
+    runError: '',
+    model: 'test-model',
+    webappId: 'test-webapp',
+    mode: 'text',
+    width: 1024,
+    height: 1024,
+  };
+  const out = { id: `${functionName}-stale-output`, type: 'output', _pending: [], images: [] };
+  const nodes = [node, out];
+  const settlement = deferred();
+  const run = { runId: `${functionName}-run`, node: { id: node.id }, refs: [] };
+  const counters = { alert: 0, append: 0, log: 0, merge: 0, modal: 0, refresh: 0, save: 0 };
+  let settlementStarted = false;
+  let uidSequence = 0;
+  const globals = {
+    nodes,
+    cascadeTargetIdFromOptions: () => '',
+    generatorSources: () => [{ prompt: 'stale owner prompt', refs: [] }],
+    orderedSources: (_owner, sources) => sources,
+    generationPromptWithMarkerDirectives: () => 'stale owner prompt',
+    imageRefsOnly: refs => refs,
+    videoRefsOnly: () => [],
+    audioRefsOnly: () => [],
+    outputForNode: () => out,
+    uid: prefix => `${prefix}_${++uidSequence}`,
+    runSnapshot: () => run,
+    makePendingForRun: id => ({ id, startedAt: 900, run }),
+    generatorSizeForRun: async () => '1024x1024',
+    normalizedImageQuality: () => '',
+    nowMs: () => 1200,
+    setTimeout: () => 1,
+    requestMetaFromResult: () => ({}),
+    collectRunMetas: (_owner, ids) => ids.map(() => ({ runMs: 300, run })),
+    collectRunMeta: () => ({ runMs: 300, run }),
+    appendOutputImages: () => { counters.append += 1; },
+    mergeGeneratedOutputs: () => { counters.merge += 1; },
+    addGenerationLog: () => { counters.log += 1; },
+    refreshRunNodes: () => { counters.refresh += 1; },
+    scheduleSave: () => { counters.save += 1; },
+    hasRemainingPendingTasksForRun: () => false,
+    canvasRunOwnerIsCurrent: (owner, output) => nodes.includes(owner) && (!output || nodes.includes(output)),
+    isCascadeAbortError: () => false,
+    responseErrorMessage: async () => 'stale owner failed',
+    tr: key => key,
+    showErrorModal: () => { counters.modal += 1; },
+    setStatus() {},
+    alert: () => { counters.alert += 1; },
+    resolveImageProviderId: value => value,
+    resolveImageModel: value => value,
+    resolveVideoProviderId: value => value,
+    resultMediaUrls: result => result?.urls || result?.images || [],
+    outputUrlValue: item => typeof item === 'string' ? item : item?.url || '',
+    mediaKindForOutputItem: () => 'image',
+    isVideoUrl: () => false,
+    CLIENT_ID: 'classic-stale-client',
+  };
+  let successValue;
+
+  if (functionName === 'runMsGenNode') {
+    Object.assign(globals, {
+      MS_GEN_MODELS: { zimage: { supportsImage: false, acceptsImage: false, endpoint: '/api/ms-stale', modelId: 'ms-test' } },
+      currentMsModelId: () => 'ms-test',
+      modelscopeLorasForModel: () => [],
+      apiImageSize: () => '1024x1024',
+      parseSizeValue: () => ({ width: 1024, height: 1024 }),
+      cascadeFetch: () => { settlementStarted = true; return settlement.promise; },
+      urlToBase64: async value => value,
+    });
+    successValue = { ok: true, json: async () => ({ url: '/late-ms.png' }) };
+  } else if (functionName === 'runRhNode') {
+    let submitComplete = false;
+    Object.assign(globals, {
+      ensureRhNodeSelection() {},
+      rhCurrentKind: () => 'app',
+      rhCurrentEntry: () => ({}),
+      rhActiveFields: () => [{}],
+      rhMediaSources: () => ({ prompt: 'rh stale prompt', refs: [] }),
+      rhBuildNodeInfoList: async () => [],
+      rhBuildWorkflowRequestExtras: async () => ({}),
+      rhUseWallet: () => false,
+      sleep: async () => {},
+      cascadeFetch: url => {
+        if (!submitComplete) {
+          submitComplete = true;
+          return Promise.resolve({ ok: true, json: async () => ({ success: true, data: { taskId: 'rh-stale-task' } }) });
+        }
+        assert.match(url, /runninghub\/query/, 'RunningHub fixture must defer its query settlement');
+        settlementStarted = true;
+        return settlement.promise;
+      },
+    });
+    successValue = { ok: true, json: async () => ({ success: true, data: { status: 'SUCCESS', urls: ['/late-rh.png'] } }) };
+  } else if (functionName === 'runGeneratorLegacy') {
+    Object.assign(globals, {
+      fetch: () => { settlementStarted = true; return settlement.promise; },
+    });
+    successValue = { ok: true, json: async () => ({ images: ['/late-legacy.png'] }) };
+  } else if (functionName === 'runVideoNode') {
+    Object.assign(globals, {
+      applyUploadedUrlToRefs: refs => refs,
+      mediaKindForRef: () => 'image',
+      manualVideoUrlForNode: () => '',
+      tempShUploadedUrlForNode: (_owner, value) => value,
+      cascadeFetch: () => { settlementStarted = true; return settlement.promise; },
+    });
+    successValue = { ok: true, json: async () => ({ urls: ['/late-video.mp4'] }) };
+  } else if (functionName === 'runLTXDirectorNode') {
+    Object.assign(globals, {
+      clearStuckGeneratorRunning() {},
+      ltxFlushTimelineToNode() {},
+      ltxDirectorTimelineSegments: () => [{ type: 'text', prompt: 'segment', duration: 1 }],
+      ltxDirectorSyncSeconds() {},
+      ltxDirectorBuildTimelinePayload: async () => ({}),
+      runQueuedComfyGenerate: () => { settlementStarted = true; return settlement.promise; },
+      comfyResultOutputs: result => result.images || [],
+      LTX_DIRECTOR_WF_NODE: 'wf',
+      LTX_DIRECTOR_SEED_NODE: 'seed',
+      LTX_DIRECTOR_WORKFLOW: 'workflow.json',
+    });
+    successValue = { images: ['/late-ltx.png'] };
+  } else {
+    Object.assign(globals, {
+      comfyFields: () => [],
+      comfyRunLabel: () => 'ComfyUI',
+      runQueuedComfyGenerate: () => { settlementStarted = true; return settlement.promise; },
+      comfyResultOutputs: result => result.images || [],
+      actionFailed: key => key,
+      noReturnedImage: key => key,
+    });
+    successValue = { images: ['/late-comfy.png'] };
+  }
+
+  const runFunction = exportedFunction(functionSource(canvasSource, functionName), functionName, globals);
+  const invocation = functionName === 'runRhNode' ? runFunction(node.id) : runFunction(node.id);
+  let earlyError = null;
+  invocation.catch(error => { earlyError = error; });
+  return {
+    counters,
+    invocation,
+    nodes,
+    node,
+    out,
+    settlement,
+    settlementStarted: () => settlementStarted,
+    earlyError: () => earlyError,
+    successValue,
+    snapshot: () => ({ counters: { ...counters }, node: JSON.stringify(node), out: JSON.stringify(out) }),
+  };
+}
+
+for (const functionName of ['runMsGenNode', 'runRhNode', 'runGeneratorLegacy', 'runVideoNode', 'runLTXDirectorNode', 'runComfyNode']) {
+  for (const settlement of ['resolve', 'reject']) {
+    const fixture = classicPendingSettlementFixture(functionName);
+    for (let index = 0; index < 20 && !fixture.settlementStarted(); index += 1) await flushMicrotasks();
+    assert.equal(fixture.settlementStarted(), true, `${functionName} ${settlement} fixture must reach deferred settlement: ${fixture.earlyError()?.stack || 'no early error'}`);
+    fixture.nodes.length = 0;
+    const baseline = fixture.snapshot();
+    if (settlement === 'resolve') fixture.settlement.resolve(fixture.successValue);
+    else fixture.settlement.reject(new Error(`late ${functionName} failure`));
+    await fixture.invocation.catch(() => {});
+    assert.deepEqual(fixture.snapshot(), baseline, `${functionName} late ${settlement} must not mutate captured owners or produce side effects after deletion`);
+  }
+}
+
+for (const settlement of ['resolve', 'reject']) {
+  const response = deferred();
+  const node = { id: `classic-llm-${settlement}`, type: 'llm', running: false, outputText: '', userInput: 'prompt' };
+  const nodes = [node];
+  const counters = { alert: 0, refresh: 0, save: 0 };
+  const runLLMNode = exportedFunction(functionSource(canvasSource, 'runLLMNode'), 'runLLMNode', {
+    nodes,
+    cascadeTargetIdFromOptions: () => '',
+    llmInputText: () => 'prompt',
+    refreshNodes: () => { counters.refresh += 1; },
+    callCanvasLLM: () => response.promise,
+    canvasRunOwnerIsCurrent: owner => nodes.includes(owner),
+    isCascadeAbortError: () => false,
+    scheduleSave: () => { counters.save += 1; },
+    tr: key => key,
+    alert: () => { counters.alert += 1; },
+  });
+  const run = runLLMNode(node.id);
+  await flushMicrotasks();
+  nodes.length = 0;
+  const baseline = { counters: { ...counters }, node: JSON.stringify(node) };
+  if (settlement === 'resolve') response.resolve('late LLM text');
+  else response.reject(new Error('late classic LLM failure'));
+  await run.catch(() => {});
+  assert.deepEqual({ counters, node: JSON.stringify(node) }, baseline, `classic LLM late ${settlement} must ignore deleted owner settlement`);
+}
+
+for (const settlement of ['resolve', 'reject']) {
+  const deferredRun = deferred();
+  const node = { id: `cascade-pass-${settlement}`, type: 'generator', runStatus: '' };
+  const nodes = [node];
+  const counters = { refresh: 0 };
+  let started = false;
+  const runOneCascadePass = exportedFunction(functionSource(canvasSource, 'runOneCascadePass'), 'runOneCascadePass', {
+    nodes,
+    cascadeTargetIdFromOptions: () => 'cascade-owner',
+    refreshNodes: () => { counters.refresh += 1; },
+    ensureCascadeActive() {},
+    cascadeContextFor: () => null,
+    runGenerator: () => {
+      started = true;
+      return deferredRun.promise;
+    },
+    canvasRunOwnerIsCurrent: owner => nodes.includes(owner),
+  });
+  const run = runOneCascadePass([node.id], { cascadeTargetId: 'cascade-owner' });
+  for (let index = 0; index < 10 && !started; index += 1) await flushMicrotasks();
+  assert.equal(started, true, `runOneCascadePass ${settlement} fixture must reach deferred leaf runner`);
+  nodes.length = 0;
+  const baseline = { counters: { ...counters }, node: JSON.stringify(node) };
+  if (settlement === 'resolve') deferredRun.resolve();
+  else deferredRun.reject(new Error('late cascade pass failure'));
+  await run;
+  assert.deepEqual(
+    { counters, node: JSON.stringify(node) },
+    baseline,
+    `runOneCascadePass late ${settlement} must not mutate or refresh a deleted leaf owner`,
+  );
+}
+
+for (const mode of ['serial', 'parallel']) {
+  for (const settlement of ['resolve', 'reject']) {
+    const deferredRun = deferred();
+    const target = { id: `node-cascade-${mode}-${settlement}`, type: 'generator', running: false, runStatus: '' };
+    const loop = { id: `node-cascade-loop-${mode}-${settlement}`, type: 'loop', mode, count: 2 };
+    const nodes = mode === 'parallel' ? [target, loop] : [target];
+    const counters = { finalize: 0, refresh: 0 };
+    let started = false;
+    const runNodeCascade = exportedFunction(functionSource(canvasSource, 'runNodeCascade'), 'runNodeCascade', {
+      nodes,
+      alert() {},
+      computeCascadeOrder: () => [target.id],
+      resolveCascadeLoop: () => (mode === 'parallel' ? { node: loop, count: 2, mode: 'parallel' } : null),
+      loopCount: () => 2,
+      beginCascade: () => ({ message: '', currentNodeId: '', currentRoundLabel: '' }),
+      refreshNodes: () => { counters.refresh += 1; },
+      cascadeUiNodeIds: () => [target.id],
+      cascadeParallelLimit: () => 1,
+      runLimitedCascadeRounds: async (rounds, _limit, worker) => Promise.allSettled([worker(rounds[0])]),
+      ensureCascadeActive() {},
+      runCascadeNodeWithLoopContext: () => {
+        started = true;
+        return deferredRun.promise;
+      },
+      finalizeCascade: () => { counters.finalize += 1; },
+      isCascadeAbortError: () => false,
+      canvasRunOwnerIsCurrent: owner => nodes.includes(owner),
+      tr: key => key,
+      loopContext: null,
+    });
+    const run = runNodeCascade(target.id);
+    for (let index = 0; index < 10 && !started; index += 1) await flushMicrotasks();
+    assert.equal(started, true, `runNodeCascade ${mode} ${settlement} fixture must reach deferred leaf runner`);
+    nodes.length = 0;
+    const baseline = { counters: { ...counters }, target: JSON.stringify(target) };
+    if (settlement === 'resolve') deferredRun.resolve();
+    else deferredRun.reject(new Error('late node cascade failure'));
+    await run;
+    assert.deepEqual(
+      { counters, target: JSON.stringify(target) },
+      baseline,
+      `runNodeCascade ${mode} late ${settlement} must not mutate, refresh, or finalize after exact owner deletion`,
+    );
+  }
+}
+
+for (const settlement of ['resolve', 'reject']) {
+  const deferredPass = deferred();
+  const target = { id: `retry-cascade-${settlement}`, type: 'generator', runStatus: '' };
+  const nodes = [target];
+  const counters = { finalize: 0 };
+  let started = false;
+  const retryNodeAndDownstream = exportedFunction(functionSource(canvasSource, 'retryNodeAndDownstream'), 'retryNodeAndDownstream', {
+    nodes,
+    isCascadeActive: () => false,
+    computeCascadeOrder: () => [target.id],
+    beginCascade() {},
+    runOneCascadePass: () => {
+      started = true;
+      return deferredPass.promise;
+    },
+    finalizeCascade: () => { counters.finalize += 1; },
+    isCascadeAbortError: () => false,
+    canvasRunOwnerIsCurrent: owner => nodes.includes(owner),
+  });
+  const run = retryNodeAndDownstream(target.id);
+  for (let index = 0; index < 10 && !started; index += 1) await flushMicrotasks();
+  assert.equal(started, true, `retryNodeAndDownstream ${settlement} fixture must reach deferred cascade pass`);
+  nodes.length = 0;
+  const baseline = { counters: { ...counters }, target: JSON.stringify(target) };
+  if (settlement === 'resolve') deferredPass.resolve();
+  else deferredPass.reject(new Error('late retry cascade failure'));
+  await run;
+  assert.deepEqual(
+    { counters, target: JSON.stringify(target) },
+    baseline,
+    `retryNodeAndDownstream late ${settlement} must not finalize a deleted cascade owner`,
+  );
+}
+
+{
+  const target = { id: 'retry-cascade-incomplete', type: 'generator', runStatus: 'running' };
+  const nodes = [target];
+  let finalizeCalls = 0;
+  const retryNodeAndDownstream = exportedFunction(functionSource(canvasSource, 'retryNodeAndDownstream'), 'retryNodeAndDownstream', {
+    nodes,
+    isCascadeActive: () => false,
+    computeCascadeOrder: () => [target.id, 'deleted-downstream'],
+    beginCascade() {},
+    runOneCascadePass: async () => false,
+    finalizeCascade: () => { finalizeCalls += 1; },
+    isCascadeAbortError: () => false,
+    canvasRunOwnerIsCurrent: owner => nodes.includes(owner),
+  });
+
+  await retryNodeAndDownstream(target.id);
+  assert.equal(finalizeCalls, 0, 'retry must not finalize done when its cascade pass reports stale downstream ownership');
+}
+
+for (const settlement of ['resolve', 'reject']) {
+  const deferredRun = deferred();
+  const node = { id: `cascade-loop-context-${settlement}`, type: 'generator' };
+  const nodes = [node];
+  let started = false;
+  const runCascadeNodeWithLoopContext = exportedFunction(
+    functionSource(canvasSource, 'runCascadeNodeWithLoopContext'),
+    'runCascadeNodeWithLoopContext',
+    {
+      nodes,
+      loopContext: null,
+      runCascadeNodeByType: () => {
+        started = true;
+        return deferredRun.promise;
+      },
+      canvasRunOwnerIsCurrent: owner => nodes.includes(owner),
+    },
+  );
+  const run = runCascadeNodeWithLoopContext(node, { index: 1 }, {});
+  for (let index = 0; index < 10 && !started; index += 1) await flushMicrotasks();
+  assert.equal(started, true, `runCascadeNodeWithLoopContext ${settlement} fixture must reach deferred runner`);
+  nodes.length = 0;
+  const baseline = JSON.stringify(node);
+  if (settlement === 'resolve') deferredRun.resolve();
+  else deferredRun.reject(new Error('late loop context failure'));
+  await run.catch(() => {});
+  assert.equal(JSON.stringify(node), baseline, `runCascadeNodeWithLoopContext late ${settlement} must not clean up a deleted owner`);
 }
 
 for (const [functionName, runArgument] of [
@@ -1480,6 +1854,94 @@ function recoveryQueryFixture() {
   assert.deepEqual(resumedTaskIds, ['live-pending'], 'resumeCanvasImageTasks must skip pending records already marked failed');
 }
 
+{
+  const run = { runId: 'classic-empty-success-run', node: { id: 'classic-empty-success-generator' }, refs: [] };
+  const pending = {
+    id: 'classic-empty-success-pending',
+    recoverTaskId: 'classic-empty-success-task',
+    canvasTaskStatus: 'jimeng_pending',
+    querying: true,
+    startedAt: 900,
+    run,
+  };
+  const out = { id: 'classic-empty-success-output', type: 'output', _pending: [pending], images: [] };
+  const generator = { id: 'classic-empty-success-generator', type: 'generator', running: false, runStatus: 'queued', runError: '' };
+  const nodes = [generator, out];
+  const logs = [];
+  const source = [
+    functionSource(canvasSource, 'currentRecoverPendingOutput'),
+    functionSource(canvasSource, 'failRecoverPendingOutput'),
+    functionSource(canvasSource, 'completeRecoverPendingOutput'),
+  ].join('\n');
+  const completeRecoverPendingOutput = exportedFunction(source, 'completeRecoverPendingOutput', {
+    nodes,
+    findOutputByPendingId: pendingId => nodes.find(node => node.type === 'output' && node._pending?.some(item => item.id === pendingId)),
+    pendingById: (owner, pendingId) => owner?._pending?.find(item => item.id === pendingId) || null,
+    nowMs: () => 1200,
+    requestMetaFromResult: () => ({}),
+    appendOutputImages() {},
+    mergeGeneratedOutputs() {},
+    hasRemainingPendingTasksForRun: () => false,
+    addGenerationLog: entry => logs.push(entry),
+    refreshRunNodes() {},
+    scheduleSave() {},
+    tr: key => key,
+  });
+
+  completeRecoverPendingOutput(out, pending, { status: 'succeeded', images: [] });
+  assert.equal(out._pending.length, 0, 'classic empty recovery success must release pending ownership');
+  assert.equal(pending.recoverTaskId, '', 'classic empty recovery success must clear the recoverable task identity');
+  assert.equal(pending.querying, false, 'classic empty recovery success must release query ownership');
+  assert.equal(generator.runStatus, 'failed', 'classic empty recovery success must become terminal failure');
+  assert.equal(logs.length, 1, 'classic empty recovery success must log terminal failure once');
+
+  completeRecoverPendingOutput(out, pending, { status: 'succeeded', images: [] });
+  assert.equal(logs.length, 1, 'classic empty recovery success must not terminalize or log twice');
+}
+
+{
+  const node = {
+    id: 'smart-empty-jimeng-owner',
+    type: 'smart-image',
+    images: [],
+    running: false,
+    pending: 0,
+    runStatus: 'queued',
+    runStartedAt: 900,
+    runSettings: { engine: 'api', provider_id: 'jimeng' },
+    runPrompt: 'smart empty Jimeng prompt',
+    jimengPending: { submitId: 'smart-empty-jimeng-task', kind: 'image', querying: true, startedAt: 900 },
+  };
+  const nodes = [node];
+  const counters = { log: 0, render: 0, save: 0, toast: 0 };
+  const source = [
+    functionSource(smartCanvasSource, 'finalizeJimengPending'),
+    functionSource(smartCanvasSource, 'terminalizeSmartJimengPending'),
+    functionSource(smartCanvasSource, 'applyJimengQueryResult'),
+  ].join('\n');
+  const applyJimengQueryResult = exportedFunction(source, 'applyJimengQueryResult', {
+    nodes,
+    stripImageGenerationMeta: value => value,
+    copyMediaSizeFields: (_item, value) => value,
+    replaceOutputsToNodeWithHistory() {},
+    nowMs: () => 1200,
+    addSmartGenerationLog: () => { counters.log += 1; },
+    toast: () => { counters.toast += 1; },
+    render: () => { counters.render += 1; },
+    scheduleSave: () => { counters.save += 1; },
+    tr: key => key,
+  });
+
+  assert.equal(applyJimengQueryResult(node, { status: 'succeeded', urls: [], kind: 'image' }), true, 'smart empty Jimeng success must terminalize');
+  assert.equal('jimengPending' in node, false, 'smart empty Jimeng success must clear pending ownership');
+  assert.equal(node.runStatus, 'failed', 'smart empty Jimeng success must become terminal failure');
+  assert.equal(counters.log, 1, 'smart empty Jimeng success must log terminal failure once');
+  assert.equal(counters.toast, 1, 'smart empty Jimeng success must report terminal failure once');
+  const terminalCounters = { ...counters };
+  assert.equal(applyJimengQueryResult(node, { status: 'succeeded', urls: [], kind: 'image' }), false, 'smart empty Jimeng success must not terminalize twice');
+  assert.deepEqual(counters, terminalCounters, 'smart empty Jimeng repeat must have no side effects');
+}
+
 const smartPollSource = functionSource(smartCanvasSource, 'pollSmartCanvasTask');
 
 function smartPollFixture() {
@@ -1571,6 +2033,7 @@ function smartDirectGenerationFixture() {
   let generationStarted = false;
   const settings = { engine: 'api', apiKind: 'image', count: 1, provider_id: 'provider-a', model: 'model-a' };
   const runGeneration = exportedFunction([
+    functionSource(smartCanvasSource, 'smartRunOwnersAreCurrent'),
     functionSource(smartCanvasSource, 'smartDirectRunOwnerIsCurrent'),
     functionSource(smartCanvasSource, 'runGeneration'),
   ].join('\n'), 'runGeneration', {
@@ -1656,6 +2119,210 @@ for (const settlement of ['resolve', 'reject']) {
   await run;
   assert.deepEqual(fixture.snapshot(), baseline, `smart direct late ${settlement} must not mutate, log, save, render, or toast after deletion`);
   assert.equal(fixture.nodes.length, 0, `smart direct late ${settlement} must not resurrect its node`);
+}
+
+function smartTextGenerationOwnershipFixture() {
+  const generation = deferred();
+  const sourceNode = { id: 'smart-text-source', type: 'smart-image', images: [{ url: '/source.png', name: 'source.png' }] };
+  const outputNode = { id: 'smart-text-output', type: 'smart-image', images: [], pending: 1, running: false };
+  const nodes = [sourceNode, outputNode];
+  const counters = { log: 0, replace: 0, render: 0, save: 0, toast: 0, track: 0 };
+  let generationStarted = false;
+  const source = [
+    functionSource(smartCanvasSource, 'smartRunOwnersAreCurrent'),
+    functionSource(smartCanvasSource, 'smartDirectRunOwnerIsCurrent'),
+    functionSource(smartCanvasSource, 'runSmartImageTextGeneration'),
+  ].join('\n');
+  const runSmartImageTextGeneration = exportedFunction(source, 'runSmartImageTextGeneration', {
+    nodes,
+    smartTextEditSubject: () => ({ node: sourceNode, index: 0, item: sourceNode.images[0] }),
+    smartTextImageRunSettings: () => ({ engine: 'api', count: 1 }),
+    smartRefWithMarkers: (url, meta) => ({ ...(meta || {}), url }),
+    imageForDisplay: value => value.url,
+    uniqueReferenceImages: refs => refs,
+    smartRunSnapshot: () => ({ nodeId: sourceNode.id, nodeType: sourceNode.type, kind: 'image' }),
+    cloneSmartSettings: value => ({ ...(value || {}) }),
+    sizeForRun: () => '1024x1024',
+    nowMs: () => 1200,
+    pushUndo() {},
+    createPendingOutputFromSource: () => outputNode,
+    settingsForStorage: value => value,
+    render: () => { counters.render += 1; },
+    generateUrlsForCurrentSettings: () => {
+      generationStarted = true;
+      return generation.promise;
+    },
+    stripImageGenerationMeta: value => value,
+    copyMediaSizeFields: (_item, value) => value,
+    replaceOutputsToNodeWithHistory: () => { counters.replace += 1; },
+    addSmartGenerationLog: () => { counters.log += 1; },
+    toast: () => { counters.toast += 1; },
+    scheduleSave: () => { counters.save += 1; },
+    trackSmartDeletedNodeIds: () => { counters.track += 1; },
+    canvas: { connections: [] },
+    selectedId: sourceNode.id,
+  });
+  return {
+    counters,
+    generation,
+    generationStarted: () => generationStarted,
+    nodes,
+    outputNode,
+    run: runSmartImageTextGeneration(sourceNode.id, 0, 'replace text'),
+    snapshot: () => ({ counters: { ...counters }, outputNode: JSON.stringify(outputNode) }),
+  };
+}
+
+for (const settlement of ['resolve', 'reject']) {
+  const fixture = smartTextGenerationOwnershipFixture();
+  for (let index = 0; index < 10 && !fixture.generationStarted(); index += 1) await flushMicrotasks();
+  assert.equal(fixture.generationStarted(), true, `smart text ${settlement} fixture must reach deferred generation`);
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  if (settlement === 'resolve') fixture.generation.resolve({ urls: ['/late-text.png'], kind: 'image' });
+  else fixture.generation.reject(new Error('late smart text failure'));
+  await fixture.run;
+  assert.deepEqual(fixture.snapshot(), baseline, `smart text late ${settlement} must have no mutation, log, save, render, toast, or cleanup after deletion`);
+}
+
+function smartCascadeStepOwnershipFixture() {
+  const generation = deferred();
+  const sourceNode = { id: 'smart-cascade-source', type: 'smart-prompt', text: 'cascade prompt' };
+  const outputNode = { id: 'smart-cascade-output', type: 'smart-image', images: [], running: false };
+  const nodes = [sourceNode, outputNode];
+  const counters = { append: 0, jimeng: 0, log: 0, render: 0, replace: 0 };
+  let generationStarted = false;
+  const runCascadeStepIntoNode = exportedFunction([
+    functionSource(smartCanvasSource, 'smartRunOwnersAreCurrent'),
+    functionSource(smartCanvasSource, 'runCascadeStepIntoNode'),
+  ].join('\n'), 'runCascadeStepIntoNode', {
+    nodes,
+    smartLoopContext: null,
+    settings: { engine: 'api', apiKind: 'image' },
+    cloneSmartSettings: value => ({ ...(value || {}) }),
+    smartLoopRoundSettings: value => value,
+    smartSettingsForNode: () => ({ engine: 'api', apiKind: 'image' }),
+    validOutpaintSize: () => null,
+    selfReferenceImagesForNode: () => [],
+    defaultReferenceImagesFor: () => [],
+    buildPromptRequestForNode: () => ({ prompt: 'cascade prompt', displayPrompt: 'cascade prompt', refs: [] }),
+    smartRunNeedsPrompt: () => true,
+    isApiLikeEngine: () => true,
+    smartRunSnapshot: () => ({ nodeId: sourceNode.id, nodeType: sourceNode.type, kind: 'image' }),
+    nowMs: () => 1200,
+    rememberRecentSmartSettings() {},
+    render: () => { counters.render += 1; },
+    generateUrlsForCurrentSettings: () => {
+      generationStarted = true;
+      return generation.promise;
+    },
+    tr: key => key,
+    addSmartGenerationLog: () => { counters.log += 1; },
+    stripImageGenerationMeta: value => value,
+    copyMediaSizeFields: (_item, value) => value,
+    appendLoopOutputsToNode: () => { counters.append += 1; },
+    replaceOutputsToNodeWithHistory: () => { counters.replace += 1; },
+    handleJimengPendingSignal: () => { counters.jimeng += 1; return false; },
+    rememberRoundOutputs: () => [],
+  });
+  return {
+    counters,
+    generation,
+    generationStarted: () => generationStarted,
+    nodes,
+    outputNode,
+    run: runCascadeStepIntoNode(sourceNode, outputNode, []),
+    snapshot: () => ({ counters: { ...counters }, outputNode: JSON.stringify(outputNode) }),
+  };
+}
+
+for (const settlement of ['resolve', 'reject']) {
+  const fixture = smartCascadeStepOwnershipFixture();
+  for (let index = 0; index < 10 && !fixture.generationStarted(); index += 1) await flushMicrotasks();
+  assert.equal(fixture.generationStarted(), true, `smart cascade ${settlement} fixture must reach deferred generation`);
+  fixture.nodes.length = 0;
+  const baseline = fixture.snapshot();
+  if (settlement === 'resolve') fixture.generation.resolve({ urls: ['/late-cascade.png'], kind: 'image' });
+  else fixture.generation.reject(new Error('late smart cascade failure'));
+  await fixture.run;
+  assert.deepEqual(fixture.snapshot(), baseline, `smart cascade late ${settlement} must have no mutation, log, render, or Jimeng handling after deletion`);
+}
+
+{
+  const generation = deferred();
+  const loopNode = { id: 'smart-loop-stale', type: 'smart-loop' };
+  const rootNode = { id: 'smart-loop-root', type: 'smart-image' };
+  const outputSlot = { id: 'smart-loop-output', type: 'smart-image', images: [], running: false };
+  const nodes = [loopNode, rootNode, outputSlot];
+  const counters = { jimeng: 0, render: 0 };
+  let generationStarted = false;
+  const runLoopRoundIntoSlot = exportedFunction([
+    functionSource(smartCanvasSource, 'smartRunOwnersAreCurrent'),
+    functionSource(smartCanvasSource, 'runLoopRoundIntoSlot'),
+  ].join('\n'), 'runLoopRoundIntoSlot', {
+    nodes,
+    settings: { engine: 'comfy', apiKind: 'image' },
+    cloneSmartSettings: value => ({ ...(value || {}) }),
+    smartLoopRoundSettings: value => value,
+    smartSettingsForNode: () => ({ engine: 'comfy', apiKind: 'image' }),
+    outputImagesForNode: () => [],
+    buildPromptRequestForNode: () => ({ prompt: 'loop prompt', displayPrompt: 'loop prompt', refs: [] }),
+    smartRunNeedsPrompt: () => true,
+    isApiLikeEngine: () => false,
+    smartRunSnapshot: () => ({ nodeId: rootNode.id, nodeType: rootNode.type, kind: 'image' }),
+    nowMs: () => 1200,
+    smartCascadePathForCtx: () => null,
+    render: () => { counters.render += 1; },
+    generateUrlsForCurrentSettings: () => {
+      generationStarted = true;
+      return generation.promise;
+    },
+    handleJimengPendingSignal: () => { counters.jimeng += 1; return false; },
+  });
+  const run = runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, 0, {});
+  for (let index = 0; index < 10 && !generationStarted; index += 1) await flushMicrotasks();
+  assert.equal(generationStarted, true, 'smart loop fixture must reach deferred generation');
+  nodes.length = 0;
+  const baseline = { counters: { ...counters }, outputSlot: JSON.stringify(outputSlot) };
+  generation.reject(new Error('late smart loop failure'));
+  await run;
+  assert.deepEqual(
+    { counters, outputSlot: JSON.stringify(outputSlot) },
+    baseline,
+    'smart loop late rejection must settle inertly without mutation, render, Jimeng handling, or error propagation after deletion',
+  );
+}
+
+for (const settlement of ['resolve', 'reject']) {
+  const response = deferred();
+  const node = { id: `smart-prompt-llm-${settlement}`, type: 'smart-prompt', text: 'prompt', running: false };
+  const nodes = [node];
+  const counters = { render: 0, save: 0, toast: 0 };
+  const runPromptLLMNode = exportedFunction([
+    functionSource(smartCanvasSource, 'smartRunOwnersAreCurrent'),
+    functionSource(smartCanvasSource, 'runPromptLLMNode'),
+  ].join('\n'), 'runPromptLLMNode', {
+    nodes,
+    promptNodeLLMInputText: () => 'prompt',
+    toast: () => { counters.toast += 1; },
+    tr: key => key,
+    render: () => { counters.render += 1; },
+    resolveChatProviderId: value => value || 'provider',
+    resolveChatModel: value => value || 'model',
+    promptNodeInputMediaForLLM: () => [],
+    imageRefsOnly: () => [],
+    videoRefsOnly: () => [],
+    fetch: () => response.promise,
+    scheduleSave: () => { counters.save += 1; },
+  });
+  const run = runPromptLLMNode(node.id);
+  await flushMicrotasks();
+  nodes.length = 0;
+  const baseline = { counters: { ...counters }, node: JSON.stringify(node) };
+  if (settlement === 'resolve') response.resolve({ ok: true, json: async () => ({ text: 'late smart LLM text' }) });
+  else response.reject(new Error('late smart prompt LLM failure'));
+  await run.catch(() => {});
+  assert.deepEqual({ counters, node: JSON.stringify(node) }, baseline, `smart prompt LLM late ${settlement} must ignore deleted owner settlement`);
 }
 
 function smartComfyLateSuccessFixture(functionName, result) {
@@ -1842,6 +2509,91 @@ for (const settlement of ['succeeded', 'pending', 'failed', 'rejected']) {
   assert.equal(fixture.nodes.length, 0, `late Jimeng ${settlement} must not resurrect its owner`);
 }
 
+{
+  const response = deferred();
+  const node = {
+    id: 'smart-background-jimeng-owner',
+    jimengPending: { submitId: 'smart-background-jimeng-task', kind: 'image', querying: false },
+  };
+  const nodes = [node];
+  const activeJimengPolls = new Set();
+  const timers = [];
+  let applyCalls = 0;
+  let fetchStarted = false;
+  const startJimengPoll = exportedFunction(functionSource(smartCanvasSource, 'startJimengPoll'), 'startJimengPoll', {
+    nodes,
+    activeJimengPolls,
+    JIMENG_POLL_MAX: 1,
+    JIMENG_POLL_INTERVAL: 1,
+    setTimeout: resolve => { timers.push(resolve); return timers.length; },
+    fetchJimengQuery: () => {
+      fetchStarted = true;
+      return response.promise;
+    },
+    currentSmartJimengQueryOwner: (nodeId, owner, submitId) => {
+      const current = nodes.find(item => item.id === nodeId);
+      return current === owner && current?.jimengPending?.submitId === submitId ? current : null;
+    },
+    applyJimengQueryResult: () => { applyCalls += 1; return true; },
+  });
+
+  startJimengPoll(node);
+  assert.equal(activeJimengPolls.has(node.jimengPending.submitId), true, 'background Jimeng poll must claim active ownership');
+  assert.equal(timers.length, 1, 'background Jimeng poll must wait for its polling interval');
+  timers.shift()();
+  for (let index = 0; index < 10 && !fetchStarted; index += 1) await flushMicrotasks();
+  assert.equal(fetchStarted, true, 'background Jimeng fixture must reach deferred query');
+  nodes.length = 0;
+  response.resolve({ status: 'succeeded', urls: ['/late-background.png'] });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  assert.equal(applyCalls, 0, 'background Jimeng poll must reject late success after exact owner deletion');
+  assert.equal(activeJimengPolls.size, 0, 'background Jimeng poll must release active ownership after stale settlement');
+}
+
+{
+  const response = deferred();
+  const node = {
+    id: 'smart-background-jimeng-replaced',
+    jimengPending: { submitId: 'smart-background-jimeng-replaced-task', kind: 'image', querying: false },
+  };
+  const replacement = {
+    id: node.id,
+    jimengPending: { ...node.jimengPending },
+  };
+  const nodes = [node];
+  const activeJimengPolls = new Set();
+  const timers = [];
+  let applyCalls = 0;
+  let fetchStarted = false;
+  const startJimengPoll = exportedFunction(functionSource(smartCanvasSource, 'startJimengPoll'), 'startJimengPoll', {
+    nodes,
+    activeJimengPolls,
+    JIMENG_POLL_MAX: 1,
+    JIMENG_POLL_INTERVAL: 1,
+    setTimeout: resolve => { timers.push(resolve); return timers.length; },
+    fetchJimengQuery: () => {
+      fetchStarted = true;
+      return response.promise;
+    },
+    currentSmartJimengQueryOwner: (nodeId, owner, submitId) => {
+      const current = nodes.find(item => item.id === nodeId);
+      return current === owner && current?.jimengPending?.submitId === submitId ? current : null;
+    },
+    applyJimengQueryResult: () => { applyCalls += 1; return true; },
+  });
+
+  startJimengPoll(node);
+  nodes.splice(0, 1, replacement);
+  timers.shift()();
+  for (let index = 0; index < 10 && !fetchStarted; index += 1) await flushMicrotasks();
+  assert.equal(fetchStarted, false, 'background Jimeng poll must not query for a same-ID replacement owner after its timer await');
+  await flushMicrotasks();
+  assert.equal(applyCalls, 0, 'background Jimeng poll must reject late success after exact owner replacement');
+  assert.deepEqual(replacement.jimengPending, node.jimengPending, 'stale background poll must not mutate same-ID replacement ownership');
+  assert.equal(activeJimengPolls.size, 0, 'replaced background Jimeng poll must release active ownership after stale settlement');
+}
+
 function smartOrdinaryManualQueryFixture() {
   const response = deferred();
   const task = {
@@ -1925,6 +2677,20 @@ for (const settlement of ['succeeded', 'pending', 'failed', 'rejected']) {
   const fetchCalls = fixture.counters.fetch || 0;
   await fixture.querySmartImageTaskNow(fixture.node.id, fixture.task.taskId);
   assert.equal(fixture.counters.fetch || 0, fetchCalls, 'terminal smart recovery must not be queryable again');
+}
+
+{
+  const fixture = smartOrdinaryManualQueryFixture();
+  fixture.response.resolve({ status: 'succeeded', images: [] });
+  await fixture.querySmartImageTaskNow(fixture.node.id, fixture.task.taskId);
+  assert.equal(fixture.counters.finalize, 0, 'empty smart recovery success must not finalize as successful output');
+  assert.equal(fixture.counters.terminal, 1, 'empty smart recovery success must terminalize exactly once');
+  assert.equal(fixture.counters.log, 1, 'empty smart recovery success must log terminal failure once');
+  assert.equal(fixture.task.recoverTaskId, '', 'empty smart recovery success must clear recovery identity');
+  assert.equal(fixture.node.pendingTasks.length, 0, 'empty smart recovery success must remove pending ownership');
+  const fetchCalls = fixture.counters.fetch || 0;
+  await fixture.querySmartImageTaskNow(fixture.node.id, fixture.task.taskId);
+  assert.equal(fixture.counters.fetch || 0, fetchCalls, 'empty smart recovery success must not be queryable again');
 }
 
 {

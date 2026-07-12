@@ -5109,6 +5109,9 @@ function liveSmartNode(node){
     if(!node?.id) return node || null;
     return nodes.find(n => n.id === node.id) || null;
 }
+function smartRunOwnersAreCurrent(...owners){
+    return owners.length > 0 && owners.every(owner => owner && nodes.includes(owner));
+}
 function clearSmartNodeBusyState(node){
     if(!node) return node;
     smartNodeRunTokens.delete(node.id);
@@ -11139,6 +11142,7 @@ async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='�
     render();
     try {
         const result = await generateUrlsForCurrentSettings(outputNode, prompt, refs, runSettings);
+        if(!smartRunOwnersAreCurrent(node, outputNode)) return [];
         if(!result.urls?.length) throw new Error('图片 API 未返回结果');
         const additions = result.urls.map((out, i) => {
             const url = typeof out === 'string' ? out : out?.url || '';
@@ -11152,6 +11156,7 @@ async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='�
         scheduleSave();
         return additions;
     } catch(err){
+        if(!smartRunOwnersAreCurrent(node, outputNode)) return [];
         outputNode.running = false;
         outputNode.pending = 0;
         delete outputNode.pendingTasks;
@@ -18644,6 +18649,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
     settings = previousSettings;
     try {
         const result = await generateUrlsForCurrentSettings(outputNode, prompt, request.refs || [], runSettings);
+        if(!smartRunOwnersAreCurrent(sourceNode, targetNode, outputNode)) return [];
         if(!result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
         if(outpaintSize) delete requestNode.outpaintSize;
         addSmartGenerationLog({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
@@ -18676,6 +18682,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
         return rememberRoundOutputs(ctx, outputNode, additions);
     } catch(e) {
         settings = previousSettings;
+        if(!smartRunOwnersAreCurrent(sourceNode, targetNode, outputNode)) return [];
         if(handleJimengPendingSignal(outputNode, e)){
             render();
             return [];
@@ -18688,8 +18695,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
 }
 async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, ctx){
     if(!loopNode || !rootNode || !outputSlot) return [];
-    outputSlot = liveSmartNode(outputSlot);
-    if(!outputSlot) return [];
+    if(!smartRunOwnersAreCurrent(loopNode, rootNode, outputSlot)) return [];
     const previousSettings = cloneSmartSettings(settings);
     const edgeKey = `${rootNode.id}->${outputSlot.id}`;
     const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(rootNode) || {})}, ctx);
@@ -18732,6 +18738,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
         let result;
         if(isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
             const taskResult = await runApiGeneration(prompt, request.refs || [], runSettings);
+            if(!smartRunOwnersAreCurrent(loopNode, rootNode, outputSlot)) return [];
             const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
             if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
             const existing = cleanHistoryImages(outputSlot.images || []);
@@ -18751,7 +18758,9 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             render();
             scheduleSave();
             await saveCanvas();
+            if(!smartRunOwnersAreCurrent(loopNode, rootNode, outputSlot)) return [];
             await resumeSmartPendingNode(outputSlot, {run:runLog, runLogStart});
+            if(!smartRunOwnersAreCurrent(loopNode, rootNode, outputSlot)) return [];
             if(outputSlot.jimengPending || smartRecoverableImageTask(outputSlot)){
                 outputSlot.queued = false;
                 return [];
@@ -18759,6 +18768,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             result = {urls:(outputSlot.images || []).map(img => img?.url ? img : null).filter(Boolean), kind:'image'};
         } else {
             result = await generateUrlsForCurrentSettings(outputSlot, prompt, request.refs || [], runSettings);
+            if(!smartRunOwnersAreCurrent(loopNode, rootNode, outputSlot)) return [];
         }
         if(!result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
         let additions;
@@ -18771,13 +18781,9 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 const url = typeof item === 'string' ? item : item?.url || '';
                 return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true}));
             }).filter(item => item.url);
-            outputSlot = liveSmartNode(outputSlot);
-            if(!outputSlot) return [];
             outputSlot.images = nonPreviewOutputImages(outputSlot.images);
             replaceOutputsToNodeWithHistory(outputSlot, additions, result.kind, meta, {skipShift:Boolean(ctx?.nodeId)});
         }
-        outputSlot = liveSmartNode(outputSlot);
-        if(!outputSlot) return [];
         markSmartNodeComplete(outputSlot, meta);
         clearSourceBusyStateIfDownstreamDone(rootNode);
         if(runPath?.states) {
@@ -18787,6 +18793,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
         addSmartGenerationLog({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
         return rememberRoundOutputs(ctx, outputSlot, additions);
     } catch(e) {
+        if(!smartRunOwnersAreCurrent(loopNode, rootNode, outputSlot)) return [];
         if(handleJimengPendingSignal(outputSlot, e)){
             outputSlot.queued = false;
             return [];
@@ -19091,7 +19098,7 @@ function runSmartCascadeFromLoop(loopId){
     runSmartCascade(tail);
 }
 function smartDirectRunOwnerIsCurrent(node, pendingNode){
-    return Boolean(node && pendingNode && nodes.includes(node) && nodes.includes(pendingNode));
+    return smartRunOwnersAreCurrent(node, pendingNode);
 }
 async function runGeneration(){
     const node = selectedNode();
@@ -19309,15 +19316,19 @@ async function runPromptLLMNode(nodeId){
             if(!r.ok) throw new Error(await r.text());
             return r.json();
         });
+        if(!smartRunOwnersAreCurrent(node)) return;
         node.text = (result.text || '').trim();
         node.llmProvider = provider;
         node.llmModel = model;
         scheduleSave();
     } catch(e) {
+        if(!smartRunOwnersAreCurrent(node)) return;
         toast((e.message || tr('smart.promptLlmFailed')).slice(0, 160));
     } finally {
-        node.running = false;
-        render();
+        if(smartRunOwnersAreCurrent(node)){
+            node.running = false;
+            render();
+        }
     }
 }
 function comfyFieldKind(field){
@@ -19743,11 +19754,33 @@ function finalizeJimengPending(node, urls, kind='image'){
     scheduleSave();
     return true;
 }
+function terminalizeSmartJimengPending(node, message){
+    if(!node?.jimengPending || !nodes.includes(node)) return false;
+    const pending = node.jimengPending;
+    const error = message || tr('smart.errRunFailed');
+    const kind = pending.kind || 'image';
+    delete node.jimengPending;
+    node.running = false;
+    node.pending = 0;
+    node.runStatus = 'failed';
+    node.runError = error;
+    addSmartGenerationLog({
+        run:{nodeId:node.id, nodeType:node.type || 'smart-image', kind, settings:node.runSettings || {}, prompt:node.runModelPrompt || node.runPrompt || ''},
+        outputs:[],
+        runMs:Math.max(0, nowMs() - Number(node.runStartedAt || pending.startedAt || nowMs())),
+        error
+    });
+    toast(error.slice(0, 160));
+    render();
+    scheduleSave();
+    return true;
+}
 function applyJimengQueryResult(node, data){
     if(!node || !data) return false;
     if(data.status === 'succeeded'){
         const kind = data.kind || node.jimengPending?.kind || 'image';
-        return finalizeJimengPending(node, data.urls || [], kind);
+        return finalizeJimengPending(node, data.urls || [], kind)
+            || terminalizeSmartJimengPending(node, kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
     }
     if(data.status === 'failed'){
         delete node.jimengPending;
@@ -19829,17 +19862,8 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
         if(!current) return;
         const currentNode = current.node;
         const currentTask = current.task;
-        if(data.status === 'succeeded'){
-            currentTask.failed = false;
-            currentTask.querying = false;
-            finalizeSmartPendingTask(currentNode, currentTask.taskId, resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data)), currentTask.kind || 'image');
-            render();
-            scheduleSave();
-            return;
-        }
-        if(data.status === 'failed'){
-            const message = data.error || tr('smart.errRunFailed');
-            terminalizeSmartRecoveryTask(currentNode, currentTask, message, recoverTaskId);
+        const terminalize = message => {
+            if(!terminalizeSmartRecoveryTask(currentNode, currentTask, message, recoverTaskId)) return false;
             addSmartGenerationLog({
                 run:{nodeId:currentNode.id, nodeType:currentNode.type || 'smart-image', kind:currentTask.kind || 'image', settings:currentNode.runSettings || {}, prompt:currentNode.runModelPrompt || currentNode.runPrompt || ''},
                 outputs:[],
@@ -19849,6 +19873,24 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
             toast(message.slice(0, 160));
             render();
             scheduleSave();
+            return true;
+        };
+        if(data.status === 'succeeded'){
+            const outputs = resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data));
+            if(!outputs.length){
+                terminalize(tr('smart.errNoOutImages'));
+                return;
+            }
+            currentTask.failed = false;
+            currentTask.querying = false;
+            finalizeSmartPendingTask(currentNode, currentTask.taskId, outputs, currentTask.kind || 'image');
+            render();
+            scheduleSave();
+            return;
+        }
+        if(data.status === 'failed'){
+            const message = data.error || tr('smart.errRunFailed');
+            terminalize(message);
             return;
         } else {
             currentTask.error = data.message || '任务仍在生成中，请稍后再查询';
@@ -19878,16 +19920,18 @@ function startJimengPoll(node){
             for(let i = 0; i < JIMENG_POLL_MAX; i++){
                 await new Promise(resolve => setTimeout(resolve, JIMENG_POLL_INTERVAL));
                 const cur = nodes.find(n => n.id === nodeId);
-                if(!cur || !cur.jimengPending || cur.jimengPending.submitId !== submitId) return;
+                if(cur !== node || !cur.jimengPending || cur.jimengPending.submitId !== submitId) return;
                 if(cur.jimengPending.querying) continue;
                 let data;
                 try {
                     data = await fetchJimengQuery(submitId, cur.jimengPending.kind || 'image');
                 } catch(err){ continue; }
-                const done = applyJimengQueryResult(cur, data);
+                const current = currentSmartJimengQueryOwner(nodeId, node, submitId);
+                if(!current) return;
+                const done = applyJimengQueryResult(current, data);
                 if(done) return;
                 const after = nodes.find(n => n.id === nodeId);
-                if(!after || !after.jimengPending || after.jimengPending.submitId !== submitId) return;
+                if(after !== node || !after.jimengPending || after.jimengPending.submitId !== submitId) return;
             }
         } finally {
             activeJimengPolls.delete(submitId);
