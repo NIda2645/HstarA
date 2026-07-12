@@ -23,14 +23,21 @@ assert.doesNotMatch(onlineHtml, /\.onclick\s*=\s*\(\)\s*=>\s*loadHistory\(false\
 assert.match(onlineHtml, /id="historyLoadSentinel"/);
 assert.match(onlineHtml, /id="historyLoadStatus"[^>]+role="status"[^>]+aria-live="polite"/);
 assert.match(onlineHtml, /let historyAutoLoadArmed = false, historyAutoObserver = null;/);
+assert.match(onlineHtml, /let historyAutoEntrySeen = false, historyAutoInitialPending = false;/);
 assert.equal((onlineHtml.match(/new\s+IntersectionObserver\s*\(/g) || []).length, 1);
-assert.match(
-  onlineHtml,
-  /if\(!entry\.isIntersecting\)\s*{\s*historyAutoLoadArmed = true;\s*return;\s*}/,
-);
-assert.match(onlineHtml, /if\(!historyAutoLoadArmed \|\| isLoading \|\| !historyHasMore\) return;/);
-assert.match(onlineHtml, /historyAutoLoadArmed = false;\s*loadHistory\(false\);/);
 assert.match(onlineHtml, /rootMargin:\s*'0px 0px 320px 0px'/);
+const historyAutoHandlersStart = onlineHtml.indexOf('function handleHistoryAutoIntersections(entries)');
+const historyAutoHandlersEnd = onlineHtml.indexOf('function syncHistoryAutoObserver()');
+assert.ok(
+  historyAutoHandlersStart >= 0 && historyAutoHandlersEnd > historyAutoHandlersStart,
+  'online history must expose executable automatic-loading handlers',
+);
+const historyAutoHandlersSource = onlineHtml.slice(historyAutoHandlersStart, historyAutoHandlersEnd);
+assert.match(historyAutoHandlersSource, /for\(const entry of entries\)/);
+assert.match(
+  historyAutoHandlersSource,
+  /function requestInitialHistoryAutoLoad\(\)\s*{\s*if\(!historyAutoInitialPending \|\| isLoading \|\| !historyHasMore\) return;\s*historyAutoInitialPending = false;\s*loadHistory\(false\);\s*}/,
+);
 const syncHistoryAutoObserverSource = onlineHtml.slice(
   onlineHtml.indexOf('function syncHistoryAutoObserver()'),
   onlineHtml.indexOf('function setupHistoryAutoLoad()'),
@@ -45,10 +52,104 @@ const setupHistoryAutoLoadSource = onlineHtml.slice(
 );
 assert.match(
   setupHistoryAutoLoadSource,
-  /historyAutoObserver = new IntersectionObserver[\s\S]*\);\s*syncHistoryAutoObserver\(\);\s*}/,
+  /historyAutoObserver = new IntersectionObserver\(handleHistoryAutoIntersections,\s*{rootMargin:'0px 0px 320px 0px', threshold:0}\);[\s\S]*syncHistoryAutoObserver\(\);\s*}/,
   'setup must delegate initial sentinel registration after constructing the observer',
 );
 assert.doesNotMatch(setupHistoryAutoLoadSource, /historyAutoObserver\.(?:observe|unobserve)\(/);
+assert.match(
+  setupHistoryAutoLoadSource,
+  /window\.addEventListener\('wheel', requestInitialHistoryAutoLoad, {passive:true}\);/,
+);
+assert.match(
+  setupHistoryAutoLoadSource,
+  /window\.addEventListener\('touchmove', requestInitialHistoryAutoLoad, {passive:true}\);/,
+);
+assert.match(
+  setupHistoryAutoLoadSource,
+  /\['PageDown','End','ArrowDown'\]\.includes\(event\.key\) \|\| event\.code === 'Space'/,
+);
+assert.match(setupHistoryAutoLoadSource, /requestInitialHistoryAutoLoad\(\);/);
+
+function createHistoryAutoHarness(){
+  return runInNewContext(`(() => {
+    let historyAutoLoadArmed = false;
+    let historyAutoEntrySeen = false;
+    let historyAutoInitialPending = false;
+    let isLoading = false;
+    let historyHasMore = true;
+    const requests = [];
+    function loadHistory(reset){ requests.push(reset); }
+    ${historyAutoHandlersSource}
+    return {
+      handle: entries => handleHistoryAutoIntersections(entries),
+      request: () => requestInitialHistoryAutoLoad(),
+      requestCount: () => requests.length,
+      lastRequest: () => requests.at(-1),
+      isArmed: () => historyAutoLoadArmed,
+      isEntrySeen: () => historyAutoEntrySeen,
+      isInitialPending: () => historyAutoInitialPending,
+      setLoading: value => { isLoading = value; },
+      setHasMore: value => { historyHasMore = value; },
+    };
+  })()`);
+}
+
+const shortPageAutoLoad = createHistoryAutoHarness();
+shortPageAutoLoad.handle([{isIntersecting:true}]);
+assert.equal(shortPageAutoLoad.requestCount(), 0, 'first intersect must preserve the initial 16-item bound');
+assert.equal(shortPageAutoLoad.isEntrySeen(), true);
+assert.equal(shortPageAutoLoad.isInitialPending(), true);
+assert.equal(shortPageAutoLoad.isArmed(), false);
+shortPageAutoLoad.request();
+assert.equal(shortPageAutoLoad.requestCount(), 1, 'first scroll intent must load one reachable page');
+assert.equal(shortPageAutoLoad.lastRequest(), false);
+assert.equal(shortPageAutoLoad.isInitialPending(), false);
+shortPageAutoLoad.request();
+shortPageAutoLoad.handle([{isIntersecting:true}, {isIntersecting:true}]);
+assert.equal(shortPageAutoLoad.requestCount(), 1, 'continuous intersection and repeated intent must not cascade');
+assert.equal(shortPageAutoLoad.isInitialPending(), false, 'continuous intersection must not recreate initial pending');
+shortPageAutoLoad.handle([{isIntersecting:false}]);
+assert.equal(shortPageAutoLoad.isArmed(), true, 'leaving the observer margin must arm the next page');
+shortPageAutoLoad.handle([{isIntersecting:true}]);
+assert.equal(shortPageAutoLoad.requestCount(), 2, 'reentry must load exactly one additional page');
+assert.equal(shortPageAutoLoad.isArmed(), false, 'reentry must consume the arm');
+shortPageAutoLoad.handle([{isIntersecting:true}]);
+assert.equal(shortPageAutoLoad.requestCount(), 2, 'repeated intersection after reentry must not cascade');
+
+const batchedAutoLoad = createHistoryAutoHarness();
+batchedAutoLoad.handle([
+  {isIntersecting:true},
+  {isIntersecting:false},
+  {isIntersecting:true},
+  {isIntersecting:true},
+]);
+assert.equal(batchedAutoLoad.requestCount(), 1, 'batched observer entries must be processed in order');
+assert.equal(batchedAutoLoad.isInitialPending(), false);
+assert.equal(batchedAutoLoad.isArmed(), false);
+
+const guardedIntentAutoLoad = createHistoryAutoHarness();
+guardedIntentAutoLoad.handle([{isIntersecting:true}]);
+guardedIntentAutoLoad.setLoading(true);
+guardedIntentAutoLoad.request();
+assert.equal(guardedIntentAutoLoad.requestCount(), 0, 'loading must block initial intent requests');
+assert.equal(guardedIntentAutoLoad.isInitialPending(), true);
+guardedIntentAutoLoad.setLoading(false);
+guardedIntentAutoLoad.setHasMore(false);
+guardedIntentAutoLoad.request();
+assert.equal(guardedIntentAutoLoad.requestCount(), 0, 'exhausted history must block initial intent requests');
+assert.equal(guardedIntentAutoLoad.isInitialPending(), true);
+
+const guardedIntersectionAutoLoad = createHistoryAutoHarness();
+guardedIntersectionAutoLoad.handle([{isIntersecting:false}]);
+guardedIntersectionAutoLoad.setLoading(true);
+guardedIntersectionAutoLoad.handle([{isIntersecting:true}]);
+assert.equal(guardedIntersectionAutoLoad.requestCount(), 0, 'loading must block armed intersection requests');
+assert.equal(guardedIntersectionAutoLoad.isArmed(), true);
+guardedIntersectionAutoLoad.setLoading(false);
+guardedIntersectionAutoLoad.setHasMore(false);
+guardedIntersectionAutoLoad.handle([{isIntersecting:true}]);
+assert.equal(guardedIntersectionAutoLoad.requestCount(), 0, 'exhausted history must block armed intersection requests');
+assert.equal(guardedIntersectionAutoLoad.isArmed(), true);
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
 assert.match(onlineHtml, /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;/);

@@ -268,6 +268,7 @@
         let historyOffset = 0, historyHasMore = true;
         let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;
         let historyAutoLoadArmed = false, historyAutoObserver = null;
+        let historyAutoEntrySeen = false, historyAutoInitialPending = false;
         const PAGE_SIZE = 16;
         const SIZE_OPTIONS = {
             square: [
@@ -844,6 +845,29 @@
                 finishHistoryMutation(historyDelta);
             }
         }
+        function handleHistoryAutoIntersections(entries){
+            for(const entry of entries){
+                const isFirstEntry = !historyAutoEntrySeen;
+                historyAutoEntrySeen = true;
+                if(!entry.isIntersecting){
+                    historyAutoLoadArmed = true;
+                    historyAutoInitialPending = false;
+                    continue;
+                }
+                if(isFirstEntry && !historyAutoLoadArmed){
+                    historyAutoInitialPending = true;
+                    continue;
+                }
+                if(!historyAutoLoadArmed || isLoading || !historyHasMore) continue;
+                historyAutoLoadArmed = false;
+                loadHistory(false);
+            }
+        }
+        function requestInitialHistoryAutoLoad(){
+            if(!historyAutoInitialPending || isLoading || !historyHasMore) return;
+            historyAutoInitialPending = false;
+            loadHistory(false);
+        }
         function syncHistoryAutoObserver(){
             if(!historyAutoObserver) return;
             const sentinel = document.getElementById('historyLoadSentinel');
@@ -851,16 +875,14 @@
             else historyAutoObserver.unobserve(sentinel);
         }
         function setupHistoryAutoLoad(){
-            historyAutoObserver = new IntersectionObserver(entries => {
-                const entry = entries[0];
-                if(!entry.isIntersecting){
-                    historyAutoLoadArmed = true;
-                    return;
+            historyAutoObserver = new IntersectionObserver(handleHistoryAutoIntersections, {rootMargin:'0px 0px 320px 0px', threshold:0});
+            window.addEventListener('wheel', requestInitialHistoryAutoLoad, {passive:true});
+            window.addEventListener('touchmove', requestInitialHistoryAutoLoad, {passive:true});
+            window.addEventListener('keydown', event => {
+                if(['PageDown','End','ArrowDown'].includes(event.key) || event.code === 'Space'){
+                    requestInitialHistoryAutoLoad();
                 }
-                if(!historyAutoLoadArmed || isLoading || !historyHasMore) return;
-                historyAutoLoadArmed = false;
-                loadHistory(false);
-            }, {rootMargin:'0px 0px 320px 0px', threshold:0});
+            });
             syncHistoryAutoObserver();
         }
         window.onload = async () => {
