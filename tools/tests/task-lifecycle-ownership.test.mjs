@@ -309,6 +309,144 @@ assert.equal(
 const ordinaryPollSource = functionSource(canvasSource, 'pollCanvasImageTask');
 
 {
+  const generator = { id: 'deleted-generator' };
+  const out = { id: 'deleted-output' };
+  const nodes = [generator, out];
+  const settlement = deferred();
+  const mutations = [];
+  const canvasRunOwnerIsCurrent = exportedFunction(
+    functionSource(canvasSource, 'canvasRunOwnerIsCurrent'),
+    'canvasRunOwnerIsCurrent',
+    { nodes },
+  );
+  const catchSettlement = settlement.promise.catch(() => {
+    if (!canvasRunOwnerIsCurrent(generator, out)) return;
+    mutations.push('log', 'save', 'refresh', 'modal');
+  });
+  nodes.length = 0;
+  settlement.reject(new Error('late ordinary poll failure'));
+  await catchSettlement;
+  assert.deepEqual(mutations, [], 'deleted classic run owners must reject late failures before any mutation-side effect');
+}
+
+{
+  const generator = { id: 'deferred-deleted-generator', count: 1, running: false };
+  const out = { id: 'deferred-deleted-output', _pending: [], images: [] };
+  const nodes = [generator, out];
+  const pollSettlement = deferred();
+  const counters = { log: 0, modal: 0, refresh: 0, save: 0 };
+  const alerts = [];
+  const modalErrors = [];
+  let pollStarted = false;
+  const runGenerator = exportedFunction(functionSource(canvasSource, 'runGenerator'), 'runGenerator', {
+    nodes,
+    cascadeTargetIdFromOptions: () => '',
+    orderedSources: (_target, sources) => sources,
+    generatorSources: () => [],
+    generationPromptWithMarkerDirectives: () => 'deferred prompt',
+    imageRefsOnly: refs => refs,
+    alert: message => alerts.push(message),
+    outputForNode: () => out,
+    runSnapshot: () => ({ node: { id: generator.id } }),
+    resolveImageProviderId: value => value,
+    resolveImageModel: value => value,
+    generatorSizeForRun: async () => '1024x1024',
+    normalizedImageQuality: () => '',
+    nowMs: () => 1000,
+    setTimeout: () => 0,
+    createCanvasImageTask: async () => ({ task_id: 'deferred-task' }),
+    uid: () => 'deferred-pending',
+    makePendingForRun: id => ({ id, canvasTaskId: 'deferred-task' }),
+    refreshRunNodes: () => { counters.refresh += 1; },
+    scheduleSave: () => { counters.save += 1; },
+    saveCanvas: async () => {},
+    pollCanvasImageTask: () => {
+      pollStarted = true;
+      return pollSettlement.promise;
+    },
+    cascadeAbortError: message => new Error(message),
+    cascadeStopMessage: () => 'stopped',
+    tr: key => key,
+    canvasRunOwnerIsCurrent: (node, owner) => nodes.includes(node) && nodes.includes(owner),
+    pendingById: (owner, id) => owner?._pending?.find(item => item.id === id),
+    collectRunMetas: () => [],
+    addGenerationLog: () => { counters.log += 1; },
+    isCascadeAbortError: () => false,
+    showErrorModal: message => {
+      counters.modal += 1;
+      modalErrors.push(message);
+    },
+  });
+
+  const run = runGenerator(generator.id);
+  for (let index = 0; index < 10 && !pollStarted; index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  assert.equal(pollStarted, true, `classic stale-owner integration fixture must reach deferred polling: alerts=${alerts.join('; ')} modals=${modalErrors.join('; ')}`);
+  nodes.length = 0;
+  const baseline = {
+    counters: { ...counters },
+    generator: JSON.stringify(generator),
+    out: JSON.stringify(out),
+  };
+  pollSettlement.resolve('failed');
+  await run;
+  assert.deepEqual({
+    counters: { ...counters },
+    generator: JSON.stringify(generator),
+    out: JSON.stringify(out),
+  }, baseline, 'runGenerator must perform no catch-path side effect after generator/output deletion');
+  assert.equal(nodes.length, 0, 'runGenerator late failure must not resurrect deleted owners');
+}
+
+for (const [functionName, ownerName] of [['runRhModelNode', 'node'], ['runGenerator', 'gen']]) {
+  const runSource = functionSource(canvasSource, functionName);
+  const catchStart = requiredIndex(runSource, '} catch(err) {', `${functionName} must define its lifecycle catch path`);
+  const firstCatchMutation = requiredIndex(runSource, 'const remainingPending', `${functionName} must inspect pending state after its ownership guard`, catchStart);
+  assert.ok(
+    runSource.slice(catchStart, firstCatchMutation).includes(`if(!canvasRunOwnerIsCurrent(${ownerName}, out)) return;`),
+    `${functionName} must reject a detached generator/output before catch-path mutation`,
+  );
+}
+
+{
+  const taskStates = [
+    { status: 'queued' },
+    { status: 'running' },
+    { status: 'jimeng_pending', submit_id: 'jimeng-no-output', kind: 'image', message: 'queued remotely' },
+  ];
+  let fetchCalls = 0;
+  const waitCanvasImageTaskResult = exportedFunction(
+    functionSource(canvasSource, 'waitCanvasImageTaskResult'),
+    'waitCanvasImageTaskResult',
+    {
+      cascadeTargetIdFromOptions: () => '',
+      ensureCascadeActive() {},
+      cascadeFetch: async () => {
+        fetchCalls += 1;
+        const task = taskStates.shift();
+        if (!task) throw new Error('no-output waiter fetched after permanent jimeng_pending');
+        return { ok: true, json: async () => task };
+      },
+      canvasJimengPendingError: task => Object.assign(new Error(task.message), {
+        jimengPending: true,
+        submitId: task.submit_id,
+        kind: task.kind,
+      }),
+      sleep: async () => {},
+      tr: key => key,
+    },
+  );
+
+  await assert.rejects(
+    waitCanvasImageTaskResult('ordinary-no-output'),
+    error => error.jimengPending === true && error.submitId === 'jimeng-no-output' && error.kind === 'image',
+    'the shared no-output waiter must terminalize permanent jimeng_pending with its submit metadata',
+  );
+  assert.equal(fetchCalls, 3, 'the shared no-output waiter must stop after queued and running reach jimeng_pending');
+}
+
+{
   const activeCanvasTaskPolls = new Set();
   let fetchCalls = 0;
   const pollCanvasImageTask = exportedFunction(ordinaryPollSource, 'pollCanvasImageTask', {
@@ -504,7 +642,10 @@ const ordinaryPollSource = functionSource(canvasSource, 'pollCanvasImageTask');
   const requests = [];
   const completions = [];
   const queryRecoverPendingOutput = exportedFunction(
-    functionSource(canvasSource, 'queryRecoverPendingOutput'),
+    [
+      functionSource(canvasSource, 'currentRecoverPendingOutput'),
+      functionSource(canvasSource, 'queryRecoverPendingOutput'),
+    ].join('\n'),
     'queryRecoverPendingOutput',
     {
       findOutputByPendingId: () => out,
@@ -517,6 +658,7 @@ const ordinaryPollSource = functionSource(canvasSource, 'pollCanvasImageTask');
       },
       providerIdForPending: () => 'jimeng',
       completeRecoverPendingOutput: (...args) => completions.push(args),
+      failRecoverPendingOutput() {},
       responseErrorMessage: async () => 'query failed',
       tr: key => key,
       showErrorModal() {},
@@ -533,6 +675,126 @@ const ordinaryPollSource = functionSource(canvasSource, 'pollCanvasImageTask');
     'classic jimeng recovery must query with its persisted submit ID and media kind',
   );
   assert.deepEqual(completions[0][2].images, ['/jimeng-result.png'], 'classic jimeng recovery must adapt returned URLs into classic output images');
+}
+
+function recoveryQueryFixture() {
+  const response = deferred();
+  const pending = {
+    id: 'pending-recovery-settlement',
+    failed: true,
+    querying: false,
+    recoverTaskId: 'jimeng-recovery-settlement',
+    canvasTaskStatus: 'jimeng_pending',
+    jimengKind: 'image',
+    startedAt: 900,
+    run: { node: { id: 'generator-recovery-settlement' } },
+  };
+  const out = { id: 'output-recovery-settlement', _pending: [pending], images: [] };
+  const generator = { id: 'generator-recovery-settlement', runStatus: 'queued', running: false };
+  const nodes = [out, generator];
+  let ownerPresent = true;
+  const counters = {
+    append: 0,
+    fetch: 0,
+    log: 0,
+    modal: 0,
+    refresh: 0,
+    refreshRun: 0,
+    save: 0,
+    status: 0,
+  };
+  const source = [
+    functionSource(canvasSource, 'currentRecoverPendingOutput'),
+    functionSource(canvasSource, 'completeRecoverPendingOutput'),
+    functionSource(canvasSource, 'failRecoverPendingOutput'),
+    functionSource(canvasSource, 'queryRecoverPendingOutput'),
+  ].join('\n');
+  const queryRecoverPendingOutput = exportedFunction(source, 'queryRecoverPendingOutput', {
+    findOutputByPendingId: () => (ownerPresent ? out : null),
+    pendingById: (owner, pendingId) => owner?._pending?.find(item => item.id === pendingId),
+    extractUpstreamTaskId: () => '',
+    refreshNodes: () => { counters.refresh += 1; },
+    fetch: () => {
+      counters.fetch += 1;
+      return response.promise;
+    },
+    providerIdForPending: () => 'jimeng',
+    responseErrorMessage: async () => 'query failed',
+    tr: key => key,
+    showErrorModal: () => { counters.modal += 1; },
+    setStatus: () => { counters.status += 1; },
+    scheduleSave: () => { counters.save += 1; },
+    nowMs: () => 1000,
+    requestMetaFromResult: () => ({}),
+    appendOutputImages: () => { counters.append += 1; },
+    nodes,
+    mergeGeneratedOutputs() {},
+    addGenerationLog: () => { counters.log += 1; },
+    refreshRunNodes: () => { counters.refreshRun += 1; },
+  });
+  return {
+    counters,
+    deleteOwner() {
+      ownerPresent = false;
+      nodes.length = 0;
+    },
+    generator,
+    nodes,
+    out,
+    pending,
+    queryRecoverPendingOutput,
+    response,
+    snapshot() {
+      return {
+        counters: { ...counters },
+        pending: JSON.stringify(pending),
+      };
+    },
+  };
+}
+
+{
+  const fixture = recoveryQueryFixture();
+  const query = fixture.queryRecoverPendingOutput(fixture.pending.id);
+  fixture.response.resolve({
+    ok: true,
+    json: async () => ({ status: 'failed', error: 'jimeng terminal failure' }),
+  });
+  await query;
+  assert.equal(fixture.out._pending.length, 0, 'failed Jimeng recovery must remove its recoverable pending record');
+  assert.equal(fixture.pending.canvasTaskStatus, 'failed', 'failed Jimeng recovery must enter terminal failed status');
+  assert.equal(fixture.pending.recoverTaskId, '', 'failed Jimeng recovery must clear its repeatedly queryable task ID');
+  assert.equal(fixture.generator.runStatus, 'failed', 'failed Jimeng recovery must mark the generator failed');
+  assert.equal(fixture.generator.running, false, 'failed Jimeng recovery must leave the generator stopped');
+  assert.equal(fixture.counters.log, 1, 'failed Jimeng recovery must add one terminal generation log');
+  assert.equal(fixture.counters.modal, 1, 'failed Jimeng recovery may report its terminal error while ownership is current');
+  await fixture.queryRecoverPendingOutput(fixture.pending.id);
+  assert.equal(fixture.counters.fetch, 1, 'failed Jimeng recovery must not be queryable again after terminalization');
+}
+
+{
+  const fixture = recoveryQueryFixture();
+  const query = fixture.queryRecoverPendingOutput(fixture.pending.id);
+  fixture.deleteOwner();
+  const baseline = fixture.snapshot();
+  fixture.response.resolve({
+    ok: true,
+    json: async () => ({ status: 'succeeded', urls: ['/late-recovery.png'], kind: 'image' }),
+  });
+  await query;
+  assert.deepEqual(fixture.snapshot(), baseline, 'late recovery success after owner deletion must not mutate, refresh, save, log, or show a modal');
+  assert.equal(fixture.nodes.length, 0, 'late recovery success must not resurrect deleted owners');
+}
+
+{
+  const fixture = recoveryQueryFixture();
+  const query = fixture.queryRecoverPendingOutput(fixture.pending.id);
+  fixture.deleteOwner();
+  const baseline = fixture.snapshot();
+  fixture.response.reject(new Error('late recovery transport failure'));
+  await query;
+  assert.deepEqual(fixture.snapshot(), baseline, 'late recovery rejection after owner deletion must not mutate, refresh, save, log, or show a modal');
+  assert.equal(fixture.nodes.length, 0, 'late recovery rejection must not resurrect deleted owners');
 }
 
 {
