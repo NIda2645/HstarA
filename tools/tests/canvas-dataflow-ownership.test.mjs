@@ -31,28 +31,89 @@ function skipBlockComment(source, index, functionName) {
   return close + 2;
 }
 
+function skipRegexLiteral(source, index, functionName) {
+  let inCharacterClass = false;
+  for (let cursor = index + 1; cursor < source.length; cursor += 1) {
+    const char = source[cursor];
+    if (char === '\\') {
+      cursor += 1;
+    } else if (char === '\n' || char === '\r') {
+      assert.fail(`functionSource(${functionName}): unterminated regex literal`);
+    } else if (char === '[') {
+      inCharacterClass = true;
+    } else if (char === ']' && inCharacterClass) {
+      inCharacterClass = false;
+    } else if (char === '/' && !inCharacterClass) {
+      cursor += 1;
+      while (/[A-Za-z]/.test(source[cursor] || '')) cursor += 1;
+      return cursor;
+    }
+  }
+  assert.fail(`functionSource(${functionName}): unterminated regex literal`);
+}
+
+function regexAllowedAfterIdentifier(identifier) {
+  return new Set([
+    'await', 'case', 'delete', 'do', 'else', 'in', 'instanceof', 'new',
+    'of', 'return', 'throw', 'typeof', 'void', 'yield',
+  ]).has(identifier);
+}
+
+function lexicalStep(source, index, canStartRegex, functionName) {
+  const char = source[index];
+  const next = source[index + 1];
+  if (/\s/.test(char)) return { cursor: index + 1, canStartRegex, punctuator: '' };
+  if (char === "'" || char === '"') {
+    return { cursor: skipQuoted(source, index, char, functionName), canStartRegex: false, punctuator: '' };
+  }
+  if (char === '`') {
+    return { cursor: skipTemplate(source, index, functionName), canStartRegex: false, punctuator: '' };
+  }
+  if (char === '/' && next === '/') {
+    return { cursor: skipLineComment(source, index), canStartRegex, punctuator: '' };
+  }
+  if (char === '/' && next === '*') {
+    return { cursor: skipBlockComment(source, index, functionName), canStartRegex, punctuator: '' };
+  }
+  if (char === '/' && next !== '=' && canStartRegex) {
+    return { cursor: skipRegexLiteral(source, index, functionName), canStartRegex: false, punctuator: '' };
+  }
+  if (/[A-Za-z_$]/.test(char)) {
+    let cursor = index + 1;
+    while (/[A-Za-z0-9_$]/.test(source[cursor] || '')) cursor += 1;
+    return {
+      cursor,
+      canStartRegex: regexAllowedAfterIdentifier(source.slice(index, cursor)),
+      punctuator: '',
+    };
+  }
+  if (/[0-9]/.test(char)) {
+    let cursor = index + 1;
+    while (/[A-Za-z0-9_.]/.test(source[cursor] || '')) cursor += 1;
+    return { cursor, canStartRegex: false, punctuator: '' };
+  }
+
+  const expressionPrefix = '([{,;:?=!?&|+-*%~^<>/';
+  return {
+    cursor: index + 1,
+    canStartRegex: expressionPrefix.includes(char),
+    punctuator: char,
+  };
+}
+
 function skipTemplateExpression(source, index, functionName) {
   let depth = 1;
   let cursor = index;
+  let canStartRegex = true;
   while (cursor < source.length) {
-    const char = source[cursor];
-    const next = source[cursor + 1];
-    if (char === "'" || char === '"') {
-      cursor = skipQuoted(source, cursor, char, functionName);
-    } else if (char === '`') {
-      cursor = skipTemplate(source, cursor, functionName);
-    } else if (char === '/' && next === '/') {
-      cursor = skipLineComment(source, cursor);
-    } else if (char === '/' && next === '*') {
-      cursor = skipBlockComment(source, cursor, functionName);
-    } else {
-      if (char === '{') depth += 1;
-      if (char === '}') {
-        depth -= 1;
-        if (depth === 0) return cursor + 1;
-      }
-      cursor += 1;
+    const step = lexicalStep(source, cursor, canStartRegex, functionName);
+    if (step.punctuator === '{') depth += 1;
+    if (step.punctuator === '}') {
+      depth -= 1;
+      if (depth === 0) return step.cursor;
     }
+    cursor = step.cursor;
+    canStartRegex = step.canStartRegex;
   }
   assert.fail(`functionSource(${functionName}): unterminated template expression`);
 }
@@ -77,61 +138,100 @@ function skipTemplate(source, index, functionName) {
 
 function isCodePosition(source, targetIndex, functionName) {
   let cursor = 0;
+  let canStartRegex = true;
   while (cursor < targetIndex) {
-    const char = source[cursor];
-    const next = source[cursor + 1];
-    let nextCursor = cursor + 1;
-    if (char === "'" || char === '"') {
-      nextCursor = skipQuoted(source, cursor, char, functionName);
-    } else if (char === '`') {
-      nextCursor = skipTemplate(source, cursor, functionName);
-    } else if (char === '/' && next === '/') {
-      nextCursor = skipLineComment(source, cursor);
-    } else if (char === '/' && next === '*') {
-      nextCursor = skipBlockComment(source, cursor, functionName);
-    }
-    if (nextCursor > targetIndex) return false;
-    cursor = nextCursor;
+    const step = lexicalStep(source, cursor, canStartRegex, functionName);
+    if (step.cursor > targetIndex) return false;
+    cursor = step.cursor;
+    canStartRegex = step.canStartRegex;
   }
   return cursor === targetIndex;
 }
 
-function functionSource(source, functionName) {
-  const declarationPattern = new RegExp(
-    `^[\\t ]*(?:async[\\t ]+)?function[\\t ]+${escapeRegExp(functionName)}[\\t ]*\\([^\\r\\n]*\\)[\\t ]*\\{`,
-    'gm',
-  );
-  let declaration = null;
-  for (let candidate = declarationPattern.exec(source); candidate; candidate = declarationPattern.exec(source)) {
-    if (isCodePosition(source, candidate.index, functionName)) {
-      declaration = candidate;
+function skipTrivia(source, index, functionName) {
+  let cursor = index;
+  while (cursor < source.length) {
+    if (/\s/.test(source[cursor])) {
+      cursor += 1;
+    } else if (source[cursor] === '/' && source[cursor + 1] === '/') {
+      cursor = skipLineComment(source, cursor);
+    } else if (source[cursor] === '/' && source[cursor + 1] === '*') {
+      cursor = skipBlockComment(source, cursor, functionName);
+    } else {
       break;
     }
   }
-  assert.ok(declaration, `functionSource(${functionName}): declaration not found`);
+  return cursor;
+}
 
-  const openingBrace = declaration.index + declaration[0].lastIndexOf('{');
+function readIdentifier(source, index) {
+  if (!/[A-Za-z_$]/.test(source[index] || '')) return null;
+  let cursor = index + 1;
+  while (/[A-Za-z0-9_$]/.test(source[cursor] || '')) cursor += 1;
+  return { value: source.slice(index, cursor), end: cursor };
+}
+
+function closingParameterIndex(source, openingParenthesis, functionName) {
   let depth = 1;
-  let cursor = openingBrace + 1;
+  let cursor = openingParenthesis + 1;
+  let canStartRegex = true;
   while (cursor < source.length) {
-    const char = source[cursor];
-    const next = source[cursor + 1];
-    if (char === "'" || char === '"') {
-      cursor = skipQuoted(source, cursor, char, functionName);
-    } else if (char === '`') {
-      cursor = skipTemplate(source, cursor, functionName);
-    } else if (char === '/' && next === '/') {
-      cursor = skipLineComment(source, cursor);
-    } else if (char === '/' && next === '*') {
-      cursor = skipBlockComment(source, cursor, functionName);
-    } else {
-      if (char === '{') depth += 1;
-      if (char === '}') {
-        depth -= 1;
-        if (depth === 0) return source.slice(declaration.index, cursor + 1);
-      }
-      cursor += 1;
+    const step = lexicalStep(source, cursor, canStartRegex, functionName);
+    if (step.punctuator === '(') depth += 1;
+    if (step.punctuator === ')') {
+      depth -= 1;
+      if (depth === 0) return step.cursor;
     }
+    cursor = step.cursor;
+    canStartRegex = step.canStartRegex;
+  }
+  assert.fail(`functionSource(${functionName}): parameter list is unbalanced`);
+}
+
+function functionDeclaration(source, functionName) {
+  const candidatePattern = new RegExp(
+    `^[\\t ]*(?:async[\\t ]+)?function\\s+${escapeRegExp(functionName)}\\b`,
+    'gm',
+  );
+  for (let candidate = candidatePattern.exec(source); candidate; candidate = candidatePattern.exec(source)) {
+    if (!isCodePosition(source, candidate.index, functionName)) continue;
+
+    let cursor = skipTrivia(source, candidate.index, functionName);
+    let identifier = readIdentifier(source, cursor);
+    if (identifier?.value === 'async') {
+      cursor = skipTrivia(source, identifier.end, functionName);
+      identifier = readIdentifier(source, cursor);
+    }
+    if (identifier?.value !== 'function') continue;
+
+    cursor = skipTrivia(source, identifier.end, functionName);
+    if (source[cursor] === '*') cursor = skipTrivia(source, cursor + 1, functionName);
+    identifier = readIdentifier(source, cursor);
+    if (identifier?.value !== functionName) continue;
+
+    cursor = skipTrivia(source, identifier.end, functionName);
+    if (source[cursor] !== '(') continue;
+    cursor = skipTrivia(source, closingParameterIndex(source, cursor, functionName), functionName);
+    if (source[cursor] === '{') return { start: candidate.index, openingBrace: cursor };
+  }
+  assert.fail(`functionSource(${functionName}): declaration not found`);
+}
+
+function functionSource(source, functionName) {
+  const declaration = functionDeclaration(source, functionName);
+
+  let depth = 1;
+  let cursor = declaration.openingBrace + 1;
+  let canStartRegex = true;
+  while (cursor < source.length) {
+    const step = lexicalStep(source, cursor, canStartRegex, functionName);
+    if (step.punctuator === '{') depth += 1;
+    if (step.punctuator === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(declaration.start, step.cursor);
+    }
+    cursor = step.cursor;
+    canStartRegex = step.canStartRegex;
   }
 
   assert.fail(`functionSource(${functionName}): balanced closing brace not found`);
@@ -162,16 +262,34 @@ function exportedFunction(source, functionName, globals) {
   return { context, fn: context.__exportedFunction };
 }
 
+assert.throws(
+  () => functionSource('const value = 1;', 'missingFixture'),
+  /functionSource\(missingFixture\): declaration not found/,
+  'functionSource should identify a missing function in its diagnostic',
+);
+assert.throws(
+  () => functionSource('function unbalancedFixture() { if (true) { return 1; }', 'unbalancedFixture'),
+  /functionSource\(unbalancedFixture\): balanced closing brace not found/,
+  'functionSource should identify an unbalanced function body in its diagnostic',
+);
+
 const extractionFixture = [
+  'const quotedDecoy = "function extractionTarget() { return \'quoted decoy\'; }";',
+  'const templateDecoy = `',
+  "function extractionTarget() { return 'template decoy'; }",
+  '`;',
   '/*',
   "function extractionTarget() { return 'comment decoy'; }",
   '*/',
-  'function extractionTarget() {',
+  'function extractionTarget(',
+  '  project = (value) => ({ value }),',
+  ') {',
   '  const quoted = "function extractionTail() { ignored }";',
   '  const template = `function extractionTail() { ${"ignored"} }`;',
+  '  const closingBrace = /}/;',
   '  // function extractionTail() { ignored }',
   '  /* function extractionTail() { ignored } */',
-  "  return quoted.length > 0 && template.length > 0 ? 'complete' : 'incomplete';",
+  "  return quoted.length > 0 && template.length > 0 && closingBrace.test('}') ? project('complete').value : 'incomplete';",
   '}',
   "function extractionTail() { return 'wrong function'; }",
 ].join('\n');
@@ -248,17 +366,25 @@ assert.deepEqual(
   'ordinary generatorSources should return exactly the linked prompt source',
 );
 
-const mutatedGeneratorSource = ordinaryGeneratorSource.replace(
-  'nodes.find(n => n.id === c.from)',
-  '(nodes.find(n => n.id === c.from) || nodes[0])',
-);
-assert.notEqual(mutatedGeneratorSource, ordinaryGeneratorSource, 'generatorSources mutation should be applied');
-const mutatedGenerator = exportedFunction(mutatedGeneratorSource, 'generatorSources', generatorGlobals).fn;
-const mutatedGeneratorIds = Array.from(mutatedGenerator(generatorFixture.generator), item => item.id);
-assert.throws(
-  () => assert.deepEqual(mutatedGeneratorIds, [generatorFixture.linkedPrompt.id]),
-  { name: 'AssertionError' },
-  'the exact linked-source fixture should reject a nodes[0] fallback',
+const disconnectedGenerator = { id: 'disconnected-generator', type: 'generator' };
+const disconnectedGeneratorSources = exportedFunction(
+  ordinaryGeneratorSource,
+  'generatorSources',
+  {
+    nodes: [
+      { id: 'unrelated-prompt', type: 'prompt', text: 'unrelated prompt' },
+      { id: 'unrelated-image', type: 'image', url: '/unrelated.png' },
+      disconnectedGenerator,
+    ],
+    connections: [{ from: 'unrelated-prompt', to: 'unrelated-image' }],
+    CANVAS_MEDIA_OUTPUT_TYPES: [],
+  },
+).fn;
+const disconnectedGeneratorSourceIds = Array.from(disconnectedGeneratorSources(disconnectedGenerator), item => item.id);
+assert.deepEqual(
+  disconnectedGeneratorSourceIds,
+  [],
+  'ordinary generatorSources should return no sources when the target has no inbound connections',
 );
 
 const smartNodes = [
@@ -281,6 +407,30 @@ const smartUpstream = exportedFunction(
 ).fn;
 const smartUpstreamIds = Array.from(smartUpstream(smartNodes[2], ['input']), node => node.id);
 assert.deepEqual(smartUpstreamIds, ['smart-linked'], 'smart upstream traversal should return exactly the linked node');
+
+const disconnectedSmartTarget = { id: 'smart-disconnected-target', type: 'smart-image' };
+const disconnectedSmartUpstream = exportedFunction(
+  functionSource(smartCanvasSource, 'upstreamNodesForKinds'),
+  'upstreamNodesForKinds',
+  {
+    canvas: { connections: [{ from: 'smart-unrelated-prompt', to: 'smart-unrelated-image', kind: 'input' }] },
+    canvasUsesConnections: true,
+    nodes: [
+      { id: 'smart-unrelated-prompt', type: 'smart-prompt' },
+      { id: 'smart-unrelated-image', type: 'smart-image' },
+      disconnectedSmartTarget,
+    ],
+  },
+).fn;
+const disconnectedSmartUpstreamIds = Array.from(
+  disconnectedSmartUpstream(disconnectedSmartTarget, ['input']),
+  node => node.id,
+);
+assert.deepEqual(
+  disconnectedSmartUpstreamIds,
+  [],
+  'smart upstream traversal should return no nodes when the target has no inbound connections',
+);
 
 const clearContext = {
   canvas: { connections: smartConnections },
