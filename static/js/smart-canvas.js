@@ -19863,6 +19863,9 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image'){
         delete node.h;
     }
 }
+function smartNodeOwnsPendingTask(node, taskId){
+    return Boolean(node && nodes.includes(node) && smartPendingTasks(node).some(task => task.taskId === taskId));
+}
 async function resumeSmartPendingNode(node, logContext={}){
     const tasks = smartPendingTasks(node);
     if(!node || !tasks.length) return;
@@ -19884,10 +19887,12 @@ async function resumeSmartPendingNode(node, logContext={}){
         if(task.failed && task.recoverTaskId) return;
         try {
             const result = await pollSmartCanvasTask(task.taskId);
+            if(!smartNodeOwnsPendingTask(node, task.taskId)) return;
             finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result)), task.kind || 'image');
             render();
             scheduleSave();
         } catch(e) {
+            if(!smartNodeOwnsPendingTask(node, task.taskId)) return;
             if(e && e.jimengPending && e.submitId){
                 node.pendingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
                 setNodeJimengPending(node, e);

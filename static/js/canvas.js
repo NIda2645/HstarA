@@ -15547,6 +15547,29 @@ function providerIdForPending(pending){
         || pending?.run?.node?.provider_id
         || 'comfly';
 }
+function handoffCanvasJimengTask(taskId, taskData={}){
+    const found = findPendingTask(taskId);
+    const submitId = String(taskData?.submit_id || '');
+    if(!found || !submitId) return false;
+    const {out, pending} = found;
+    pending.failed = true;
+    pending.querying = false;
+    pending.error = taskData?.message || tr('canvas.generationFailed');
+    pending.recoverTaskId = submitId;
+    pending.providerId = 'jimeng';
+    pending.canvasTaskStatus = 'jimeng_pending';
+    pending.jimengKind = taskData?.kind || 'image';
+    pending.jimengQueueInfo = taskData?.queue_info || {};
+    const gen = nodes.find(n => n.id === pending?.run?.node?.id);
+    if(gen){
+        gen.runStatus = 'queued';
+        gen.runError = '';
+        gen.running = false;
+    }
+    refreshRunNodes(gen, out);
+    scheduleSave();
+    return true;
+}
 function completeRecoverPendingOutput(out, pending, result){
     if(!out || !pending || !result) return;
     const images = result.images || [];
@@ -15582,15 +15605,21 @@ async function queryRecoverPendingOutput(pendingId){
     pending.recoverTaskId = taskId;
     refreshNodes([out.id]);
     try {
-        const res = await fetch('/api/image-task-query', {
+        const isJimengPending = pending.canvasTaskStatus === 'jimeng_pending';
+        const res = await fetch(isJimengPending ? '/api/jimeng/query-media' : '/api/image-task-query', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({provider_id:providerIdForPending(pending), task_id:taskId})
+            body:JSON.stringify(isJimengPending
+                ? {submit_id:taskId, kind:pending.jimengKind || 'image'}
+                : {provider_id:providerIdForPending(pending), task_id:taskId})
         });
         if(!res.ok) throw new Error(await responseErrorMessage(res, '查询失败'));
         const data = await res.json();
+        const latestOut = findOutputByPendingId(pendingId);
+        const latestPending = pendingById(latestOut, pendingId);
+        if(!latestOut || latestPending !== pending) return;
         if(data.status === 'succeeded'){
-            completeRecoverPendingOutput(out, pending, data);
+            completeRecoverPendingOutput(latestOut, latestPending, isJimengPending ? {...data, images:data.urls || []} : data);
             return;
         }
         if(data.status === 'failed'){
@@ -15632,6 +15661,9 @@ async function pollCanvasImageTask(taskId, options={}){
             if(data.status === 'succeeded'){
                 completeCanvasImageTask(taskId, data.result || {});
                 return 'succeeded';
+            }
+            if(data.status === 'jimeng_pending'){
+                return handoffCanvasJimengTask(taskId, data) ? 'jimeng_pending' : 'missing';
             }
             if(data.status === 'failed'){
                 failCanvasImageTask(taskId, data.error || tr('canvas.generationFailed'), data);
