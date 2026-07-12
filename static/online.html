@@ -903,7 +903,7 @@
                 if(historyAutoTouchStartX === null || historyAutoTouchStartY === null || currentX === undefined || currentY === undefined) return;
                 const deltaX = currentX - historyAutoTouchStartX;
                 const deltaY = currentY - historyAutoTouchStartY;
-                if(deltaY >= 0 || Math.abs(deltaY) < Math.abs(deltaX)) return;
+                if(deltaY >= 0 || Math.abs(deltaY) <= Math.abs(deltaX)) return;
                 return requestInitialHistoryAutoLoad();
             }
         }

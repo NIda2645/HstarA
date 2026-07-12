@@ -305,6 +305,9 @@ assert.equal(touchAutoLoad.touchStartY(), null, 'touchend must reset touch inten
 await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:100, clientY:80}], target:bodyIntentTarget});
 assert.equal(touchAutoLoad.requestCount(), 0, 'touchmove without an active start must be ignored');
 touchAutoLoad.touchStart({touches:[{clientX:100, clientY:100}]});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:120, clientY:80}], target:bodyIntentTarget});
+assert.equal(touchAutoLoad.requestCount(), 0, 'equal diagonal upward movement must be ignored');
+assert.equal(touchAutoLoad.isInitialPending(), true);
 await touchAutoLoad.pointer({type:'touchmove', touches:[{clientX:110, clientY:80}], target:bodyIntentTarget});
 assert.equal(touchAutoLoad.requestCount(), 1, 'vertical-dominant upward finger movement must attempt one pending page');
 assert.equal(touchAutoLoad.isInitialPending(), false);
