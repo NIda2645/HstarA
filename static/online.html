@@ -869,7 +869,7 @@
             loadHistory(false);
         }
         function handleHistoryAutoKeydown(event){
-            if(event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+            if(event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
             if(event.target?.closest?.('input, textarea, select, button, a, [contenteditable="true"]')) return;
             if(['PageDown','End','ArrowDown'].includes(event.key) || event.key === ' ' || event.code === 'Space'){
                 requestInitialHistoryAutoLoad();

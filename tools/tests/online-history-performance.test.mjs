@@ -40,7 +40,7 @@ assert.match(
 );
 assert.match(
   historyAutoHandlersSource,
-  /function handleHistoryAutoKeydown\(event\)\s*{\s*if\(event\.defaultPrevented \|\| event\.altKey \|\| event\.ctrlKey \|\| event\.metaKey\) return;\s*if\(event\.target\?\.closest\?\.\('input, textarea, select, button, a, \[contenteditable="true"\]'\)\) return;\s*if\(\['PageDown','End','ArrowDown'\]\.includes\(event\.key\) \|\| event\.key === ' ' \|\| event\.code === 'Space'\)\s*{\s*requestInitialHistoryAutoLoad\(\);\s*}\s*}/,
+  /function handleHistoryAutoKeydown\(event\)\s*{\s*if\(event\.defaultPrevented \|\| event\.altKey \|\| event\.ctrlKey \|\| event\.metaKey \|\| event\.shiftKey\) return;\s*if\(event\.target\?\.closest\?\.\('input, textarea, select, button, a, \[contenteditable="true"\]'\)\) return;\s*if\(\['PageDown','End','ArrowDown'\]\.includes\(event\.key\) \|\| event\.key === ' ' \|\| event\.code === 'Space'\)\s*{\s*requestInitialHistoryAutoLoad\(\);\s*}\s*}/,
 );
 const syncHistoryAutoObserverSource = onlineHtml.slice(
   onlineHtml.indexOf('function syncHistoryAutoObserver()'),
@@ -174,12 +174,16 @@ guardedKeydownAutoLoad.keydown({
 });
 assert.equal(guardedKeydownAutoLoad.requestCount(), 0, 'ArrowDown in a select must not load history');
 assert.equal(guardedKeydownAutoLoad.isInitialPending(), true);
-for(const modifier of ['altKey', 'ctrlKey', 'metaKey']){
+for(const modifier of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey']){
+  const isShiftSpace = modifier === 'shiftKey';
   guardedKeydownAutoLoad.keydown({
-    key: 'PageDown',
+    key: isShiftSpace ? ' ' : 'PageDown',
+    code: isShiftSpace ? 'Space' : undefined,
     [modifier]: true,
     target: {closest: () => null},
   });
+  assert.equal(guardedKeydownAutoLoad.requestCount(), 0, `${modifier} scroll intent must not load history`);
+  assert.equal(guardedKeydownAutoLoad.isInitialPending(), true, `${modifier} must not consume initial pending`);
 }
 guardedKeydownAutoLoad.keydown({
   key: 'End',
@@ -199,6 +203,16 @@ guardedKeydownAutoLoad.keydown({
   target: {},
 });
 assert.equal(guardedKeydownAutoLoad.requestCount(), 1, 'repeated document intent must remain one-shot');
+
+const unmodifiedSpaceAutoLoad = createHistoryAutoHarness();
+unmodifiedSpaceAutoLoad.handle([{isIntersecting:true}]);
+unmodifiedSpaceAutoLoad.keydown({
+  key: ' ',
+  code: 'Space',
+  target: {closest: () => null},
+});
+assert.equal(unmodifiedSpaceAutoLoad.requestCount(), 1, 'unmodified Space must load one pending page');
+assert.equal(unmodifiedSpaceAutoLoad.isInitialPending(), false);
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
 assert.match(onlineHtml, /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;/);
