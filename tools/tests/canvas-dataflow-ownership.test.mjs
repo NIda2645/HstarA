@@ -366,26 +366,34 @@ assert.deepEqual(
   'ordinary generatorSources should return exactly the linked prompt source',
 );
 
-const disconnectedGenerator = { id: 'disconnected-generator', type: 'generator' };
-const disconnectedGeneratorSources = exportedFunction(
-  ordinaryGeneratorSource,
-  'generatorSources',
-  {
-    nodes: [
-      { id: 'unrelated-prompt', type: 'prompt', text: 'unrelated prompt' },
-      { id: 'unrelated-image', type: 'image', url: '/unrelated.png' },
-      disconnectedGenerator,
-    ],
-    connections: [{ from: 'unrelated-prompt', to: 'unrelated-image' }],
-    CANVAS_MEDIA_OUTPUT_TYPES: [],
-  },
-).fn;
-const disconnectedGeneratorSourceIds = Array.from(disconnectedGeneratorSources(disconnectedGenerator), item => item.id);
-assert.deepEqual(
-  disconnectedGeneratorSourceIds,
-  [],
-  'ordinary generatorSources should return no sources when the target has no inbound connections',
-);
+const disconnectedStates = ['selected', 'active', 'running'];
+for (const state of disconnectedStates) {
+  const disconnectedGenerator = { id: `disconnected-${state}-generator`, type: 'generator' };
+  const unrelatedStatefulNode = {
+    id: `unrelated-${state}-prompt`,
+    type: 'prompt',
+    text: `unrelated ${state} prompt`,
+    [state]: true,
+  };
+  const disconnectedGeneratorSources = exportedFunction(
+    ordinaryGeneratorSource,
+    'generatorSources',
+    {
+      nodes: [unrelatedStatefulNode, disconnectedGenerator],
+      connections: [{ from: unrelatedStatefulNode.id, to: `other-${state}-target` }],
+      CANVAS_MEDIA_OUTPUT_TYPES: [],
+    },
+  ).fn;
+  const disconnectedGeneratorSourceIds = Array.from(
+    disconnectedGeneratorSources(disconnectedGenerator),
+    item => item.id,
+  );
+  assert.deepEqual(
+    disconnectedGeneratorSourceIds,
+    [],
+    `ordinary generatorSources must not leak an unrelated ${state} node into a zero-inbound target`,
+  );
+}
 
 const smartNodes = [
   { id: 'smart-stray', type: 'smart-prompt' },
@@ -408,29 +416,34 @@ const smartUpstream = exportedFunction(
 const smartUpstreamIds = Array.from(smartUpstream(smartNodes[2], ['input']), node => node.id);
 assert.deepEqual(smartUpstreamIds, ['smart-linked'], 'smart upstream traversal should return exactly the linked node');
 
-const disconnectedSmartTarget = { id: 'smart-disconnected-target', type: 'smart-image' };
-const disconnectedSmartUpstream = exportedFunction(
-  functionSource(smartCanvasSource, 'upstreamNodesForKinds'),
-  'upstreamNodesForKinds',
-  {
-    canvas: { connections: [{ from: 'smart-unrelated-prompt', to: 'smart-unrelated-image', kind: 'input' }] },
-    canvasUsesConnections: true,
-    nodes: [
-      { id: 'smart-unrelated-prompt', type: 'smart-prompt' },
-      { id: 'smart-unrelated-image', type: 'smart-image' },
-      disconnectedSmartTarget,
-    ],
-  },
-).fn;
-const disconnectedSmartUpstreamIds = Array.from(
-  disconnectedSmartUpstream(disconnectedSmartTarget, ['input']),
-  node => node.id,
-);
-assert.deepEqual(
-  disconnectedSmartUpstreamIds,
-  [],
-  'smart upstream traversal should return no nodes when the target has no inbound connections',
-);
+for (const state of disconnectedStates) {
+  const disconnectedSmartTarget = { id: `smart-disconnected-${state}-target`, type: 'smart-image' };
+  const unrelatedStatefulNode = {
+    id: `smart-unrelated-${state}-prompt`,
+    type: 'smart-prompt',
+    [state]: true,
+  };
+  const disconnectedSmartUpstream = exportedFunction(
+    functionSource(smartCanvasSource, 'upstreamNodesForKinds'),
+    'upstreamNodesForKinds',
+    {
+      canvas: {
+        connections: [{ from: unrelatedStatefulNode.id, to: `smart-other-${state}-target`, kind: 'input' }],
+      },
+      canvasUsesConnections: true,
+      nodes: [unrelatedStatefulNode, disconnectedSmartTarget],
+    },
+  ).fn;
+  const disconnectedSmartUpstreamIds = Array.from(
+    disconnectedSmartUpstream(disconnectedSmartTarget, ['input']),
+    node => node.id,
+  );
+  assert.deepEqual(
+    disconnectedSmartUpstreamIds,
+    [],
+    `smart upstream traversal must not leak an unrelated ${state} node into a zero-inbound target`,
+  );
+}
 
 const clearContext = {
   canvas: { connections: smartConnections },
