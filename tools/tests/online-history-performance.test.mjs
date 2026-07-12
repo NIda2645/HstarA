@@ -24,6 +24,7 @@ assert.match(onlineHtml, /id="historyLoadSentinel"/);
 assert.match(onlineHtml, /id="historyLoadStatus"[^>]+role="status"[^>]+aria-live="polite"/);
 assert.match(onlineHtml, /let historyAutoLoadArmed = false, historyAutoObserver = null;/);
 assert.match(onlineHtml, /let historyAutoEntrySeen = false, historyAutoInitialPending = false;/);
+assert.match(onlineHtml, /let historyAutoTouchStartY = null;/);
 assert.equal((onlineHtml.match(/new\s+IntersectionObserver\s*\(/g) || []).length, 1);
 assert.match(onlineHtml, /rootMargin:\s*'0px 0px 320px 0px'/);
 const historyAutoHandlersStart = onlineHtml.indexOf('function handleHistoryAutoIntersections(entries)');
@@ -36,12 +37,23 @@ const historyAutoHandlersSource = onlineHtml.slice(historyAutoHandlersStart, his
 assert.match(historyAutoHandlersSource, /for\(const entry of entries\)/);
 assert.match(
   historyAutoHandlersSource,
-  /function requestInitialHistoryAutoLoad\(\)\s*{\s*if\(!historyAutoInitialPending \|\| isLoading \|\| !historyHasMore\) return;\s*historyAutoInitialPending = false;\s*loadHistory\(false\);\s*}/,
+  /async function requestInitialHistoryAutoLoad\(\)\s*{\s*if\(!historyAutoInitialPending \|\| isLoading \|\| historyMutationDepth > 0 \|\| !historyHasMore\) return;\s*const outcome = await loadHistory\(false\);\s*if\(\['loaded','queued','exhausted'\]\.includes\(outcome\)\) historyAutoInitialPending = false;\s*return outcome;\s*}/,
 );
 assert.match(
   historyAutoHandlersSource,
-  /function handleHistoryAutoKeydown\(event\)\s*{\s*if\(event\.defaultPrevented \|\| event\.altKey \|\| event\.ctrlKey \|\| event\.metaKey \|\| event\.shiftKey\) return;\s*if\(event\.target\?\.closest\?\.\('input, textarea, select, button, a, \[contenteditable="true"\]'\)\) return;\s*if\(\['PageDown','End','ArrowDown'\]\.includes\(event\.key\) \|\| event\.key === ' ' \|\| event\.code === 'Space'\)\s*{\s*requestInitialHistoryAutoLoad\(\);\s*}\s*}/,
+  /function isHistoryAutoIntentBlocked\(event\)[\s\S]*function handleHistoryAutoKeydown\(event\)\s*{\s*if\(isHistoryAutoIntentBlocked\(event\)\) return;[\s\S]*return requestInitialHistoryAutoLoad\(\);/,
 );
+assert.match(
+  historyAutoHandlersSource,
+  /event\.defaultPrevented \|\| event\.altKey \|\| event\.ctrlKey \|\| event\.metaKey \|\| event\.shiftKey/,
+);
+assert.match(
+  historyAutoHandlersSource,
+  /event\.target\?\.closest\?\.\('input, textarea, select, button, a, \[contenteditable="true"\]'\)/,
+);
+assert.match(historyAutoHandlersSource, /function handleHistoryAutoPointerIntent\(event\)/);
+assert.match(historyAutoHandlersSource, /function handleHistoryAutoTouchStart\(event\)/);
+assert.match(historyAutoHandlersSource, /function resetHistoryAutoTouchIntent\(\)/);
 const syncHistoryAutoObserverSource = onlineHtml.slice(
   onlineHtml.indexOf('function syncHistoryAutoObserver()'),
   onlineHtml.indexOf('function setupHistoryAutoLoad()'),
@@ -62,36 +74,51 @@ assert.match(
 assert.doesNotMatch(setupHistoryAutoLoadSource, /historyAutoObserver\.(?:observe|unobserve)\(/);
 assert.match(
   setupHistoryAutoLoadSource,
-  /window\.addEventListener\('wheel', requestInitialHistoryAutoLoad, {passive:true}\);/,
+  /window\.addEventListener\('wheel', handleHistoryAutoPointerIntent, {passive:true}\);/,
 );
 assert.match(
   setupHistoryAutoLoadSource,
-  /window\.addEventListener\('touchmove', requestInitialHistoryAutoLoad, {passive:true}\);/,
+  /window\.addEventListener\('touchstart', handleHistoryAutoTouchStart, {passive:true}\);/,
 );
+assert.match(setupHistoryAutoLoadSource, /window\.addEventListener\('touchmove', handleHistoryAutoPointerIntent, {passive:true}\);/);
+assert.match(setupHistoryAutoLoadSource, /window\.addEventListener\('touchend', resetHistoryAutoTouchIntent, {passive:true}\);/);
+assert.match(setupHistoryAutoLoadSource, /window\.addEventListener\('touchcancel', resetHistoryAutoTouchIntent, {passive:true}\);/);
 assert.match(setupHistoryAutoLoadSource, /window\.addEventListener\('keydown', handleHistoryAutoKeydown\);/);
 assert.doesNotMatch(setupHistoryAutoLoadSource, /window\.addEventListener\('keydown', event =>/);
+assert.doesNotMatch(setupHistoryAutoLoadSource, /addEventListener\([^\n]+requestInitialHistoryAutoLoad/);
 
-function createHistoryAutoHarness(){
+function createHistoryAutoHarness(loadOutcomes=['loaded']){
   return runInNewContext(`(() => {
     let historyAutoLoadArmed = false;
     let historyAutoEntrySeen = false;
     let historyAutoInitialPending = false;
+    let historyAutoTouchStartY = null;
     let isLoading = false;
     let historyHasMore = true;
+    let historyMutationDepth = 0;
     const requests = [];
-    function loadHistory(reset){ requests.push(reset); }
+    const outcomes = ${JSON.stringify(loadOutcomes)};
+    async function loadHistory(reset){
+      requests.push(reset);
+      return outcomes.length ? outcomes.shift() : 'loaded';
+    }
     ${historyAutoHandlersSource}
     return {
       handle: entries => handleHistoryAutoIntersections(entries),
       request: () => requestInitialHistoryAutoLoad(),
       keydown: event => handleHistoryAutoKeydown(event),
+      pointer: event => handleHistoryAutoPointerIntent(event),
+      touchStart: event => handleHistoryAutoTouchStart(event),
+      touchEnd: () => resetHistoryAutoTouchIntent(),
       requestCount: () => requests.length,
       lastRequest: () => requests.at(-1),
       isArmed: () => historyAutoLoadArmed,
       isEntrySeen: () => historyAutoEntrySeen,
       isInitialPending: () => historyAutoInitialPending,
+      touchStartY: () => historyAutoTouchStartY,
       setLoading: value => { isLoading = value; },
       setHasMore: value => { historyHasMore = value; },
+      setMutationDepth: value => { historyMutationDepth = value; },
     };
   })()`);
 }
@@ -102,11 +129,11 @@ assert.equal(shortPageAutoLoad.requestCount(), 0, 'first intersect must preserve
 assert.equal(shortPageAutoLoad.isEntrySeen(), true);
 assert.equal(shortPageAutoLoad.isInitialPending(), true);
 assert.equal(shortPageAutoLoad.isArmed(), false);
-shortPageAutoLoad.request();
+await shortPageAutoLoad.request();
 assert.equal(shortPageAutoLoad.requestCount(), 1, 'first scroll intent must load one reachable page');
 assert.equal(shortPageAutoLoad.lastRequest(), false);
 assert.equal(shortPageAutoLoad.isInitialPending(), false);
-shortPageAutoLoad.request();
+await shortPageAutoLoad.request();
 shortPageAutoLoad.handle([{isIntersecting:true}, {isIntersecting:true}]);
 assert.equal(shortPageAutoLoad.requestCount(), 1, 'continuous intersection and repeated intent must not cascade');
 assert.equal(shortPageAutoLoad.isInitialPending(), false, 'continuous intersection must not recreate initial pending');
@@ -132,12 +159,12 @@ assert.equal(batchedAutoLoad.isArmed(), false);
 const guardedIntentAutoLoad = createHistoryAutoHarness();
 guardedIntentAutoLoad.handle([{isIntersecting:true}]);
 guardedIntentAutoLoad.setLoading(true);
-guardedIntentAutoLoad.request();
+await guardedIntentAutoLoad.request();
 assert.equal(guardedIntentAutoLoad.requestCount(), 0, 'loading must block initial intent requests');
 assert.equal(guardedIntentAutoLoad.isInitialPending(), true);
 guardedIntentAutoLoad.setLoading(false);
 guardedIntentAutoLoad.setHasMore(false);
-guardedIntentAutoLoad.request();
+await guardedIntentAutoLoad.request();
 assert.equal(guardedIntentAutoLoad.requestCount(), 0, 'exhausted history must block initial intent requests');
 assert.equal(guardedIntentAutoLoad.isInitialPending(), true);
 
@@ -161,14 +188,14 @@ function historyAutoControlTarget(controlSelector){
 
 const guardedKeydownAutoLoad = createHistoryAutoHarness();
 guardedKeydownAutoLoad.handle([{isIntersecting:true}]);
-guardedKeydownAutoLoad.keydown({
+await guardedKeydownAutoLoad.keydown({
   key: ' ',
   code: 'Space',
   target: historyAutoControlTarget('textarea'),
 });
 assert.equal(guardedKeydownAutoLoad.requestCount(), 0, 'Space in a textarea must not load history');
 assert.equal(guardedKeydownAutoLoad.isInitialPending(), true, 'ignored textarea input must preserve pending');
-guardedKeydownAutoLoad.keydown({
+await guardedKeydownAutoLoad.keydown({
   key: 'ArrowDown',
   target: historyAutoControlTarget('select'),
 });
@@ -176,7 +203,7 @@ assert.equal(guardedKeydownAutoLoad.requestCount(), 0, 'ArrowDown in a select mu
 assert.equal(guardedKeydownAutoLoad.isInitialPending(), true);
 for(const modifier of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey']){
   const isShiftSpace = modifier === 'shiftKey';
-  guardedKeydownAutoLoad.keydown({
+  await guardedKeydownAutoLoad.keydown({
     key: isShiftSpace ? ' ' : 'PageDown',
     code: isShiftSpace ? 'Space' : undefined,
     [modifier]: true,
@@ -185,20 +212,20 @@ for(const modifier of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey']){
   assert.equal(guardedKeydownAutoLoad.requestCount(), 0, `${modifier} scroll intent must not load history`);
   assert.equal(guardedKeydownAutoLoad.isInitialPending(), true, `${modifier} must not consume initial pending`);
 }
-guardedKeydownAutoLoad.keydown({
+await guardedKeydownAutoLoad.keydown({
   key: 'End',
   defaultPrevented: true,
   target: {closest: () => null},
 });
 assert.equal(guardedKeydownAutoLoad.requestCount(), 0, 'modified and prevented keys must not load history');
 assert.equal(guardedKeydownAutoLoad.isInitialPending(), true);
-guardedKeydownAutoLoad.keydown({
+await guardedKeydownAutoLoad.keydown({
   key: 'PageDown',
   target: {closest: () => null},
 });
 assert.equal(guardedKeydownAutoLoad.requestCount(), 1, 'document PageDown must load one pending page');
 assert.equal(guardedKeydownAutoLoad.isInitialPending(), false);
-guardedKeydownAutoLoad.keydown({
+await guardedKeydownAutoLoad.keydown({
   key: 'PageDown',
   target: {},
 });
@@ -206,13 +233,76 @@ assert.equal(guardedKeydownAutoLoad.requestCount(), 1, 'repeated document intent
 
 const unmodifiedSpaceAutoLoad = createHistoryAutoHarness();
 unmodifiedSpaceAutoLoad.handle([{isIntersecting:true}]);
-unmodifiedSpaceAutoLoad.keydown({
+await unmodifiedSpaceAutoLoad.keydown({
   key: ' ',
   code: 'Space',
   target: {closest: () => null},
 });
 assert.equal(unmodifiedSpaceAutoLoad.requestCount(), 1, 'unmodified Space must load one pending page');
 assert.equal(unmodifiedSpaceAutoLoad.isInitialPending(), false);
+
+const retryableInitialAutoLoad = createHistoryAutoHarness(['failed', 'loaded']);
+retryableInitialAutoLoad.handle([{isIntersecting:true}]);
+assert.equal(await retryableInitialAutoLoad.request(), 'failed');
+assert.equal(retryableInitialAutoLoad.requestCount(), 1, 'first failed intent must attempt once');
+assert.equal(retryableInitialAutoLoad.isInitialPending(), true, 'failed intent must preserve pending');
+assert.equal(await retryableInitialAutoLoad.request(), 'loaded');
+assert.equal(retryableInitialAutoLoad.requestCount(), 2, 'second valid intent must retry once');
+assert.equal(retryableInitialAutoLoad.isInitialPending(), false, 'successful retry must consume pending');
+await retryableInitialAutoLoad.request();
+assert.equal(retryableInitialAutoLoad.requestCount(), 2, 'consumed retry must remain one-shot');
+
+const queuedInitialAutoLoad = createHistoryAutoHarness(['queued']);
+queuedInitialAutoLoad.handle([{isIntersecting:true}]);
+assert.equal(await queuedInitialAutoLoad.request(), 'queued');
+assert.equal(queuedInitialAutoLoad.isInitialPending(), false, 'queued retry must consume pending');
+await queuedInitialAutoLoad.request();
+assert.equal(queuedInitialAutoLoad.requestCount(), 1, 'queued retry must not permit an extra page intent');
+
+const mutationGuardedInitialAutoLoad = createHistoryAutoHarness();
+mutationGuardedInitialAutoLoad.handle([{isIntersecting:true}]);
+mutationGuardedInitialAutoLoad.setMutationDepth(1);
+await mutationGuardedInitialAutoLoad.request();
+assert.equal(mutationGuardedInitialAutoLoad.requestCount(), 0, 'active mutations must block initial intent requests');
+assert.equal(mutationGuardedInitialAutoLoad.isInitialPending(), true);
+
+const bodyIntentTarget = {closest: () => null};
+const wheelAutoLoad = createHistoryAutoHarness();
+wheelAutoLoad.handle([{isIntersecting:true}]);
+await wheelAutoLoad.pointer({type:'wheel', deltaY:-40, deltaX:0, target:bodyIntentTarget});
+await wheelAutoLoad.pointer({type:'wheel', deltaY:20, deltaX:40, target:bodyIntentTarget});
+await wheelAutoLoad.pointer({type:'wheel', deltaY:40, deltaX:0, ctrlKey:true, target:bodyIntentTarget});
+await wheelAutoLoad.pointer({type:'wheel', deltaY:40, deltaX:0, shiftKey:true, target:bodyIntentTarget});
+await wheelAutoLoad.pointer({type:'wheel', deltaY:40, deltaX:0, defaultPrevented:true, target:bodyIntentTarget});
+await wheelAutoLoad.pointer({type:'wheel', deltaY:40, deltaX:0, target:historyAutoControlTarget('input')});
+assert.equal(wheelAutoLoad.requestCount(), 0, 'upward, horizontal, zoom, modified, prevented, and control wheel events must be ignored');
+assert.equal(wheelAutoLoad.isInitialPending(), true);
+await wheelAutoLoad.pointer({type:'wheel', deltaY:40, deltaX:5, target:bodyIntentTarget});
+assert.equal(wheelAutoLoad.requestCount(), 1, 'downward body wheel must attempt one pending page');
+assert.equal(wheelAutoLoad.isInitialPending(), false);
+
+const touchAutoLoad = createHistoryAutoHarness();
+touchAutoLoad.handle([{isIntersecting:true}]);
+touchAutoLoad.touchStart({touches:[{clientY:100}]});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:120}], target:bodyIntentTarget});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:100}], target:bodyIntentTarget});
+assert.equal(touchAutoLoad.requestCount(), 0, 'downward and non-directional touch gestures must be ignored');
+assert.equal(touchAutoLoad.isInitialPending(), true);
+touchAutoLoad.touchEnd();
+assert.equal(touchAutoLoad.touchStartY(), null, 'touchend must reset touch intent state');
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:80}], target:bodyIntentTarget});
+assert.equal(touchAutoLoad.requestCount(), 0, 'touchmove without an active start must be ignored');
+touchAutoLoad.touchStart({touches:[{clientY:100}]});
+await touchAutoLoad.pointer({type:'touchmove', touches:[{clientY:80}], target:bodyIntentTarget});
+assert.equal(touchAutoLoad.requestCount(), 1, 'upward finger movement must attempt one pending page');
+assert.equal(touchAutoLoad.isInitialPending(), false);
+
+const cancelledTouchAutoLoad = createHistoryAutoHarness();
+cancelledTouchAutoLoad.handle([{isIntersecting:true}]);
+cancelledTouchAutoLoad.touchStart({touches:[{clientY:100}]});
+cancelledTouchAutoLoad.touchEnd();
+await cancelledTouchAutoLoad.pointer({type:'touchmove', touches:[{clientY:80}], target:bodyIntentTarget});
+assert.equal(cancelledTouchAutoLoad.requestCount(), 0, 'touchcancel reset must prevent stale directional intent');
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
 assert.match(onlineHtml, /let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;/);
@@ -232,12 +322,21 @@ assert.match(
   onlineHtml,
   /function finishHistoryMutation\(offsetDelta=0\)\s*{\s*historyOffset = Math\.max\(0, historyOffset \+ offsetDelta\);\s*historyMutationDepth = Math\.max\(0, historyMutationDepth - 1\);\s*if\(historyMutationDepth === 0\) runQueuedHistoryLoad\(\);\s*}/,
 );
+const loadHistorySource = onlineHtml.slice(
+  onlineHtml.indexOf('async function loadHistory(reset=false)'),
+  onlineHtml.indexOf('let lightboxPreview = null'),
+);
 assert.match(
-  onlineHtml,
-  /if\(historyMutationDepth > 0\)\s*{\s*queueHistoryLoad\(reset\);\s*return;\s*}/,
+  loadHistorySource,
+  /if\(historyMutationDepth > 0\)\s*{\s*queueHistoryLoad\(reset\);\s*return 'queued';\s*}/,
   'history GETs must queue while mutations are in flight',
 );
-assert.match(onlineHtml, /const requestRevision = historyRevision;/);
+assert.match(loadHistorySource, /if\(isLoading\) return 'busy';/);
+assert.match(loadHistorySource, /if\(!reset && !historyHasMore\) return 'exhausted';/);
+assert.match(loadHistorySource, /let outcome = 'failed';/);
+assert.match(loadHistorySource, /outcome = 'loaded';/);
+assert.match(loadHistorySource, /return outcome;\s*}/);
+assert.match(loadHistorySource, /const requestRevision = historyRevision;/);
 assert.ok(
   onlineHtml.indexOf('const requestRevision = historyRevision;')
     < onlineHtml.indexOf('const response = await fetch(`/api/history?type=online'),
@@ -245,8 +344,8 @@ assert.ok(
 );
 const staleResponseGuard = 'if(requestRevision !== historyRevision){';
 assert.match(
-  onlineHtml,
-  /if\(requestRevision !== historyRevision\)\s*{\s*queueHistoryLoad\(reset\);\s*return;\s*}/,
+  loadHistorySource,
+  /if\(requestRevision !== historyRevision\)\s*{\s*queueHistoryLoad\(reset\);\s*outcome = 'queued';\s*}\s*else\s*{/,
   'stale history responses must queue the same request mode',
 );
 assert.ok(
@@ -254,8 +353,8 @@ assert.ok(
   'stale history responses must be rejected before rendering',
 );
 assert.match(
-  onlineHtml,
-  /finally\s*{\s*if\(requestRevision !== historyRevision\) queueHistoryLoad\(reset\);[\s\S]*isLoading = false;\s*runQueuedHistoryLoad\(\);/,
+  loadHistorySource,
+  /finally\s*{\s*if\(requestRevision !== historyRevision\)\s*{\s*queueHistoryLoad\(reset\);\s*outcome = 'queued';\s*}[\s\S]*isLoading = false;\s*runQueuedHistoryLoad\(\);/,
 );
 
 const generationSource = onlineHtml.slice(
