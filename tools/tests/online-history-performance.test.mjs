@@ -18,10 +18,22 @@ assert.ok(
 );
 assert.match(onlineHtml, /historyOffset = page\.next_offset \?\? \(page\.offset \+ items\.length\);/);
 assert.match(onlineHtml, /historyHasMore = Boolean\(page\.has_more\)/);
-assert.doesNotMatch(onlineHtml, /new\s+IntersectionObserver\s*\(/);
+assert.doesNotMatch(onlineHtml, /<button[^>]+id="loadMoreTrigger"/);
+assert.doesNotMatch(onlineHtml, /\.onclick\s*=\s*\(\)\s*=>\s*loadHistory\(false\)/);
+assert.match(onlineHtml, /id="historyLoadSentinel"/);
+assert.match(onlineHtml, /id="historyLoadStatus"[^>]+role="status"[^>]+aria-live="polite"/);
+assert.match(onlineHtml, /let historyAutoLoadArmed = false, historyAutoObserver = null;/);
+assert.equal((onlineHtml.match(/new\s+IntersectionObserver\s*\(/g) || []).length, 1);
 assert.match(
   onlineHtml,
-  /document\.getElementById\('loadMoreTrigger'\)\.onclick = \(\) => loadHistory\(false\)/,
+  /if\(!entry\.isIntersecting\)\s*{\s*historyAutoLoadArmed = true;\s*return;\s*}/,
+);
+assert.match(onlineHtml, /if\(!historyAutoLoadArmed \|\| isLoading \|\| !historyHasMore\) return;/);
+assert.match(onlineHtml, /historyAutoLoadArmed = false;\s*loadHistory\(false\);/);
+assert.match(onlineHtml, /rootMargin:\s*'0px 0px 320px 0px'/);
+assert.match(
+  onlineHtml,
+  /historyAutoObserver\.observe\(document\.getElementById\('historyLoadSentinel'\)\)/,
 );
 assert.doesNotMatch(onlineHtml, /new\s+MutationObserver\s*\(/);
 assert.doesNotMatch(onlineHtml, /historyResetPending|invalidateHistory/);
@@ -124,14 +136,6 @@ const bulkListenerSource = onlineHtml.slice(
   onlineHtml.indexOf("window.HistoryBulkManager?.attach({masonry:'#masonry'})"),
 );
 assert.doesNotMatch(bulkListenerSource, /loadHistory\(true\)|innerHTML/);
-assert.match(onlineHtml, /<button\s+type="button"\s+id="loadMoreTrigger"/);
-assert.doesNotMatch(onlineHtml, /<div\s+id="loadMoreTrigger"/);
-assert.match(
-  onlineHtml,
-  /<button[^>]+id="loadMoreTrigger"[^>]+class="[^"]*\bw-full\b[^"]*\bfocus-visible:ring-2\b[^"]*"/,
-);
-assert.match(onlineHtml, /loader\.disabled = true;/);
-assert.match(onlineHtml, /finally\s*{[^}]*loader\.disabled = false;/s);
 
 const pythonEnv = {
   ...process.env,

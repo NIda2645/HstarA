@@ -207,7 +207,8 @@
         <section class="mt-32">
             <div class="flex items-center gap-6 mb-12"><h2 class="text-[11px] font-black uppercase tracking-[0.5em]" data-i18n="online.archives">Archives</h2><div class="h-px flex-1 bg-gray-100"></div></div>
             <div id="masonry" class="masonry-grid"></div>
-            <button type="button" id="loadMoreTrigger" class="block w-full py-20 text-center text-gray-300 text-[10px] font-bold uppercase tracking-widest cursor-pointer hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60">Load More Archive</button>
+            <div id="historyLoadSentinel" class="h-px w-full" aria-hidden="true"></div>
+            <div id="historyLoadStatus" class="hidden py-8 text-center text-gray-400 text-[10px] font-bold uppercase tracking-widest" role="status" aria-live="polite"></div>
         </section>
     </div>
 
@@ -239,8 +240,6 @@
         function applyLanguage(lang){
             if(lang && window.StudioI18n) StudioI18n.set(lang);
             document.title = tr('online.title');
-            const loader = document.getElementById('loadMoreTrigger');
-            if(loader && !isLoading) loader.innerText = tr('online.loadMore');
         }
         window.addEventListener('message', event => {
             if(event.data?.type === 'studio-lang') applyLanguage(event.data.lang);
@@ -268,6 +267,7 @@
         let currentResult = null, currentLightboxData = null, isLoading = false;
         let historyOffset = 0, historyHasMore = true;
         let historyRevision = 0, historyMutationDepth = 0, queuedHistoryLoad = null;
+        let historyAutoLoadArmed = false, historyAutoObserver = null;
         const PAGE_SIZE = 16;
         const SIZE_OPTIONS = {
             square: [
@@ -723,11 +723,9 @@
             if(!reset && !historyHasMore) return;
             isLoading = true;
             const requestRevision = historyRevision;
-            const loader = document.getElementById('loadMoreTrigger');
-            loader.disabled = true;
-            loader.classList.remove('hidden');
-            loader.setAttribute('aria-disabled', 'true');
-            loader.innerText = tr('online.loadingArchives');
+            const status = document.getElementById('historyLoadStatus');
+            status.classList.remove('hidden');
+            status.textContent = tr('online.loadingArchives');
             try {
                 if(reset){
                     historyOffset = 0;
@@ -745,16 +743,13 @@
                 renderHistoryBatch(items);
                 historyOffset = page.next_offset ?? (page.offset + items.length);
                 historyHasMore = Boolean(page.has_more);
-                loader.innerText = tr('online.loadMore');
-                loader.classList.toggle('hidden', !historyHasMore);
+                syncHistoryAutoObserver();
             } catch(error) {
-                loader.classList.remove('hidden');
-                loader.innerText = tr('online.loadMore');
                 console.error('Failed to load online image history:', error);
             } finally {
                 if(requestRevision !== historyRevision) queueHistoryLoad(reset);
-                loader.disabled = false;
-                loader.removeAttribute('aria-disabled');
+                status.classList.add('hidden');
+                status.textContent = '';
                 isLoading = false;
                 runQueuedHistoryLoad();
             }
@@ -849,12 +844,32 @@
                 finishHistoryMutation(historyDelta);
             }
         }
+        function syncHistoryAutoObserver(){
+            if(!historyAutoObserver) return;
+            const sentinel = document.getElementById('historyLoadSentinel');
+            if(historyHasMore) historyAutoObserver.observe(sentinel);
+            else historyAutoObserver.unobserve(sentinel);
+        }
+        function setupHistoryAutoLoad(){
+            historyAutoObserver = new IntersectionObserver(entries => {
+                const entry = entries[0];
+                if(!entry.isIntersecting){
+                    historyAutoLoadArmed = true;
+                    return;
+                }
+                if(!historyAutoLoadArmed || isLoading || !historyHasMore) return;
+                historyAutoLoadArmed = false;
+                loadHistory(false);
+            }, {rootMargin:'0px 0px 320px 0px', threshold:0});
+            historyAutoObserver.observe(document.getElementById('historyLoadSentinel'));
+        }
         window.onload = async () => {
             applyLanguage();
             setRatio('square');
             setResolution('1k');
             await initModels();
             await loadHistory(true);
+            setupHistoryAutoLoad();
             const masonry = document.getElementById('masonry');
             masonry.addEventListener('history-bulk-delete-start', beginHistoryMutation);
             masonry.addEventListener('history-bulk-delete-finish', event => {
@@ -862,7 +877,6 @@
                 finishHistoryMutation(-successCount);
             });
             window.HistoryBulkManager?.attach({masonry:'#masonry'});
-            document.getElementById('loadMoreTrigger').onclick = () => loadHistory(false);
         };
     </script>
 </body>
