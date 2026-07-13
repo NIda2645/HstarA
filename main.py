@@ -5240,8 +5240,15 @@ async def run_gemini_cli(prompt, model="", timeout=None, allow_tools=False):
 
 def gemini_cli_error_text(value, limit=900):
     text = gemini_cli_terminal_text(value).strip()
+    text = re.sub(r"(?i)\b(https?://)(?:[^/\s?#@]+(?::[^/\s?#@]*)?@)", r"\1[REDACTED]@", text)
+    text = re.sub(
+        r"(?i)([\"']?(?:api[_-]?key|token|password|secret)[\"']?\s*[:=]\s*)([\"'])(?:\\.|(?!\2).)*\2",
+        r"\1\2[REDACTED]\2",
+        text,
+    )
     text = re.sub(r"(?i)(authorization\s*:\s*bearer\s+|bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
     text = re.sub(r"(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)\bsk-[A-Za-z0-9][A-Za-z0-9_-]*\b", "sk-[REDACTED]", text)
     return text[:limit] or "no diagnostic output"
 
 async def gemini_cli_cleanup_process(proc, reason):
@@ -6704,6 +6711,45 @@ def ensure_same_origin_request(request: Request):
     actual = origin or referer
     if expected and actual != expected:
         raise HTTPException(status_code=403, detail="只允许从当前页面导入本地图片")
+
+def gemini_cli_request_origin(value, allow_path=False):
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "null":
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        if not allow_path and (parsed.path or parsed.query or parsed.fragment):
+            return None
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if not hostname:
+        return None
+    hostname = hostname.lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    default_port = 80 if parsed.scheme.lower() == "http" else 443
+    authority = hostname if port in (None, default_port) else f"{hostname}:{port}"
+    return f"{parsed.scheme.lower()}://{authority}"
+
+def ensure_gemini_cli_same_origin_request(request: Request):
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return
+    host = str(headers.get("host") or "").strip()
+    scheme = str(getattr(getattr(request, "url", None), "scheme", "") or "").strip()
+    expected = gemini_cli_request_origin(f"{scheme}://{host}") if scheme and host else None
+    for header_name, allow_path in (("origin", False), ("referer", True)):
+        if header_name not in headers:
+            continue
+        actual = gemini_cli_request_origin(headers.get(header_name), allow_path=allow_path)
+        if not expected or actual != expected:
+            raise HTTPException(status_code=403, detail="Only same-origin browser requests may launch Antigravity CLI.")
 
 def normalize_local_image_path(value):
     text = str(value or "").strip().strip('"').strip("'")
@@ -13653,6 +13699,7 @@ def is_loopback_gemini_cli_request(request: Request) -> bool:
 async def launch_gemini_cli(request: Request):
     if not is_loopback_gemini_cli_request(request):
         raise HTTPException(status_code=403, detail="仅允许本机访问 Antigravity CLI 启动接口。")
+    ensure_gemini_cli_same_origin_request(request)
     if os.name != "nt":
         raise HTTPException(status_code=400, detail="启动 Antigravity CLI 仅支持 Windows。")
 

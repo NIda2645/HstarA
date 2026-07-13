@@ -684,12 +684,32 @@ async def run():
     assert "exit=7" in str(non_zero_error.detail)
 
     secret = FakeProcess(
-        stderr=b"Authorization: Bearer super-secret-token password=hidden-value " + b"x" * 5000,
+        stderr=(
+            b"safe-context "
+            b"Authorization: Bearer super-secret-token "
+            b"password=hidden-value "
+            b'{\"api_key\":\"TOPSECRET\"} '
+            b"password='TOP SECRET' "
+            b"https://user:pass@example.com/safe/path "
+            b"sk-standalone-secret "
+            b"\x1b[31mterminal-color\x1b[0m "
+            b"safe-tail "
+            + b"x" * 5000
+        ),
         returncode=23,
     )
     secret_error = await expect_http_error(secret, 502)
     assert "super-secret-token" not in str(secret_error.detail)
     assert "hidden-value" not in str(secret_error.detail)
+    assert "TOPSECRET" not in str(secret_error.detail)
+    assert "TOP SECRET" not in str(secret_error.detail)
+    assert "user:pass" not in str(secret_error.detail)
+    assert "sk-standalone-secret" not in str(secret_error.detail)
+    assert "https://" in str(secret_error.detail)
+    assert "example.com/safe/path" in str(secret_error.detail)
+    assert "safe-context" in str(secret_error.detail)
+    assert "safe-tail" in str(secret_error.detail)
+    assert "\x1b" not in str(secret_error.detail)
     assert len(str(secret_error.detail)) <= 1200
 
     empty = FakeProcess(stdout=b"\x1b[32mAvailable Models:\x1b[0m\r\n\r\n")
@@ -919,6 +939,48 @@ async def run():
         boundary_response = await asgi_launch("192.168.10.25")
     assert boundary_response.status_code == 403
     boundary_remote_popen.assert_not_called()
+
+    for browser_headers in (
+        {"Origin": "https://attacker.example"},
+        {"Referer": "https://attacker.example/page"},
+        {"Origin": "null"},
+        {"Referer": "not a url"},
+    ):
+        with patch.object(main.os, "name", "nt"):
+            with patch.object(main, "gemini_cli_executable", return_value=agy):
+                with patch.object(main, "is_antigravity_cli", return_value=True):
+                    with patch.object(main.shutil, "which", return_value=powershell):
+                        with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
+                            with patch.object(main.subprocess, "Popen", return_value=FakeLaunchedProcess()) as browser_popen:
+                                browser_response = await asgi_launch("127.0.0.1", browser_headers)
+        assert browser_response.status_code == 403
+        browser_popen.assert_not_called()
+
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main, "gemini_cli_executable", return_value=agy):
+            with patch.object(main, "is_antigravity_cli", return_value=True):
+                with patch.object(main.shutil, "which", return_value=powershell):
+                    with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
+                        with patch.object(main.subprocess, "Popen", return_value=FakeLaunchedProcess()) as same_origin_popen:
+                            same_origin_response = await asgi_launch(
+                                "127.0.0.1",
+                                {
+                                    "Origin": "http://testserver",
+                                    "Referer": "http://testserver/settings",
+                                },
+                            )
+    assert same_origin_response.status_code == 200
+    same_origin_popen.assert_called_once()
+
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main, "gemini_cli_executable", return_value=agy):
+            with patch.object(main, "is_antigravity_cli", return_value=True):
+                with patch.object(main.shutil, "which", return_value=powershell):
+                    with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
+                        with patch.object(main.subprocess, "Popen", return_value=FakeLaunchedProcess()) as no_origin_popen:
+                            no_origin_response = await asgi_launch("127.0.0.1")
+    assert no_origin_response.status_code == 200
+    no_origin_popen.assert_called_once()
 
     for forwarded_headers in (
         {"X-Forwarded-For": "127.0.0.1"},
