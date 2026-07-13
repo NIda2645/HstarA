@@ -5075,8 +5075,9 @@ def gemini_cli_env_value(key):
     return os.getenv(key, "") or read_api_env_value(key)
 
 GEMINI_CLI_MODELS_TIMEOUT = 20
-ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-ANSI_OSC_RE = re.compile(r"(?:\x1b\]|\x9d).*?(?:\x07|\x1b\\|\x9c)", re.DOTALL)
+GEMINI_CLI_STRING_CONTROL_ESCAPES = {"]", "P", "X", "^", "_"}
+GEMINI_CLI_STRING_CONTROL_C1 = {0x90, 0x98, 0x9D, 0x9E, 0x9F}
+GEMINI_CLI_CLEANUP_TIMEOUT = 1
 GEMINI_CLI_MODEL_NOISE = {
     "available models",
     "available models:",
@@ -5209,37 +5210,145 @@ async def run_gemini_cli(prompt, model="", timeout=None, allow_tools=False):
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
     except asyncio.TimeoutError as exc:
-        if proc and proc.returncode is None:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
+        await gemini_cli_cleanup_process(proc, "command timeout")
         raise HTTPException(status_code=504, detail=f"{gemini_cli_display_name(exe)} 执行超时。可设置 GEMINI_CLI_TIMEOUT 增大等待时间。") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=f"未找到 {gemini_cli_display_name(exe)}：{exe}") from exc
     out_text, err_text = codex_decode_output(stdout, stderr)
     raw, text = gemini_cli_parse_stdout(out_text)
     if proc.returncode != 0:
-        message = err_text or out_text or f"exit={proc.returncode}"
-        raise HTTPException(status_code=502, detail=f"{gemini_cli_display_name(exe)} 调用失败：{message[:1200]}")
-    return {"text": text or out_text, "raw": raw, "_stdout": out_text, "_stderr": err_text}
+        message = gemini_cli_error_text(err_text or out_text or "")
+        raise HTTPException(status_code=502, detail=f"{gemini_cli_display_name(exe)} 调用失败（exit={proc.returncode}）：{message}")
+    return {"text": text or out_text, "raw": raw}
+
+def gemini_cli_error_text(value, limit=900):
+    text = gemini_cli_terminal_text(value).strip()
+    text = re.sub(r"(?i)(authorization\s*:\s*bearer\s+|bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+    return text[:limit] or "no diagnostic output"
+
+async def gemini_cli_cleanup_process(proc, reason):
+    if not proc:
+        return
+    try:
+        if proc.returncode is None:
+            proc.kill()
+    except Exception as exc:
+        logging.warning("Antigravity CLI cleanup failed while killing process (%s): %s", reason, exc, exc_info=True)
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=GEMINI_CLI_CLEANUP_TIMEOUT)
+    except Exception as exc:
+        logging.warning("Antigravity CLI cleanup drain failed (%s): %s", reason, exc, exc_info=True)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=GEMINI_CLI_CLEANUP_TIMEOUT)
+    except Exception as exc:
+        logging.warning("Antigravity CLI cleanup wait failed (%s): %s", reason, exc, exc_info=True)
+
+def gemini_cli_terminal_text(value):
+    text = str(value or "")
+    output = []
+    index = 0
+    length = len(text)
+    string_control = None
+    while index < length:
+        char = text[index]
+        code = ord(char)
+        if string_control:
+            if code == 0x9C or (char == "\x1b" and index + 1 < length and text[index + 1] == "\\"):
+                index += 2 if char == "\x1b" else 1
+                string_control = None
+                continue
+            if string_control == "osc" and (char == "\x07" or code == 0x9C):
+                index += 1
+                string_control = None
+                continue
+            index += 1
+            continue
+        if char == "\r":
+            output.append("\n")
+            index += 2 if index + 1 < length and text[index + 1] == "\n" else 1
+            continue
+        if char == "\n" or code == 0x85:
+            output.append("\n")
+            index += 1
+            continue
+        if char == "\x1b":
+            if index + 1 >= length:
+                break
+            marker = text[index + 1]
+            if marker in GEMINI_CLI_STRING_CONTROL_ESCAPES:
+                index += 2
+                string_control = "osc" if marker == "]" else "string"
+                continue
+            if marker == "[":
+                index += 2
+                while index < length:
+                    final = ord(text[index])
+                    index += 1
+                    if 0x40 <= final <= 0x7E:
+                        break
+                continue
+            index += 1
+            while index < length and 0x20 <= ord(text[index]) <= 0x2F:
+                index += 1
+            if index < length and 0x30 <= ord(text[index]) <= 0x7E:
+                index += 1
+            continue
+        if code == 0x9B:
+            index += 1
+            while index < length:
+                final = ord(text[index])
+                index += 1
+                if 0x40 <= final <= 0x7E:
+                    break
+            continue
+        if code in GEMINI_CLI_STRING_CONTROL_C1:
+            index += 1
+            string_control = "osc" if code == 0x9D else "string"
+            continue
+        if code < 0x20 or 0x7F <= code <= 0x9F:
+            index += 1
+            continue
+        output.append(char)
+        index += 1
+    return "".join(output)
 
 def gemini_cli_parse_models_output(value):
     models = []
     seen = set()
-    cleaned = ANSI_OSC_RE.sub("", str(value or ""))
-    for raw_line in re.split(r"\r\n?|\n", cleaned):
-        line = ANSI_ESCAPE_RE.sub("", raw_line)
-        line = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", line).strip()
+    for raw_line in gemini_cli_terminal_text(value).split("\n"):
+        line = raw_line.strip(" ")
         if not line or line.lower() in GEMINI_CLI_MODEL_NOISE or line in seen:
             continue
         seen.add(line)
         models.append(line)
     return models
 
-def gemini_cli_models_payload(models=None, raw=None):
+def gemini_cli_models_payload(raw=None):
+    all_models = model_list_from_values([
+        *GEMINI_CLI_DEFAULT_IMAGE_MODELS,
+        *GEMINI_CLI_DEFAULT_CHAT_MODELS,
+    ])
+    return {
+        "ok": True,
+        "protocol": "gemini-cli",
+        "status": 200,
+        "message": "Antigravity CLI 可用，模型列表使用 auto 默认模型。",
+        "model_count": len(all_models),
+        "total": len(all_models),
+        "image_models": list(GEMINI_CLI_DEFAULT_IMAGE_MODELS),
+        "chat_models": list(GEMINI_CLI_DEFAULT_CHAT_MODELS),
+        "video_models": [],
+        "all": all_models,
+        "raw": raw or {},
+    }
+
+def gemini_cli_discovered_models_payload(models, raw=None):
     discovered = model_list_from_values(models or [])
+    metadata = {
+        str(key): value for key, value in (raw or {}).items()
+        if key not in {"stdout", "stderr", "_stdout", "_stderr"}
+    } if isinstance(raw, dict) else {}
     return {
         "ok": True,
         "protocol": "gemini-cli",
@@ -5251,7 +5360,7 @@ def gemini_cli_models_payload(models=None, raw=None):
         "chat_models": list(discovered),
         "video_models": [],
         "all": list(discovered),
-        "raw": raw or {},
+        "raw": metadata,
     }
 
 async def discover_gemini_cli_models(timeout=GEMINI_CLI_MODELS_TIMEOUT):
@@ -5272,12 +5381,7 @@ async def discover_gemini_cli_models(timeout=GEMINI_CLI_MODELS_TIMEOUT):
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as exc:
-        if proc and proc.returncode is None:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
+        await gemini_cli_cleanup_process(proc, "model discovery timeout")
         raise HTTPException(
             status_code=504,
             detail="Antigravity CLI 拉取模型超时，已保留原有模型配置。",
@@ -5289,10 +5393,10 @@ async def discover_gemini_cli_models(timeout=GEMINI_CLI_MODELS_TIMEOUT):
         ) from exc
     out_text, err_text = codex_decode_output(stdout, stderr)
     if proc.returncode != 0:
-        message = (err_text or out_text or f"exit={proc.returncode}")[:1200]
+        message = gemini_cli_error_text(err_text or out_text or "")
         raise HTTPException(
             status_code=502,
-            detail=f"Antigravity CLI 拉取模型失败：{message}。已保留原有模型配置。",
+            detail=f"Antigravity CLI 拉取模型失败（exit={proc.returncode}）：{message}。已保留原有模型配置。",
         )
     models = gemini_cli_parse_models_output(out_text)
     if not models:
@@ -5300,7 +5404,7 @@ async def discover_gemini_cli_models(timeout=GEMINI_CLI_MODELS_TIMEOUT):
             status_code=502,
             detail="Antigravity CLI 未返回可用模型，已保留原有模型配置。",
         )
-    return gemini_cli_models_payload(models, raw={"stdout": out_text, "stderr": err_text})
+    return gemini_cli_discovered_models_payload(models)
 
 def gemini_cli_reference_note(reference_images=None):
     refs = []
