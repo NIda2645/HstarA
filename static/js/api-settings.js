@@ -2844,6 +2844,17 @@ async function refreshGeminiCliStatus(showInfo=true){
         if(geminiCliInfo) geminiCliInfo.textContent = e.message || String(e);
     }
 }
+async function launchGeminiCli(){
+    try {
+        const data = await fetch('/api/gemini-cli/launch', {method:'POST'})
+            .then(r => readApiJsonResponse(r, '启动 Antigravity CLI 失败'));
+        if(geminiCliInfo) geminiCliInfo.textContent = data.message || `已启动 Antigravity CLI 交互终端（PID ${data.pid || '未知'}）。`;
+    } catch(e){
+        const message = e.message || String(e);
+        if(geminiCliInfo) geminiCliInfo.textContent = message;
+        alert(message);
+    }
+}
 function openGeminiCliHelp(){
     if(!geminiCliHelpOverlay) return;
     geminiCliHelpOverlay.style.display = 'flex';

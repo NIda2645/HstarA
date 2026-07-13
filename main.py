@@ -13634,6 +13634,37 @@ async def gemini_cli_status():
             "message": f"{display_name} 检测失败：{exc}",
         }
 
+@app.post("/api/gemini-cli/launch")
+async def launch_gemini_cli(request: Request):
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
+    if client_host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="仅允许本机访问 Antigravity CLI 启动接口。")
+    if os.name != "nt":
+        raise HTTPException(status_code=400, detail="启动 Antigravity CLI 仅支持 Windows。")
+
+    exe = gemini_cli_executable()
+    if not exe:
+        raise HTTPException(status_code=400, detail="未找到 Antigravity CLI 可执行文件。")
+    if not is_antigravity_cli(exe):
+        raise HTTPException(status_code=400, detail="找到的 CLI 不是 Antigravity agy 可执行文件。")
+
+    powershell = shutil.which("powershell.exe")
+    if not powershell:
+        raise HTTPException(status_code=400, detail="未找到 powershell.exe。")
+
+    launch_env = os.environ.copy()
+    launch_env["HSTARA_ANTIGRAVITY_LAUNCH_EXE"] = exe
+    try:
+        process = subprocess.Popen(
+            [powershell, "-NoLogo", "-NoExit", "-Command", "& $env:HSTARA_ANTIGRAVITY_LAUNCH_EXE"],
+            cwd=BASE_DIR,
+            env=launch_env,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"启动 Antigravity CLI 失败：{exc}") from exc
+    return {"ok": True, "pid": process.pid, "message": "已启动 Antigravity CLI 交互终端。"}
+
 @app.post("/api/gemini-cli/help")
 async def gemini_cli_help(payload: GeminiCliHelpRequest):
     exe = gemini_cli_executable()

@@ -8,6 +8,7 @@ import vm from 'node:vm';
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const mainPath = join(repoRoot, 'main.py');
 const mainPy = readFileSync(mainPath, 'utf8');
+const apiSettingsHtml = readFileSync(join(repoRoot, 'static', 'api-settings.html'), 'utf8');
 const apiSettingsPath = join(repoRoot, 'static', 'js', 'api-settings.js');
 const apiSettings = readFileSync(apiSettingsPath, 'utf8');
 
@@ -33,6 +34,19 @@ const fetchModelsBlock = apiSettings.slice(fetchModelsStart, fetchModelsEnd);
 assert.match(fetchModelsBlock, /storeFetchedPickerState\(data, item\);/);
 assert.doesNotMatch(fetchModelsBlock, /item\.(image_models|chat_models|video_models)\s*=/, 'failed fetch must not clear saved model configuration');
 assert.equal((apiSettings.match(/storeFetchedPickerState\(data, item\);/g) || []).length, 3);
+assert.match(
+  apiSettingsHtml,
+  /<button class="action-btn" type="button" onclick="openGeminiCliHelp\(\)">[\s\S]*?<button class="action-btn" type="button" onclick="launchGeminiCli\(\)" title="[^"]+">[\s\S]*data-lucide="(?:play|square-terminal)"/,
+  'launch must be immediately to the right of Antigravity help',
+);
+assert.match(apiSettings, /async function launchGeminiCli\(\)/);
+const launchFunctionStart = apiSettings.indexOf('async function launchGeminiCli(){');
+const launchFunctionEnd = apiSettings.indexOf('function currentProviderApiKey(', launchFunctionStart);
+const launchFunctionBlock = apiSettings.slice(launchFunctionStart, launchFunctionEnd);
+assert.match(launchFunctionBlock, /fetch\('\/api\/gemini-cli\/launch',\s*\{\s*method:'POST'\s*\}\)/);
+assert.match(launchFunctionBlock, /readApiJsonResponse\(/);
+assert.match(launchFunctionBlock, /geminiCliInfo\.textContent/);
+assert.match(launchFunctionBlock, /alert\(/);
 
 function createPickerHarness() {
   const calls = {
@@ -159,6 +173,7 @@ this.__pickerApi = {
   togglePickerRow,
   applyModelPicker,
   fetchModels,
+  launchGeminiCli,
   setProviders(values, id = values[0]?.id) { providers = values; selectedId = id; },
   setProvider(value) { providers = [value]; selectedId = value.id; lastFetchedContextKey = ''; },
   setFetched(value) {
@@ -376,6 +391,30 @@ assert.equal(JSON.stringify({
 assert.equal(pickerApi.calls.applyModelPicker, applyCallsBeforeFailedFetch);
 assert.equal(pickerApi.calls.openModelPicker, openCallsBeforeFailedFetch);
 
+const launchInfo = pickerApi.getElement('geminiCliInfo');
+const launchFetchCalls = [];
+pickerApi.setFetch((url, options) => {
+  launchFetchCalls.push([url, options]);
+  return Promise.resolve({
+    ok: true,
+    text: async () => JSON.stringify({ ok: true, pid: 4321, message: '已启动 Antigravity CLI 交互终端。' }),
+  });
+});
+await pickerApi.launchGeminiCli();
+assert.equal(launchFetchCalls[0][0], '/api/gemini-cli/launch');
+assert.equal(launchFetchCalls[0][1].method, 'POST');
+assert.equal(launchInfo.textContent, '已启动 Antigravity CLI 交互终端。');
+
+pickerApi.setFetch(() => Promise.resolve({
+  ok: false,
+  text: async () => JSON.stringify({ detail: '仅支持 Windows。' }),
+}));
+const launchAlertCount = pickerApi.calls.alerts.length;
+await pickerApi.launchGeminiCli();
+assert.equal(launchInfo.textContent, '仅支持 Windows。');
+assert.equal(pickerApi.calls.alerts.length, launchAlertCount + 1);
+assert.equal(pickerApi.calls.alerts.at(-1), '仅支持 Windows。');
+
 const pythonEnv = {
   ...process.env,
   PYTHONIOENCODING: 'utf-8',
@@ -423,6 +462,8 @@ import os
 import sys
 import time
 from unittest.mock import patch
+import inspect
+from types import SimpleNamespace
 
 sys.path.insert(0, os.getcwd())
 
@@ -800,6 +841,125 @@ async def run():
     assert canvas_result["model"] == "Legacy Chat"
     assert chat_calls[0][0].model == "Legacy Chat"
     assert warn_chat.call_args.args == (provider, "Legacy Chat", "chat")
+
+    signature = inspect.signature(main.launch_gemini_cli)
+    assert list(signature.parameters) == ["request"]
+    assert signature.parameters["request"].annotation is main.Request
+
+    class FakeLaunchedProcess:
+        pid = 4321
+
+    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+    agy = r"C:\\Users\\test\\agy.exe"
+    powershell = r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+    original_environment = dict(os.environ)
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main, "gemini_cli_executable", return_value=agy):
+            with patch.object(main, "is_antigravity_cli", return_value=True):
+                with patch.object(main.shutil, "which", side_effect=lambda name: powershell if name == "powershell.exe" else None):
+                    with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
+                        with patch.object(main.subprocess, "Popen", return_value=FakeLaunchedProcess()) as popen:
+                            result = await main.launch_gemini_cli(request)
+    assert result == {"ok": True, "pid": 4321, "message": "已启动 Antigravity CLI 交互终端。"}
+    popen.assert_called_once()
+    args, kwargs = popen.call_args
+    assert list(args[0]) == [
+        powershell,
+        "-NoLogo",
+        "-NoExit",
+        "-Command",
+        "& $env:HSTARA_ANTIGRAVITY_LAUNCH_EXE",
+    ]
+    assert kwargs["cwd"] == main.BASE_DIR
+    assert kwargs["creationflags"] == 0x10
+    assert "shell" not in kwargs or kwargs["shell"] is False
+    assert kwargs["env"] is not os.environ
+    assert kwargs["env"] == {**original_environment, "HSTARA_ANTIGRAVITY_LAUNCH_EXE": agy}
+    assert not hasattr(request, "command")
+
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main, "gemini_cli_executable", return_value=agy):
+            with patch.object(main, "is_antigravity_cli", return_value=True):
+                with patch.object(main.shutil, "which", return_value=powershell):
+                    with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
+                        with patch.object(main.subprocess, "Popen", return_value=FakeLaunchedProcess()) as independent_popen:
+                            await main.launch_gemini_cli(request)
+                            await main.launch_gemini_cli(request)
+    assert independent_popen.call_count == 2, "each click must launch an independent session"
+
+    for host in ("::1", "localhost"):
+        local_request = SimpleNamespace(client=SimpleNamespace(host=host))
+        with patch.object(main.os, "name", "nt"):
+            with patch.object(main, "gemini_cli_executable", return_value=agy):
+                with patch.object(main, "is_antigravity_cli", return_value=True):
+                    with patch.object(main.shutil, "which", return_value=powershell):
+                        with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
+                            with patch.object(main.subprocess, "Popen", return_value=FakeLaunchedProcess()) as local_popen:
+                                local_result = await main.launch_gemini_cli(local_request)
+        assert local_result["ok"] is True
+        local_popen.assert_called_once()
+
+    with patch.object(main.subprocess, "Popen") as remote_popen:
+        try:
+            await main.launch_gemini_cli(SimpleNamespace(client=SimpleNamespace(host="192.168.1.8")))
+        except HTTPException as exc:
+            assert exc.status_code == 403
+        else:
+            raise AssertionError("remote clients must be rejected")
+    remote_popen.assert_not_called()
+
+    with patch.object(main.os, "name", "posix"):
+        try:
+            await main.launch_gemini_cli(request)
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "Windows" in str(exc.detail)
+        else:
+            raise AssertionError("non-Windows clients must be rejected")
+
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main, "gemini_cli_executable", return_value=""):
+            try:
+                await main.launch_gemini_cli(request)
+            except HTTPException as exc:
+                assert exc.status_code == 400
+                assert "Antigravity CLI" in str(exc.detail)
+            else:
+                raise AssertionError("missing agy must be rejected")
+
+        with patch.object(main, "gemini_cli_executable", return_value="gemini.exe"):
+            with patch.object(main, "is_antigravity_cli", return_value=False):
+                try:
+                    await main.launch_gemini_cli(request)
+                except HTTPException as exc:
+                    assert exc.status_code == 400
+                    assert "Antigravity" in str(exc.detail)
+                else:
+                    raise AssertionError("non-agy executables must be rejected")
+
+        with patch.object(main, "gemini_cli_executable", return_value=agy):
+            with patch.object(main, "is_antigravity_cli", return_value=True):
+                with patch.object(main.shutil, "which", return_value=None):
+                    try:
+                        await main.launch_gemini_cli(request)
+                    except HTTPException as exc:
+                        assert exc.status_code == 400
+                        assert "powershell.exe" in str(exc.detail)
+                    else:
+                        raise AssertionError("missing PowerShell must be rejected")
+
+        with patch.object(main, "gemini_cli_executable", return_value=agy):
+            with patch.object(main, "is_antigravity_cli", return_value=True):
+                with patch.object(main.shutil, "which", return_value=powershell):
+                    with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
+                        with patch.object(main.subprocess, "Popen", side_effect=OSError("launch failed")):
+                            try:
+                                await main.launch_gemini_cli(request)
+                            except HTTPException as exc:
+                                assert exc.status_code == 500
+                                assert "启动" in str(exc.detail)
+                            else:
+                                raise AssertionError("Popen failures must be reported")
 
 
 asyncio.run(run())
