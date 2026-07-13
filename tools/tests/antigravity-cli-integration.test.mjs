@@ -48,6 +48,7 @@ assert.ok(
 
 const backendHarness = String.raw`
 import asyncio
+import copy
 import json
 import os
 import sys
@@ -342,11 +343,24 @@ async def run():
                 main.run_gemini_cli("prompt one", model="Model One", timeout=30),
                 main.run_gemini_cli("prompt two", model="Model Two", timeout=30),
             )
-    concurrent_models = {
-        args[args.index("--model") + 1]
-        for args in concurrent_calls
+    assert len(concurrent_calls) == 2
+    expected_concurrent_requests = {
+        "prompt one": "Model One",
+        "prompt two": "Model Two",
     }
-    assert concurrent_models == {"Model One", "Model Two"}
+    observed_concurrent_requests = {}
+    for args in concurrent_calls:
+        assert args.count("--model") == 1
+        assert args.count("-p") == 1
+        model_index = args.index("--model") + 1
+        prompt_index = args.index("-p") + 1
+        captured_model = args[model_index]
+        captured_prompt = args[prompt_index]
+        assert captured_prompt in expected_concurrent_requests
+        assert captured_model == expected_concurrent_requests[captured_prompt]
+        assert captured_prompt not in observed_concurrent_requests
+        observed_concurrent_requests[captured_prompt] = captured_model
+    assert observed_concurrent_requests == expected_concurrent_requests
 
     provider = {
         "id": "gemini-cli",
@@ -354,13 +368,33 @@ async def run():
         "image_models": ["Current Image"],
         "chat_models": ["Current Chat"],
     }
-    with patch.object(main.logging, "warning") as warning:
-        main.warn_unlisted_gemini_cli_model(provider, "Legacy Image", "image")
-    assert warning.call_args.args == (
-        "Antigravity CLI using saved canvas model outside current %s list: %s",
-        "image",
+    def assert_model_warning(provider_value, model_value, channel, expected):
+        provider_before = copy.deepcopy(provider_value)
+        model_before = model_value
+        with patch.object(main.logging, "warning") as warning:
+            result = main.warn_unlisted_gemini_cli_model(provider_value, model_value, channel)
+        assert result is None
+        assert provider_value == provider_before
+        assert model_value == model_before
+        if expected:
+            assert warning.call_count == 1
+            assert warning.call_args.args == (
+                "Antigravity CLI using saved canvas model outside current %s list: %s",
+                channel,
+                model_value,
+            )
+        else:
+            warning.assert_not_called()
+
+    assert_model_warning(provider, "auto", "image", expected=False)
+    assert_model_warning(
+        {**provider, "image_models": []},
         "Legacy Image",
+        "image",
+        expected=False,
     )
+    assert_model_warning(provider, "Current Image", "image", expected=False)
+    assert_model_warning(provider, "Legacy Image", "image", expected=True)
 
     image_calls = []
 
