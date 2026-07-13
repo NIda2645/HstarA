@@ -5074,6 +5074,15 @@ async def codex_chat_text(payload, history_messages=None):
 def gemini_cli_env_value(key):
     return os.getenv(key, "") or read_api_env_value(key)
 
+GEMINI_CLI_MODELS_TIMEOUT = 20
+ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+GEMINI_CLI_MODEL_NOISE = {
+    "available models",
+    "available models:",
+    "models",
+    "models:",
+}
+
 def antigravity_cli_winget_candidates():
     patterns = [
         os.path.join(os.path.expanduser("~"), "AppData", "Local", "Microsoft", "WinGet", "Packages", "Google.AntigravityCLI_*", "agy.exe"),
@@ -5215,22 +5224,81 @@ async def run_gemini_cli(prompt, model="", timeout=None, allow_tools=False):
         raise HTTPException(status_code=502, detail=f"{gemini_cli_display_name(exe)} 调用失败：{message[:1200]}")
     return {"text": text or out_text, "raw": raw, "_stdout": out_text, "_stderr": err_text}
 
-def gemini_cli_models_payload(raw=None):
-    all_models = [*GEMINI_CLI_DEFAULT_IMAGE_MODELS, *GEMINI_CLI_DEFAULT_CHAT_MODELS]
-    all_models = model_list_from_values(all_models)
+def gemini_cli_parse_models_output(value):
+    models = []
+    seen = set()
+    for raw_line in str(value or "").splitlines():
+        line = ANSI_ESCAPE_RE.sub("", raw_line)
+        line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line).strip()
+        if not line or line.lower() in GEMINI_CLI_MODEL_NOISE or line in seen:
+            continue
+        seen.add(line)
+        models.append(line)
+    return models
+
+def gemini_cli_models_payload(models=None, raw=None):
+    discovered = model_list_from_values(models or [])
     return {
         "ok": True,
         "protocol": "gemini-cli",
         "status": 200,
-        "message": "Antigravity CLI 可用，模型列表使用 auto 默认模型。",
-        "model_count": len(all_models),
-        "total": len(all_models),
-        "image_models": GEMINI_CLI_DEFAULT_IMAGE_MODELS,
-        "chat_models": GEMINI_CLI_DEFAULT_CHAT_MODELS,
+        "message": f"Antigravity CLI 已实时拉取 {len(discovered)} 个模型。",
+        "model_count": len(discovered),
+        "total": len(discovered),
+        "image_models": list(discovered),
+        "chat_models": list(discovered),
         "video_models": [],
-        "all": all_models,
+        "all": list(discovered),
         "raw": raw or {},
     }
+
+async def discover_gemini_cli_models(timeout=GEMINI_CLI_MODELS_TIMEOUT):
+    exe = gemini_cli_executable()
+    if not exe or not is_antigravity_cli(exe):
+        raise HTTPException(
+            status_code=400,
+            detail="未找到 Antigravity CLI，请先安装 agy 并完成登录。已保留原有模型配置。",
+        )
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            exe,
+            "models",
+            cwd=BASE_DIR,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=504,
+            detail="Antigravity CLI 拉取模型超时，已保留原有模型配置。",
+        ) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未找到 Antigravity CLI：{exe}。已保留原有模型配置。",
+        ) from exc
+    out_text, err_text = codex_decode_output(stdout, stderr)
+    if proc.returncode != 0:
+        message = (err_text or out_text or f"exit={proc.returncode}")[:1200]
+        raise HTTPException(
+            status_code=502,
+            detail=f"Antigravity CLI 拉取模型失败：{message}。已保留原有模型配置。",
+        )
+    models = gemini_cli_parse_models_output(out_text)
+    if not models:
+        raise HTTPException(
+            status_code=502,
+            detail="Antigravity CLI 未返回可用模型，已保留原有模型配置。",
+        )
+    return gemini_cli_models_payload(models, raw={"stdout": out_text, "stderr": err_text})
 
 def gemini_cli_reference_note(reference_images=None):
     refs = []
