@@ -12,5 +12,10 @@ assert.match(
   /@app\.post\(["']\/api\/image-marker\/identify["']\)\s*\nasync def identify_image_marker\(payload: ImageMarkerIdentifyRequest\):/,
   'backend should register the image marker identify endpoint used by both canvases',
 );
+const markerRouteStart = py.indexOf('@app.post("/api/image-marker/identify")');
+const markerRouteEnd = py.indexOf('@app.post("/api/smart-image/text/recognize")', markerRouteStart);
+const markerRoute = py.slice(markerRouteStart, markerRouteEnd);
+assert.match(markerRoute, /is_gemini_cli_provider\(/, 'marker recognition should detect the Antigravity CLI provider');
+assert.match(markerRoute, /gemini_cli_chat_text\(/, 'marker recognition should use the Antigravity CLI chat adapter');
 
 console.log('image marker API route tests passed');

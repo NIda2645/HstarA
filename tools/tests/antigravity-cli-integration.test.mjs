@@ -594,15 +594,18 @@ async def discover_with(process, timeout=main.GEMINI_CLI_MODELS_TIMEOUT):
         calls.append((args, kwargs))
         return process
 
-    with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
-        with patch.object(main.asyncio, "create_subprocess_exec", side_effect=fake_exec):
-            result = await main.discover_gemini_cli_models(timeout=timeout)
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
+                with patch.object(main.asyncio, "create_subprocess_exec", side_effect=fake_exec):
+                    result = await main.discover_gemini_cli_models(timeout=timeout)
     assert len(calls) == 1
     args, kwargs = calls[0]
     assert list(args) == ["agy.exe", "models"]
     assert kwargs["cwd"] == main.BASE_DIR
     assert kwargs["stdout"] is asyncio.subprocess.PIPE
     assert kwargs["stderr"] is asyncio.subprocess.PIPE
+    assert kwargs["creationflags"] == 0x08000000
     return result
 
 
@@ -661,10 +664,12 @@ async def run_cli_with_capture(prompt, model, allow_tools=False, delay=0):
         calls.append((args, kwargs))
         return FakeProcess(delay=delay)
 
-    with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
-        with patch.object(main.asyncio, "create_subprocess_exec", side_effect=fake_exec):
-            with patch.object(main.logging, "info") as info:
-                await main.run_gemini_cli(prompt, model=model, timeout=30, allow_tools=allow_tools)
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
+                with patch.object(main.asyncio, "create_subprocess_exec", side_effect=fake_exec):
+                    with patch.object(main.logging, "info") as info:
+                        await main.run_gemini_cli(prompt, model=model, timeout=30, allow_tools=allow_tools)
     return calls, info
 
 
@@ -772,6 +777,7 @@ async def run():
         allow_tools=True,
     )
     args = list(calls[0][0])
+    assert calls[0][1]["creationflags"] == 0x08000000
     assert args[args.index("--model") + 1] == exact_model
     assert args.count(exact_model) == 1
     assert info.call_args.args == ("Antigravity CLI request model=%s tools=%s", exact_model, True)
@@ -878,6 +884,57 @@ async def run():
     assert canvas_result["model"] == "Legacy Chat"
     assert chat_calls[0][0].model == "Legacy Chat"
     assert warn_chat.call_args.args == (provider, "Legacy Chat", "chat")
+
+    marker_data_image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    marker_payload = main.ImageMarkerIdentifyRequest(
+        image_url=marker_data_image,
+        thumbnail=marker_data_image,
+        x=0.5,
+        y=0.25,
+        number=3,
+        provider="gemini-cli",
+        model="Gemini 3.5 Flash (Low)",
+    )
+    marker_calls = []
+
+    async def fake_marker_chat(payload, history):
+        marker_calls.append((payload, history))
+        return "红色马克杯", {"text": "红色马克杯"}
+
+    with patch.object(main, "get_api_provider", return_value=provider):
+        with patch.object(main, "resolve_chat_provider") as resolve_marker_http:
+            with patch.object(main, "warn_unlisted_gemini_cli_model") as warn_marker:
+                with patch.object(main, "gemini_cli_chat_text", side_effect=fake_marker_chat):
+                    marker_result = await main.identify_image_marker(marker_payload)
+    resolve_marker_http.assert_not_called()
+    assert marker_result["object_name"] == "红色马克杯"
+    assert marker_result["model"] == "Gemini 3.5 Flash (Low)"
+    assert marker_calls[0][0].model == "Gemini 3.5 Flash (Low)"
+    assert marker_calls[0][0].images == [marker_data_image, marker_data_image]
+    assert "Marker #3" in marker_calls[0][0].message
+    assert "x=0.5000, y=0.2500" in marker_calls[0][0].message
+    assert marker_calls[0][1] == []
+    assert warn_marker.call_args.args == (provider, "Gemini 3.5 Flash (Low)", "chat")
+
+    background_calls = []
+
+    async def background_exec(*args, **kwargs):
+        background_calls.append((args, kwargs))
+        return FakeProcess(stdout=b"agy 1.0")
+
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
+                with patch.object(main.asyncio, "create_subprocess_exec", side_effect=background_exec):
+                    status_result = await main.gemini_cli_status()
+                    help_result = await main.gemini_cli_help(main.GeminiCliHelpRequest(command="help"))
+    assert status_result["installed"] is True
+    assert help_result["text"] == "agy 1.0"
+    assert [list(call[0]) for call in background_calls] == [
+        ["agy.exe", "--version"],
+        ["agy.exe", "help", "--help"],
+    ]
+    assert all(call[1]["creationflags"] == 0x08000000 for call in background_calls)
 
     signature = inspect.signature(main.launch_gemini_cli)
     assert list(signature.parameters) == ["request"]

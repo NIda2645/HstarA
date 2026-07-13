@@ -5131,6 +5131,11 @@ def gemini_cli_image_timeout():
     except Exception:
         return 300
 
+def gemini_cli_background_subprocess_kwargs():
+    if os.name != "nt":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+
 def gemini_cli_model(model="", fallback=""):
     value = str(model or fallback or "").strip()
     return value or "auto"
@@ -5224,6 +5229,7 @@ async def run_gemini_cli(prompt, model="", timeout=None, allow_tools=False):
             cwd=BASE_DIR,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **gemini_cli_background_subprocess_kwargs(),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
     except asyncio.TimeoutError as exc:
@@ -5460,6 +5466,7 @@ async def discover_gemini_cli_models(timeout=GEMINI_CLI_MODELS_TIMEOUT):
             cwd=BASE_DIR,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **gemini_cli_background_subprocess_kwargs(),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as exc:
@@ -13105,20 +13112,33 @@ async def move_local_assets(payload: dict, request: Request):
 @app.post("/api/image-marker/identify")
 async def identify_image_marker(payload: ImageMarkerIdentifyRequest):
     provider_id = payload.provider or "comfly"
-    chat_base, chat_hdrs, resolved_model = resolve_chat_provider(provider_id, payload.model, payload.ms_model)
+    llm_provider = get_api_provider(provider_id) if provider_id not in ("modelscope",) else {}
+    use_gemini_cli = is_gemini_cli_provider(llm_provider)
+    if use_gemini_cli:
+        resolved_model = selected_model(
+            payload.model,
+            (llm_provider.get("chat_models") or GEMINI_CLI_DEFAULT_CHAT_MODELS)[0],
+        )
+    else:
+        chat_base, chat_hdrs, resolved_model = resolve_chat_provider(
+            provider_id,
+            payload.model,
+            payload.ms_model,
+        )
     thumb_url = payload.thumbnail if str(payload.thumbnail or "").startswith("data:image/") else ""
     image_url = media_reference_to_url(payload.image_url, max_image_size=1280) if payload.image_url else ""
     if not image_url and not thumb_url:
         raise HTTPException(status_code=400, detail="image_url or thumbnail is required")
+    marker_prompt = (
+        "Identify the complete object that the marked point belongs to, not just the tiny part under the point. "
+        "Use the local crop to locate the point, then use the full image context to name the whole object. "
+        "Return a precise Simplified Chinese phrase within 9 Chinese characters: key adjective plus whole object name. "
+        "No punctuation, no explanation. "
+        f"Marker #{payload.number}, normalized position x={payload.x:.4f}, y={payload.y:.4f}."
+    )
     content = [{
         "type": "text",
-        "text": (
-            "Identify the complete object that the marked point belongs to, not just the tiny part under the point. "
-            "Use the local crop to locate the point, then use the full image context to name the whole object. "
-            "Return a precise Simplified Chinese phrase within 9 Chinese characters: key adjective plus whole object name. "
-            "No punctuation, no explanation. "
-            f"Marker #{payload.number}, normalized position x={payload.x:.4f}, y={payload.y:.4f}."
-        ),
+        "text": marker_prompt,
     }]
     if thumb_url:
         content.append({"type": "image_url", "image_url": {"url": thumb_url}})
@@ -13128,23 +13148,34 @@ async def identify_image_marker(payload: ImageMarkerIdentifyRequest):
         {"role": "system", "content": "You are a precise visual labeling assistant for image annotation."},
         {"role": "user", "content": content},
     ]
-    llm_provider = get_api_provider(provider_id) if provider_id not in ("modelscope",) else {}
-    try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
-            response = await client.post(
-                f"{chat_base}/chat/completions",
-                headers=chat_hdrs,
-                json={"model": resolved_model, "messages": messages},
-            )
-            response.raise_for_status()
-            raw = response.json()
-    except httpx.HTTPStatusError as exc:
-        body = exc.response.text or ""
-        friendly = friendly_chat_error_detail(body, resolved_model, llm_provider)
-        raise HTTPException(status_code=exc.response.status_code, detail=friendly or body[:500]) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"request failed: {exc}") from exc
-    text = text_from_chat_response(raw).strip() if isinstance(raw, dict) else ""
+    if use_gemini_cli:
+        warn_unlisted_gemini_cli_model(llm_provider, resolved_model, "chat")
+        cli_payload = CanvasLLMRequest(
+            message=marker_prompt,
+            system_prompt="You are a precise visual labeling assistant for image annotation.",
+            model=resolved_model,
+            provider=provider_id,
+            images=[value for value in (thumb_url, image_url) if value],
+        )
+        text, _raw = await gemini_cli_chat_text(cli_payload, [])
+        text = str(text or "").strip()
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+                response = await client.post(
+                    f"{chat_base}/chat/completions",
+                    headers=chat_hdrs,
+                    json={"model": resolved_model, "messages": messages},
+                )
+                response.raise_for_status()
+                raw = response.json()
+        except httpx.HTTPStatusError as exc:
+            body = exc.response.text or ""
+            friendly = friendly_chat_error_detail(body, resolved_model, llm_provider)
+            raise HTTPException(status_code=exc.response.status_code, detail=friendly or body[:500]) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"request failed: {exc}") from exc
+        text = text_from_chat_response(raw).strip() if isinstance(raw, dict) else ""
     object_name = "".join(list(re.sub(r"[\r\n]+", " ", text).strip().strip('\"“”‘’.,，。！？?！'))[:9])
     return {"object_name": object_name, "text": text, "model": resolved_model}
 
@@ -13736,6 +13767,7 @@ async def gemini_cli_status():
             cwd=BASE_DIR,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **gemini_cli_background_subprocess_kwargs(),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         out_text, err_text = codex_decode_output(stdout, stderr)
@@ -13815,6 +13847,7 @@ async def gemini_cli_help(payload: GeminiCliHelpRequest):
         cwd=BASE_DIR,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **gemini_cli_background_subprocess_kwargs(),
     )
     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
     out_text, err_text = codex_decode_output(stdout, stderr)
