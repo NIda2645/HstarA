@@ -5238,16 +5238,74 @@ async def run_gemini_cli(prompt, model="", timeout=None, allow_tools=False):
         raise HTTPException(status_code=502, detail=f"{gemini_cli_display_name(exe)} 调用失败（exit={proc.returncode}）：{message}")
     return {"text": text or out_text, "raw": raw}
 
+GEMINI_CLI_SECRET_KEYS = ("api_key", "api-key", "apikey", "token", "password", "secret")
+
+def gemini_cli_quoted_value_end(text, start, quote):
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == quote:
+            return index
+        else:
+            index += 1
+    return None
+
+def gemini_cli_redact_quoted_credentials(text):
+    output = []
+    index = 0
+    length = len(text)
+    lowered = text.lower()
+    while index < length:
+        key_end = None
+        for candidate in GEMINI_CLI_SECRET_KEYS:
+            if lowered.startswith(f'"{candidate}"', index) or lowered.startswith(f"'{candidate}'", index):
+                key_end = index + len(candidate) + 2
+                break
+            if lowered.startswith(candidate, index):
+                before = text[index - 1] if index else ""
+                after_index = index + len(candidate)
+                after = text[after_index] if after_index < length else ""
+                if not (before.isalnum() or before in "_-") and not (after.isalnum() or after in "_-"):
+                    key_end = after_index
+                    break
+        if key_end is None:
+            output.append(text[index])
+            index += 1
+            continue
+
+        separator_end = key_end
+        while separator_end < length and text[separator_end].isspace():
+            separator_end += 1
+        if separator_end >= length or text[separator_end] not in ":=":
+            output.append(text[index])
+            index += 1
+            continue
+        value_start = separator_end + 1
+        while value_start < length and text[value_start].isspace():
+            value_start += 1
+        if value_start >= length or text[value_start] not in "\"'":
+            output.append(text[index])
+            index += 1
+            continue
+
+        quote = text[value_start]
+        value_end = gemini_cli_quoted_value_end(text, value_start, quote)
+        output.append(text[index:value_start + 1])
+        output.append("[REDACTED]")
+        if value_end is None:
+            index = length
+        else:
+            output.append(quote)
+            index = value_end + 1
+    return "".join(output)
+
 def gemini_cli_error_text(value, limit=900):
     text = gemini_cli_terminal_text(value).strip()
     text = re.sub(r"(?i)\b(https?://)(?:[^/\s?#@]+(?::[^/\s?#@]*)?@)", r"\1[REDACTED]@", text)
-    text = re.sub(
-        r"(?i)([\"']?(?:api[_-]?key|token|password|secret)[\"']?\s*[:=]\s*)([\"'])(?:\\.|(?!\2).)*\2",
-        r"\1\2[REDACTED]\2",
-        text,
-    )
+    text = gemini_cli_redact_quoted_credentials(text)
     text = re.sub(r"(?i)(authorization\s*:\s*bearer\s+|bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
-    text = re.sub(r"(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)(?![\"'])[^\s,;]+", r"\1[REDACTED]", text)
     text = re.sub(r"(?i)\bsk-[A-Za-z0-9][A-Za-z0-9_-]*\b", "sk-[REDACTED]", text)
     return text[:limit] or "no diagnostic output"
 
@@ -6737,6 +6795,20 @@ def gemini_cli_request_origin(value, allow_path=False):
     authority = hostname if port in (None, default_port) else f"{hostname}:{port}"
     return f"{parsed.scheme.lower()}://{authority}"
 
+def is_gemini_cli_loopback_hostname(value) -> bool:
+    hostname = str(value or "").strip().lower()
+    if hostname == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_loopback or (
+        isinstance(address, ipaddress.IPv6Address)
+        and address.ipv4_mapped is not None
+        and address.ipv4_mapped.is_loopback
+    )
+
 def ensure_gemini_cli_same_origin_request(request: Request):
     headers = getattr(request, "headers", None)
     if headers is None:
@@ -6744,6 +6816,12 @@ def ensure_gemini_cli_same_origin_request(request: Request):
     host = str(headers.get("host") or "").strip()
     scheme = str(getattr(getattr(request, "url", None), "scheme", "") or "").strip()
     expected = gemini_cli_request_origin(f"{scheme}://{host}") if scheme and host else None
+    try:
+        authority_hostname = urllib.parse.urlsplit(expected).hostname if expected else None
+    except (TypeError, ValueError):
+        authority_hostname = None
+    if not is_gemini_cli_loopback_hostname(authority_hostname):
+        raise HTTPException(status_code=403, detail="Only local request authorities may launch Antigravity CLI.")
     for header_name, allow_path in (("origin", False), ("referer", True)):
         if header_name not in headers:
             continue
@@ -13683,17 +13761,7 @@ async def gemini_cli_status():
 
 def is_loopback_gemini_cli_request(request: Request) -> bool:
     client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
-    if client_host.lower() == "localhost":
-        return True
-    try:
-        address = ipaddress.ip_address(client_host)
-    except ValueError:
-        return False
-    return address.is_loopback or (
-        isinstance(address, ipaddress.IPv6Address)
-        and address.ipv4_mapped is not None
-        and address.ipv4_mapped.is_loopback
-    )
+    return is_gemini_cli_loopback_hostname(client_host)
 
 @app.post("/api/gemini-cli/launch")
 async def launch_gemini_cli(request: Request):
