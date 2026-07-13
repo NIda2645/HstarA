@@ -242,6 +242,20 @@ async def expect_http_error(process, status_code, timeout=main.GEMINI_CLI_MODELS
     raise AssertionError(f"Expected HTTP {status_code}")
 
 
+async def run_cli_with_capture(prompt, model, allow_tools=False, delay=0):
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess(delay=delay)
+
+    with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
+        with patch.object(main.asyncio, "create_subprocess_exec", side_effect=fake_exec):
+            with patch.object(main.logging, "info") as info:
+                await main.run_gemini_cli(prompt, model=model, timeout=30, allow_tools=allow_tools)
+    return calls, info
+
+
 async def run():
     success = FakeProcess(stdout=sample.encode("utf-8"))
     payload = await discover_with(success)
@@ -283,6 +297,106 @@ async def run():
         timeout_error = await expect_http_error(cleanup_failure, 504, timeout=0.001)
     assert timeout_error.status_code == 504
     assert warning.called
+
+    discovered_payload = main.gemini_cli_discovered_models_payload(
+        ["Live Chat Model", "Live Image Model"],
+        raw={"source": "agy models"},
+    )
+    discovery_calls = 0
+
+    async def fake_discover():
+        nonlocal discovery_calls
+        discovery_calls += 1
+        return discovered_payload
+
+    with patch.object(main, "discover_gemini_cli_models", side_effect=fake_discover):
+        tested = await main.test_provider_connection(main.TestConnectionPayload(protocol="gemini-cli"))
+        fetched = await main.fetch_models_from_upstream("", "", "gemini-cli")
+    assert discovery_calls == 2
+    assert tested["all"] == discovered_payload["all"]
+    assert fetched["all"] == discovered_payload["all"]
+    assert tested["raw"] == {"source": "agy models"}
+
+    exact_model = "Claude Sonnet 4.6 (Thinking)"
+    calls, info = await run_cli_with_capture(
+        "private prompt Authorization: Bearer super-secret-token",
+        exact_model,
+        allow_tools=True,
+    )
+    args = list(calls[0][0])
+    assert args[args.index("--model") + 1] == exact_model
+    assert args.count(exact_model) == 1
+    assert info.call_args.args == ("Antigravity CLI request model=%s tools=%s", exact_model, True)
+    assert "private prompt" not in repr(info.call_args)
+    assert "super-secret-token" not in repr(info.call_args)
+
+    concurrent_calls = []
+
+    async def concurrent_exec(*args, **kwargs):
+        concurrent_calls.append(list(args))
+        return FakeProcess(delay=0.01)
+
+    with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
+        with patch.object(main.asyncio, "create_subprocess_exec", side_effect=concurrent_exec):
+            await asyncio.gather(
+                main.run_gemini_cli("prompt one", model="Model One", timeout=30),
+                main.run_gemini_cli("prompt two", model="Model Two", timeout=30),
+            )
+    concurrent_models = {
+        args[args.index("--model") + 1]
+        for args in concurrent_calls
+    }
+    assert concurrent_models == {"Model One", "Model Two"}
+
+    provider = {
+        "id": "gemini-cli",
+        "protocol": "gemini-cli",
+        "image_models": ["Current Image"],
+        "chat_models": ["Current Chat"],
+    }
+    with patch.object(main.logging, "warning") as warning:
+        main.warn_unlisted_gemini_cli_model(provider, "Legacy Image", "image")
+    assert warning.call_args.args == (
+        "Antigravity CLI using saved canvas model outside current %s list: %s",
+        "image",
+        "Legacy Image",
+    )
+
+    image_calls = []
+
+    async def fake_image(*args):
+        image_calls.append(args)
+        return {"image": "ok"}
+
+    with patch.object(main, "get_api_provider", return_value=provider):
+        with patch.object(main, "warn_unlisted_gemini_cli_model") as warn_image:
+            with patch.object(main, "generate_gemini_cli_provider_image", side_effect=fake_image):
+                image_result = await main.generate_ai_image(
+                    "image prompt", "1024x1024", "standard", "Legacy Image", [], "gemini-cli"
+                )
+    assert image_result == {"image": "ok"}
+    assert image_calls[0][2] == "Legacy Image"
+    assert warn_image.call_args.args == (provider, "Legacy Image", "image")
+
+    chat_calls = []
+
+    async def fake_chat(payload, history):
+        chat_calls.append((payload, history))
+        return "reply", {"text": "reply"}
+
+    canvas_payload = main.CanvasLLMRequest(
+        message="canvas message",
+        model="Legacy Chat",
+        provider="gemini-cli",
+    )
+    with patch.object(main, "get_api_provider", return_value=provider):
+        with patch.object(main, "warn_unlisted_gemini_cli_model") as warn_chat:
+            with patch.object(main, "gemini_cli_chat_text", side_effect=fake_chat):
+                canvas_result = await main.canvas_llm(canvas_payload)
+    assert canvas_result["text"] == "reply"
+    assert canvas_result["model"] == "Legacy Chat"
+    assert chat_calls[0][0].model == "Legacy Chat"
+    assert warn_chat.call_args.args == (provider, "Legacy Chat", "chat")
 
 
 asyncio.run(run())

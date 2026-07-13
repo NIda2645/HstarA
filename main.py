@@ -5134,6 +5134,17 @@ def gemini_cli_model(model="", fallback=""):
     value = str(model or fallback or "").strip()
     return value or "auto"
 
+def warn_unlisted_gemini_cli_model(provider, model, channel):
+    key = "image_models" if channel == "image" else "chat_models"
+    configured = model_list_from_values((provider or {}).get(key) or [])
+    selected = str(model or "").strip()
+    if selected and selected != "auto" and configured and selected not in configured:
+        logging.warning(
+            "Antigravity CLI using saved canvas model outside current %s list: %s",
+            channel,
+            selected,
+        )
+
 def gemini_cli_text_from_raw(raw, fallback_text=""):
     if isinstance(raw, str):
         return raw.strip()
@@ -5200,6 +5211,11 @@ async def run_gemini_cli(prompt, model="", timeout=None, allow_tools=False):
         if allow_tools:
             args.extend(["--approval-mode", "yolo"])
         args.extend(["--prompt", str(prompt or "")])
+    logging.info(
+        "Antigravity CLI request model=%s tools=%s",
+        selected if is_antigravity_cli(exe) else gemini_cli_model(model),
+        bool(allow_tools),
+    )
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -11223,6 +11239,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     if is_codex_provider(provider):
         return await generate_codex_provider_image(prompt, size, model, reference_images, provider)
     if is_gemini_cli_provider(provider):
+        warn_unlisted_gemini_cli_model(provider, model, "image")
         return await generate_gemini_cli_provider_image(prompt, size, model, reference_images, provider)
     if is_jimeng_provider(provider):
         return await generate_jimeng_provider_image(prompt, size, model, reference_images, provider)
@@ -14148,13 +14165,8 @@ async def test_provider_connection(payload: TestConnectionPayload):
         })
         return payload_models
     if protocol == "gemini-cli":
-        status = await gemini_cli_status()
-        payload_models = gemini_cli_models_payload(raw={"status": status})
-        payload_models.update({
-            "ok": bool(status.get("installed")),
-            "status": 200 if status.get("installed") else 0,
-            "message": status.get("message") or ("Antigravity CLI 可用" if status.get("installed") else "未找到 Antigravity CLI"),
-        })
+        payload_models = await discover_gemini_cli_models()
+        payload_models["message"] = payload_models.get("message") or "Antigravity CLI 可用"
         return payload_models
     if protocol == "jimeng":
         status = await jimeng_status()
@@ -14406,10 +14418,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
         payload["message"] = status.get("message") or payload["message"]
         return payload
     if protocol == "gemini-cli":
-        status = await gemini_cli_status()
-        payload = gemini_cli_models_payload(raw={"status": status})
-        payload["message"] = status.get("message") or payload["message"]
-        return payload
+        return await discover_gemini_cli_models()
     if protocol == "jimeng":
         return {
             "total": len(JIMENG_DEFAULT_IMAGE_MODELS) + len(JIMENG_DEFAULT_VIDEO_MODELS),
@@ -15928,6 +15937,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
     if is_gemini_cli_provider(_provider):
         model = selected_model(payload.model, (_provider.get("chat_models") or GEMINI_CLI_DEFAULT_CHAT_MODELS)[0])
         payload.model = model
+        warn_unlisted_gemini_cli_model(_provider, model, "chat")
         text, raw = await gemini_cli_chat_text(payload, payload.messages)
         return {"text": text, "model": model, "raw_usage": None, "raw": raw}
     chat_base, chat_hdrs, model = resolve_chat_provider(payload.provider, payload.model, payload.ms_model)
