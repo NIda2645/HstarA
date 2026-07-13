@@ -121,7 +121,7 @@ assert main.gemini_cli_parse_models_output(
     "\x1bXunterminated SOS hidden"
 ) == ["DCS Visible"]
 
-adversarial = "\x1b]x" * 100_000
+adversarial = "\x1b]" * 100_000
 started = time.perf_counter()
 assert main.gemini_cli_parse_models_output(adversarial) == []
 assert time.perf_counter() - started < 5.0
