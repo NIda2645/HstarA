@@ -5076,6 +5076,7 @@ def gemini_cli_env_value(key):
 
 GEMINI_CLI_MODELS_TIMEOUT = 20
 ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+ANSI_OSC_RE = re.compile(r"(?:\x1b\]|\x9d).*?(?:\x07|\x1b\\|\x9c)", re.DOTALL)
 GEMINI_CLI_MODEL_NOISE = {
     "available models",
     "available models:",
@@ -5227,9 +5228,10 @@ async def run_gemini_cli(prompt, model="", timeout=None, allow_tools=False):
 def gemini_cli_parse_models_output(value):
     models = []
     seen = set()
-    for raw_line in str(value or "").splitlines():
+    cleaned = ANSI_OSC_RE.sub("", str(value or ""))
+    for raw_line in re.split(r"\r\n?|\n", cleaned):
         line = ANSI_ESCAPE_RE.sub("", raw_line)
-        line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line).strip()
+        line = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", line).strip()
         if not line or line.lower() in GEMINI_CLI_MODEL_NOISE or line in seen:
             continue
         seen.add(line)

@@ -49,6 +49,18 @@ expected = [
 
 assert main.gemini_cli_parse_models_output(sample) == expected
 
+sanitized = main.gemini_cli_parse_models_output(
+    "模型 Alpha\t (Thinking)\r\n"
+    "\x1b]0;temporary title\x07Gemini Pro (High)\r\n"
+    "\x1b]2;secondary title\x1b\\Claude Sonnet 4.6 (Thinking)\r\n"
+    "Gemini Pro (High)\r\n"
+)
+assert sanitized == [
+    "模型 Alpha (Thinking)",
+    "Gemini Pro (High)",
+    "Claude Sonnet 4.6 (Thinking)",
+], sanitized
+
 for count in (1, 4, 9):
     dynamic = [f"Dynamic Model {index}" for index in range(count)]
     parsed = main.gemini_cli_parse_models_output("\r\n".join(dynamic))
