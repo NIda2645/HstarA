@@ -209,14 +209,17 @@ async def discover_with_real_sleeping_process(timeout=0.01):
 
     with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
         with patch.object(main.asyncio, "create_subprocess_exec", side_effect=real_exec):
+            started = time.perf_counter()
             try:
                 await main.discover_gemini_cli_models(timeout=timeout)
             except HTTPException as exc:
                 timeout_error = exc
             else:
                 raise AssertionError("Expected HTTP 504")
+            elapsed = time.perf_counter() - started
 
     assert timeout_error.status_code == 504
+    assert elapsed < max(timeout + (main.GEMINI_CLI_CLEANUP_TIMEOUT * 2) + 1.0, 3.0), elapsed
     process = captured["process"]
     assert process.returncode is not None
     assert await process.wait() == process.returncode
