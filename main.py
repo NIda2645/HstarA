@@ -5134,7 +5134,14 @@ def gemini_cli_image_timeout():
 def gemini_cli_background_subprocess_kwargs():
     if os.name != "nt":
         return {}
-    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+    kwargs = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+    startup_info_factory = getattr(subprocess, "STARTUPINFO", None)
+    if callable(startup_info_factory):
+        startup_info = startup_info_factory()
+        startup_info.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+        startup_info.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startup_info
+    return kwargs
 
 def gemini_cli_model(model="", fallback=""):
     value = str(model or fallback or "").strip()
@@ -13182,19 +13189,32 @@ async def identify_image_marker(payload: ImageMarkerIdentifyRequest):
 @app.post("/api/smart-image/text/recognize")
 async def recognize_smart_image_text(payload: SmartImageTextRecognizeRequest):
     provider_id = payload.provider or "comfly"
-    chat_base, chat_hdrs, resolved_model = resolve_chat_provider(provider_id, payload.model, payload.ms_model)
     image_url = media_reference_to_url(payload.image_url, max_image_size=1536) if payload.image_url else ""
     if not image_url:
         raise HTTPException(status_code=400, detail="image_url is required")
+    llm_provider = get_api_provider(provider_id) if provider_id not in ("modelscope",) else {}
+    use_gemini_cli = is_gemini_cli_provider(llm_provider)
+    if use_gemini_cli:
+        resolved_model = selected_model(
+            payload.model,
+            (llm_provider.get("chat_models") or GEMINI_CLI_DEFAULT_CHAT_MODELS)[0],
+        )
+    else:
+        chat_base, chat_hdrs, resolved_model = resolve_chat_provider(
+            provider_id,
+            payload.model,
+            payload.ms_model,
+        )
+    ocr_prompt = (
+        "Read every visible text fragment in this image from left to right and top to bottom. "
+        "Return only JSON in this exact shape: {\"texts\":[{\"text\":\"...\"}]}. "
+        "Keep original punctuation and line breaks inside each text fragment when important. "
+        "Do not describe the image. Do not add explanations."
+    )
     content = [
         {
             "type": "text",
-            "text": (
-                "Read every visible text fragment in this image from left to right and top to bottom. "
-                "Return only JSON in this exact shape: {\"texts\":[{\"text\":\"...\"}]}. "
-                "Keep original punctuation and line breaks inside each text fragment when important. "
-                "Do not describe the image. Do not add explanations."
-            ),
+            "text": ocr_prompt,
         },
         {"type": "image_url", "image_url": {"url": image_url}},
     ]
@@ -13202,24 +13222,35 @@ async def recognize_smart_image_text(payload: SmartImageTextRecognizeRequest):
         {"role": "system", "content": "You are an OCR assistant that returns strict JSON."},
         {"role": "user", "content": content},
     ]
-    llm_provider = get_api_provider(provider_id) if provider_id not in ("modelscope",) else {}
-    try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
-            response = await client.post(
-                f"{chat_base}/chat/completions",
-                headers=chat_hdrs,
-                json={"model": resolved_model, "messages": messages},
-            )
-            response.raise_for_status()
-            raw = response.json()
-    except httpx.HTTPStatusError as exc:
-        body = exc.response.text or ""
-        friendly = friendly_chat_error_detail(body, resolved_model, llm_provider)
-        raise HTTPException(status_code=exc.response.status_code, detail=friendly or body[:500]) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"request failed: {exc}") from exc
+    if use_gemini_cli:
+        warn_unlisted_gemini_cli_model(llm_provider, resolved_model, "chat")
+        cli_payload = CanvasLLMRequest(
+            message=ocr_prompt,
+            system_prompt="You are an OCR assistant that returns strict JSON.",
+            model=resolved_model,
+            provider=provider_id,
+            images=[image_url],
+        )
+        text, _raw = await gemini_cli_chat_text(cli_payload, [])
+        text = str(text or "").strip()
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+                response = await client.post(
+                    f"{chat_base}/chat/completions",
+                    headers=chat_hdrs,
+                    json={"model": resolved_model, "messages": messages},
+                )
+                response.raise_for_status()
+                raw = response.json()
+        except httpx.HTTPStatusError as exc:
+            body = exc.response.text or ""
+            friendly = friendly_chat_error_detail(body, resolved_model, llm_provider)
+            raise HTTPException(status_code=exc.response.status_code, detail=friendly or body[:500]) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"request failed: {exc}") from exc
 
-    text = text_from_chat_response(raw).strip() if isinstance(raw, dict) else ""
+        text = text_from_chat_response(raw).strip() if isinstance(raw, dict) else ""
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I | re.S).strip()
     items = []
     try:

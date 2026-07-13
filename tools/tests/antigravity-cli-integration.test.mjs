@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import vm from 'node:vm';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -587,6 +588,12 @@ class FakeProcess:
         return self.returncode
 
 
+class FakeStartupInfo:
+    def __init__(self):
+        self.dwFlags = 0
+        self.wShowWindow = None
+
+
 async def discover_with(process, timeout=main.GEMINI_CLI_MODELS_TIMEOUT):
     calls = []
 
@@ -595,7 +602,14 @@ async def discover_with(process, timeout=main.GEMINI_CLI_MODELS_TIMEOUT):
         return process
 
     with patch.object(main.os, "name", "nt"):
-        with patch.object(main.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+        with patch.multiple(
+            main.subprocess,
+            CREATE_NO_WINDOW=0x08000000,
+            STARTUPINFO=FakeStartupInfo,
+            STARTF_USESHOWWINDOW=0x00000001,
+            SW_HIDE=0,
+            create=True,
+        ):
             with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
                 with patch.object(main.asyncio, "create_subprocess_exec", side_effect=fake_exec):
                     result = await main.discover_gemini_cli_models(timeout=timeout)
@@ -606,6 +620,9 @@ async def discover_with(process, timeout=main.GEMINI_CLI_MODELS_TIMEOUT):
     assert kwargs["stdout"] is asyncio.subprocess.PIPE
     assert kwargs["stderr"] is asyncio.subprocess.PIPE
     assert kwargs["creationflags"] == 0x08000000
+    assert isinstance(kwargs["startupinfo"], FakeStartupInfo)
+    assert kwargs["startupinfo"].dwFlags & 0x00000001
+    assert kwargs["startupinfo"].wShowWindow == 0
     return result
 
 
@@ -665,7 +682,14 @@ async def run_cli_with_capture(prompt, model, allow_tools=False, delay=0):
         return FakeProcess(delay=delay)
 
     with patch.object(main.os, "name", "nt"):
-        with patch.object(main.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+        with patch.multiple(
+            main.subprocess,
+            CREATE_NO_WINDOW=0x08000000,
+            STARTUPINFO=FakeStartupInfo,
+            STARTF_USESHOWWINDOW=0x00000001,
+            SW_HIDE=0,
+            create=True,
+        ):
             with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
                 with patch.object(main.asyncio, "create_subprocess_exec", side_effect=fake_exec):
                     with patch.object(main.logging, "info") as info:
@@ -778,6 +802,9 @@ async def run():
     )
     args = list(calls[0][0])
     assert calls[0][1]["creationflags"] == 0x08000000
+    assert isinstance(calls[0][1]["startupinfo"], FakeStartupInfo)
+    assert calls[0][1]["startupinfo"].dwFlags & 0x00000001
+    assert calls[0][1]["startupinfo"].wShowWindow == 0
     assert args[args.index("--model") + 1] == exact_model
     assert args.count(exact_model) == 1
     assert info.call_args.args == ("Antigravity CLI request model=%s tools=%s", exact_model, True)
@@ -916,6 +943,34 @@ async def run():
     assert marker_calls[0][1] == []
     assert warn_marker.call_args.args == (provider, "Gemini 3.5 Flash (Low)", "chat")
 
+    ocr_payload = main.SmartImageTextRecognizeRequest(
+        image_url=marker_data_image,
+        provider="gemini-cli",
+        model="Gemini 3.5 Flash (Low)",
+    )
+    ocr_calls = []
+
+    async def fake_ocr_chat(payload, history):
+        ocr_calls.append((payload, history))
+        return '{"texts":[{"text":"快乐一天"},{"text":"经典奶茶"}]}', {"text": "ok"}
+
+    with patch.object(main, "get_api_provider", return_value=provider):
+        with patch.object(main, "resolve_chat_provider") as resolve_ocr_http:
+            with patch.object(main, "warn_unlisted_gemini_cli_model") as warn_ocr:
+                with patch.object(main, "gemini_cli_chat_text", side_effect=fake_ocr_chat):
+                    ocr_result = await main.recognize_smart_image_text(ocr_payload)
+    resolve_ocr_http.assert_not_called()
+    assert ocr_result["texts"] == [
+        {"index": 0, "text": "快乐一天"},
+        {"index": 1, "text": "经典奶茶"},
+    ]
+    assert ocr_result["model"] == "Gemini 3.5 Flash (Low)"
+    assert ocr_calls[0][0].model == "Gemini 3.5 Flash (Low)"
+    assert ocr_calls[0][0].images == [marker_data_image]
+    assert "strict JSON" in ocr_calls[0][0].system_prompt
+    assert ocr_calls[0][1] == []
+    assert warn_ocr.call_args.args == (provider, "Gemini 3.5 Flash (Low)", "chat")
+
     background_calls = []
 
     async def background_exec(*args, **kwargs):
@@ -923,7 +978,14 @@ async def run():
         return FakeProcess(stdout=b"agy 1.0")
 
     with patch.object(main.os, "name", "nt"):
-        with patch.object(main.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+        with patch.multiple(
+            main.subprocess,
+            CREATE_NO_WINDOW=0x08000000,
+            STARTUPINFO=FakeStartupInfo,
+            STARTF_USESHOWWINDOW=0x00000001,
+            SW_HIDE=0,
+            create=True,
+        ):
             with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
                 with patch.object(main.asyncio, "create_subprocess_exec", side_effect=background_exec):
                     status_result = await main.gemini_cli_status()
@@ -935,6 +997,9 @@ async def run():
         ["agy.exe", "help", "--help"],
     ]
     assert all(call[1]["creationflags"] == 0x08000000 for call in background_calls)
+    assert all(isinstance(call[1]["startupinfo"], FakeStartupInfo) for call in background_calls)
+    assert all(call[1]["startupinfo"].dwFlags & 0x00000001 for call in background_calls)
+    assert all(call[1]["startupinfo"].wShowWindow == 0 for call in background_calls)
 
     signature = inspect.signature(main.launch_gemini_cli)
     assert list(signature.parameters) == ["request"]
@@ -1171,12 +1236,20 @@ asyncio.run(run())
 print(json.dumps({"ok": True}))
 `;
 
-const backend = spawnSync(python.command, [...python.args, '-X', 'utf8', '-c', backendHarness], {
-  cwd: repoRoot,
-  encoding: 'utf8',
-  env: pythonEnv,
-  timeout: 60_000,
-});
+const harnessDir = mkdtempSync(join(tmpdir(), 'hstara-antigravity-test-'));
+const harnessPath = join(harnessDir, 'backend_harness.py');
+let backend;
+try {
+  writeFileSync(harnessPath, backendHarness, 'utf8');
+  backend = spawnSync(python.command, [...python.args, '-X', 'utf8', harnessPath], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: pythonEnv,
+    timeout: 60_000,
+  });
+} finally {
+  rmSync(harnessDir, { recursive: true, force: true });
+}
 
 assert.ok(!backend.error, `Python harness failed to launch: ${backend.error?.message}`);
 assert.equal(backend.status, 0, backend.stderr || backend.stdout);

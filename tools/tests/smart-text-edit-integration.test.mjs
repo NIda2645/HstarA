@@ -66,6 +66,7 @@ assert.doesNotMatch(js, /function smartTextSourceRatioSettings\(/, 'text erase g
 assert.doesNotMatch(js, /customRatio:\`\$\{size\.w\}:\$\{size\.h\}\`/, 'text erase generation should not inject source image ratio into generation settings');
 assert.doesNotMatch(js, /smartTextEraseRunSettings[\s\S]{0,260}smartTextSourceRatioSettings/, 'text erase settings should come only from the user-selected image API controls');
 assert.match(js, /runSmartImageTextGeneration\(state\.nodeId,\s*state\.imageIndex,\s*smartTextErasePrompt\(\),\s*'消除文字',\s*runSettings\)/, 'apply erase should reuse the downstream text generation path');
+assert.match(js, /runSmartImageTextGeneration\(state\.nodeId,\s*state\.imageIndex,\s*prompt,\s*'修改文字'\)/, 'apply modification should reuse the same downstream image generation path');
 assert.doesNotMatch(js, /document\.body\.appendChild\(panel\);/, 'text edit panel should not be mounted under body because StudioScale can transform body');
 assert.doesNotMatch(js, /document\.body\.appendChild\(menu\);/, 'text edit dropdown should not be mounted under body because it would drift away from the scaled canvas toolbar');
 assert.doesNotMatch(js, /document\.documentElement\.appendChild\(panel\);|host\.doc\.documentElement\.appendChild\(panel\);/, 'text edit panel should not be mounted in a screen-space document overlay');
@@ -99,10 +100,12 @@ assert.match(js, /fetch\('\/api\/smart-image\/text\/recognize'/, 'smart text rec
 assert.match(js, /generateUrlsForCurrentSettings\([^)]*prompt[^)]*refs[^)]*runSettings/, 'text edit should reuse the smart canvas image generation chain');
 assert.match(js, /createPendingOutputFromSource\(node,[\s\S]*runSettings\.count[\s\S]*meta,[\s\S]*selectOutput:true[\s\S]*refs/, 'text edit modification should create a new downstream output node with the source node image generation settings');
 assert.match(js, /generateUrlsForCurrentSettings\(outputNode,\s*prompt,\s*refs,\s*runSettings\)/, 'text edit modification should run generation on the new downstream node');
+assert.match(js, /const sourceRef = smartRefWithMarkers\(imageForDisplay\(item\),[\s\S]*const refs = uniqueReferenceImages\(\[sourceRef\]\)\.filter\(ref => ref\?\.url\);/, 'text modification and erase should derive a real source-image reference');
 assert.match(js, /replaceOutputsToNodeWithHistory\(outputNode,\s*additions/, 'text edit results should be written into the downstream node instead of the source image node');
 assert.doesNotMatch(js, /runSettings\.count = 1;/, 'text edit image generation should not force count to 1 and should respect the source node setting');
 assert.match(js, /if\(!refs\.length\) throw new Error\('修改文字需要原图参考，但当前节点没有可发送的图片'\);/, 'text edit generation should never fall back to a text-only image request');
 assert.match(js, /runSettings\.requireReferenceImage = true;/, 'text edit generation should mark API requests as requiring a reference image');
+assert.match(js, /const payload = \{prompt, provider_id:runSettings\.provider_id, model:runSettings\.model,[\s\S]*reference_images:imageRefs\};/, 'text edit generation should send the selected provider, exact model, and source image to the shared image task');
 assert.match(js, /const runLog = \{\.\.\.smartRunSnapshot\(node, prompt, refs, 'image'\), settings:cloneSmartSettings\(runSettings\), size:sizeForRun\(runSettings\)\};[\s\S]*const runLogStart = nowMs\(\);/, 'text edit generation should prepare the same run log metadata as normal image runs');
 assert.match(js, /addSmartGenerationLog\(\{run:runLog, outputs:result\.urls, runMs:nowMs\(\) - runLogStart\}\);/, 'successful text edit generation should enter the smart canvas run log');
 assert.match(js, /delete outputNode\.pendingTasks;[\s\S]*outputNode\.runTimerHidden = true;[\s\S]*addSmartGenerationLog\(\{run:runLog, outputs:\[\], runMs:nowMs\(\) - runLogStart, error:err\?\.message \|\| String\(err\)\}\);/, 'failed text edit generation should stop pending state, hide the timer, and enter the smart canvas run log');
@@ -120,5 +123,10 @@ for (const cls of [
 assert.match(main, /class SmartImageTextRecognizeRequest\(BaseModel\)/, 'backend should define smart text recognition payload');
 assert.match(main, /@app\.post\("\/api\/smart-image\/text\/recognize"\)/, 'backend should expose smart text recognition route');
 assert.match(main, /text_from_chat_response\(raw\)/, 'backend route should read text model response');
+const ocrRouteStart = main.indexOf('@app.post("/api/smart-image/text/recognize")');
+const ocrRouteEnd = main.indexOf('@app.post("/api/local-assets/caption")', ocrRouteStart);
+const ocrRoute = main.slice(ocrRouteStart, ocrRouteEnd);
+assert.match(ocrRoute, /is_gemini_cli_provider\(/, 'text OCR should detect the Antigravity CLI provider');
+assert.match(ocrRoute, /gemini_cli_chat_text\(/, 'text OCR should send the image through the Antigravity CLI adapter');
 
 console.log('smart text edit integration tests passed');
