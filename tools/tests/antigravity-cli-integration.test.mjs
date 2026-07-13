@@ -461,6 +461,7 @@ import json
 import os
 import sys
 import time
+import httpx
 from unittest.mock import patch
 import inspect
 from types import SimpleNamespace
@@ -872,6 +873,7 @@ async def run():
     ]
     assert kwargs["cwd"] == main.BASE_DIR
     assert kwargs["creationflags"] == 0x10
+    assert kwargs["close_fds"] is True
     assert "shell" not in kwargs or kwargs["shell"] is False
     assert kwargs["env"] is not os.environ
     assert kwargs["env"] == {**original_environment, "HSTARA_ANTIGRAVITY_LAUNCH_EXE": agy}
@@ -887,7 +889,7 @@ async def run():
                             await main.launch_gemini_cli(request)
     assert independent_popen.call_count == 2, "each click must launch an independent session"
 
-    for host in ("::1", "localhost"):
+    for host in ("::1", "localhost", "::ffff:127.0.0.1"):
         local_request = SimpleNamespace(client=SimpleNamespace(host=host))
         with patch.object(main.os, "name", "nt"):
             with patch.object(main, "gemini_cli_executable", return_value=agy):
@@ -907,6 +909,36 @@ async def run():
         else:
             raise AssertionError("remote clients must be rejected")
     remote_popen.assert_not_called()
+
+    async def asgi_launch(client_host, headers=None):
+        transport = httpx.ASGITransport(app=main.app, client=(client_host, 41823))
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/api/gemini-cli/launch", headers=headers or {})
+
+    with patch.object(main.subprocess, "Popen") as boundary_remote_popen:
+        boundary_response = await asgi_launch("192.168.10.25")
+    assert boundary_response.status_code == 403
+    boundary_remote_popen.assert_not_called()
+
+    for forwarded_headers in (
+        {"X-Forwarded-For": "127.0.0.1"},
+        {"Forwarded": "for=127.0.0.1"},
+    ):
+        with patch.object(main.subprocess, "Popen") as spoofed_popen:
+            spoofed_response = await asgi_launch("192.168.10.25", forwarded_headers)
+        assert spoofed_response.status_code == 403
+        spoofed_popen.assert_not_called()
+
+    with patch.object(main.os, "name", "nt"):
+        with patch.object(main, "gemini_cli_executable", return_value=agy):
+            with patch.object(main, "is_antigravity_cli", return_value=True):
+                with patch.object(main.shutil, "which", return_value=powershell):
+                    with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
+                        with patch.object(main.subprocess, "Popen", return_value=FakeLaunchedProcess()) as boundary_local_popen:
+                            boundary_local_response = await asgi_launch("127.0.0.1")
+    assert boundary_local_response.status_code == 200
+    assert boundary_local_response.json()["pid"] == 4321
+    boundary_local_popen.assert_called_once()
 
     with patch.object(main.os, "name", "posix"):
         try:
@@ -952,14 +984,19 @@ async def run():
             with patch.object(main, "is_antigravity_cli", return_value=True):
                 with patch.object(main.shutil, "which", return_value=powershell):
                     with patch.object(main.subprocess, "CREATE_NEW_CONSOLE", 0x10, create=True):
-                        with patch.object(main.subprocess, "Popen", side_effect=OSError("launch failed")):
-                            try:
-                                await main.launch_gemini_cli(request)
-                            except HTTPException as exc:
-                                assert exc.status_code == 500
-                                assert "启动" in str(exc.detail)
-                            else:
-                                raise AssertionError("Popen failures must be reported")
+                        sensitive_error = OSError(f"failed to launch {agy} with SECRET_TOKEN")
+                        with patch.object(main.logging, "exception") as log_exception:
+                            with patch.object(main.subprocess, "Popen", side_effect=sensitive_error):
+                                try:
+                                    await main.launch_gemini_cli(request)
+                                except HTTPException as exc:
+                                    assert exc.status_code == 500
+                                    assert exc.detail == "启动 Antigravity CLI 失败，请检查本机配置。"
+                                    assert agy not in str(exc.detail)
+                                    assert "SECRET_TOKEN" not in str(exc.detail)
+                                else:
+                                    raise AssertionError("Popen failures must be reported")
+                        log_exception.assert_called_once_with("Antigravity CLI launch failed")
 
 
 asyncio.run(run())

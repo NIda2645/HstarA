@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import uuid
 import base64
 import hashlib
@@ -13634,10 +13635,23 @@ async def gemini_cli_status():
             "message": f"{display_name} 检测失败：{exc}",
         }
 
+def is_loopback_gemini_cli_request(request: Request) -> bool:
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
+    if client_host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    return address.is_loopback or (
+        isinstance(address, ipaddress.IPv6Address)
+        and address.ipv4_mapped is not None
+        and address.ipv4_mapped.is_loopback
+    )
+
 @app.post("/api/gemini-cli/launch")
 async def launch_gemini_cli(request: Request):
-    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
+    if not is_loopback_gemini_cli_request(request):
         raise HTTPException(status_code=403, detail="仅允许本机访问 Antigravity CLI 启动接口。")
     if os.name != "nt":
         raise HTTPException(status_code=400, detail="启动 Antigravity CLI 仅支持 Windows。")
@@ -13660,9 +13674,11 @@ async def launch_gemini_cli(request: Request):
             cwd=BASE_DIR,
             env=launch_env,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
+            close_fds=True,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"启动 Antigravity CLI 失败：{exc}") from exc
+    except Exception:
+        logging.exception("Antigravity CLI launch failed")
+        raise HTTPException(status_code=500, detail="启动 Antigravity CLI 失败，请检查本机配置。") from None
     return {"ok": True, "pid": process.pid, "message": "已启动 Antigravity CLI 交互终端。"}
 
 @app.post("/api/gemini-cli/help")
