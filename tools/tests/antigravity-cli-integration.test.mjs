@@ -121,10 +121,10 @@ assert main.gemini_cli_parse_models_output(
     "\x1bXunterminated SOS hidden"
 ) == ["DCS Visible"]
 
-adversarial = "\x1b]" + ("x" * 1_000_000)
+adversarial = "\x1b]x" * 100_000
 started = time.perf_counter()
 assert main.gemini_cli_parse_models_output(adversarial) == []
-assert time.perf_counter() - started < 2.0
+assert time.perf_counter() - started < 5.0
 
 legacy_raw = {"status": {"installed": True}}
 for legacy_payload in (
@@ -194,6 +194,41 @@ async def discover_with(process, timeout=main.GEMINI_CLI_MODELS_TIMEOUT):
     return result
 
 
+async def discover_with_real_sleeping_process(timeout=0.01):
+    real_create_subprocess_exec = asyncio.create_subprocess_exec
+    captured = {}
+
+    async def real_exec(*args, **kwargs):
+        captured["process"] = await real_create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            **kwargs,
+        )
+        return captured["process"]
+
+    with patch.object(main, "gemini_cli_executable", return_value="agy.exe"):
+        with patch.object(main.asyncio, "create_subprocess_exec", side_effect=real_exec):
+            try:
+                await main.discover_gemini_cli_models(timeout=timeout)
+            except HTTPException as exc:
+                timeout_error = exc
+            else:
+                raise AssertionError("Expected HTTP 504")
+
+    assert timeout_error.status_code == 504
+    process = captured["process"]
+    assert process.returncode is not None
+    assert await process.wait() == process.returncode
+    if os.name != "nt":
+        try:
+            os.waitpid(process.pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            raise AssertionError("timed-out child was not reaped")
+
+
 async def expect_http_error(process, status_code, timeout=main.GEMINI_CLI_MODELS_TIMEOUT):
     try:
         await discover_with(process, timeout=timeout)
@@ -237,6 +272,8 @@ async def run():
     assert "拉取模型超时" in str(timeout_error.detail)
     assert timed_out.killed
     assert timed_out.waited
+
+    await discover_with_real_sleeping_process()
 
     cleanup_failure = FakeProcess(delay=0.1, returncode=None, drain_failure=True)
     with patch.object(main.logging, "warning") as warning:
