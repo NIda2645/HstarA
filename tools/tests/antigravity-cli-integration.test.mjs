@@ -30,8 +30,9 @@ assert.match(apiSettings, /catch\(e\)\{[\s\S]*setStatus\('.*拉取失败/);
 const fetchModelsStart = apiSettings.indexOf('async function fetchModels(){');
 const fetchModelsEnd = apiSettings.indexOf('function isAntigravityPickerMode(', fetchModelsStart);
 const fetchModelsBlock = apiSettings.slice(fetchModelsStart, fetchModelsEnd);
-assert.match(fetchModelsBlock, /lastFetchedAll = data\.all \|\| \[\];/);
+assert.match(fetchModelsBlock, /storeFetchedPickerState\(data, item\);/);
 assert.doesNotMatch(fetchModelsBlock, /item\.(image_models|chat_models|video_models)\s*=/, 'failed fetch must not clear saved model configuration');
+assert.equal((apiSettings.match(/storeFetchedPickerState\(data, item\);/g) || []).length, 3);
 
 function createPickerHarness() {
   const calls = {
@@ -46,6 +47,7 @@ function createPickerHarness() {
   const elements = new Map();
   const makeElement = (id = '') => {
     const classes = new Set();
+    const attributes = {};
     const count = { textContent: '' };
     const element = {
       id,
@@ -73,8 +75,9 @@ function createPickerHarness() {
         return null;
       },
       querySelectorAll() { return []; },
-      setAttribute() {},
-      removeAttribute() {},
+      setAttribute(name, value) { attributes[name] = String(value); },
+      removeAttribute(name) { delete attributes[name]; },
+      getAttribute(name) { return attributes[name] ?? null; },
     };
     element.__count = count;
     elements.set(id, element);
@@ -131,10 +134,17 @@ openModelPicker = (...args) => {
   __calls.openModelPicker += 1;
   return actualOpenModelPicker(...args);
 };
-syncEditor = () => {};
+syncEditor = () => {
+  const item = provider();
+  if (item) item.name = 'Synced editor field';
+};
 currentProviderApiKey = () => 'test-key';
 isRunningHubContext = () => false;
 tr = () => '';
+isProviderTemporarilyHidden = () => false;
+syncRecommendView = () => {};
+renderRecommendApi = () => {};
+renderEditor = () => {};
 this.__pickerApi = {
   hooks: {
     isAntigravityPickerMode,
@@ -145,12 +155,21 @@ this.__pickerApi = {
   },
   openModelPicker,
   selectPickerCat,
+  selectProvider,
   togglePickerRow,
   applyModelPicker,
   fetchModels,
-  setProvider(value) { providers = [value]; selectedId = value.id; },
-  setFetched(value) { lastFetchedAll = value; lastFetchedSuggestion = null; },
+  setProviders(values, id = values[0]?.id) { providers = values; selectedId = id; },
+  setProvider(value) { providers = [value]; selectedId = value.id; lastFetchedContextKey = ''; },
+  setFetched(value) {
+    lastFetchedAll = value;
+    lastFetchedSuggestion = null;
+    lastFetchedModelProtocols = {};
+    lastFetchedContextKey = fetchedPickerContextKey(provider());
+  },
   getState() { return pickerState; },
+  getElement(id) { return document.getElementById(id); },
+  getFetchedContextKey() { return lastFetchedContextKey; },
   setFetch(value) { fetch = value; },
   calls: __calls,
   elements: __elements,
@@ -173,6 +192,14 @@ assert.deepEqual(
   [...pickerHooks.buildAntigravityPickerState(['Zeta', 'Alpha'], { protocol: 'openai', image_models: [], chat_models: [] }).order],
   ['Zeta', 'Alpha'],
   'stable order must retain fetched Antigravity order rather than sorting it',
+);
+assert.deepEqual(
+  [...pickerHooks.buildAntigravityPickerState(
+    ['  Fetched Model  ', 'Same', 'same', '   '],
+    { protocol: 'gemini-cli', image_models: [' Saved Image ', 'Same'], chat_models: ['SAME', 'Saved Chat'] },
+  ).order],
+  ['  Fetched Model  ', 'Same', 'same', ' Saved Image ', 'SAME', 'Saved Chat'],
+  'stable order must preserve non-empty model identifiers exactly',
 );
 assert.equal(pickerHooks.isAntigravityPickerMode({ protocol: 'gemini-cli' }), true);
 assert.equal(pickerHooks.isAntigravityPickerMode({ protocol: 'openai' }), false);
@@ -211,12 +238,16 @@ pickerApi.openModelPicker();
 const tabByCategory = Object.fromEntries(pickerApi.tabs.map(tab => [tab.dataset.cat, tab]));
 assert.equal(tabByCategory.all.style.display, 'none');
 assert.equal(tabByCategory.all.disabled, true);
+assert.equal(tabByCategory.all.getAttribute('aria-hidden'), 'true');
 assert.equal(tabByCategory.video.style.display, 'none');
 assert.equal(tabByCategory.video.disabled, true);
+assert.equal(tabByCategory.video.getAttribute('aria-hidden'), 'true');
 assert.equal(tabByCategory.image.style.display, '');
 assert.equal(tabByCategory.image.disabled, false);
+assert.equal(tabByCategory.image.getAttribute('aria-hidden'), 'false');
 assert.equal(tabByCategory.chat.style.display, '');
 assert.equal(tabByCategory.chat.disabled, false);
+assert.equal(tabByCategory.chat.getAttribute('aria-hidden'), 'false');
 assert.equal(tabByCategory.image.classList.contains('active'), true);
 assert.equal(tabByCategory.chat.classList.contains('active'), false);
 
@@ -251,16 +282,49 @@ const normalProvider = {
   chat_models: ['Saved Chat'],
   video_models: ['Saved Video'],
 };
+pickerApi.setProviders([antigravityProvider, normalProvider], antigravityProvider.id);
+pickerApi.setFetched(['A stale model']);
+const openPickerButton = pickerApi.getElement('openPickerBtn');
 pickerApi.elements.get('protocolInput').value = 'openai';
-pickerApi.setProvider(normalProvider);
-pickerApi.setFetched(['Normal First', 'Normal Second']);
+pickerApi.selectProvider(normalProvider.id);
+assert.equal(openPickerButton.disabled, true);
+assert.equal(openPickerButton.style.opacity, '0.55');
+const staleAlertCount = pickerApi.calls.alerts.length;
+const staleOpenCalls = pickerApi.calls.openModelPicker;
 pickerApi.openModelPicker();
+assert.equal(pickerApi.calls.openModelPicker, staleOpenCalls + 1);
+assert.equal(pickerApi.calls.alerts.length, staleAlertCount + 1);
+assert.equal(pickerApi.getFetchedContextKey(), '');
+
+pickerApi.elements.get('baseInput').value = normalProvider.base_url || 'https://normal.example/v1';
+pickerApi.setFetch(() => Promise.resolve({
+  ok: true,
+  text: async () => JSON.stringify({
+    all: ['Normal First', 'Normal Second'],
+    image_models: [],
+    chat_models: [],
+    video_models: [],
+    total: 2,
+  }),
+}));
+await pickerApi.fetchModels();
+assert.equal(openPickerButton.disabled, false);
+assert.equal(openPickerButton.style.opacity, '1');
+assert.deepEqual(
+  [...pickerApi.getState().order],
+  ['Normal First', 'Normal Second', 'Saved Image', 'Saved Chat', 'Saved Video'],
+);
+assert.equal(pickerApi.getFetchedContextKey(), 'normal-provider::openai');
 assert.equal(tabByCategory.all.style.display, '');
 assert.equal(tabByCategory.all.disabled, false);
+assert.equal(tabByCategory.all.getAttribute('aria-hidden'), 'false');
 assert.equal(tabByCategory.video.style.display, '');
 assert.equal(tabByCategory.video.disabled, false);
+assert.equal(tabByCategory.video.getAttribute('aria-hidden'), 'false');
 assert.equal(tabByCategory.image.style.display, '');
+assert.equal(tabByCategory.image.getAttribute('aria-hidden'), 'false');
 assert.equal(tabByCategory.chat.style.display, '');
+assert.equal(tabByCategory.chat.getAttribute('aria-hidden'), 'false');
 assert.equal(tabByCategory.all.classList.contains('active'), true);
 assert.equal(tabByCategory.image.classList.contains('active'), false);
 pickerState = pickerApi.getState();
@@ -270,6 +334,18 @@ assert.equal(pickerState.category['Saved Chat'], 'chat');
 assert.equal(pickerState.selected['Saved Image'], true);
 assert.equal(pickerState.selected['Saved Chat'], true);
 assert.equal(pickerState.selected['Normal First'], false);
+
+const mismatchedProvider = { id: 'mismatched-provider', protocol: 'openai', image_models: [], chat_models: [], video_models: [] };
+pickerApi.setProviders([normalProvider, mismatchedProvider], normalProvider.id);
+pickerApi.setFetched(['Normal stale model']);
+openPickerButton.disabled = false;
+openPickerButton.style.opacity = '1';
+pickerApi.setProviders([normalProvider, mismatchedProvider], mismatchedProvider.id);
+const mismatchAlertCount = pickerApi.calls.alerts.length;
+pickerApi.openModelPicker();
+assert.equal(pickerApi.calls.alerts.length, mismatchAlertCount + 1);
+assert.equal(pickerApi.getFetchedContextKey(), '');
+assert.equal(openPickerButton.disabled, true);
 
 const failedProvider = {
   id: 'failed-provider',
@@ -282,12 +358,21 @@ const failedProvider = {
 pickerApi.elements.get('protocolInput').value = 'openai';
 pickerApi.elements.get('baseInput').value = failedProvider.base_url;
 pickerApi.setProvider(failedProvider);
-const beforeFailedFetch = JSON.stringify(failedProvider);
+const beforeFailedModels = JSON.stringify({
+  image_models: failedProvider.image_models,
+  chat_models: failedProvider.chat_models,
+  video_models: failedProvider.video_models,
+});
 const applyCallsBeforeFailedFetch = pickerApi.calls.applyModelPicker;
 const openCallsBeforeFailedFetch = pickerApi.calls.openModelPicker;
 pickerApi.setFetch(() => Promise.reject(new Error('network down')));
 await pickerApi.fetchModels();
-assert.equal(JSON.stringify(failedProvider), beforeFailedFetch, 'failed fetch must preserve saved channels byte-for-byte');
+assert.equal(failedProvider.name, 'Synced editor field');
+assert.equal(JSON.stringify({
+  image_models: failedProvider.image_models,
+  chat_models: failedProvider.chat_models,
+  video_models: failedProvider.video_models,
+}), beforeFailedModels, 'failed fetch must preserve saved channels byte-for-byte');
 assert.equal(pickerApi.calls.applyModelPicker, applyCallsBeforeFailedFetch);
 assert.equal(pickerApi.calls.openModelPicker, openCallsBeforeFailedFetch);
 

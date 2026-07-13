@@ -2991,15 +2991,7 @@ async function probeAsync(){
             })
             }).then(r => readApiJsonResponse(r, '请求失败'));
             applyDetectedProtocol('runninghub');
-            lastFetchedAll = data.all || [];
-            lastFetchedSuggestion = {
-                image: new Set(data.image_models || []),
-                chat: new Set(data.chat_models || []),
-                video: new Set(data.video_models || []),
-            };
-            syncFetchedModelProtocols(data);
-            const openBtn = document.getElementById('openPickerBtn');
-            if(openBtn){ openBtn.disabled = false; openBtn.style.opacity = '1'; }
+            storeFetchedPickerState(data, item);
             showVerifyResult(`<span style="color:#15803d;font-size:11px;font-weight:800">✓ RunningHub OpenAPI 验证通过 · 找到 ${data.model_count || data.total || 0} 个模型${runninghubModelSourceNote(data)}</span>`);
             return;
         }
@@ -3084,15 +3076,7 @@ async function testConnection(){
             }
             if(data.image_request_mode) applyDetectedImageRequestMode(data.image_request_mode);
             // 存入 picker 状态并启用「选择模型」按钮，但不自动弹出
-            lastFetchedAll = data.all || [];
-            lastFetchedSuggestion = {
-                image: new Set(data.image_models || []),
-                chat: new Set(data.chat_models || []),
-                video: new Set(data.video_models || []),
-            };
-            syncFetchedModelProtocols(data);
-            const openBtn = document.getElementById('openPickerBtn');
-            if(openBtn){ openBtn.disabled = false; openBtn.style.opacity = '1'; }
+            storeFetchedPickerState(data, item);
             const isRunningHubNow = runninghubContext || detectedProtocol === 'runninghub';
             const isVolcengineNow = !isRunningHubNow && (detectedProtocol === 'volcengine' || isVolcengineProvider(item));
             const volcengineNote = isVolcengineNow
@@ -3120,6 +3104,36 @@ async function testConnection(){
 let lastFetchedAll = [];          // 全部模型 id 列表
 let lastFetchedSuggestion = null; // 后端自动分类建议
 let lastFetchedModelProtocols = {};
+let lastFetchedContextKey = '';
+function fetchedPickerContextKey(item=provider()){
+    const providerId = String(item?.id || '').trim();
+    const protocol = String(protocolInput?.value || item?.protocol || '').trim().toLowerCase();
+    return `${providerId}::${protocol}`;
+}
+function setPickerButtonEnabled(enabled){
+    const openBtn = document.getElementById('openPickerBtn');
+    if(!openBtn) return;
+    openBtn.disabled = !enabled;
+    openBtn.style.opacity = enabled ? '1' : '0.55';
+}
+function invalidateFetchedPickerState(){
+    lastFetchedAll = [];
+    lastFetchedSuggestion = null;
+    lastFetchedModelProtocols = {};
+    lastFetchedContextKey = '';
+    setPickerButtonEnabled(false);
+}
+function storeFetchedPickerState(data, item=provider()){
+    lastFetchedAll = Array.isArray(data?.all) ? data.all : [];
+    lastFetchedSuggestion = {
+        image: new Set(data?.image_models || []),
+        chat: new Set(data?.chat_models || []),
+        video: new Set(data?.video_models || []),
+    };
+    syncFetchedModelProtocols(data);
+    lastFetchedContextKey = fetchedPickerContextKey(item);
+    setPickerButtonEnabled(true);
+}
 function syncFetchedModelProtocols(data){
     lastFetchedModelProtocols = (data?.model_protocols && typeof data.model_protocols === 'object') ? {...data.model_protocols} : {};
 }
@@ -3172,18 +3186,12 @@ async function fetchModels(){
                 image_request_mode:imageRequestModeInput?.value || item.image_request_mode || 'openai'
             })
         }).then(r => readApiJsonResponse(r, tr('api.urlInvalid') || '拉取失败'));
-        lastFetchedAll = data.all || [];
-        lastFetchedSuggestion = {
-            image: new Set(data.image_models || []),
-            chat: new Set(data.chat_models || []),
-            video: new Set(data.video_models || []),
-        };
-        syncFetchedModelProtocols(data);
         const detectedProtocol = String(data.protocol || '').toLowerCase();
         if(detectedProtocol && detectedProtocol !== String(protocolInput?.value || '').toLowerCase()){
             applyDetectedProtocol(detectedProtocol);
         }
         if(data.image_request_mode) applyDetectedImageRequestMode(data.image_request_mode);
+        storeFetchedPickerState(data, item);
         // 启用「选择模型」按钮，并 statusbar 显示已拉取数量
         const openBtn = document.getElementById('openPickerBtn');
         if(openBtn){ openBtn.disabled = false; openBtn.style.opacity = '1'; }
@@ -3209,8 +3217,8 @@ function isAntigravityPickerMode(item=provider()){
 function buildStablePickerOrder(fetched, image, chat){
     const seen = new Set();
     return [...(Array.isArray(fetched) ? fetched : []), ...(Array.isArray(image) ? image : []), ...(Array.isArray(chat) ? chat : [])]
-        .map(model => String(model || '').trim())
-        .filter(model => model && !seen.has(model) && seen.add(model));
+        .map(model => String(model ?? ''))
+        .filter(model => model.trim() && !seen.has(model) && seen.add(model));
 }
 function buildAntigravityPickerState(fetched, item){
     const image = Array.isArray(item?.image_models) ? item.image_models : [];
@@ -3267,6 +3275,11 @@ let pickerVisibleIds = [];
 function openModelPicker(){
     const item = provider();
     if(!item || !lastFetchedAll.length){ alert('没有拉取到模型'); return; }
+    if(lastFetchedContextKey !== fetchedPickerContextKey(item)){
+        invalidateFetchedPickerState();
+        alert('Please fetch models for the current provider first');
+        return;
+    }
     const independent = isAntigravityPickerMode(item);
     if(independent){
         pickerState = buildAntigravityPickerState(lastFetchedAll, item);
@@ -3545,6 +3558,7 @@ function selectProvider(id){
     renderRecommendApi();
     syncEditor();
     selectedId = id;
+    invalidateFetchedPickerState();
     renderEditor();
 }
 function addProvider(){
