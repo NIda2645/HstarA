@@ -3203,14 +3203,84 @@ async function fetchModels(){
 
 // —— 模型选择器浮层 ——
 // 每个模型只归一类（根据用户已配置 或 关键字猜测）；勾选 = 纳入该分类
-let pickerState = { category: {}, selected: {} };
+function isAntigravityPickerMode(item=provider()){
+    return String(protocolInput?.value || item?.protocol || '').toLowerCase() === 'gemini-cli';
+}
+function buildStablePickerOrder(fetched, image, chat){
+    const seen = new Set();
+    return [...(Array.isArray(fetched) ? fetched : []), ...(Array.isArray(image) ? image : []), ...(Array.isArray(chat) ? chat : [])]
+        .map(model => String(model || '').trim())
+        .filter(model => model && !seen.has(model) && seen.add(model));
+}
+function buildAntigravityPickerState(fetched, item){
+    const image = Array.isArray(item?.image_models) ? item.image_models : [];
+    const chat = Array.isArray(item?.chat_models) ? item.chat_models : [];
+    return {
+        category: {},
+        selected: {},
+        independent: true,
+        order: buildStablePickerOrder(fetched, image, chat),
+        selectedByCategory: { image:new Set(image), chat:new Set(chat) },
+    };
+}
+function toggleAntigravityPickerSelection(state, category, id){
+    const selectedByCategory = {
+        image:new Set(state?.selectedByCategory?.image || []),
+        chat:new Set(state?.selectedByCategory?.chat || []),
+    };
+    const selected = selectedByCategory[category];
+    if(!selected) return state;
+    if(selected.has(id)) selected.delete(id);
+    else selected.add(id);
+    return {...state, selectedByCategory};
+}
+function countAntigravityPickerSelections(state){
+    return {
+        image:state?.selectedByCategory?.image?.size || 0,
+        chat:state?.selectedByCategory?.chat?.size || 0,
+    };
+}
+function applyAntigravityPickerSelection(state){
+    const order = Array.isArray(state?.order) ? state.order : [];
+    return {
+        image_models:order.filter(id => state.selectedByCategory.image.has(id)),
+        chat_models:order.filter(id => state.selectedByCategory.chat.has(id)),
+        video_models:[],
+    };
+}
+function syncPickerTabVisibility(independent){
+    document.querySelectorAll('.picker-cat-tab').forEach(tab => {
+        const hidden = independent && (tab.dataset.cat === 'all' || tab.dataset.cat === 'video');
+        tab.style.display = hidden ? 'none' : '';
+        tab.disabled = hidden;
+        tab.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+    });
+}
+let pickerState = {
+    category: {},
+    selected: {},
+    independent: false,
+    order: [],
+    selectedByCategory: { image:new Set(), chat:new Set() },
+};
 let pickerVisibleIds = [];
 function openModelPicker(){
     const item = provider();
     if(!item || !lastFetchedAll.length){ alert('没有拉取到模型'); return; }
+    const independent = isAntigravityPickerMode(item);
+    if(independent){
+        pickerState = buildAntigravityPickerState(lastFetchedAll, item);
+        syncPickerTabVisibility(true);
+    } else {
     const existing = { image: new Set(item.image_models||[]), chat: new Set(item.chat_models||[]), video: new Set(item.video_models||[]) };
     const allIds = new Set([...lastFetchedAll, ...(item.image_models||[]), ...(item.chat_models||[]), ...(item.video_models||[])]);
-    pickerState = { category: {}, selected: {} };
+    pickerState = {
+        category: {},
+        selected: {},
+        independent: false,
+        order: [...allIds],
+        selectedByCategory: { image:new Set(), chat:new Set() },
+    };
     allIds.forEach(id => {
         // 类别归属：用户已配置 > 关键字建议 > 默认 chat
         let cat;
@@ -3224,8 +3294,10 @@ function openModelPicker(){
         // 默认勾选状态：已在用户配置里的 = 勾选；新拉的 = 不勾选（让用户主动选）
         pickerState.selected[id] = existing.image.has(id) || existing.chat.has(id) || existing.video.has(id);
     });
-    // 默认 tab 切回「全部」
-    document.querySelectorAll('.picker-cat-tab').forEach(t => t.classList.toggle('active', t.dataset.cat === 'all'));
+    syncPickerTabVisibility(false);
+    }
+    const initialTab = independent ? 'image' : 'all';
+    document.querySelectorAll('.picker-cat-tab').forEach(t => t.classList.toggle('active', t.dataset.cat === initialTab));
     document.getElementById('modelPickerOverlay').style.display = 'flex';
     renderModelPicker();
 }
@@ -3233,19 +3305,28 @@ function closeModelPicker(){ document.getElementById('modelPickerOverlay').style
 function renderModelPicker(){
     const filter = (document.getElementById('pickerFilter')?.value || '').toLowerCase();
     const currentTab = document.querySelector('.picker-cat-tab.active')?.dataset.cat || 'all';
-    const ids = Object.keys(pickerState.category).sort();
+    const ids = pickerState.independent ? pickerState.order : Object.keys(pickerState.category).sort();
+    const activeCategory = currentTab === 'chat' ? 'chat' : 'image';
     // 各分类总数 / 已选数
     const totals = { all: ids.length, image:0, chat:0, video:0 };
     const selecteds = { all:0, image:0, chat:0, video:0 };
-    ids.forEach(id => {
-        const cat = pickerState.category[id];
-        totals[cat]++;
-        if(pickerState.selected[id]){ selecteds[cat]++; selecteds.all++; }
-    });
+    if(pickerState.independent){
+        totals.image = ids.length;
+        totals.chat = ids.length;
+        selecteds.image = pickerState.selectedByCategory.image.size;
+        selecteds.chat = pickerState.selectedByCategory.chat.size;
+    } else {
+        ids.forEach(id => {
+            const cat = pickerState.category[id];
+            totals[cat]++;
+            if(pickerState.selected[id]){ selecteds[cat]++; selecteds.all++; }
+        });
+    }
     // 过滤显示
     const list = ids.filter(id => {
         if(filter && !id.toLowerCase().includes(filter)) return false;
         if(currentTab === 'all') return true;
+        if(pickerState.independent) return currentTab === 'image' || currentTab === 'chat';
         return pickerState.category[id] === currentTab;
     });
     pickerVisibleIds = list;
@@ -3256,7 +3337,9 @@ function renderModelPicker(){
     });
     // 列表
     const html = list.map((id, index) => {
-        const checked = pickerState.selected[id];
+        const checked = pickerState.independent
+            ? pickerState.selectedByCategory[activeCategory].has(id)
+            : pickerState.selected[id];
         return `
             <div class="picker-row ${checked?'has-sel':''}" onclick="togglePickerRowByIndex(${index})">
                 <div class="picker-checkbox ${checked?'checked':''}">
@@ -3275,9 +3358,19 @@ function renderModelPicker(){
     if(sumImage){ sumImage.textContent = `生图 ${selecteds.image}`; sumImage.classList.toggle('picker-sum-chip-empty', selecteds.image === 0); }
     if(sumChat){ sumChat.textContent = `LLM ${selecteds.chat}`; sumChat.classList.toggle('picker-sum-chip-empty', selecteds.chat === 0); }
     if(sumVideo){ sumVideo.textContent = `视频 ${selecteds.video}`; sumVideo.classList.toggle('picker-sum-chip-empty', selecteds.video === 0); }
-    if(sumUnsel){ sumUnsel.textContent = `未选 ${totals.all - selecteds.all}`; }
+    if(sumUnsel){
+        sumUnsel.textContent = pickerState.independent
+            ? `未选 生图 ${totals.image - selecteds.image} / LLM ${totals.chat - selecteds.chat}`
+            : `未选 ${totals.all - selecteds.all}`;
+    }
 }
 function togglePickerRow(id){
+    if(pickerState.independent){
+        const currentTab = document.querySelector('.picker-cat-tab.active')?.dataset.cat || 'image';
+        pickerState = toggleAntigravityPickerSelection(pickerState, currentTab === 'chat' ? 'chat' : 'image', id);
+        renderModelPicker();
+        return;
+    }
     pickerState.selected[id] = !pickerState.selected[id];
     renderModelPicker();
 }
@@ -3287,11 +3380,24 @@ function togglePickerRowByIndex(index){
     togglePickerRow(id);
 }
 function selectPickerCat(cat){
+    if(pickerState.independent && (cat === 'all' || cat === 'video')) return;
     document.querySelectorAll('.picker-cat-tab').forEach(t => t.classList.toggle('active', t.dataset.cat === cat));
     renderModelPicker();
 }
 function applyModelPicker(){
     const item = provider(); if(!item) return;
+    if(pickerState.independent){
+        const selected = applyAntigravityPickerSelection(pickerState);
+        item.image_models = selected.image_models;
+        item.chat_models = selected.chat_models;
+        item.video_models = selected.video_models;
+        applyImplicitModelProtocols(item, item.image_models);
+        renderModels('image'); renderModels('chat'); renderModels('video');
+        renderMsLoras();
+        setStatus(`已应用 · 生图 ${item.image_models.length} / LLM ${item.chat_models.length}，点保存生效`);
+        closeModelPicker();
+        return;
+    }
     const image = [], chat = [], video = [];
     Object.entries(pickerState.selected).forEach(([id, sel]) => {
         if(!sel) return;

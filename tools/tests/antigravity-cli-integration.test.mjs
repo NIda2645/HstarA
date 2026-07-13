@@ -3,10 +3,101 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import vm from 'node:vm';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const mainPath = join(repoRoot, 'main.py');
 const mainPy = readFileSync(mainPath, 'utf8');
+const apiSettingsPath = join(repoRoot, 'static', 'js', 'api-settings.js');
+const apiSettings = readFileSync(apiSettingsPath, 'utf8');
+
+assert.match(apiSettings, /function isAntigravityPickerMode\(/);
+assert.match(apiSettings, /selectedByCategory:\s*\{\s*image:\s*new Set/);
+assert.match(apiSettings, /selectedByCategory\.chat/);
+assert.match(apiSettings, /selectedByCategory\.image/);
+assert.match(apiSettings, /item\.image_models = selected\.image_models/);
+assert.match(apiSettings, /item\.chat_models = selected\.chat_models/);
+assert.match(apiSettings, /pickerState\.independent[\s\S]*pickerState\.order/);
+assert.match(apiSettings, /function syncPickerTabVisibility\([\s\S]*style\.display =/);
+assert.match(apiSettings, /function syncPickerTabVisibility\([\s\S]*disabled =/);
+assert.match(apiSettings, /syncPickerTabVisibility\(true\)/);
+assert.match(apiSettings, /syncPickerTabVisibility\(false\)/);
+assert.match(apiSettings, /const ids = pickerState\.independent \? pickerState\.order : Object\.keys\(pickerState\.category\)\.sort\(\);/);
+assert.match(apiSettings, /const cat = pickerState\.category\[id\];/);
+assert.match(apiSettings, /if\(pickerState\.independent\)\{[\s\S]*return;\s*}\s*const image = \[\], chat = \[\], video = \[\];/);
+assert.match(apiSettings, /catch\(e\)\{[\s\S]*alert\('.*拉取失败/);
+assert.match(apiSettings, /catch\(e\)\{[\s\S]*setStatus\('.*拉取失败/);
+const fetchModelsStart = apiSettings.indexOf('async function fetchModels(){');
+const fetchModelsEnd = apiSettings.indexOf('function isAntigravityPickerMode(', fetchModelsStart);
+const fetchModelsBlock = apiSettings.slice(fetchModelsStart, fetchModelsEnd);
+assert.match(fetchModelsBlock, /lastFetchedAll = data\.all \|\| \[\];/);
+assert.doesNotMatch(fetchModelsBlock, /item\.(image_models|chat_models|video_models)\s*=/, 'failed fetch must not clear saved model configuration');
+
+function createPickerVm() {
+  const makeElement = (id = '') => ({
+    id,
+    value: '',
+    style: {},
+    dataset: {},
+    classList: { toggle() {}, add() {}, remove() {} },
+    addEventListener() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    setAttribute() {},
+    removeAttribute() {},
+  });
+  const document = {
+    body: makeElement('body'),
+    getElementById: makeElement,
+    querySelectorAll() { return []; },
+    addEventListener() {},
+  };
+  const window = {
+    addEventListener() {},
+    parent: { postMessage() {} },
+    top: { postMessage() {} },
+  };
+  const context = { console, document, window, fetch() {}, setTimeout, clearTimeout };
+  vm.createContext(context);
+  vm.runInContext(`${apiSettings}\nthis.__pickerHooks = {\n  isAntigravityPickerMode,\n  buildAntigravityPickerState,\n  toggleAntigravityPickerSelection,\n  countAntigravityPickerSelections,\n  applyAntigravityPickerSelection,\n};`, context, { filename: apiSettingsPath });
+  return context.__pickerHooks;
+}
+
+const pickerHooks = createPickerVm();
+const initialState = pickerHooks.buildAntigravityPickerState(
+  ['Model C', 'Model A', 'Model C'],
+  { protocol: 'gemini-cli', image_models: ['Saved Image', 'Model A'], chat_models: ['Saved Chat', 'Model A'] },
+);
+assert.equal(initialState.independent, true);
+assert.deepEqual([...initialState.order], ['Model C', 'Model A', 'Saved Image', 'Saved Chat']);
+assert.deepEqual([...initialState.selectedByCategory.image], ['Saved Image', 'Model A']);
+assert.deepEqual([...initialState.selectedByCategory.chat], ['Saved Chat', 'Model A']);
+assert.deepEqual(
+  [...pickerHooks.buildAntigravityPickerState(['Zeta', 'Alpha'], { protocol: 'openai', image_models: [], chat_models: [] }).order],
+  ['Zeta', 'Alpha'],
+  'stable order must retain fetched Antigravity order rather than sorting it',
+);
+assert.equal(pickerHooks.isAntigravityPickerMode({ protocol: 'gemini-cli' }), true);
+assert.equal(pickerHooks.isAntigravityPickerMode({ protocol: 'openai' }), false);
+
+const toggledImage = pickerHooks.toggleAntigravityPickerSelection(
+  pickerHooks.buildAntigravityPickerState(['Shared'], { protocol: 'gemini-cli', image_models: [], chat_models: ['Shared'] }),
+  'image',
+  'Shared',
+);
+assert.equal(toggledImage.selectedByCategory.image.has('Shared'), true);
+assert.equal(toggledImage.selectedByCategory.chat.has('Shared'), true, 'image toggles must not change chat selections');
+const counts = pickerHooks.countAntigravityPickerSelections(toggledImage);
+assert.equal(counts.image, 1);
+assert.equal(counts.chat, 1);
+
+const applied = pickerHooks.applyAntigravityPickerSelection(
+  toggledImage,
+);
+assert.deepEqual([...applied.image_models], ['Shared']);
+assert.deepEqual([...applied.chat_models], ['Shared']);
+assert.deepEqual([...applied.video_models], []);
+
 const pythonEnv = {
   ...process.env,
   PYTHONIOENCODING: 'utf-8',
