@@ -4,7 +4,7 @@ import { extname, join, relative, resolve } from 'node:path';
 
 const root = resolve(process.cwd());
 const textExtensions = new Set(['.py', '.html', '.js', '.css', '.md', '.txt', '.bat', '.command', '.sh', '.json']);
-const skippedDirs = new Set(['.git', 'python', 'packages', 'assets', 'output', 'build', 'node_modules']);
+const skippedDirs = new Set(['.git', '.worktrees', 'python', 'packages', 'assets', 'output', 'build', 'node_modules']);
 const allowedReplacementCharFiles = new Set([join('static', 'js', 'i18n', 'validate-i18n.js')]);
 const allowedMojibakeTokenFiles = new Set([join('static', 'js', 'i18n', 'validate-i18n.js')]);
 const visibleMojibakePattern = /鎼滅储|銆|脳|鐏|寮€|鏉愯川|璐村浘|绮楃硻|閲嶇疆|澶嶄綅|宸插|鍏抽棴|楂樺害|姘村钩|鑹叉俯|闃村奖|杩斿洖|瀹屾垚|鐐瑰嚮|æ|å|ç|è|ä|ï|ã/;

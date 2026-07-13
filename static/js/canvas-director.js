@@ -73,7 +73,7 @@
             <div class="director-node-status">
                 <strong>3D导演台</strong>
                 <div class="director-node-panorama">
-                    <i data-lucide="${panorama ? 'image-check' : 'image-off'}"></i>
+                    <i data-lucide="${panorama ? 'badge-check' : 'image-off'}"></i>
                     <span>${panorama ? escapeHtml(panorama.fileName || '已连接图片') : '未连接全景图片'}</span>
                 </div>
                 <div class="director-node-hint">连接一张图片作为场景背景，在导演台完成构图后发送截图回画布。</div>

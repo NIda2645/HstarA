@@ -354,3 +354,9 @@ it("keeps the demo usable in narrower in-app browser widths", () => {
   expect(css).toMatch(/@media \(max-width: 1180px\)\s*\{[\s\S]*?\.director-shell-fullbleed\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   expect(css).not.toContain("min-width: 1280px;");
 });
+
+it("wraps the viewport toolbar inside phone-width viewports", () => {
+  const css = readFileSync("src/styles/index.css", "utf8");
+
+  expect(css).toMatch(/@media \(max-width: 560px\)\s*\{[\s\S]*?\.viewport-toolbar\s*\{[\s\S]*?max-width:\s*calc\(100% - 16px\);[\s\S]*?flex-wrap:\s*wrap;/);
+});

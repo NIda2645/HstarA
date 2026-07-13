@@ -4,18 +4,18 @@ import { execFileSync } from 'node:child_process';
 const NULL = String.fromCharCode(0);
 const scanPathspecs = [
   'main.py',
-  'static/**/*.html',
-  'static/**/*.js',
-  'static/**/*.css',
-  'static/**/*.json',
+  ':(glob)static/**/*.html',
+  ':(glob)static/**/*.js',
+  ':(glob)static/**/*.css',
+  ':(glob)static/**/*.json',
   ':(exclude)static/vendor/**',
 ];
 
-const files = execFileSync('git', ['ls-files', '-z', '--', ...scanPathspecs], {
+const files = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...scanPathspecs], {
   encoding: 'utf8',
 })
   .split(NULL)
-  .filter(Boolean);
+  .filter((file) => file && fs.existsSync(file));
 
 const utf8Latin1Pattern = /(?:[\u00c2\u00c3][\u0080-\u00bf]|(?:[\u00e0-\u00e6]|[\u00e8-\u00ef])[\u0080-\u00bf]|â(?:€|™|œ|ž|“|”|–|—|…|[\u0080-\u00bf])|ð[\u0080-\u017f])+/g;
 const chineseMojibakePattern = /锟斤拷|鎼滅储|銆|脳|鐏|寮€|鏉愯川|璐村浘|绮楃硻|閲嶇置|宸插|鍏抽棴|楂樺害|姘村钩|鑹叉俟|闃村奖|杩斿洖|瀹屾垚|鐐瑰嚮|璁|娴|澶|鎻|鐢|鍙|杈|绋|鏂|涓|浼|鍏|鍔|瀹|瑙|姝|姣|鏈|閫|闂|锛|ï¼/g;

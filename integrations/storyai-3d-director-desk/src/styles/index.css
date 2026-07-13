@@ -3459,4 +3459,9 @@ textarea:focus-visible {
   .left-sidebar {
     display: none;
   }
+
+  .viewport-toolbar {
+    max-width: calc(100% - 16px);
+    flex-wrap: wrap;
+  }
 }
