@@ -40,6 +40,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
+from openshop_projects import (
+    OpenShopNotFound,
+    OpenShopOwnershipError,
+    OpenShopProjectStore,
+    OpenShopStoreError,
+    OpenShopValidationError,
+    OpenShopVersionConflict,
+)
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -255,6 +263,7 @@ def runtime_paths_for_storage_root(storage_root: str, software_settings_file: st
         "data_dir": data_dir,
         "conversation_dir": os.path.join(data_dir, "conversations"),
         "canvas_dir": os.path.join(data_dir, "canvases"),
+        "openshop_data_dir": os.path.join(data_dir, "openshop"),
         "media_preview_dir": os.path.join(data_dir, "media_previews"),
         "asset_library_path": os.path.join(data_dir, "asset_library.json"),
         "prompt_library_path": os.path.join(data_dir, "prompt_libraries.json"),
@@ -297,6 +306,7 @@ API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
 DATA_DIR = RUNTIME_PATHS["data_dir"]
 CONVERSATION_DIR = RUNTIME_PATHS["conversation_dir"]
 CANVAS_DIR = RUNTIME_PATHS["canvas_dir"]
+OPENSHOP_DATA_DIR = RUNTIME_PATHS["openshop_data_dir"]
 MEDIA_PREVIEW_DIR = RUNTIME_PATHS["media_preview_dir"]
 ASSET_LIBRARY_PATH = RUNTIME_PATHS["asset_library_path"]
 PROMPT_LIBRARY_PATH = RUNTIME_PATHS["prompt_library_path"]
@@ -305,6 +315,7 @@ RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_PATHS["runninghub_workflow_store_file"]
 SHARED_FOLDERS_FILE = RUNTIME_PATHS["shared_folders_file"]
 SOFTWARE_SETTINGS_FILE = RUNTIME_PATHS["software_settings_file"]
 GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
+OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR)
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 LOCAL_IMAGE_IMPORT_MAX_BYTES = int(os.getenv("LOCAL_IMAGE_IMPORT_MAX_BYTES", str(50 * 1024 * 1024)))
 LOCAL_IMAGE_IMPORT_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -2744,6 +2755,19 @@ class CanvasSaveRequest(BaseModel):
     client_id: str = ""
     base_updated_at: int = 0
 
+class OpenShopProjectInitializeRequest(BaseModel):
+    owner: Dict[str, Any]
+    document: Dict[str, Any] = Field(default_factory=dict)
+
+class OpenShopProjectSaveRequest(BaseModel):
+    owner: Dict[str, Any]
+    project: Dict[str, Any]
+    base_version: int = 0
+
+class OpenShopProjectCloneRequest(BaseModel):
+    source_project_id: str
+    owner: Dict[str, Any]
+
 class CanvasAssetCheckRequest(BaseModel):
     urls: List[str] = []
 
@@ -3284,6 +3308,33 @@ def save_canvas(canvas):
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
 
+def openshop_project_owners(nodes):
+    return {
+        str(node.get("projectId")): str(node.get("id"))
+        for node in (nodes or [])
+        if isinstance(node, dict)
+        and node.get("type") == "openshop-layered"
+        and node.get("projectId")
+        and node.get("id")
+    }
+
+def remove_openshop_projects(project_owners, canvas_type, canvas_id):
+    removed = []
+    for project_id, node_id in (project_owners or {}).items():
+        owner = {
+            "canvasType": normalize_canvas_kind(canvas_type),
+            "canvasId": str(canvas_id),
+            "nodeId": str(node_id),
+        }
+        try:
+            if OPENSHOP_STORE.delete(project_id, owner):
+                removed.append(project_id)
+        except OpenShopNotFound:
+            continue
+    if removed:
+        OPENSHOP_STORE.collect_garbage()
+    return removed
+
 # ===== 项目（按项目分类管理画布）=====
 PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
 DEFAULT_PROJECT_ID = "default"
@@ -3416,6 +3467,7 @@ def canvas_record(data):
 
 def cleanup_expired_canvas_trash():
     cutoff = now_ms() - CANVAS_TRASH_RETENTION_MS
+    removed_projects = False
     with CANVAS_LOCK:
         for filename in os.listdir(CANVAS_DIR):
             if not filename.endswith(".json"):
@@ -3426,9 +3478,15 @@ def cleanup_expired_canvas_trash():
                     data = json.load(f)
                 deleted_at = int(data.get("deleted_at") or 0)
                 if deleted_at and deleted_at < cutoff:
+                    removed_projects = bool(OPENSHOP_STORE.delete_canvas_projects(
+                        normalize_canvas_kind(data.get("kind")),
+                        str(data.get("id") or os.path.splitext(filename)[0]),
+                    )) or removed_projects
                     os.remove(path)
             except Exception:
                 continue
+    if removed_projects:
+        OPENSHOP_STORE.collect_garbage()
 
 def iter_canvas_records(include_deleted=False):
     cleanup_expired_canvas_trash()
@@ -16269,6 +16327,161 @@ async def delete_conversation(conversation_id: str, request: Request, x_user_id:
         os.remove(path)
     return {"ok": True}
 
+# --- OpenShop node projects ---
+
+def openshop_owner(canvas_type: str, canvas_id: str, node_id: str) -> Dict[str, str]:
+    return {
+        "canvasType": str(canvas_type or "").strip(),
+        "canvasId": str(canvas_id or "").strip(),
+        "nodeId": str(node_id or "").strip(),
+    }
+
+def raise_openshop_http_error(exc: OpenShopStoreError):
+    if isinstance(exc, OpenShopNotFound):
+        status_code = 404
+    elif isinstance(exc, OpenShopOwnershipError):
+        status_code = 403
+    elif isinstance(exc, OpenShopVersionConflict):
+        status_code = 409
+    else:
+        status_code = 400
+    raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+async def read_bounded_upload(file: UploadFile, max_bytes: int) -> bytes:
+    chunks = []
+    total = 0
+    try:
+        while True:
+            chunk = await file.read(min(1024 * 1024, max_bytes - total + 1))
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(status_code=413, detail="OpenShop 图片超过 64 MiB 限制")
+            chunks.append(chunk)
+    finally:
+        await file.close()
+
+@app.post("/api/openshop/projects/{project_id}/initialize")
+async def initialize_openshop_project(
+    project_id: str,
+    payload: OpenShopProjectInitializeRequest,
+):
+    try:
+        project = await asyncio.to_thread(
+            OPENSHOP_STORE.initialize,
+            project_id,
+            payload.owner,
+            payload.document,
+        )
+        return {"project": project}
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+
+@app.get("/api/openshop/projects/{project_id}")
+async def get_openshop_project(
+    project_id: str,
+    canvas_type: str,
+    canvas_id: str,
+    node_id: str,
+):
+    try:
+        project = await asyncio.to_thread(
+            OPENSHOP_STORE.load,
+            project_id,
+            openshop_owner(canvas_type, canvas_id, node_id),
+        )
+        return {"project": project}
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+
+@app.put("/api/openshop/projects/{project_id}")
+async def save_openshop_project(
+    project_id: str,
+    payload: OpenShopProjectSaveRequest,
+):
+    try:
+        project = await asyncio.to_thread(
+            OPENSHOP_STORE.save,
+            project_id,
+            payload.owner,
+            payload.project,
+            payload.base_version,
+        )
+        return {"project": project}
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+
+@app.post("/api/openshop/projects/{project_id}/clone")
+async def clone_openshop_project(
+    project_id: str,
+    payload: OpenShopProjectCloneRequest,
+):
+    try:
+        project = await asyncio.to_thread(
+            OPENSHOP_STORE.clone,
+            payload.source_project_id,
+            project_id,
+            payload.owner,
+        )
+        return {"project": project}
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+
+@app.delete("/api/openshop/projects/{project_id}")
+async def delete_openshop_project(
+    project_id: str,
+    canvas_type: str,
+    canvas_id: str,
+    node_id: str,
+):
+    def delete_and_collect():
+        deleted = OPENSHOP_STORE.delete(
+            project_id,
+            openshop_owner(canvas_type, canvas_id, node_id),
+        )
+        if deleted:
+            OPENSHOP_STORE.collect_garbage()
+        return deleted
+
+    try:
+        return {"ok": True, "deleted": await asyncio.to_thread(delete_and_collect)}
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+
+@app.post("/api/openshop/projects/{project_id}/assets")
+async def upload_openshop_asset(
+    project_id: str,
+    file: UploadFile = File(...),
+    canvas_type: str = Form(...),
+    canvas_id: str = Form(...),
+    node_id: str = Form(...),
+    role: str = Form("asset"),
+):
+    content = await read_bounded_upload(file, OPENSHOP_STORE.MAX_IMAGE_BYTES)
+    try:
+        asset = await asyncio.to_thread(
+            OPENSHOP_STORE.store_image,
+            project_id,
+            openshop_owner(canvas_type, canvas_id, node_id),
+            content,
+            file.content_type or "",
+            file.filename or "OpenShop image",
+            role,
+        )
+        asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
+        return {"asset": asset}
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+
+@app.get("/api/openshop/assets/{asset_id}")
+async def get_openshop_asset(asset_id: str):
+    try:
+        path, metadata = await asyncio.to_thread(OPENSHOP_STORE.asset_path, asset_id)
+        return FileResponse(path, media_type=metadata["mime"])
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+
 # --- 画布管理 ---
 
 @app.get("/api/canvases")
@@ -17487,6 +17700,8 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
             "canvas": canvas,
             "updated_at": current_updated_at,
         })
+    previous_openshop_projects = openshop_project_owners(canvas.get("nodes"))
+    next_openshop_projects = openshop_project_owners(payload.nodes)
     canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
     canvas["icon"] = (payload.icon or canvas.get("icon") or "layers")[:32]
     canvas["kind"] = normalize_canvas_kind(canvas.get("kind"))
@@ -17499,6 +17714,18 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
     canvas["logs"] = payload.logs[-500:]
     canvas["settings"] = payload.settings or {}
     save_canvas(canvas)
+    removed_openshop_projects = {
+        project_id: node_id
+        for project_id, node_id in previous_openshop_projects.items()
+        if project_id not in next_openshop_projects
+    }
+    if removed_openshop_projects:
+        await asyncio.to_thread(
+            remove_openshop_projects,
+            removed_openshop_projects,
+            canvas["kind"],
+            canvas_id,
+        )
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get("updated_at") or now_ms()), payload.client_id)
     return {"canvas": canvas}
 
@@ -17522,6 +17749,16 @@ async def restore_canvas(canvas_id: str):
 async def purge_canvas(canvas_id: str):
     path = canvas_path(canvas_id)
     if os.path.exists(path):
+        canvas = load_canvas_any(canvas_id)
+        def delete_projects_and_collect():
+            removed = OPENSHOP_STORE.delete_canvas_projects(
+                normalize_canvas_kind(canvas.get("kind")),
+                canvas_id,
+            )
+            if removed:
+                OPENSHOP_STORE.collect_garbage()
+            return removed
+        await asyncio.to_thread(delete_projects_and_collect)
         os.remove(path)
     return {"ok": True}
 

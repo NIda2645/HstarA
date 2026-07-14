@@ -51,6 +51,7 @@ assert.ok(
 
 const harness = String.raw`
 import copy
+import asyncio
 import io
 import json
 import os
@@ -58,6 +59,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import httpx
 from PIL import Image
 
 sys.path.insert(0, os.getcwd())
@@ -166,6 +168,157 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
 
     assert not list(Path(data_dir).rglob("*.tmp"))
 
+
+async def api_lifecycle():
+    with tempfile.TemporaryDirectory(prefix="hstara-openshop-api-") as app_root:
+        settings_dir = Path(app_root) / "data"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        (settings_dir / "software_settings.json").write_text(
+            json.dumps({"storage_root": app_root}),
+            encoding="utf-8",
+        )
+        os.environ["HSTAR_DATA_DIR"] = app_root
+
+        import main
+
+        image_data = png_bytes((75, 161, 88, 255))
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            canvas_response = await client.post(
+                "/api/canvases",
+                json={"title": "OpenShop API canvas", "icon": "layers", "kind": "classic"},
+            )
+            assert canvas_response.status_code == 200
+            canvas = canvas_response.json()["canvas"]
+            owner = {"canvasType": "classic", "canvasId": canvas["id"], "nodeId": "node-api"}
+
+            init = await client.post(
+                "/api/openshop/projects/project-api/initialize",
+                json={"owner": owner, "document": {"width": 1920, "height": 1080}},
+            )
+            assert init.status_code == 200, init.text
+            project = init.json()["project"]
+            assert project["autosaveVersion"] == 1
+
+            fetched = await client.get(
+                "/api/openshop/projects/project-api",
+                params={"canvas_type": "classic", "canvas_id": canvas["id"], "node_id": "node-api"},
+            )
+            assert fetched.status_code == 200
+            assert fetched.json()["project"]["projectId"] == "project-api"
+
+            upload = await client.post(
+                "/api/openshop/projects/project-api/assets",
+                data={
+                    "canvas_type": "classic",
+                    "canvas_id": canvas["id"],
+                    "node_id": "node-api",
+                    "role": "source",
+                },
+                files={"file": ("source.png", image_data, "image/png")},
+            )
+            assert upload.status_code == 200, upload.text
+            asset = upload.json()["asset"]
+            assert asset["url"] == f"/api/openshop/assets/{asset['assetId']}"
+
+            content = await client.get(asset["url"])
+            assert content.status_code == 200
+            assert content.content == image_data
+            assert content.headers["content-type"].startswith("image/png")
+
+            project["assetRefs"] = [asset["assetId"]]
+            project["previewAssetId"] = asset["assetId"]
+            saved = await client.put(
+                "/api/openshop/projects/project-api",
+                json={"owner": owner, "project": project, "base_version": 1},
+            )
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["project"]["autosaveVersion"] == 2
+
+            conflict = await client.put(
+                "/api/openshop/projects/project-api",
+                json={"owner": owner, "project": project, "base_version": 1},
+            )
+            assert conflict.status_code == 409
+
+            clone_owner = {**owner, "nodeId": "node-clone"}
+            cloned = await client.post(
+                "/api/openshop/projects/project-clone/clone",
+                json={"source_project_id": "project-api", "owner": clone_owner},
+            )
+            assert cloned.status_code == 200, cloned.text
+            assert cloned.json()["project"]["owner"] == clone_owner
+            assert cloned.json()["project"]["assetRefs"] == [asset["assetId"]]
+
+            deleted_clone = await client.delete(
+                "/api/openshop/projects/project-clone",
+                params={"canvas_type": "classic", "canvas_id": canvas["id"], "node_id": "node-clone"},
+            )
+            assert deleted_clone.status_code == 200
+            assert (await client.get(asset["url"])).status_code == 200
+
+            canvas_payload = {
+                "title": canvas["title"],
+                "icon": canvas["icon"],
+                "nodes": [{
+                    "id": "node-api",
+                    "type": "openshop-layered",
+                    "projectId": "project-api",
+                }],
+                "connections": [],
+                "viewport": {},
+                "logs": [],
+                "settings": {},
+                "base_updated_at": canvas["updated_at"],
+            }
+            attached = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
+            assert attached.status_code == 200, attached.text
+            canvas_payload["nodes"] = []
+            canvas_payload["base_updated_at"] = attached.json()["canvas"]["updated_at"]
+            detached = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
+            assert detached.status_code == 200, detached.text
+
+            missing_project = await client.get(
+                "/api/openshop/projects/project-api",
+                params={"canvas_type": "classic", "canvas_id": canvas["id"], "node_id": "node-api"},
+            )
+            assert missing_project.status_code == 404
+            assert (await client.get(asset["url"])).status_code == 404
+
+            smart_response = await client.post(
+                "/api/canvases",
+                json={"title": "Soft delete canvas", "icon": "sparkles", "kind": "smart"},
+            )
+            smart_canvas = smart_response.json()["canvas"]
+            soft_owner = {
+                "canvasType": "smart",
+                "canvasId": smart_canvas["id"],
+                "nodeId": "node-soft",
+            }
+            soft_init = await client.post(
+                "/api/openshop/projects/project-soft/initialize",
+                json={"owner": soft_owner, "document": {"width": 1280, "height": 720}},
+            )
+            assert soft_init.status_code == 200
+
+            soft_deleted = await client.delete(f"/api/canvases/{smart_canvas['id']}")
+            assert soft_deleted.status_code == 200
+            soft_project = await client.get(
+                "/api/openshop/projects/project-soft",
+                params={"canvas_type": "smart", "canvas_id": smart_canvas["id"], "node_id": "node-soft"},
+            )
+            assert soft_project.status_code == 200
+
+            purged = await client.delete(f"/api/canvases/{smart_canvas['id']}/purge")
+            assert purged.status_code == 200
+            purged_project = await client.get(
+                "/api/openshop/projects/project-soft",
+                params={"canvas_type": "smart", "canvas_id": smart_canvas["id"], "node_id": "node-soft"},
+            )
+            assert purged_project.status_code == 404
+
+
+asyncio.run(api_lifecycle())
 print(json.dumps({"ok": True, "assetId": first_asset["assetId"]}, ensure_ascii=False))
 `;
 
