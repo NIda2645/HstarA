@@ -8,7 +8,9 @@
     "build:hstar": "node scripts/build-hstar.mjs",
     "test": "vitest run",
     "test:unit": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test tests/openshop.e2e.spec.js",
+    "test:hstar:e2e": "playwright test tests/hstar-foundation.e2e.spec.js",
+    "test:hstar:4k": "playwright test tests/hstar-foundation.e2e.spec.js --grep 4K"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
