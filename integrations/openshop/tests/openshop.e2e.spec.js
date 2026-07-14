@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const appUrl = pathToFileURL(join(process.cwd(), 'index.html')).toString();
+const appUrl = `${pathToFileURL(join(process.cwd(), 'index.html')).toString()}?lang=en-US`;
 
 test('loads the editor shell and supports core UI interactions', async ({ page }) => {
   const pageErrors = [];

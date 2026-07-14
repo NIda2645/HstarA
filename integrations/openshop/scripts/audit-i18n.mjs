@@ -41,7 +41,14 @@ function collectMatches(source, pattern, keyGroup) {
 }
 
 collectMatches(indexSource, /\b_t\(\s*(['"])([^'"\r\n]+)\1/g, 2);
-collectMatches(indexSource, /data-i18n(?:-[a-z-]+)?\s*=\s*(['"])(.*?)\1/g, 2);
+for (const match of indexSource.matchAll(/data-i18n(?:-[a-z-]+)?\s*=\s*(['"])(.*?)\1/g)) {
+  messageKeys.add(match[2]
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&'));
+}
 
 const literalEntries = new Map();
 const entryPattern = /^\s*"((?:\\.|[^"\\])*)"\s*:\s*"((?:\\.|[^"\\])*)"\s*,?\s*$/gm;

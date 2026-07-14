@@ -12,6 +12,7 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test tests/openshop.e2e.spec.js",
     "test:hstar:e2e": "playwright test tests/hstar-foundation.e2e.spec.js",
+    "test:hstar:localization": "playwright test tests/hstar-localization.e2e.spec.js",
     "test:hstar:4k": "playwright test tests/hstar-foundation.e2e.spec.js --grep 4K"
   },
   "devDependencies": {

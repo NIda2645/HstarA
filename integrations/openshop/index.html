@@ -590,491 +590,504 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <body>
 
 <!-- ===== TOP MENU ===== -->
-<div id="topbar" role="menubar" aria-label="Main menu">
+<div id="topbar" role="menubar" aria-label="Main menu" data-i18n-aria-label="Main menu">
     <div class="logo" aria-hidden="true">OpenShop<span>v0.19.1</span></div>
-    <button class="mobile-panel-toggle" onclick="document.getElementById('panels').classList.toggle('mobile-open')" aria-label="Toggle panels" style="display:none;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid var(--border);border-radius:4px;background:var(--bg-depth-3);color:var(--text-secondary);cursor:pointer;margin-left:auto;font-size:14px">&#9776;</button>
-    <div class="menu-item" role="menuitem" aria-haspopup="true">File
+    <button class="mobile-panel-toggle" onclick="document.getElementById('panels').classList.toggle('mobile-open')" aria-label="Toggle panels" style="display:none;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid var(--border);border-radius:4px;background:var(--bg-depth-3);color:var(--text-secondary);cursor:pointer;margin-left:auto;font-size:14px" data-i18n-aria-label="Toggle panels">&#9776;</button>
+    <div class="menu-item" role="menuitem" aria-haspopup="true" data-i18n="File">File
         <div class="menu-dropdown">
-            <div class="dd-item" onclick="OS.newImage()">New</div>
-            <div class="dd-item" onclick="OS.openFile()">Open Image</div>
-            <div class="dd-item" onclick="OS.openPSD()">Open PSD</div>
+            <div class="dd-item" onclick="OS.newImage()" data-i18n="New">New</div>
+            <div class="dd-item" onclick="OS.openFile()" data-i18n="Open Image">Open Image</div>
+            <div class="dd-item" onclick="OS.openPSD()" data-i18n="Open PSD">Open PSD</div>
             <div class="dd-sep"></div>
-            <div class="dd-sub dd-item">Export As
+            <div class="dd-sub dd-item" data-i18n="Export As">Export As
                 <div class="menu-dropdown">
                     <div class="dd-item" onclick="OS.saveFile('png')">PNG</div>
                     <div class="dd-item" onclick="OS.saveFile('jpeg')">JPEG</div>
                     <div class="dd-item" onclick="OS.saveFile('webp')">WebP</div>
                     <div class="dd-item" onclick="OS.saveFile('svg')">SVG</div>
                     <div class="dd-item" onclick="OS.exportPDF()">PDF</div>
-                    <div class="dd-item" onclick="OS.exportPSD()">PSD (Photoshop)</div>
+                    <div class="dd-item" onclick="OS.exportPSD()" data-i18n="PSD (Photoshop)">PSD (Photoshop)</div>
                 </div>
             </div>
-            <div class="dd-item" onclick="OS.batchExport()">Batch Export...</div>
-            <div class="dd-item" onclick="OS.showExportSettings()">Export Settings...</div>
+            <div class="dd-item" onclick="OS.batchExport()" data-i18n="Batch Export...">Batch Export...</div>
+            <div class="dd-item" onclick="OS.showExportSettings()" data-i18n="Export Settings...">Export Settings...</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.showTemplates()">Templates...</div>
+            <div class="dd-item" onclick="OS.showTemplates()" data-i18n="Templates...">Templates...</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.saveProject()">Save Project (JSON)</div>
-            <div class="dd-item" onclick="OS.openProject()">Open Project</div>
+            <div class="dd-item" onclick="OS.saveProject()" data-i18n="Save Project (JSON)">Save Project (JSON)</div>
+            <div class="dd-item" onclick="OS.openProject()" data-i18n="Open Project">Open Project</div>
         </div>
     </div>
-    <div class="menu-item" role="menuitem" aria-haspopup="true">Edit
+    <div class="menu-item" role="menuitem" aria-haspopup="true" data-i18n="Edit">Edit
         <div class="menu-dropdown">
-            <div class="dd-item" onclick="OS.undo()">Undo</div>
-            <div class="dd-item" onclick="OS.redo()">Redo</div>
+            <div class="dd-item" onclick="OS.undo()" data-i18n="Undo">Undo</div>
+            <div class="dd-item" onclick="OS.redo()" data-i18n="Redo">Redo</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.copyObj()">Copy</div>
-            <div class="dd-item" onclick="OS.pasteObj()">Paste</div>
-            <div class="dd-item" onclick="OS.duplicateSelected()">Duplicate</div>
+            <div class="dd-item" onclick="OS.copyObj()" data-i18n="Copy">Copy</div>
+            <div class="dd-item" onclick="OS.pasteObj()" data-i18n="Paste">Paste</div>
+            <div class="dd-item" onclick="OS.duplicateSelected()" data-i18n="Duplicate">Duplicate</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.deleteSelected()">Delete</div>
+            <div class="dd-item" onclick="OS.deleteSelected()" data-i18n="Delete">Delete</div>
             <div class="dd-sep"></div>
-            <div class="dd-sub dd-item">Transform
+            <div class="dd-sub dd-item" data-i18n="Transform">Transform
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.showFreeTransform()">Free Transform...</div>
-                    <div class="dd-item" onclick="OS.skewObject()">Skew...</div>
-                    <div class="dd-item" onclick="OS.showPerspective()">Perspective...</div>
-                    <div class="dd-item" onclick="OS.showLiquify()">Liquify...</div>
-                    <div class="dd-item" onclick="OS.showCurvedText()">Curved Text...</div>
+                    <div class="dd-item" onclick="OS.showFreeTransform()" data-i18n="Free Transform...">Free Transform...</div>
+                    <div class="dd-item" onclick="OS.skewObject()" data-i18n="Skew...">Skew...</div>
+                    <div class="dd-item" onclick="OS.showPerspective()" data-i18n="Perspective...">Perspective...</div>
+                    <div class="dd-item" onclick="OS.showLiquify()" data-i18n="Liquify...">Liquify...</div>
+                    <div class="dd-item" onclick="OS.showCurvedText()" data-i18n="Curved Text...">Curved Text...</div>
                 </div>
             </div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.showPreferences()">Preferences...</div>
+            <div class="dd-item" onclick="OS.showPreferences()" data-i18n="Preferences...">Preferences...</div>
         </div>
     </div>
-    <div class="menu-item" role="menuitem" aria-haspopup="true">Select
+    <div class="menu-item" role="menuitem" aria-haspopup="true" data-i18n="Select">Select
         <div class="menu-dropdown">
-            <div class="dd-item" onclick="OS.selectAll()">All<span class="dd-shortcut">Ctrl+A</span></div>
-            <div class="dd-item" onclick="OS.deselectAll()">Deselect<span class="dd-shortcut">Ctrl+D</span></div>
-            <div class="dd-item" onclick="OS.reselectSelection()">Reselect<span class="dd-shortcut">Ctrl+Shift+D</span></div>
-            <div class="dd-item" onclick="OS.invertSelection()">Inverse<span class="dd-shortcut">Ctrl+Shift+I</span></div>
+            <div class="dd-item" onclick="OS.selectAll()" data-i18n="All">All<span class="dd-shortcut">Ctrl+A</span></div>
+            <div class="dd-item" onclick="OS.deselectAll()" data-i18n="Deselect">Deselect<span class="dd-shortcut">Ctrl+D</span></div>
+            <div class="dd-item" onclick="OS.reselectSelection()" data-i18n="Reselect">Reselect<span class="dd-shortcut">Ctrl+Shift+D</span></div>
+            <div class="dd-item" onclick="OS.invertSelection()" data-i18n="Inverse">Inverse<span class="dd-shortcut">Ctrl+Shift+I</span></div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.showColorRange()">Color Range...</div>
+            <div class="dd-item" onclick="OS.showColorRange()" data-i18n="Color Range...">Color Range...</div>
             <div class="dd-sep"></div>
-            <div class="dd-sub dd-item">Modify
+            <div class="dd-sub dd-item" data-i18n="Modify">Modify
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.modifySelection('expand')">Expand...</div>
-                    <div class="dd-item" onclick="OS.modifySelection('contract')">Contract...</div>
-                    <div class="dd-item" onclick="OS.modifySelection('feather')">Feather...</div>
-                    <div class="dd-item" onclick="OS.modifySelection('border')">Border...</div>
-                    <div class="dd-item" onclick="OS.modifySelection('smooth')">Smooth</div>
+                    <div class="dd-item" onclick="OS.modifySelection('expand')" data-i18n="Expand...">Expand...</div>
+                    <div class="dd-item" onclick="OS.modifySelection('contract')" data-i18n="Contract...">Contract...</div>
+                    <div class="dd-item" onclick="OS.modifySelection('feather')" data-i18n="Feather...">Feather...</div>
+                    <div class="dd-item" onclick="OS.modifySelection('border')" data-i18n="Border...">Border...</div>
+                    <div class="dd-item" onclick="OS.modifySelection('smooth')" data-i18n="Smooth">Smooth</div>
                 </div>
             </div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.growSelection()">Grow</div>
-            <div class="dd-item" onclick="OS.similarSelection()">Similar</div>
+            <div class="dd-item" onclick="OS.growSelection()" data-i18n="Grow">Grow</div>
+            <div class="dd-item" onclick="OS.similarSelection()" data-i18n="Similar">Similar</div>
         </div>
     </div>
-    <div class="menu-item" role="menuitem" aria-haspopup="true">Image
+    <div class="menu-item" role="menuitem" aria-haspopup="true" data-i18n="Image">Image
         <div class="menu-dropdown">
-            <div class="dd-item" onclick="OS.showResize()">Resize Canvas</div>
+            <div class="dd-item" onclick="OS.showResize()" data-i18n="Resize Canvas">Resize Canvas</div>
             <div class="dd-sep"></div>
-            <div class="dd-sub dd-item">Image Rotation
+            <div class="dd-sub dd-item" data-i18n="Image Rotation">Image Rotation
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.flipH()">Flip Horizontal</div>
-                    <div class="dd-item" onclick="OS.flipV()">Flip Vertical</div>
+                    <div class="dd-item" onclick="OS.flipH()" data-i18n="Flip Horizontal">Flip Horizontal</div>
+                    <div class="dd-item" onclick="OS.flipV()" data-i18n="Flip Vertical">Flip Vertical</div>
                     <div class="dd-sep"></div>
-                    <div class="dd-item" onclick="OS.rotateObj(90)">Rotate 90&deg; CW</div>
-                    <div class="dd-item" onclick="OS.rotateObj(-90)">Rotate 90&deg; CCW</div>
+                    <div class="dd-item" onclick="OS.rotateObj(90)" data-i18n="Rotate 90° CW">Rotate 90&deg; CW</div>
+                    <div class="dd-item" onclick="OS.rotateObj(-90)" data-i18n="Rotate 90° CCW">Rotate 90&deg; CCW</div>
                 </div>
             </div>
-            <div class="dd-sub dd-item">Canvas Rotation
+            <div class="dd-sub dd-item" data-i18n="Canvas Rotation">Canvas Rotation
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.canvasRotate(90)">Rotate 90&deg; CW</div>
-                    <div class="dd-item" onclick="OS.canvasRotate(-90)">Rotate 90&deg; CCW</div>
+                    <div class="dd-item" onclick="OS.canvasRotate(90)" data-i18n="Rotate 90° CW">Rotate 90&deg; CW</div>
+                    <div class="dd-item" onclick="OS.canvasRotate(-90)" data-i18n="Rotate 90° CCW">Rotate 90&deg; CCW</div>
                     <div class="dd-sep"></div>
-                    <div class="dd-item" onclick="OS.canvasFlip('h')">Flip Horizontal</div>
-                    <div class="dd-item" onclick="OS.canvasFlip('v')">Flip Vertical</div>
+                    <div class="dd-item" onclick="OS.canvasFlip('h')" data-i18n="Flip Horizontal">Flip Horizontal</div>
+                    <div class="dd-item" onclick="OS.canvasFlip('v')" data-i18n="Flip Vertical">Flip Vertical</div>
                 </div>
             </div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.flattenImage()">Flatten Image</div>
+            <div class="dd-item" onclick="OS.flattenImage()" data-i18n="Flatten Image">Flatten Image</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.addWatermark()">Add Watermark...</div>
-            <div class="dd-item" onclick="OS.autoEnhance()">Auto Enhance</div>
-            <div class="dd-item" onclick="OS.showImageInfo()">Image Info...</div>
-            <div class="dd-item" onclick="OS.showBeforeAfter()">Before / After Compare</div>
+            <div class="dd-item" onclick="OS.addWatermark()" data-i18n="Add Watermark...">Add Watermark...</div>
+            <div class="dd-item" onclick="OS.autoEnhance()" data-i18n="Auto Enhance">Auto Enhance</div>
+            <div class="dd-item" onclick="OS.showImageInfo()" data-i18n="Image Info...">Image Info...</div>
+            <div class="dd-item" onclick="OS.showBeforeAfter()" data-i18n="Before / After Compare">Before / After Compare</div>
         </div>
     </div>
-    <div class="menu-item" role="menuitem" aria-haspopup="true">Filter
+    <div class="menu-item" role="menuitem" aria-haspopup="true" data-i18n="Layer">Layer
         <div class="menu-dropdown">
-            <div class="dd-sub dd-item">Blur
+            <div class="dd-item" onclick="OS.addLayer()" data-i18n="New Layer">New Layer</div>
+            <div class="dd-item" onclick="OS.duplicateLayer()" data-i18n="Duplicate Layer">Duplicate Layer</div>
+            <div class="dd-item" onclick="OS.deleteLayer()" data-i18n="Delete Layer">Delete Layer</div>
+            <div class="dd-sep"></div>
+            <div class="dd-item" onclick="OS.addLayerMask()" data-i18n="Add Layer Mask">Add Layer Mask</div>
+            <div class="dd-item" onclick="OS.removeLayerMask()" data-i18n="Remove Layer Mask">Remove Layer Mask</div>
+            <div class="dd-sep"></div>
+            <div class="dd-item" onclick="OS.mergeDown()" data-i18n="Merge Down">Merge Down</div>
+            <div class="dd-item" onclick="OS.flattenImage()" data-i18n="Flatten Image">Flatten Image</div>
+        </div>
+    </div>
+    <div class="menu-item" role="menuitem" aria-haspopup="true" data-i18n="Filter">Filter
+        <div class="menu-dropdown">
+            <div class="dd-sub dd-item" data-i18n="Blur">Blur
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.showFilterDialog('Blur')">Blur...</div>
-                    <div class="dd-item" onclick="OS.applyFilterDirect('Sharpen')">Sharpen</div>
-                    <div class="dd-item" onclick="OS.filterUnsharpMask()">Unsharp Mask...</div>
-                    <div class="dd-item" onclick="OS.filterTiltShift()">Tilt Shift...</div>
+                    <div class="dd-item" onclick="OS.showFilterDialog('Blur')" data-i18n="Blur...">Blur...</div>
+                    <div class="dd-item" onclick="OS.applyFilterDirect('Sharpen')" data-i18n="Sharpen">Sharpen</div>
+                    <div class="dd-item" onclick="OS.filterUnsharpMask()" data-i18n="Unsharp Mask...">Unsharp Mask...</div>
+                    <div class="dd-item" onclick="OS.filterTiltShift()" data-i18n="Tilt Shift...">Tilt Shift...</div>
                 </div>
             </div>
-            <div class="dd-sub dd-item">Distort
+            <div class="dd-sub dd-item" data-i18n="Distort">Distort
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.showFilterDialog('Pixelate')">Pixelate...</div>
-                    <div class="dd-item" onclick="OS.filterChromaticAberration()">Chromatic Aberration...</div>
-                    <div class="dd-item" onclick="OS.adjLensCorrection()">Lens Correction...</div>
+                    <div class="dd-item" onclick="OS.showFilterDialog('Pixelate')" data-i18n="Pixelate...">Pixelate...</div>
+                    <div class="dd-item" onclick="OS.filterChromaticAberration()" data-i18n="Chromatic Aberration...">Chromatic Aberration...</div>
+                    <div class="dd-item" onclick="OS.adjLensCorrection()" data-i18n="Lens Correction...">Lens Correction...</div>
                 </div>
             </div>
-            <div class="dd-sub dd-item">Noise
+            <div class="dd-sub dd-item" data-i18n="Noise">Noise
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.showFilterDialog('Noise')">Add Noise...</div>
-                    <div class="dd-item" onclick="OS.filterNoiseGen()">Generate Noise...</div>
+                    <div class="dd-item" onclick="OS.showFilterDialog('Noise')" data-i18n="Add Noise...">Add Noise...</div>
+                    <div class="dd-item" onclick="OS.filterNoiseGen()" data-i18n="Generate Noise...">Generate Noise...</div>
                 </div>
             </div>
-            <div class="dd-sub dd-item">Stylize
+            <div class="dd-sub dd-item" data-i18n="Stylize">Stylize
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.applyFilterDirect('Emboss')">Emboss</div>
-                    <div class="dd-item" onclick="OS.filterEdgeDetect()">Edge Detect</div>
-                    <div class="dd-item" onclick="OS.filterSolarize()">Solarize</div>
+                    <div class="dd-item" onclick="OS.applyFilterDirect('Emboss')" data-i18n="Emboss">Emboss</div>
+                    <div class="dd-item" onclick="OS.filterEdgeDetect()" data-i18n="Edge Detect">Edge Detect</div>
+                    <div class="dd-item" onclick="OS.filterSolarize()" data-i18n="Solarize">Solarize</div>
                     <div class="dd-sep"></div>
-                    <div class="dd-item" onclick="OS.filterOilPaint()">Oil Paint...</div>
-                    <div class="dd-item" onclick="OS.filterHalftone()">Halftone...</div>
-                    <div class="dd-item" onclick="OS.filterDuotone()">Duotone...</div>
-                    <div class="dd-item" onclick="OS.filterVignette()">Vignette...</div>
+                    <div class="dd-item" onclick="OS.filterOilPaint()" data-i18n="Oil Paint...">Oil Paint...</div>
+                    <div class="dd-item" onclick="OS.filterHalftone()" data-i18n="Halftone...">Halftone...</div>
+                    <div class="dd-item" onclick="OS.filterDuotone()" data-i18n="Duotone...">Duotone...</div>
+                    <div class="dd-item" onclick="OS.filterVignette()" data-i18n="Vignette...">Vignette...</div>
                     <div class="dd-sep"></div>
-                    <div class="dd-item" onclick="OS.filterPosterize()">Posterize...</div>
-                    <div class="dd-item" onclick="OS.filterThreshold()">Threshold...</div>
+                    <div class="dd-item" onclick="OS.filterPosterize()" data-i18n="Posterize...">Posterize...</div>
+                    <div class="dd-item" onclick="OS.filterThreshold()" data-i18n="Threshold...">Threshold...</div>
                 </div>
             </div>
             <div class="dd-sep"></div>
-            <div class="dd-sub dd-item">Adjustments
+            <div class="dd-sub dd-item" data-i18n="Adjustments">Adjustments
                 <div class="menu-dropdown">
-                    <div class="dd-sub dd-item">Tone
+                    <div class="dd-sub dd-item" data-i18n="Tone">Tone
                         <div class="menu-dropdown">
-                            <div class="dd-item" onclick="OS.showFilterDialog('Brightness')">Brightness...</div>
-                            <div class="dd-item" onclick="OS.showFilterDialog('Contrast')">Contrast...</div>
-                            <div class="dd-item" onclick="OS.showFilterDialog('Gamma')">Gamma...</div>
+                            <div class="dd-item" onclick="OS.showFilterDialog('Brightness')" data-i18n="Brightness...">Brightness...</div>
+                            <div class="dd-item" onclick="OS.showFilterDialog('Contrast')" data-i18n="Contrast...">Contrast...</div>
+                            <div class="dd-item" onclick="OS.showFilterDialog('Gamma')" data-i18n="Gamma...">Gamma...</div>
                             <div class="dd-sep"></div>
-                            <div class="dd-item" onclick="OS.adjExposure()">Exposure...</div>
-                            <div class="dd-item" onclick="OS.adjShadowsHighlights()">Shadows / Highlights...</div>
+                            <div class="dd-item" onclick="OS.adjExposure()" data-i18n="Exposure...">Exposure...</div>
+                            <div class="dd-item" onclick="OS.adjShadowsHighlights()" data-i18n="Shadows / Highlights...">Shadows / Highlights...</div>
                             <div class="dd-sep"></div>
-                            <div class="dd-item" onclick="OS.showCurvesDialog()">Curves...</div>
-                            <div class="dd-item" onclick="OS.showLevelsDialog()">Levels...</div>
+                            <div class="dd-item" onclick="OS.showCurvesDialog()" data-i18n="Curves...">Curves...</div>
+                            <div class="dd-item" onclick="OS.showLevelsDialog()" data-i18n="Levels...">Levels...</div>
                         </div>
                     </div>
-                    <div class="dd-sub dd-item">Color
+                    <div class="dd-sub dd-item" data-i18n="Color">Color
                         <div class="menu-dropdown">
-                            <div class="dd-item" onclick="OS.showFilterDialog('Saturation')">Saturation...</div>
-                            <div class="dd-item" onclick="OS.showFilterDialog('HueRotation')">Hue Rotation...</div>
-                            <div class="dd-item" onclick="OS.adjVibrance()">Vibrance...</div>
+                            <div class="dd-item" onclick="OS.showFilterDialog('Saturation')" data-i18n="Saturation...">Saturation...</div>
+                            <div class="dd-item" onclick="OS.showFilterDialog('HueRotation')" data-i18n="Hue Rotation...">Hue Rotation...</div>
+                            <div class="dd-item" onclick="OS.adjVibrance()" data-i18n="Vibrance...">Vibrance...</div>
                             <div class="dd-sep"></div>
-                            <div class="dd-item" onclick="OS.showColorBalanceDialog()">Color Balance...</div>
-                            <div class="dd-item" onclick="OS.showChannelMixer()">Channel Mixer...</div>
-                            <div class="dd-item" onclick="OS.showGradientMap()">Gradient Map...</div>
+                            <div class="dd-item" onclick="OS.showColorBalanceDialog()" data-i18n="Color Balance...">Color Balance...</div>
+                            <div class="dd-item" onclick="OS.showChannelMixer()" data-i18n="Channel Mixer...">Channel Mixer...</div>
+                            <div class="dd-item" onclick="OS.showGradientMap()" data-i18n="Gradient Map...">Gradient Map...</div>
                             <div class="dd-sep"></div>
-                            <div class="dd-item" onclick="OS.adjPhotoFilter()">Photo Filter...</div>
-                            <div class="dd-item" onclick="OS.adjSelectiveColor()">Selective Color...</div>
-                            <div class="dd-item" onclick="OS.adjReplaceColor()">Replace Color...</div>
+                            <div class="dd-item" onclick="OS.adjPhotoFilter()" data-i18n="Photo Filter...">Photo Filter...</div>
+                            <div class="dd-item" onclick="OS.adjSelectiveColor()" data-i18n="Selective Color...">Selective Color...</div>
+                            <div class="dd-item" onclick="OS.adjReplaceColor()" data-i18n="Replace Color...">Replace Color...</div>
                         </div>
                     </div>
                 </div>
             </div>
-            <div class="dd-sub dd-item">Color Mode
+            <div class="dd-sub dd-item" data-i18n="Color Mode">Color Mode
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.applyFilterDirect('Grayscale')">Grayscale</div>
-                    <div class="dd-item" onclick="OS.applyFilterDirect('Invert')">Invert</div>
-                    <div class="dd-item" onclick="OS.applyFilterDirect('Sepia')">Sepia</div>
-                    <div class="dd-item" onclick="OS.applyFilterDirect('BlackWhite')">Black & White</div>
+                    <div class="dd-item" onclick="OS.applyFilterDirect('Grayscale')" data-i18n="Grayscale">Grayscale</div>
+                    <div class="dd-item" onclick="OS.applyFilterDirect('Invert')" data-i18n="Invert">Invert</div>
+                    <div class="dd-item" onclick="OS.applyFilterDirect('Sepia')" data-i18n="Sepia">Sepia</div>
+                    <div class="dd-item" onclick="OS.applyFilterDirect('BlackWhite')" data-i18n="Black &amp; White">Black & White</div>
                 </div>
             </div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.autoLevels()">Auto Levels</div>
-            <div class="dd-item" onclick="OS.autoContrast()">Auto Contrast</div>
-            <div class="dd-item" onclick="OS.showPresets()">Photo Presets...</div>
+            <div class="dd-item" onclick="OS.autoLevels()" data-i18n="Auto Levels">Auto Levels</div>
+            <div class="dd-item" onclick="OS.autoContrast()" data-i18n="Auto Contrast">Auto Contrast</div>
+            <div class="dd-item" onclick="OS.showPresets()" data-i18n="Photo Presets...">Photo Presets...</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.aiRemoveBackground()">Remove Background (AI)</div>
+            <div class="dd-item" onclick="OS.aiRemoveBackground()" data-i18n="Remove Background (AI)">Remove Background (AI)</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.clearFilters()">Clear All Filters</div>
+            <div class="dd-item" onclick="OS.clearFilters()" data-i18n="Clear All Filters">Clear All Filters</div>
         </div>
     </div>
     <div class="menu-item" role="menuitem" aria-haspopup="true">AI
         <div class="menu-dropdown">
-            <div class="dd-item" onclick="OS.aiRemoveBackground()">Background Remove</div>
-            <div class="dd-item" onclick="OS.aiDepthMap()">Depth Map</div>
-            <div class="dd-item" onclick="OS.aiObjectDetect()">Detect Objects</div>
-            <div class="dd-item" onclick="OS.activateSegmentSelect()">Segment Select</div>
+            <div class="dd-item" onclick="OS.aiRemoveBackground()" data-i18n="Background Remove">Background Remove</div>
+            <div class="dd-item" onclick="OS.aiDepthMap()" data-i18n="Depth Map">Depth Map</div>
+            <div class="dd-item" onclick="OS.aiObjectDetect()" data-i18n="Detect Objects">Detect Objects</div>
+            <div class="dd-item" onclick="OS.activateSegmentSelect()" data-i18n="Segment Select">Segment Select</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.aiUpscale(2)">Smart Upscale 2x</div>
-            <div class="dd-item" onclick="OS.aiUpscale(4)">Smart Upscale 4x</div>
+            <div class="dd-item" onclick="OS.aiUpscale(2)" data-i18n="Smart Upscale 2x">Smart Upscale 2x</div>
+            <div class="dd-item" onclick="OS.aiUpscale(4)" data-i18n="Smart Upscale 4x">Smart Upscale 4x</div>
             <div class="dd-sep"></div>
-            <div class="dd-note" role="note" aria-hidden="true">Models download on first use — no API keys needed</div>
+            <div class="dd-note" role="note" aria-hidden="true" data-i18n="Models download on first use — no API keys needed">Models download on first use — no API keys needed</div>
         </div>
     </div>
-    <div class="menu-item" role="menuitem" aria-haspopup="true">View
+    <div class="menu-item" role="menuitem" aria-haspopup="true" data-i18n="View">View
         <div class="menu-dropdown">
-            <div class="dd-sub dd-item">Zoom
+            <div class="dd-sub dd-item" data-i18n="Zoom">Zoom
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.zoomIn()">Zoom In</div>
-                    <div class="dd-item" onclick="OS.zoomOut()">Zoom Out</div>
-                    <div class="dd-item" onclick="OS.zoomFit()">Fit to Screen</div>
+                    <div class="dd-item" onclick="OS.zoomIn()" data-i18n="Zoom In">Zoom In</div>
+                    <div class="dd-item" onclick="OS.zoomOut()" data-i18n="Zoom Out">Zoom Out</div>
+                    <div class="dd-item" onclick="OS.zoomFit()" data-i18n="Fit to Screen">Fit to Screen</div>
                     <div class="dd-item" onclick="OS.zoomReset()">100%</div>
                 </div>
             </div>
-            <div class="dd-sub dd-item">Show
+            <div class="dd-sub dd-item" data-i18n="Show">Show
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.toggleGrid()">Toggle Grid</div>
-                    <div class="dd-item" onclick="OS.toggleRulers()">Toggle Rulers</div>
-                    <div class="dd-item" onclick="OS.toggleSnap()">Toggle Snap to Grid</div>
-                    <div class="dd-sub dd-item">Symmetry
+                    <div class="dd-item" onclick="OS.toggleGrid()" data-i18n="Toggle Grid">Toggle Grid</div>
+                    <div class="dd-item" onclick="OS.toggleRulers()" data-i18n="Toggle Rulers">Toggle Rulers</div>
+                    <div class="dd-item" onclick="OS.toggleSnap()" data-i18n="Toggle Snap to Grid">Toggle Snap to Grid</div>
+                    <div class="dd-sub dd-item" data-i18n="Symmetry">Symmetry
                         <div class="menu-dropdown">
-                            <div class="dd-item" onclick="OS.setSymmetryMode('off')">Off</div>
-                            <div class="dd-item" onclick="OS.setSymmetryMode('horizontal')">Horizontal</div>
-                            <div class="dd-item" onclick="OS.setSymmetryMode('vertical')">Vertical</div>
-                            <div class="dd-item" onclick="OS.setSymmetryMode('both')">Both Axes</div>
-                            <div class="dd-item" onclick="OS.setSymmetryMode('radial')">Radial (6-fold)</div>
+                            <div class="dd-item" onclick="OS.setSymmetryMode('off')" data-i18n="Off">Off</div>
+                            <div class="dd-item" onclick="OS.setSymmetryMode('horizontal')" data-i18n="Horizontal">Horizontal</div>
+                            <div class="dd-item" onclick="OS.setSymmetryMode('vertical')" data-i18n="Vertical">Vertical</div>
+                            <div class="dd-item" onclick="OS.setSymmetryMode('both')" data-i18n="Both Axes">Both Axes</div>
+                            <div class="dd-item" onclick="OS.setSymmetryMode('radial')" data-i18n="Radial (6-fold)">Radial (6-fold)</div>
                         </div>
                     </div>
-                    <div class="dd-item" onclick="OS.togglePixelGrid()">Pixel Grid</div>
+                    <div class="dd-item" onclick="OS.togglePixelGrid()" data-i18n="Pixel Grid">Pixel Grid</div>
                 </div>
             </div>
-            <div class="dd-sub dd-item">Guides
+            <div class="dd-sub dd-item" data-i18n="Guides">Guides
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.addGuide('horizontal')">Add Horizontal Guide</div>
-                    <div class="dd-item" onclick="OS.addGuide('vertical')">Add Vertical Guide</div>
+                    <div class="dd-item" onclick="OS.addGuide('horizontal')" data-i18n="Add Horizontal Guide">Add Horizontal Guide</div>
+                    <div class="dd-item" onclick="OS.addGuide('vertical')" data-i18n="Add Vertical Guide">Add Vertical Guide</div>
                     <div class="dd-sep"></div>
-                    <div class="dd-item" onclick="OS.clearGuides()">Clear All Guides</div>
+                    <div class="dd-item" onclick="OS.clearGuides()" data-i18n="Clear All Guides">Clear All Guides</div>
                 </div>
             </div>
             <div class="dd-sep"></div>
-            <div class="dd-sub dd-item">Panels
+            <div class="dd-sub dd-item" data-i18n="Panels">Panels
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.toggleTimeline()">Animation Timeline</div>
-                    <div class="dd-item" onclick="OS.toggleMacroPanel()">Actions / Macros</div>
+                    <div class="dd-item" onclick="OS.toggleTimeline()" data-i18n="Animation Timeline">Animation Timeline</div>
+                    <div class="dd-item" onclick="OS.toggleMacroPanel()" data-i18n="Actions / Macros">Actions / Macros</div>
                 </div>
             </div>
-            <div class="dd-sub dd-item">Theme
+            <div class="dd-sub dd-item" data-i18n="Theme">Theme
                 <div class="menu-dropdown">
-                    <div class="dd-item" onclick="OS.setTheme('default')">Dark (Default)</div>
-                    <div class="dd-item" onclick="OS.setTheme('midnight')">Midnight</div>
-                    <div class="dd-item" onclick="OS.setTheme('oled')">OLED Black</div>
+                    <div class="dd-item" onclick="OS.setTheme('default')" data-i18n="Dark (Default)">Dark (Default)</div>
+                    <div class="dd-item" onclick="OS.setTheme('midnight')" data-i18n="Midnight">Midnight</div>
+                    <div class="dd-item" onclick="OS.setTheme('oled')" data-i18n="OLED Black">OLED Black</div>
                 </div>
             </div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.toggleFullscreen()">Fullscreen Mode</div>
-            <div class="dd-item" onclick="OS.showShortcuts()">Keyboard Shortcuts...</div>
+            <div class="dd-item" onclick="OS.toggleFullscreen()" data-i18n="Fullscreen Mode">Fullscreen Mode</div>
+            <div class="dd-item" onclick="OS.showShortcuts()" data-i18n="Keyboard Shortcuts...">Keyboard Shortcuts...</div>
         </div>
     </div>
 </div>
 
 <!-- ===== LEFT TOOLBAR ===== -->
-<div id="toolbar" role="toolbar" aria-label="Drawing tools">
-    <button class="tool-btn active" data-tool="select" data-tip="Move / Select (V)" onclick="OS.setTool('select')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></svg></button>
+<div id="toolbar" role="toolbar" aria-label="Drawing tools" data-i18n-aria-label="Drawing tools">
+    <button class="tool-btn active" data-tool="select" data-tip="Move / Select (V)" onclick="OS.setTool('select')" data-i18n-tip="Move / Select (V)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="selection">
-        <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee (M)" onclick="OS.setTool('marquee-rect')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
+        <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee (M)" onclick="OS.setTool('marquee-rect')" data-i18n-tip="Rect Marquee (M)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
         <div class="tool-flyout">
-            <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee" onclick="OS.flyoutSelect(this,'selection')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
-            <button class="tool-btn" data-tool="marquee-ellipse" data-tip="Ellipse Marquee" onclick="OS.flyoutSelect(this,'selection')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><ellipse cx="12" cy="12" rx="10" ry="7"/></svg></button>
-            <button class="tool-btn" data-tool="lasso" data-tip="Lasso" onclick="OS.flyoutSelect(this,'selection')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12c0 4.97 4.03 9 9 9s9-4.03 9-9-4.03-9-9-9c-3.04 0-5.73 1.51-7.36 3.82"/><circle cx="7" cy="20" r="2" fill="currentColor"/></svg></button>
-            <button class="tool-btn" data-tool="magic-wand" data-tip="Magic Wand (W)" onclick="OS.flyoutSelect(this,'selection')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 4V2m0 14v-2M8 9H6m14 0h-2m-2.8-3.8L14 4m-4.2 9.8L8.6 15m9.8-1.2L19.6 15M9.8 5.2L8.6 4"/><path d="M2 22l10-10"/><circle cx="15" cy="9" r="1" fill="currentColor"/></svg></button>
-            <button class="tool-btn" data-tool="ai-segment" data-tip="AI Segment Select" onclick="OS.flyoutSelect(this,'selection')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7" stroke-dasharray="3 2"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/><path d="M8.5 13.5c2.2 1.7 5.8 1.2 7-1.5" stroke-linecap="round"/></svg></button>
+            <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Rect Marquee"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
+            <button class="tool-btn" data-tool="marquee-ellipse" data-tip="Ellipse Marquee" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Ellipse Marquee"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><ellipse cx="12" cy="12" rx="10" ry="7"/></svg></button>
+            <button class="tool-btn" data-tool="lasso" data-tip="Lasso" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Lasso"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12c0 4.97 4.03 9 9 9s9-4.03 9-9-4.03-9-9-9c-3.04 0-5.73 1.51-7.36 3.82"/><circle cx="7" cy="20" r="2" fill="currentColor"/></svg></button>
+            <button class="tool-btn" data-tool="magic-wand" data-tip="Magic Wand (W)" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Magic Wand (W)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 4V2m0 14v-2M8 9H6m14 0h-2m-2.8-3.8L14 4m-4.2 9.8L8.6 15m9.8-1.2L19.6 15M9.8 5.2L8.6 4"/><path d="M2 22l10-10"/><circle cx="15" cy="9" r="1" fill="currentColor"/></svg></button>
+            <button class="tool-btn" data-tool="ai-segment" data-tip="AI Segment Select" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="AI Segment Select"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7" stroke-dasharray="3 2"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/><path d="M8.5 13.5c2.2 1.7 5.8 1.2 7-1.5" stroke-linecap="round"/></svg></button>
         </div>
     </div>
     <div class="tool-group" data-group="crop">
-        <button class="tool-btn" data-tool="crop" data-tip="Crop (C)" onclick="OS.setTool('crop')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
+        <button class="tool-btn" data-tool="crop" data-tip="Crop (C)" onclick="OS.setTool('crop')" data-i18n-tip="Crop (C)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
         <div class="tool-flyout">
-            <button class="tool-btn" data-tool="crop" data-tip="Crop" onclick="OS.flyoutSelect(this,'crop')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
-            <button class="tool-btn" data-tool="measure" data-tip="Measure" onclick="OS.flyoutSelect(this,'crop')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L20 2"/><path d="M6 16l2-2"/><path d="M10 12l2-2"/><path d="M14 8l2-2"/><circle cx="2" cy="20" r="1.5" fill="currentColor"/><circle cx="20" cy="2" r="1.5" fill="currentColor"/></svg></button>
+            <button class="tool-btn" data-tool="crop" data-tip="Crop" onclick="OS.flyoutSelect(this,'crop')" data-i18n-tip="Crop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
+            <button class="tool-btn" data-tool="measure" data-tip="Measure" onclick="OS.flyoutSelect(this,'crop')" data-i18n-tip="Measure"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L20 2"/><path d="M6 16l2-2"/><path d="M10 12l2-2"/><path d="M14 8l2-2"/><circle cx="2" cy="20" r="1.5" fill="currentColor"/><circle cx="20" cy="2" r="1.5" fill="currentColor"/></svg></button>
         </div>
     </div>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="brush">
-        <button class="tool-btn" data-tool="brush" data-tip="Brush (B)" onclick="OS.setTool('brush')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
+        <button class="tool-btn" data-tool="brush" data-tip="Brush (B)" onclick="OS.setTool('brush')" data-i18n-tip="Brush (B)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
         <div class="tool-flyout">
-            <button class="tool-btn" data-tool="brush" data-tip="Brush" onclick="OS.flyoutSelect(this,'brush')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
-            <button class="tool-btn" data-tool="pencil" data-tip="Pencil" onclick="OS.flyoutSelect(this,'brush')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>
-            <button class="tool-btn" data-tool="spray" data-tip="Spray / Airbrush" onclick="OS.flyoutSelect(this,'brush')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="12" width="10" height="10" rx="2"/><path d="M11 12V8"/><circle cx="7" cy="4" r="1" fill="currentColor"/><circle cx="11" cy="3" r="1" fill="currentColor"/><circle cx="15" cy="4" r="1" fill="currentColor"/></svg></button>
+            <button class="tool-btn" data-tool="brush" data-tip="Brush" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Brush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
+            <button class="tool-btn" data-tool="pencil" data-tip="Pencil" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Pencil"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>
+            <button class="tool-btn" data-tool="spray" data-tip="Spray / Airbrush" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Spray / Airbrush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="12" width="10" height="10" rx="2"/><path d="M11 12V8"/><circle cx="7" cy="4" r="1" fill="currentColor"/><circle cx="11" cy="3" r="1" fill="currentColor"/><circle cx="15" cy="4" r="1" fill="currentColor"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="eraser" data-tip="Eraser (E)" onclick="OS.setTool('eraser')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7L3 16l9-9 8 8-4 4z"/><path d="M6 11l8 8"/></svg></button>
+    <button class="tool-btn" data-tool="eraser" data-tip="Eraser (E)" onclick="OS.setTool('eraser')" data-i18n-tip="Eraser (E)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7L3 16l9-9 8 8-4 4z"/><path d="M6 11l8 8"/></svg></button>
     <div class="tool-group" data-group="stamp">
-        <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp (S)" onclick="OS.setTool('clone')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
+        <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp (S)" onclick="OS.setTool('clone')" data-i18n-tip="Clone Stamp (S)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
         <div class="tool-flyout">
-            <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp" onclick="OS.flyoutSelect(this,'stamp')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
-            <button class="tool-btn" data-tool="healing" data-tip="Healing Brush" onclick="OS.flyoutSelect(this,'stamp')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 2l4 4-12 12H6v-4L18 2z"/><path d="M14 6l4 4"/><line x1="2" y1="22" x2="22" y2="22"/></svg></button>
+            <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp" onclick="OS.flyoutSelect(this,'stamp')" data-i18n-tip="Clone Stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
+            <button class="tool-btn" data-tool="healing" data-tip="Healing Brush" onclick="OS.flyoutSelect(this,'stamp')" data-i18n-tip="Healing Brush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 2l4 4-12 12H6v-4L18 2z"/><path d="M14 6l4 4"/><line x1="2" y1="22" x2="22" y2="22"/></svg></button>
         </div>
     </div>
     <div class="tool-group" data-group="retouch">
-        <button class="tool-btn" data-tool="dodge" data-tip="Dodge" onclick="OS.setTool('dodge')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12h9" fill="currentColor" stroke="none" opacity=".3"/></svg></button>
+        <button class="tool-btn" data-tool="dodge" data-tip="Dodge" onclick="OS.setTool('dodge')" data-i18n-tip="Dodge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12h9" fill="currentColor" stroke="none" opacity=".3"/></svg></button>
         <div class="tool-flyout">
-            <button class="tool-btn" data-tool="dodge" data-tip="Dodge (Lighten)" onclick="OS.flyoutSelect(this,'retouch')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12h9" fill="currentColor" stroke="none" opacity=".3"/></svg></button>
-            <button class="tool-btn" data-tool="burn" data-tip="Burn (Darken)" onclick="OS.flyoutSelect(this,'retouch')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M12 12h9" fill="currentColor" stroke="none" opacity=".5"/></svg></button>
-            <button class="tool-btn" data-tool="sponge" data-tip="Sponge" onclick="OS.flyoutSelect(this,'retouch')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/><line x1="8" y1="12" x2="16" y2="12"/></svg></button>
-            <button class="tool-btn" data-tool="smudge" data-tip="Smudge" onclick="OS.flyoutSelect(this,'retouch')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 4l-4 4c-2 2-5 2-8 5s-1 6 2 7 5-1 7-4 3-6 5-8l4-4z"/></svg></button>
+            <button class="tool-btn" data-tool="dodge" data-tip="Dodge (Lighten)" onclick="OS.flyoutSelect(this,'retouch')" data-i18n-tip="Dodge (Lighten)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12h9" fill="currentColor" stroke="none" opacity=".3"/></svg></button>
+            <button class="tool-btn" data-tool="burn" data-tip="Burn (Darken)" onclick="OS.flyoutSelect(this,'retouch')" data-i18n-tip="Burn (Darken)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M12 12h9" fill="currentColor" stroke="none" opacity=".5"/></svg></button>
+            <button class="tool-btn" data-tool="sponge" data-tip="Sponge" onclick="OS.flyoutSelect(this,'retouch')" data-i18n-tip="Sponge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/><line x1="8" y1="12" x2="16" y2="12"/></svg></button>
+            <button class="tool-btn" data-tool="smudge" data-tip="Smudge" onclick="OS.flyoutSelect(this,'retouch')" data-i18n-tip="Smudge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 4l-4 4c-2 2-5 2-8 5s-1 6 2 7 5-1 7-4 3-6 5-8l4-4z"/></svg></button>
         </div>
     </div>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="shape">
-        <button class="tool-btn" data-tool="rect" data-tip="Rectangle (R)" onclick="OS.setTool('rect')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
+        <button class="tool-btn" data-tool="rect" data-tip="Rectangle (R)" onclick="OS.setTool('rect')" data-i18n-tip="Rectangle (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
         <div class="tool-flyout">
-            <button class="tool-btn" data-tool="rect" data-tip="Rectangle" onclick="OS.flyoutSelect(this,'shape')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
-            <button class="tool-btn" data-tool="circle" data-tip="Ellipse" onclick="OS.flyoutSelect(this,'shape')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></button>
-            <button class="tool-btn" data-tool="triangle" data-tip="Triangle" onclick="OS.flyoutSelect(this,'shape')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3L2 21h20L12 3z"/></svg></button>
-            <button class="tool-btn" data-tool="line" data-tip="Line (L)" onclick="OS.flyoutSelect(this,'shape')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/></svg></button>
-            <button class="tool-btn" data-tool="arrow" data-tip="Arrow" onclick="OS.flyoutSelect(this,'shape')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="10 5 19 5 19 14"/></svg></button>
-            <button class="tool-btn" data-tool="polygon" data-tip="Polygon" onclick="OS.flyoutSelect(this,'shape')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8.5 6.2-3.2 10H6.7L3.5 8.2z"/></svg></button>
-            <button class="tool-btn" data-tool="star" data-tip="Star" onclick="OS.flyoutSelect(this,'shape')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg></button>
+            <button class="tool-btn" data-tool="rect" data-tip="Rectangle" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Rectangle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
+            <button class="tool-btn" data-tool="circle" data-tip="Ellipse" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Ellipse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></button>
+            <button class="tool-btn" data-tool="triangle" data-tip="Triangle" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Triangle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3L2 21h20L12 3z"/></svg></button>
+            <button class="tool-btn" data-tool="line" data-tip="Line (L)" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Line (L)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/></svg></button>
+            <button class="tool-btn" data-tool="arrow" data-tip="Arrow" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="10 5 19 5 19 14"/></svg></button>
+            <button class="tool-btn" data-tool="polygon" data-tip="Polygon" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Polygon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8.5 6.2-3.2 10H6.7L3.5 8.2z"/></svg></button>
+            <button class="tool-btn" data-tool="star" data-tip="Star" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Star"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="pen" data-tip="Pen (P)" onclick="OS.setTool('pen')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
-    <button class="tool-btn" data-tool="text" data-tip="Text (T)" onclick="OS.setTool('text')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
+    <button class="tool-btn" data-tool="pen" data-tip="Pen (P)" onclick="OS.setTool('pen')" data-i18n-tip="Pen (P)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
+    <button class="tool-btn" data-tool="text" data-tip="Text (T)" onclick="OS.setTool('text')" data-i18n-tip="Text (T)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="fillgrp">
-        <button class="tool-btn" data-tool="gradient" data-tip="Gradient (G)" onclick="OS.setTool('gradient')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
+        <button class="tool-btn" data-tool="gradient" data-tip="Gradient (G)" onclick="OS.setTool('gradient')" data-i18n-tip="Gradient (G)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
         <div class="tool-flyout">
-            <button class="tool-btn" data-tool="gradient" data-tip="Gradient" onclick="OS.flyoutSelect(this,'fillgrp')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
-            <button class="tool-btn" data-tool="fill" data-tip="Fill Bucket" onclick="OS.flyoutSelect(this,'fillgrp')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14 6l3-3 3 3"/><path d="M20 12.5a1.5 1.5 0 0 0 3 0c0-1.5-3-4-3-4s-3 2.5-3 4a1.5 1.5 0 0 0 3 0z"/></svg></button>
-            <button class="tool-btn" data-tool="pattern" data-tip="Pattern Fill" onclick="OS.flyoutSelect(this,'fillgrp')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></button>
+            <button class="tool-btn" data-tool="gradient" data-tip="Gradient" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Gradient"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
+            <button class="tool-btn" data-tool="fill" data-tip="Fill Bucket" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Fill Bucket"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14 6l3-3 3 3"/><path d="M20 12.5a1.5 1.5 0 0 0 3 0c0-1.5-3-4-3-4s-3 2.5-3 4a1.5 1.5 0 0 0 3 0z"/></svg></button>
+            <button class="tool-btn" data-tool="pattern" data-tip="Pattern Fill" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Pattern Fill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="eyedropper" data-tip="Eyedropper (I)" onclick="OS.setTool('eyedropper')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14.5 6.5l3-3a2.12 2.12 0 0 1 3 3l-3 3"/></svg></button>
-    <button class="tool-btn" data-tool="note" data-tip="Sticky Note" onclick="OS.setTool('note')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3z"/><polyline points="14 3 14 8 21 8"/></svg></button>
+    <button class="tool-btn" data-tool="eyedropper" data-tip="Eyedropper (I)" onclick="OS.setTool('eyedropper')" data-i18n-tip="Eyedropper (I)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14.5 6.5l3-3a2.12 2.12 0 0 1 3 3l-3 3"/></svg></button>
+    <button class="tool-btn" data-tool="note" data-tip="Sticky Note" onclick="OS.setTool('note')" data-i18n-tip="Sticky Note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3z"/><polyline points="14 3 14 8 21 8"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="nav">
-        <button class="tool-btn" data-tool="pan" data-tip="Pan (H)" onclick="OS.setTool('pan')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
+        <button class="tool-btn" data-tool="pan" data-tip="Pan (H)" onclick="OS.setTool('pan')" data-i18n-tip="Pan (H)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
         <div class="tool-flyout">
-            <button class="tool-btn" data-tool="pan" data-tip="Pan" onclick="OS.flyoutSelect(this,'nav')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
-            <button class="tool-btn" data-tool="zoom" data-tip="Zoom (Z)" onclick="OS.flyoutSelect(this,'nav')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg></button>
+            <button class="tool-btn" data-tool="pan" data-tip="Pan" onclick="OS.flyoutSelect(this,'nav')" data-i18n-tip="Pan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
+            <button class="tool-btn" data-tool="zoom" data-tip="Zoom (Z)" onclick="OS.flyoutSelect(this,'nav')" data-i18n-tip="Zoom (Z)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg></button>
         </div>
     </div>
 </div>
 
 <!-- ===== TOOL OPTIONS BAR ===== -->
-<div id="tool-options" role="region" aria-label="Tool options">
+<div id="tool-options" role="region" aria-label="Tool options" data-i18n-aria-label="Tool options">
     <div class="opt-group" id="opt-brush" style="display:none">
-        <label>Preset</label>
+        <label data-i18n="Preset">Preset</label>
         <select id="brush-preset" onchange="OS.setBrushPreset(this.value)">
-            <option value="round">Round</option><option value="soft">Soft Round</option><option value="flat">Flat/Calligraphy</option>
-            <option value="scatter">Scatter</option><option value="pixel">Pixel</option>
+            <option value="round" data-i18n="Round">Round</option><option value="soft" data-i18n="Soft Round">Soft Round</option><option value="flat" data-i18n="Flat/Calligraphy">Flat/Calligraphy</option>
+            <option value="scatter" data-i18n="Scatter">Scatter</option><option value="pixel" data-i18n="Pixel">Pixel</option>
         </select>
-        <label>Size</label>
+        <label data-i18n="Size">Size</label>
         <input type="range" id="brush-size" min="1" max="150" value="8" oninput="OS.setBrushSize(this.value)">
         <span class="opt-val" id="brush-size-val">8</span>
-        <label>Opacity</label>
+        <label data-i18n="Opacity">Opacity</label>
         <input type="range" id="brush-opacity" min="1" max="100" value="100" oninput="OS.setBrushOpacity(this.value)">
         <span class="opt-val" id="brush-opacity-val">100</span>
     </div>
     <div class="opt-group" id="opt-spray" style="display:none">
-        <label>Density</label>
+        <label data-i18n="Density">Density</label>
         <input type="range" id="spray-density" min="5" max="100" value="30" oninput="OS.state.sprayDensity=+this.value">
-        <label>Width</label>
+        <label data-i18n="Width">Width</label>
         <input type="range" id="spray-width" min="5" max="150" value="30" oninput="OS.state.sprayWidth=+this.value">
     </div>
     <div class="opt-group" id="opt-shape" style="display:none">
-        <label>Fill</label><input type="color" id="shape-fill" value="#6c8cff" onchange="OS.state.shapeFill=this.value">
-        <label>Stroke</label><input type="color" id="shape-stroke" value="#ffffff" onchange="OS.state.shapeStroke=this.value">
-        <label>Width</label><input type="number" id="shape-stroke-w" value="2" min="0" max="50" onchange="OS.state.shapeStrokeWidth=+this.value">
-        <label><input type="checkbox" id="shape-filled" checked onchange="OS.state.shapeFilled=this.checked"> Filled</label>
-        <label>Dash</label><select id="shape-dash" onchange="OS.state.shapeDash=this.value" style="font-size:11px">
-            <option value="">Solid</option><option value="8,4">Dashed</option><option value="2,4">Dotted</option><option value="12,4,2,4">Dash-Dot</option><option value="16,8">Long Dash</option>
+        <label data-i18n="Fill">Fill</label><input type="color" id="shape-fill" value="#6c8cff" onchange="OS.state.shapeFill=this.value">
+        <label data-i18n="Stroke">Stroke</label><input type="color" id="shape-stroke" value="#ffffff" onchange="OS.state.shapeStroke=this.value">
+        <label data-i18n="Width">Width</label><input type="number" id="shape-stroke-w" value="2" min="0" max="50" onchange="OS.state.shapeStrokeWidth=+this.value">
+        <label data-i18n="Filled"><input type="checkbox" id="shape-filled" checked onchange="OS.state.shapeFilled=this.checked"> Filled</label>
+        <label data-i18n="Dash">Dash</label><select id="shape-dash" onchange="OS.state.shapeDash=this.value" style="font-size:11px">
+            <option value="" data-i18n="Solid">Solid</option><option value="8,4" data-i18n="Dashed">Dashed</option><option value="2,4" data-i18n="Dotted">Dotted</option><option value="12,4,2,4" data-i18n="Dash-Dot">Dash-Dot</option><option value="16,8" data-i18n="Long Dash">Long Dash</option>
         </select>
     </div>
     <div class="opt-group" id="opt-text" style="display:none">
-        <label>Font</label>
+        <label data-i18n="Font">Font</label>
         <select id="text-font" onchange="OS.state.textFont=this.value">
             <option>Microsoft YaHei UI</option><option>Arial</option><option>Georgia</option><option>Courier New</option>
             <option>Verdana</option><option>Times New Roman</option><option>Consolas</option><option>Impact</option>
         </select>
-        <label>Size</label><input type="number" id="text-size" value="24" min="8" max="200" onchange="OS.state.textSize=+this.value">
-        <label>Color</label><input type="color" id="text-color" value="#ffffff" onchange="OS.state.textColor=this.value">
+        <label data-i18n="Size">Size</label><input type="number" id="text-size" value="24" min="8" max="200" onchange="OS.state.textSize=+this.value">
+        <label data-i18n="Color">Color</label><input type="color" id="text-color" value="#ffffff" onchange="OS.state.textColor=this.value">
         <label><input type="checkbox" id="text-bold" onchange="OS.state.textBold=this.checked"> B</label>
         <label><input type="checkbox" id="text-italic" onchange="OS.state.textItalic=this.checked"> I</label>
     </div>
     <div class="opt-group" id="opt-gradient" style="display:none">
-        <label>From</label><input type="color" id="grad-from" value="#6c8cff" onchange="OS.state.gradFrom=this.value">
-        <label>To</label><input type="color" id="grad-to" value="#000000" onchange="OS.state.gradTo=this.value">
-        <label>Type</label>
-        <select id="grad-type" onchange="OS.state.gradType=this.value"><option value="linear">Linear</option><option value="radial">Radial</option></select>
+        <label data-i18n="From">From</label><input type="color" id="grad-from" value="#6c8cff" onchange="OS.state.gradFrom=this.value">
+        <label data-i18n="To">To</label><input type="color" id="grad-to" value="#000000" onchange="OS.state.gradTo=this.value">
+        <label data-i18n="Type">Type</label>
+        <select id="grad-type" onchange="OS.state.gradType=this.value"><option value="linear" data-i18n="Linear">Linear</option><option value="radial" data-i18n="Radial">Radial</option></select>
     </div>
     <div class="opt-group" id="opt-pattern" style="display:none">
-        <label>Pattern</label>
+        <label data-i18n="Pattern">Pattern</label>
         <select id="pattern-type" onchange="OS.state.patternType=this.value">
-            <option value="checkerboard">Checkerboard</option><option value="stripes">Stripes</option><option value="dots">Dots</option>
-            <option value="grid">Grid</option><option value="diagonal">Diagonal</option><option value="crosshatch">Crosshatch</option>
+            <option value="checkerboard" data-i18n="Checkerboard">Checkerboard</option><option value="stripes" data-i18n="Stripes">Stripes</option><option value="dots" data-i18n="Dots">Dots</option>
+            <option value="grid" data-i18n="Grid">Grid</option><option value="diagonal" data-i18n="Diagonal">Diagonal</option><option value="crosshatch" data-i18n="Crosshatch">Crosshatch</option>
         </select>
-        <label>Scale</label><input type="range" id="pattern-scale" min="5" max="80" value="20" oninput="OS.state.patternScale=+this.value">
-        <label>Color</label><input type="color" id="pattern-color" value="#6c8cff" onchange="OS.state.patternColor=this.value">
+        <label data-i18n="Scale">Scale</label><input type="range" id="pattern-scale" min="5" max="80" value="20" oninput="OS.state.patternScale=+this.value">
+        <label data-i18n="Color">Color</label><input type="color" id="pattern-color" value="#6c8cff" onchange="OS.state.patternColor=this.value">
     </div>
     <div class="opt-group" id="opt-clone" style="display:none">
-        <label>Size</label>
+        <label data-i18n="Size">Size</label>
         <input type="range" id="clone-size" min="5" max="100" value="20" oninput="OS.state.cloneSize=+this.value;document.getElementById('clone-size-val').textContent=this.value">
         <span class="opt-val" id="clone-size-val">20</span>
-        <span style="color:var(--text-muted);font-size:11px;margin-left:8px">Alt+Click source</span>
+        <span style="color:var(--text-muted);font-size:11px;margin-left:8px" data-i18n="Alt+Click source">Alt+Click source</span>
     </div>
     <div class="opt-group" id="opt-wand" style="display:none">
-        <label>Tolerance</label>
+        <label data-i18n="Tolerance">Tolerance</label>
         <input type="range" id="wand-tolerance" min="0" max="100" value="32" oninput="OS.state.wandTolerance=+this.value;document.getElementById('wand-tol-val').textContent=this.value">
         <span class="opt-val" id="wand-tol-val">32</span>
-        <label><input type="checkbox" id="wand-contiguous" checked onchange="OS.state.wandContiguous=this.checked"> Contiguous</label>
+        <label data-i18n="Contiguous"><input type="checkbox" id="wand-contiguous" checked onchange="OS.state.wandContiguous=this.checked"> Contiguous</label>
     </div>
     <div class="opt-group" id="opt-crop" style="display:none">
-        <label>Ratio</label>
+        <label data-i18n="Ratio">Ratio</label>
         <select id="crop-ratio" onchange="OS.setCropRatio(this.value)" style="font-size:11px">
-            <option value="free">Freeform</option>
-            <option value="original">Original Ratio</option>
-            <option value="1:1">1:1 (Square)</option>
+            <option value="free" data-i18n="Freeform">Freeform</option>
+            <option value="original" data-i18n="Original Ratio">Original Ratio</option>
+            <option value="1:1" data-i18n="1:1 (Square)">1:1 (Square)</option>
             <option value="4:3">4:3</option>
             <option value="3:2">3:2</option>
             <option value="16:9">16:9</option>
-            <option value="9:16">9:16 (Portrait)</option>
+            <option value="9:16" data-i18n="9:16 (Portrait)">9:16 (Portrait)</option>
             <option value="5:4">5:4</option>
             <option value="2:3">2:3</option>
-            <option value="custom">Custom...</option>
+            <option value="custom" data-i18n="Custom...">Custom...</option>
         </select>
         <label>W</label><input id="crop-w" type="number" style="width:52px;height:22px;background:var(--bg-depth-3);border:1px solid var(--border);border-radius:3px;color:var(--text-primary);font-size:11px;text-align:center" onchange="OS.setCropSize()">
         <label>x</label>
         <label>H</label><input id="crop-h" type="number" style="width:52px;height:22px;background:var(--bg-depth-3);border:1px solid var(--border);border-radius:3px;color:var(--text-primary);font-size:11px;text-align:center" onchange="OS.setCropSize()">
-        <button class="btn" style="padding:3px 8px;font-size:11px" onclick="OS.swapCropRatio()" title="Swap W/H">&#8646;</button>
+        <button class="btn" style="padding:3px 8px;font-size:11px" onclick="OS.swapCropRatio()" title="Swap W/H" data-i18n-title="Swap W/H">&#8646;</button>
         <span style="flex:1"></span>
-        <button class="btn btn-primary" style="padding:3px 14px;font-size:11px" onclick="OS.applyCrop()">Apply</button>
-        <button class="btn" style="padding:3px 10px;font-size:11px" onclick="OS.cancelCrop()">Cancel</button>
+        <button class="btn btn-primary" style="padding:3px 14px;font-size:11px" onclick="OS.applyCrop()" data-i18n="Apply">Apply</button>
+        <button class="btn" style="padding:3px 10px;font-size:11px" onclick="OS.cancelCrop()" data-i18n="Cancel">Cancel</button>
     </div>
-    <div class="opt-group" id="opt-marquee" style="display:none"><span style="color:var(--text-muted);font-size:11px">Drag to create selection.</span></div>
-    <div class="opt-group" id="opt-lasso" style="display:none"><span style="color:var(--text-muted);font-size:11px">Click to add points. Double-click to close selection.</span></div>
-    <div class="opt-group" id="opt-ai-segment" style="display:none"><span style="color:var(--text-muted);font-size:11px">Segment Select</span><span style="color:var(--accent);font-size:11px;margin-left:8px">Panoptic model loads on demand</span></div>
+    <div class="opt-group" id="opt-marquee" style="display:none"><span style="color:var(--text-muted);font-size:11px" data-i18n="Drag to create selection.">Drag to create selection.</span></div>
+    <div class="opt-group" id="opt-lasso" style="display:none"><span style="color:var(--text-muted);font-size:11px" data-i18n="Click to add points. Double-click to close selection.">Click to add points. Double-click to close selection.</span></div>
+    <div class="opt-group" id="opt-ai-segment" style="display:none"><span style="color:var(--text-muted);font-size:11px" data-i18n="Segment Select">Segment Select</span><span style="color:var(--accent);font-size:11px;margin-left:8px" data-i18n="Panoptic model loads on demand">Panoptic model loads on demand</span></div>
     <div class="opt-group" id="opt-pen" style="display:none">
-        <span style="color:var(--text-muted);font-size:11px">Click to add anchor points. Double-click to finish path.</span>
-        <label>Stroke</label><input type="color" id="pen-stroke" value="#ffffff" onchange="OS.state.penStroke=this.value">
-        <label>Width</label><input type="number" id="pen-width" value="2" min="1" max="20" style="width:45px" onchange="OS.state.penWidth=+this.value">
-        <label><input type="checkbox" id="pen-filled" onchange="OS.state.penFilled=this.checked"> Fill</label>
+        <span style="color:var(--text-muted);font-size:11px" data-i18n="Click to add anchor points. Double-click to finish path.">Click to add anchor points. Double-click to finish path.</span>
+        <label data-i18n="Stroke">Stroke</label><input type="color" id="pen-stroke" value="#ffffff" onchange="OS.state.penStroke=this.value">
+        <label data-i18n="Width">Width</label><input type="number" id="pen-width" value="2" min="1" max="20" style="width:45px" onchange="OS.state.penWidth=+this.value">
+        <label data-i18n="Fill"><input type="checkbox" id="pen-filled" onchange="OS.state.penFilled=this.checked"> Fill</label>
     </div>
     <div class="opt-group" id="opt-polygon" style="display:none">
-        <label>Sides</label><input type="number" id="poly-sides" value="5" min="3" max="20" style="width:45px" onchange="OS.state.polySides=+this.value">
-        <label>Fill</label><input type="color" id="poly-fill" value="#6c8cff" onchange="OS.state.shapeFill=this.value">
-        <label>Stroke</label><input type="color" id="poly-stroke" value="#ffffff" onchange="OS.state.shapeStroke=this.value">
-        <label><input type="checkbox" id="poly-filled" checked onchange="OS.state.shapeFilled=this.checked"> Filled</label>
+        <label data-i18n="Sides">Sides</label><input type="number" id="poly-sides" value="5" min="3" max="20" style="width:45px" onchange="OS.state.polySides=+this.value">
+        <label data-i18n="Fill">Fill</label><input type="color" id="poly-fill" value="#6c8cff" onchange="OS.state.shapeFill=this.value">
+        <label data-i18n="Stroke">Stroke</label><input type="color" id="poly-stroke" value="#ffffff" onchange="OS.state.shapeStroke=this.value">
+        <label data-i18n="Filled"><input type="checkbox" id="poly-filled" checked onchange="OS.state.shapeFilled=this.checked"> Filled</label>
     </div>
     <div class="opt-group" id="opt-star" style="display:none">
-        <label>Points</label><input type="number" id="star-points" value="5" min="3" max="20" style="width:45px" onchange="OS.state.starPoints=+this.value">
-        <label>Inner R</label><input type="range" id="star-inner" min="10" max="90" value="40" oninput="OS.state.starInner=+this.value">
-        <label>Fill</label><input type="color" id="star-fill" value="#6c8cff" onchange="OS.state.shapeFill=this.value">
-        <label><input type="checkbox" id="star-filled" checked onchange="OS.state.shapeFilled=this.checked"> Filled</label>
+        <label data-i18n="Points">Points</label><input type="number" id="star-points" value="5" min="3" max="20" style="width:45px" onchange="OS.state.starPoints=+this.value">
+        <label data-i18n="Inner R">Inner R</label><input type="range" id="star-inner" min="10" max="90" value="40" oninput="OS.state.starInner=+this.value">
+        <label data-i18n="Fill">Fill</label><input type="color" id="star-fill" value="#6c8cff" onchange="OS.state.shapeFill=this.value">
+        <label data-i18n="Filled"><input type="checkbox" id="star-filled" checked onchange="OS.state.shapeFilled=this.checked"> Filled</label>
     </div>
     <div class="opt-group" id="opt-healing" style="display:none">
-        <label>Size</label>
+        <label data-i18n="Size">Size</label>
         <input type="range" id="healing-size" min="5" max="80" value="15" oninput="OS.state.healingSize=+this.value;document.getElementById('heal-size-val').textContent=this.value">
         <span class="opt-val" id="heal-size-val">15</span>
-        <span style="color:var(--text-muted);font-size:11px;margin-left:8px">Click to heal blemish</span>
+        <span style="color:var(--text-muted);font-size:11px;margin-left:8px" data-i18n="Click to heal blemish">Click to heal blemish</span>
     </div>
     <div class="opt-group" id="opt-dodge" style="display:none">
-        <label>Size</label><input type="range" id="dodge-size" min="5" max="100" value="20" oninput="OS.state.dodgeSize=+this.value">
-        <label>Exposure</label><input type="range" id="dodge-exp" min="5" max="100" value="30" oninput="OS.state.dodgeExposure=+this.value">
-        <label>Range</label><select id="dodge-range" onchange="OS.state.dodgeRange=this.value" style="font-size:11px"><option value="midtones">Midtones</option><option value="shadows">Shadows</option><option value="highlights">Highlights</option></select>
+        <label data-i18n="Size">Size</label><input type="range" id="dodge-size" min="5" max="100" value="20" oninput="OS.state.dodgeSize=+this.value">
+        <label data-i18n="Exposure">Exposure</label><input type="range" id="dodge-exp" min="5" max="100" value="30" oninput="OS.state.dodgeExposure=+this.value">
+        <label data-i18n="Range">Range</label><select id="dodge-range" onchange="OS.state.dodgeRange=this.value" style="font-size:11px"><option value="midtones" data-i18n="Midtones">Midtones</option><option value="shadows" data-i18n="Shadows">Shadows</option><option value="highlights" data-i18n="Highlights">Highlights</option></select>
     </div>
     <div class="opt-group" id="opt-burn" style="display:none">
-        <label>Size</label><input type="range" id="burn-size" min="5" max="100" value="20" oninput="OS.state.burnSize=+this.value">
-        <label>Exposure</label><input type="range" id="burn-exp" min="5" max="100" value="30" oninput="OS.state.burnExposure=+this.value">
-        <label>Range</label><select id="burn-range" onchange="OS.state.burnRange=this.value" style="font-size:11px"><option value="midtones">Midtones</option><option value="shadows">Shadows</option><option value="highlights">Highlights</option></select>
+        <label data-i18n="Size">Size</label><input type="range" id="burn-size" min="5" max="100" value="20" oninput="OS.state.burnSize=+this.value">
+        <label data-i18n="Exposure">Exposure</label><input type="range" id="burn-exp" min="5" max="100" value="30" oninput="OS.state.burnExposure=+this.value">
+        <label data-i18n="Range">Range</label><select id="burn-range" onchange="OS.state.burnRange=this.value" style="font-size:11px"><option value="midtones" data-i18n="Midtones">Midtones</option><option value="shadows" data-i18n="Shadows">Shadows</option><option value="highlights" data-i18n="Highlights">Highlights</option></select>
     </div>
     <div class="opt-group" id="opt-sponge" style="display:none">
-        <label>Size</label><input type="range" id="sponge-size" min="5" max="100" value="20" oninput="OS.state.spongeSize=+this.value">
-        <label>Flow</label><input type="range" id="sponge-flow" min="5" max="100" value="50" oninput="OS.state.spongeFlow=+this.value">
-        <label>Mode</label><select id="sponge-mode" onchange="OS.state.spongeMode=this.value" style="font-size:11px"><option value="saturate">Saturate</option><option value="desaturate">Desaturate</option></select>
+        <label data-i18n="Size">Size</label><input type="range" id="sponge-size" min="5" max="100" value="20" oninput="OS.state.spongeSize=+this.value">
+        <label data-i18n="Flow">Flow</label><input type="range" id="sponge-flow" min="5" max="100" value="50" oninput="OS.state.spongeFlow=+this.value">
+        <label data-i18n="Mode">Mode</label><select id="sponge-mode" onchange="OS.state.spongeMode=this.value" style="font-size:11px"><option value="saturate" data-i18n="Saturate">Saturate</option><option value="desaturate" data-i18n="Desaturate">Desaturate</option></select>
     </div>
     <div class="opt-group" id="opt-smudge" style="display:none">
-        <label>Size</label><input type="range" id="smudge-size" min="3" max="80" value="15" oninput="OS.state.smudgeSize=+this.value">
-        <label>Strength</label><input type="range" id="smudge-str" min="10" max="100" value="60" oninput="OS.state.smudgeStrength=+this.value">
+        <label data-i18n="Size">Size</label><input type="range" id="smudge-size" min="3" max="80" value="15" oninput="OS.state.smudgeSize=+this.value">
+        <label data-i18n="Strength">Strength</label><input type="range" id="smudge-str" min="10" max="100" value="60" oninput="OS.state.smudgeStrength=+this.value">
     </div>
-    <div class="opt-group" id="opt-measure" style="display:none"><span style="color:var(--text-muted);font-size:11px">Click two points to measure distance.</span><span id="measure-result" style="color:var(--accent);font-family:Consolas,'Microsoft YaHei UI',monospace;font-size:11px;margin-left:8px"></span></div>
-    <div class="opt-group" id="opt-select" style="display:none"><span style="color:var(--text-muted);font-size:11px">Click to select. Drag to move. Handles to resize/rotate.</span></div>
+    <div class="opt-group" id="opt-measure" style="display:none"><span style="color:var(--text-muted);font-size:11px" data-i18n="Click two points to measure distance.">Click two points to measure distance.</span><span id="measure-result" style="color:var(--accent);font-family:Consolas,'Microsoft YaHei UI',monospace;font-size:11px;margin-left:8px"></span></div>
+    <div class="opt-group" id="opt-select" style="display:none"><span style="color:var(--text-muted);font-size:11px" data-i18n="Click to select. Drag to move. Handles to resize/rotate.">Click to select. Drag to move. Handles to resize/rotate.</span></div>
 </div>
 
 <!-- ===== RULERS ===== -->
@@ -1082,8 +1095,8 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <div class="ruler-v" id="ruler-v"><canvas id="ruler-v-canvas" width="20"></canvas></div>
 
 <!-- ===== CANVAS ===== -->
-<div id="canvas-area" role="application" aria-roledescription="image editor canvas" aria-label="Image canvas" aria-describedby="canvas-a11y-summary">
-    <canvas id="editor-canvas" aria-label="Drawing surface"></canvas>
+<div id="canvas-area" role="application" aria-roledescription="image editor canvas" aria-label="Image canvas" aria-describedby="canvas-a11y-summary" data-i18n-aria-label="Image canvas" data-i18n-aria-roledescription="image editor canvas">
+    <canvas id="editor-canvas" aria-label="Drawing surface" data-i18n-aria-label="Drawing surface"></canvas>
     <canvas class="canvas-grid" id="grid-overlay"></canvas>
     <div id="guides-container"></div>
     <div id="lasso-overlay" class="lasso-overlay" style="display:none"><svg><polygon class="lasso-path" points=""/></svg></div>
@@ -1092,30 +1105,30 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     <div id="selection-overlay" class="selection-rect" style="display:none"></div>
     <div id="crop-container" class="crop-overlay" style="display:none"></div>
 </div>
-<section id="canvas-a11y-tree" class="sr-only" aria-label="Canvas state">
-    <h2>Canvas state</h2>
-    <p id="canvas-a11y-summary">OpenShop canvas ready.</p>
-    <p id="canvas-a11y-tool">Tool: Select</p>
-    <p id="canvas-a11y-layer">Active layer: none</p>
-    <p id="canvas-a11y-selection">Selection: none</p>
-    <p id="canvas-a11y-objects">Objects: 0</p>
+<section id="canvas-a11y-tree" class="sr-only" aria-label="Canvas state" data-i18n-aria-label="Canvas state">
+    <h2 data-i18n="Canvas state">Canvas state</h2>
+    <p id="canvas-a11y-summary" data-i18n="OpenShop canvas ready.">OpenShop canvas ready.</p>
+    <p id="canvas-a11y-tool" data-i18n="Tool: Select">Tool: Select</p>
+    <p id="canvas-a11y-layer" data-i18n="Active layer: none">Active layer: none</p>
+    <p id="canvas-a11y-selection" data-i18n="Selection: none">Selection: none</p>
+    <p id="canvas-a11y-objects" data-i18n="Objects: 0">Objects: 0</p>
     <ul id="canvas-a11y-layers"></ul>
 </section>
 <div id="canvas-a11y-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
 <!-- ===== WELCOME SCREEN ===== -->
-<div id="welcome-overlay" role="dialog" aria-label="Welcome to OpenShop">
+<div id="welcome-overlay" role="dialog" aria-label="Welcome to OpenShop" data-i18n-aria-label="Welcome to OpenShop">
     <div class="welcome-inner">
         <h1>OpenShop</h1>
-        <p>Professional image editing, entirely in your browser.<br>No uploads, no accounts, no install.</p>
+        <p><span data-i18n="Professional image editing, entirely in your browser.">Professional image editing, entirely in your browser.</span><br><span data-i18n="No uploads, no accounts, no install.">No uploads, no accounts, no install.</span></p>
         <div class="welcome-actions">
-            <button class="btn btn-primary" onclick="OS.dismissWelcome();OS.newImage()">New Canvas</button>
-            <button class="btn" onclick="OS.dismissWelcome();OS.openFile()">Open Image</button>
-            <button class="btn" onclick="OS.dismissWelcome();OS.openPSD()">Open PSD</button>
-            <button class="btn" onclick="OS.dismissWelcome()" style="opacity:.7">Skip</button>
+            <button class="btn btn-primary" onclick="OS.dismissWelcome();OS.newImage()" data-i18n="New Canvas">New Canvas</button>
+            <button class="btn" onclick="OS.dismissWelcome();OS.openFile()" data-i18n="Open Image">Open Image</button>
+            <button class="btn" onclick="OS.dismissWelcome();OS.openPSD()" data-i18n="Open PSD">Open PSD</button>
+            <button class="btn" onclick="OS.dismissWelcome()" style="opacity:.7" data-i18n="Skip">Skip</button>
         </div>
         <div class="template-section">
-            <h3>Start from Template</h3>
+            <h3 data-i18n="Start from Template">Start from Template</h3>
             <div class="template-grid" id="template-grid"></div>
         </div>
         <div class="recent-files" id="recent-files-area"></div>
@@ -1123,91 +1136,91 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 </div>
 
 <!-- ===== RIGHT PANELS ===== -->
-<div id="panels" role="complementary" aria-label="Editor panels">
+<div id="panels" role="complementary" aria-label="Editor panels" data-i18n-aria-label="Editor panels">
     <!-- ===== TAB GROUP 1: Layers / Properties / Align ===== -->
     <div class="panel-tab-group ptg-flex">
         <div class="panel-tabs">
-            <button class="panel-tab active" onclick="OS.switchTab(this,'ptg1','ptg1-layers')">Layers</button>
-            <button class="panel-tab" onclick="OS.switchTab(this,'ptg1','ptg1-props')">Properties</button>
-            <button class="panel-tab" onclick="OS.switchTab(this,'ptg1','ptg1-align')">Align</button>
+            <button class="panel-tab active" onclick="OS.switchTab(this,'ptg1','ptg1-layers')" data-i18n="Layers">Layers</button>
+            <button class="panel-tab" onclick="OS.switchTab(this,'ptg1','ptg1-props')" data-i18n="Properties">Properties</button>
+            <button class="panel-tab" onclick="OS.switchTab(this,'ptg1','ptg1-align')" data-i18n="Align">Align</button>
         </div>
         <!-- Layers Tab -->
         <div class="panel-tab-content active" id="ptg1-layers" data-group="ptg1">
             <div class="ptc-inner">
                 <div class="panel-actions" style="display:flex;gap:2px;margin-bottom:6px;justify-content:flex-end">
-                    <button class="panel-action" title="New Layer" onclick="OS.addLayer()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
-                    <button class="panel-action" title="Duplicate" onclick="OS.duplicateLayer()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-                    <button class="panel-action" title="Merge Down" onclick="OS.mergeDown()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 18L12 22L16 18"/><path d="M12 2V22"/></svg></button>
-                    <button class="panel-action" title="Delete" onclick="OS.deleteLayer()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
-                    <button class="panel-action" title="Mask" onclick="OS.canvas.getActiveObject()&&OS.canvas.getActiveObject()._hasMask?OS.removeLayerMask():OS.addLayerMask()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="5"/></svg></button>
+                    <button class="panel-action" title="New Layer" onclick="OS.addLayer()" data-i18n-title="New Layer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+                    <button class="panel-action" title="Duplicate" onclick="OS.duplicateLayer()" data-i18n-title="Duplicate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                    <button class="panel-action" title="Merge Down" onclick="OS.mergeDown()" data-i18n-title="Merge Down"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 18L12 22L16 18"/><path d="M12 2V22"/></svg></button>
+                    <button class="panel-action" title="Delete" onclick="OS.deleteLayer()" data-i18n-title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                    <button class="panel-action" title="Mask" onclick="OS.canvas.getActiveObject()&&OS.canvas.getActiveObject()._hasMask?OS.removeLayerMask():OS.addLayerMask()" data-i18n-title="Mask"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="5"/></svg></button>
                 </div>
                 <div class="blend-row">
                     <select id="layer-blend" onchange="OS.setLayerBlend(this.value)">
-                        <option value="source-over">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option>
-                        <option value="overlay">Overlay</option><option value="darken">Darken</option><option value="lighten">Lighten</option>
-                        <option value="color-dodge">Color Dodge</option><option value="color-burn">Color Burn</option>
-                        <option value="hard-light">Hard Light</option><option value="soft-light">Soft Light</option>
-                        <option value="difference">Difference</option><option value="exclusion">Exclusion</option>
-                        <option value="hue">Hue</option><option value="saturation">Saturation</option>
-                        <option value="color">Color</option><option value="luminosity">Luminosity</option>
+                        <option value="source-over" data-i18n="Normal">Normal</option><option value="multiply" data-i18n="Multiply">Multiply</option><option value="screen" data-i18n="Screen">Screen</option>
+                        <option value="overlay" data-i18n="Overlay">Overlay</option><option value="darken" data-i18n="Darken">Darken</option><option value="lighten" data-i18n="Lighten">Lighten</option>
+                        <option value="color-dodge" data-i18n="Color Dodge">Color Dodge</option><option value="color-burn" data-i18n="Color Burn">Color Burn</option>
+                        <option value="hard-light" data-i18n="Hard Light">Hard Light</option><option value="soft-light" data-i18n="Soft Light">Soft Light</option>
+                        <option value="difference" data-i18n="Difference">Difference</option><option value="exclusion" data-i18n="Exclusion">Exclusion</option>
+                        <option value="hue" data-i18n="Hue">Hue</option><option value="saturation" data-i18n="Saturation">Saturation</option>
+                        <option value="color" data-i18n="Color">Color</option><option value="luminosity" data-i18n="Luminosity">Luminosity</option>
                     </select>
                 </div>
                 <div class="opt-group" style="margin-bottom:6px">
-                    <label>Opacity</label>
+                    <label data-i18n="Opacity">Opacity</label>
                     <input type="range" id="layer-opacity" min="0" max="100" value="100" oninput="OS.setLayerOpacity(this.value)">
                     <span class="opt-val" id="layer-opacity-val">100</span>
                 </div>
-                <div id="layers-list" role="listbox" aria-label="Layers"></div>
-                <div id="layers-empty">No layers. Click + to add one.</div>
+                <div id="layers-list" role="listbox" aria-label="Layers" data-i18n-aria-label="Layers"></div>
+                <div id="layers-empty" data-i18n="No layers. Click + to add one.">No layers. Click + to add one.</div>
             </div>
         </div>
         <!-- Properties Tab (Adjustments + Text FX + Layer Styles) -->
         <div class="panel-tab-content" id="ptg1-props" data-group="ptg1">
             <div class="ptc-inner">
-                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:6px">Adjustments</div>
-                <div class="adj-row"><label>Brightness</label><input type="range" id="adj-bright" min="-100" max="100" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-bright-val">0</span></div>
-                <div class="adj-row"><label>Contrast</label><input type="range" id="adj-contrast" min="-100" max="100" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-contrast-val">0</span></div>
-                <div class="adj-row"><label>Saturation</label><input type="range" id="adj-sat" min="-100" max="100" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-sat-val">0</span></div>
-                <div class="adj-row"><label>Hue</label><input type="range" id="adj-hue" min="-180" max="180" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-hue-val">0</span></div>
-                <div class="adj-row"><label>Blur</label><input type="range" id="adj-blur" min="0" max="100" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-blur-val">0</span></div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:6px" data-i18n="Adjustments">Adjustments</div>
+                <div class="adj-row"><label data-i18n="Brightness">Brightness</label><input type="range" id="adj-bright" min="-100" max="100" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-bright-val">0</span></div>
+                <div class="adj-row"><label data-i18n="Contrast">Contrast</label><input type="range" id="adj-contrast" min="-100" max="100" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-contrast-val">0</span></div>
+                <div class="adj-row"><label data-i18n="Saturation">Saturation</label><input type="range" id="adj-sat" min="-100" max="100" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-sat-val">0</span></div>
+                <div class="adj-row"><label data-i18n="Hue">Hue</label><input type="range" id="adj-hue" min="-180" max="180" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-hue-val">0</span></div>
+                <div class="adj-row"><label data-i18n="Blur">Blur</label><input type="range" id="adj-blur" min="0" max="100" value="0" oninput="OS.liveAdjust()"><span class="adj-val" id="adj-blur-val">0</span></div>
                 <div class="adj-btns">
-                    <button class="btn btn-primary" onclick="OS.applyAdjustments()">Apply</button>
-                    <button class="btn" onclick="OS.resetAdjustments()">Reset</button>
+                    <button class="btn btn-primary" onclick="OS.applyAdjustments()" data-i18n="Apply">Apply</button>
+                    <button class="btn" onclick="OS.resetAdjustments()" data-i18n="Reset">Reset</button>
                 </div>
                 <div style="height:1px;background:var(--border);margin:10px 0"></div>
-                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:6px">Text Effects</div>
-                <div class="text-fx-row"><label>Shadow X</label><input type="range" id="tfx-sx" min="-20" max="20" value="2" oninput="OS.applyTextFx()"></div>
-                <div class="text-fx-row"><label>Shadow Y</label><input type="range" id="tfx-sy" min="-20" max="20" value="2" oninput="OS.applyTextFx()"></div>
-                <div class="text-fx-row"><label>Blur</label><input type="range" id="tfx-blur" min="0" max="30" value="4" oninput="OS.applyTextFx()"></div>
-                <div class="text-fx-row"><label>Color</label><input type="color" id="tfx-color" value="#000000" onchange="OS.applyTextFx()"></div>
-                <div class="text-fx-row"><label>Outline W</label><input type="range" id="tfx-stroke" min="0" max="10" value="0" oninput="OS.applyTextFx()"></div>
-                <div class="text-fx-row"><label>Outline C</label><input type="color" id="tfx-stroke-color" value="#000000" onchange="OS.applyTextFx()"></div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:6px" data-i18n="Text Effects">Text Effects</div>
+                <div class="text-fx-row"><label data-i18n="Shadow X">Shadow X</label><input type="range" id="tfx-sx" min="-20" max="20" value="2" oninput="OS.applyTextFx()"></div>
+                <div class="text-fx-row"><label data-i18n="Shadow Y">Shadow Y</label><input type="range" id="tfx-sy" min="-20" max="20" value="2" oninput="OS.applyTextFx()"></div>
+                <div class="text-fx-row"><label data-i18n="Blur">Blur</label><input type="range" id="tfx-blur" min="0" max="30" value="4" oninput="OS.applyTextFx()"></div>
+                <div class="text-fx-row"><label data-i18n="Color">Color</label><input type="color" id="tfx-color" value="#000000" onchange="OS.applyTextFx()"></div>
+                <div class="text-fx-row"><label data-i18n="Outline W">Outline W</label><input type="range" id="tfx-stroke" min="0" max="10" value="0" oninput="OS.applyTextFx()"></div>
+                <div class="text-fx-row"><label data-i18n="Outline C">Outline C</label><input type="color" id="tfx-stroke-color" value="#000000" onchange="OS.applyTextFx()"></div>
                 <div class="adj-btns">
-                    <button class="btn btn-primary" onclick="OS.applyTextFx()" style="padding:3px 10px;font-size:11px">Apply</button>
-                    <button class="btn" onclick="OS.clearTextFx()" style="padding:3px 10px;font-size:11px">Clear</button>
+                    <button class="btn btn-primary" onclick="OS.applyTextFx()" style="padding:3px 10px;font-size:11px" data-i18n="Apply">Apply</button>
+                    <button class="btn" onclick="OS.clearTextFx()" style="padding:3px 10px;font-size:11px" data-i18n="Clear">Clear</button>
                 </div>
                 <div style="height:1px;background:var(--border);margin:10px 0"></div>
-                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:6px">Layer Styles</div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:6px" data-i18n="Layer Styles">Layer Styles</div>
                 <details class="style-section" open>
-                    <summary>Drop Shadow</summary>
-                    <div class="layer-style-row"><label>Offset X</label><input type="range" id="ls-ds-x" min="-30" max="30" value="3" oninput="OS.previewLayerStyle()"></div>
-                    <div class="layer-style-row"><label>Offset Y</label><input type="range" id="ls-ds-y" min="-30" max="30" value="3" oninput="OS.previewLayerStyle()"></div>
-                    <div class="layer-style-row"><label>Blur</label><input type="range" id="ls-ds-blur" min="0" max="40" value="6" oninput="OS.previewLayerStyle()"></div>
-                    <div class="layer-style-row"><label>Color</label><input type="color" id="ls-ds-color" value="#000000" onchange="OS.previewLayerStyle()"></div>
+                    <summary data-i18n="Drop Shadow">Drop Shadow</summary>
+                    <div class="layer-style-row"><label data-i18n="Offset X">Offset X</label><input type="range" id="ls-ds-x" min="-30" max="30" value="3" oninput="OS.previewLayerStyle()"></div>
+                    <div class="layer-style-row"><label data-i18n="Offset Y">Offset Y</label><input type="range" id="ls-ds-y" min="-30" max="30" value="3" oninput="OS.previewLayerStyle()"></div>
+                    <div class="layer-style-row"><label data-i18n="Blur">Blur</label><input type="range" id="ls-ds-blur" min="0" max="40" value="6" oninput="OS.previewLayerStyle()"></div>
+                    <div class="layer-style-row"><label data-i18n="Color">Color</label><input type="color" id="ls-ds-color" value="#000000" onchange="OS.previewLayerStyle()"></div>
                 </details>
                 <details class="style-section">
-                    <summary>Outer Glow</summary>
-                    <div class="layer-style-row"><label>Size</label><input type="range" id="ls-og-size" min="0" max="40" value="0" oninput="OS.previewLayerStyle()"></div>
-                    <div class="layer-style-row"><label>Color</label><input type="color" id="ls-og-color" value="#6c8cff" onchange="OS.previewLayerStyle()"></div>
+                    <summary data-i18n="Outer Glow">Outer Glow</summary>
+                    <div class="layer-style-row"><label data-i18n="Size">Size</label><input type="range" id="ls-og-size" min="0" max="40" value="0" oninput="OS.previewLayerStyle()"></div>
+                    <div class="layer-style-row"><label data-i18n="Color">Color</label><input type="color" id="ls-og-color" value="#6c8cff" onchange="OS.previewLayerStyle()"></div>
                 </details>
                 <details class="style-section">
-                    <summary>Stroke</summary>
-                    <div class="layer-style-row"><label>Width</label><input type="range" id="ls-st-w" min="0" max="20" value="0" oninput="OS.previewLayerStyle()"></div>
-                    <div class="layer-style-row"><label>Color</label><input type="color" id="ls-st-color" value="#ffffff" onchange="OS.previewLayerStyle()"></div>
+                    <summary data-i18n="Stroke">Stroke</summary>
+                    <div class="layer-style-row"><label data-i18n="Width">Width</label><input type="range" id="ls-st-w" min="0" max="20" value="0" oninput="OS.previewLayerStyle()"></div>
+                    <div class="layer-style-row"><label data-i18n="Color">Color</label><input type="color" id="ls-st-color" value="#ffffff" onchange="OS.previewLayerStyle()"></div>
                 </details>
                 <div class="adj-btns">
-                    <button class="btn btn-primary" onclick="OS.applyLayerStyle()" style="padding:3px 10px;font-size:11px">Apply</button>
-                    <button class="btn" onclick="OS.clearLayerStyle()" style="padding:3px 10px;font-size:11px">Clear</button>
+                    <button class="btn btn-primary" onclick="OS.applyLayerStyle()" style="padding:3px 10px;font-size:11px" data-i18n="Apply">Apply</button>
+                    <button class="btn" onclick="OS.clearLayerStyle()" style="padding:3px 10px;font-size:11px" data-i18n="Clear">Clear</button>
                 </div>
             </div>
         </div>
@@ -1215,16 +1228,16 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         <div class="panel-tab-content" id="ptg1-align" data-group="ptg1">
             <div class="ptc-inner">
                 <div class="align-grid">
-                    <button onclick="OS.alignObjects('left')" title="Align Left"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="2" x2="4" y2="22"/><rect x="8" y="4" width="12" height="6" rx="1"/><rect x="8" y="14" width="8" height="6" rx="1"/></svg></button>
-                    <button onclick="OS.alignObjects('centerH')" title="Align Center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="2" x2="12" y2="22"/><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="6" y="14" width="12" height="6" rx="1"/></svg></button>
-                    <button onclick="OS.alignObjects('right')" title="Align Right"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="20" y1="2" x2="20" y2="22"/><rect x="4" y="4" width="12" height="6" rx="1"/><rect x="8" y="14" width="8" height="6" rx="1"/></svg></button>
-                    <button onclick="OS.alignObjects('top')" title="Align Top"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="4" x2="22" y2="4"/><rect x="4" y="8" width="6" height="12" rx="1"/><rect x="14" y="8" width="6" height="8" rx="1"/></svg></button>
-                    <button onclick="OS.alignObjects('centerV')" title="Align Middle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="12" x2="22" y2="12"/><rect x="4" y="4" width="6" height="16" rx="1"/><rect x="14" y="6" width="6" height="12" rx="1"/></svg></button>
-                    <button onclick="OS.alignObjects('bottom')" title="Align Bottom"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="20" x2="22" y2="20"/><rect x="4" y="4" width="6" height="12" rx="1"/><rect x="14" y="8" width="6" height="8" rx="1"/></svg></button>
+                    <button onclick="OS.alignObjects('left')" title="Align Left" data-i18n-title="Align Left"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="2" x2="4" y2="22"/><rect x="8" y="4" width="12" height="6" rx="1"/><rect x="8" y="14" width="8" height="6" rx="1"/></svg></button>
+                    <button onclick="OS.alignObjects('centerH')" title="Align Center" data-i18n-title="Align Center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="2" x2="12" y2="22"/><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="6" y="14" width="12" height="6" rx="1"/></svg></button>
+                    <button onclick="OS.alignObjects('right')" title="Align Right" data-i18n-title="Align Right"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="20" y1="2" x2="20" y2="22"/><rect x="4" y="4" width="12" height="6" rx="1"/><rect x="8" y="14" width="8" height="6" rx="1"/></svg></button>
+                    <button onclick="OS.alignObjects('top')" title="Align Top" data-i18n-title="Align Top"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="4" x2="22" y2="4"/><rect x="4" y="8" width="6" height="12" rx="1"/><rect x="14" y="8" width="6" height="8" rx="1"/></svg></button>
+                    <button onclick="OS.alignObjects('centerV')" title="Align Middle" data-i18n-title="Align Middle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="12" x2="22" y2="12"/><rect x="4" y="4" width="6" height="16" rx="1"/><rect x="14" y="6" width="6" height="12" rx="1"/></svg></button>
+                    <button onclick="OS.alignObjects('bottom')" title="Align Bottom" data-i18n-title="Align Bottom"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="20" x2="22" y2="20"/><rect x="4" y="4" width="6" height="12" rx="1"/><rect x="14" y="8" width="6" height="8" rx="1"/></svg></button>
                 </div>
                 <div class="distribute-row">
-                    <button onclick="OS.distributeObjects('horizontal')">Distribute H</button>
-                    <button onclick="OS.distributeObjects('vertical')">Distribute V</button>
+                    <button onclick="OS.distributeObjects('horizontal')" data-i18n="Distribute H">Distribute H</button>
+                    <button onclick="OS.distributeObjects('vertical')" data-i18n="Distribute V">Distribute V</button>
                 </div>
             </div>
         </div>
@@ -1233,8 +1246,8 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     <!-- ===== TAB GROUP 2: Color / Palettes ===== -->
     <div class="panel-tab-group">
         <div class="panel-tabs">
-            <button class="panel-tab active" onclick="OS.switchTab(this,'ptg2','ptg2-color')">Color</button>
-            <button class="panel-tab" onclick="OS.switchTab(this,'ptg2','ptg2-palettes')">Swatches</button>
+            <button class="panel-tab active" onclick="OS.switchTab(this,'ptg2','ptg2-color')" data-i18n="Color">Color</button>
+            <button class="panel-tab" onclick="OS.switchTab(this,'ptg2','ptg2-palettes')" data-i18n="Swatches">Swatches</button>
         </div>
         <div class="panel-tab-content active" id="ptg2-color" data-group="ptg2">
             <div class="ptc-inner" style="display:flex;flex-direction:column;gap:8px">
@@ -1256,7 +1269,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
                         <input type="color" id="bg-picker" value="#000000" style="display:none" onchange="OS.setBgColor(this.value)">
                     </div>
                     <div style="flex:1">
-                        <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">FG / BG</div>
+                        <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px" data-i18n="FG / BG">FG / BG</div>
                         <div style="font-family:Consolas,'Microsoft YaHei UI',monospace;font-size:11px"><span id="fg-hex">#FFFFFF</span> / <span id="bg-hex">#000000</span></div>
                         <div id="fg-oklch" style="font-family:Consolas,'Microsoft YaHei UI',monospace;font-size:9px;color:var(--text-muted);margin-top:1px"></div>
                     </div>
@@ -1266,15 +1279,15 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         </div>
         <div class="panel-tab-content" id="ptg2-palettes" data-group="ptg2">
             <div class="ptc-inner">
-                <div class="palette-name">Default</div>
+                <div class="palette-name" data-i18n="Default">Default</div>
                 <div class="palette-row" id="palette-default"></div>
-                <div class="palette-name">Saved</div>
+                <div class="palette-name" data-i18n="Saved">Saved</div>
                 <div class="palette-row" id="palette-saved"></div>
                 <div class="palette-actions">
-                    <button class="btn" onclick="OS.savePaletteColor()" style="padding:2px 8px;font-size:10px">+ Add FG</button>
-                    <button class="btn" onclick="OS.clearPalette()" style="padding:2px 8px;font-size:10px">Clear</button>
-                    <button class="btn" onclick="OS.exportPalette()" style="padding:2px 8px;font-size:10px">Export</button>
-                    <button class="btn" onclick="OS.importPalette()" style="padding:2px 8px;font-size:10px">Import</button>
+                    <button class="btn" onclick="OS.savePaletteColor()" style="padding:2px 8px;font-size:10px" data-i18n="+ Add FG">+ Add FG</button>
+                    <button class="btn" onclick="OS.clearPalette()" style="padding:2px 8px;font-size:10px" data-i18n="Clear">Clear</button>
+                    <button class="btn" onclick="OS.exportPalette()" style="padding:2px 8px;font-size:10px" data-i18n="Export">Export</button>
+                    <button class="btn" onclick="OS.importPalette()" style="padding:2px 8px;font-size:10px" data-i18n="Import">Import</button>
                 </div>
             </div>
         </div>
@@ -1283,13 +1296,13 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     <!-- ===== TAB GROUP 3: History / Navigator / Info ===== -->
     <div class="panel-tab-group">
         <div class="panel-tabs">
-            <button class="panel-tab active" onclick="OS.switchTab(this,'ptg3','ptg3-history')">History</button>
-            <button class="panel-tab" onclick="OS.switchTab(this,'ptg3','ptg3-nav')">Navigator</button>
-            <button class="panel-tab" onclick="OS.switchTab(this,'ptg3','ptg3-info')">Info</button>
+            <button class="panel-tab active" onclick="OS.switchTab(this,'ptg3','ptg3-history')" data-i18n="History">History</button>
+            <button class="panel-tab" onclick="OS.switchTab(this,'ptg3','ptg3-nav')" data-i18n="Navigator">Navigator</button>
+            <button class="panel-tab" onclick="OS.switchTab(this,'ptg3','ptg3-info')" data-i18n="Info">Info</button>
         </div>
         <div class="panel-tab-content active" id="ptg3-history" data-group="ptg3">
             <div class="ptc-inner">
-                <div id="history-list" role="listbox" aria-label="Undo history"></div>
+                <div id="history-list" role="listbox" aria-label="Undo history" data-i18n-aria-label="Undo history"></div>
             </div>
         </div>
         <div class="panel-tab-content" id="ptg3-nav" data-group="ptg3">
@@ -1299,7 +1312,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
                     <div class="minimap-viewport" id="minimap-vp"></div>
                 </div>
                 <div style="height:1px;background:var(--border);margin:10px 0"></div>
-                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:6px">Histogram</div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:6px" data-i18n="Histogram">Histogram</div>
                 <div class="histogram-channel-btns">
                     <button class="active" onclick="OS._histChannel='luminance';OS.updateHistogram();this.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('active'));this.classList.add('active')">L</button>
                     <button onclick="OS._histChannel='red';OS.updateHistogram();this.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('active'));this.classList.add('active')">R</button>
@@ -1307,18 +1320,18 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
                     <button onclick="OS._histChannel='blue';OS.updateHistogram();this.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('active'));this.classList.add('active')">B</button>
                 </div>
                 <canvas class="histogram-canvas" id="histogram-canvas" width="240" height="80"></canvas>
-                <div class="histogram-stats"><span id="hist-min">Min: 0</span><span id="hist-mean">Mean: 128</span><span id="hist-max">Max: 255</span></div>
+                <div class="histogram-stats"><span id="hist-min" data-i18n="Min: 0">Min: 0</span><span id="hist-mean" data-i18n="Mean: 128">Mean: 128</span><span id="hist-max" data-i18n="Max: 255">Max: 255</span></div>
             </div>
         </div>
         <div class="panel-tab-content" id="ptg3-info" data-group="ptg3">
             <div class="ptc-inner">
                 <dl class="info-grid" id="info-grid">
-                    <dt>Canvas</dt><dd id="info-dims">1920 x 1080</dd>
-                    <dt>Layers</dt><dd id="info-layers">1</dd>
-                    <dt>Objects</dt><dd id="info-objects">0</dd>
-                    <dt>Zoom</dt><dd id="info-zoom">100%</dd>
-                    <dt>Color Mode</dt><dd>RGB 8bit</dd>
-                    <dt>Cursor</dt><dd id="info-cursor">0, 0</dd>
+                    <dt data-i18n="Canvas">Canvas</dt><dd id="info-dims">1920 x 1080</dd>
+                    <dt data-i18n="Layers">Layers</dt><dd id="info-layers">1</dd>
+                    <dt data-i18n="Objects">Objects</dt><dd id="info-objects">0</dd>
+                    <dt data-i18n="Zoom">Zoom</dt><dd id="info-zoom">100%</dd>
+                    <dt data-i18n="Color Mode">Color Mode</dt><dd>RGB 8bit</dd>
+                    <dt data-i18n="Cursor">Cursor</dt><dd id="info-cursor">0, 0</dd>
                 </dl>
             </div>
         </div>
@@ -1326,69 +1339,69 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 </div>
 
 <!-- ===== STATUS BAR ===== -->
-<div id="statusbar" role="status" aria-label="Status bar" aria-live="polite">
+<div id="statusbar" role="status" aria-label="Status bar" aria-live="polite" data-i18n-aria-label="Status bar">
     <span id="canvas-dims">1920 x 1080</span><span class="sep"></span>
     <span id="zoom-display" onclick="OS.zoomFit()">100%</span><span class="sep"></span>
     <span id="cursor-pos">X: 0 Y: 0</span><span class="sep"></span>
-    <span id="tool-display">Select</span><span style="flex:1"></span>
-    <span id="object-count">0 objects</span>
+    <span id="tool-display" data-i18n="Select">Select</span><span style="flex:1"></span>
+    <span id="object-count" data-i18n="0 objects">0 objects</span>
 </div>
-<div id="ai-progress" role="dialog" aria-label="AI processing" aria-live="polite">
+<div id="ai-progress" role="dialog" aria-label="AI processing" aria-live="polite" data-i18n-aria-label="AI processing">
     <div class="ai-box">
-        <div class="ai-title" id="ai-title"><span class="ai-spinner"></span>Loading AI Model...</div>
-        <div class="ai-msg" id="ai-msg">Downloading model weights (cached after first use)</div>
+        <div class="ai-title" id="ai-title" data-i18n="Loading AI Model..."><span class="ai-spinner"></span>Loading AI Model...</div>
+        <div class="ai-msg" id="ai-msg" data-i18n="Downloading model weights (cached after first use)">Downloading model weights (cached after first use)</div>
         <div class="ai-bar-wrap"><div class="ai-bar" id="ai-bar"></div></div>
         <div class="ai-pct" id="ai-pct">0%</div>
     </div>
 </div>
 <div id="toast-container" role="alert" aria-live="assertive" aria-atomic="true"></div>
 <!-- ===== COMMAND PALETTE ===== -->
-<div id="cmd-palette" role="dialog" aria-label="Command palette" onclick="if(event.target===this)OS.closeCmdPalette()">
+<div id="cmd-palette" role="dialog" aria-label="Command palette" onclick="if(event.target===this)OS.closeCmdPalette()" data-i18n-aria-label="Command palette">
     <div id="cmd-box">
-        <input id="cmd-input" type="text" placeholder="Type a command... (Ctrl+K)" aria-label="Search commands" oninput="OS.filterCommands(this.value)" onkeydown="OS.cmdKeyDown(event)">
+        <input id="cmd-input" type="text" placeholder="Type a command... (Ctrl+K)" aria-label="Search commands" oninput="OS.filterCommands(this.value)" onkeydown="OS.cmdKeyDown(event)" data-i18n-aria-label="Search commands" data-i18n-placeholder="Type a command... (Ctrl+K)">
         <div id="cmd-results"></div>
     </div>
 </div>
 <!-- ===== CONTEXT MENU ===== -->
-<div id="context-menu" role="menu" aria-label="Context menu"></div>
+<div id="context-menu" role="menu" aria-label="Context menu" data-i18n-aria-label="Context menu"></div>
 <!-- ===== DROPZONE ===== -->
 <div id="dropzone-overlay">
     <div class="dropzone-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
-    <div class="dropzone-text">Drop files here</div>
-    <div class="dropzone-sub">PNG, JPEG, WebP, PSD, SVG</div>
+    <div class="dropzone-text" data-i18n="Drop files here">Drop files here</div>
+    <div class="dropzone-sub" data-i18n="PNG, JPEG, WebP, PSD, SVG">PNG, JPEG, WebP, PSD, SVG</div>
 </div>
 <!-- ===== ANNOTATION CONTAINER ===== -->
 <div id="sticky-container" style="position:absolute;inset:0;pointer-events:none;z-index:99"></div>
 <!-- ===== LIQUIFY ===== -->
 <div id="liquify-overlay">
     <div id="liquify-topbar">
-        <label>Tool</label>
-        <select id="liq-tool"><option value="push">Forward Warp</option><option value="bloat">Bloat</option><option value="pucker">Pucker</option><option value="twirl-cw">Twirl CW</option><option value="twirl-ccw">Twirl CCW</option></select>
-        <label>Size</label><input type="range" id="liq-size" min="10" max="200" value="60">
-        <label>Pressure</label><input type="range" id="liq-pressure" min="10" max="100" value="50">
-        <label>Density</label><input type="range" id="liq-density" min="10" max="100" value="50">
+        <label data-i18n="Tool">Tool</label>
+        <select id="liq-tool"><option value="push" data-i18n="Forward Warp">Forward Warp</option><option value="bloat" data-i18n="Bloat">Bloat</option><option value="pucker" data-i18n="Pucker">Pucker</option><option value="twirl-cw" data-i18n="Twirl CW">Twirl CW</option><option value="twirl-ccw" data-i18n="Twirl CCW">Twirl CCW</option></select>
+        <label data-i18n="Size">Size</label><input type="range" id="liq-size" min="10" max="200" value="60">
+        <label data-i18n="Pressure">Pressure</label><input type="range" id="liq-pressure" min="10" max="100" value="50">
+        <label data-i18n="Density">Density</label><input type="range" id="liq-density" min="10" max="100" value="50">
         <span style="flex:1"></span>
-        <button class="btn" onclick="OS._liquifyReset()">Reset</button>
-        <button class="btn" onclick="OS.closeLiquify()">Cancel</button>
-        <button class="btn btn-primary" onclick="OS._liquifyApply()">Apply</button>
+        <button class="btn" onclick="OS._liquifyReset()" data-i18n="Reset">Reset</button>
+        <button class="btn" onclick="OS.closeLiquify()" data-i18n="Cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="OS._liquifyApply()" data-i18n="Apply">Apply</button>
     </div>
     <div id="liquify-canvas-wrap"><canvas id="liquify-canvas"></canvas></div>
 </div>
 <!-- ===== TIMELINE ===== -->
 <div id="timeline-panel">
     <div id="timeline-header">
-        <span>Animation</span>
+        <span data-i18n="Animation">Animation</span>
         <span style="flex:1"></span>
         <div class="timeline-transport">
-            <button onclick="OS.prevFrame()" title="Previous"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM9.5 12l8.5 6V6z"/></svg></button>
-            <button id="tl-play" onclick="OS.togglePlay()" title="Play/Pause"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
-            <button onclick="OS.nextFrame()" title="Next"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+            <button onclick="OS.prevFrame()" title="Previous" data-i18n-title="Previous"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM9.5 12l8.5 6V6z"/></svg></button>
+            <button id="tl-play" onclick="OS.togglePlay()" title="Play/Pause" data-i18n-title="Play/Pause"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+            <button onclick="OS.nextFrame()" title="Next" data-i18n-title="Next"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
         </div>
-        <button class="btn" onclick="OS.addFrame()">+ Frame</button>
-        <button class="btn" onclick="OS.dupFrame()">Dup</button>
+        <button class="btn" onclick="OS.addFrame()" data-i18n="+ Frame">+ Frame</button>
+        <button class="btn" onclick="OS.dupFrame()" data-i18n="Dup">Dup</button>
         <label style="font-size:10px;color:var(--text-muted)">FPS</label>
         <input type="number" id="tl-fps" value="12" min="1" max="60" style="width:40px;height:22px;background:var(--bg-depth-3);border:1px solid var(--border);border-radius:3px;color:var(--text-primary);font-size:11px;text-align:center">
-        <button class="btn btn-primary" onclick="OS.exportGIF()">Export GIF</button>
+        <button class="btn btn-primary" onclick="OS.exportGIF()" data-i18n="Export GIF">Export GIF</button>
         <button class="btn" onclick="OS.toggleTimeline()" style="padding:2px 6px">X</button>
     </div>
     <div id="timeline-frames"></div>
@@ -1396,30 +1409,30 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <!-- ===== MACRO PANEL ===== -->
 <div id="macro-panel">
     <div id="macro-header">
-        <span>Actions</span>
+        <span data-i18n="Actions">Actions</span>
         <div id="macro-rec-indicator" style="display:none"><div class="recording-indicator"></div></div>
     </div>
     <div class="macro-list" id="macro-list"></div>
     <div class="macro-controls">
-        <button class="btn" id="macro-rec-btn" onclick="OS.toggleMacroRec()">Record</button>
-        <button class="btn" onclick="OS.playMacro()">Play</button>
-        <button class="btn" onclick="OS.clearMacro()">Clear</button>
-        <button class="btn" onclick="OS.saveMacro()">Save</button>
-        <button class="btn" onclick="OS.loadMacro()">Load</button>
+        <button class="btn" id="macro-rec-btn" onclick="OS.toggleMacroRec()" data-i18n="Record">Record</button>
+        <button class="btn" onclick="OS.playMacro()" data-i18n="Play">Play</button>
+        <button class="btn" onclick="OS.clearMacro()" data-i18n="Clear">Clear</button>
+        <button class="btn" onclick="OS.saveMacro()" data-i18n="Save">Save</button>
+        <button class="btn" onclick="OS.loadMacro()" data-i18n="Load">Load</button>
     </div>
 </div>
 <!-- ===== BEFORE/AFTER COMPARE ===== -->
 <div id="ba-overlay">
     <div id="ba-topbar">
-        <span>Before / After Compare</span>
-        <button class="btn" onclick="OS.closeBeforeAfter()">Close</button>
+        <span data-i18n="Before / After Compare">Before / After Compare</span>
+        <button class="btn" onclick="OS.closeBeforeAfter()" data-i18n="Close">Close</button>
     </div>
     <div id="ba-container">
         <canvas id="ba-before"></canvas>
         <canvas id="ba-after"></canvas>
         <div id="ba-divider" style="left:50%"></div>
-        <div class="ba-label before">Before</div>
-        <div class="ba-label after">After</div>
+        <div class="ba-label before" data-i18n="Before">Before</div>
+        <div class="ba-label after" data-i18n="After">After</div>
     </div>
 </div>
 <input type="file" id="file-input" accept="image/*" style="display:none" onchange="OS.handleFileOpen(event)">
@@ -4008,7 +4021,9 @@ self.onmessage = function(e) {
         preview.textContent = this._safeText(t.icon, 12);
         const name = document.createElement('div');
         name.className = 'tpl-name';
-        name.textContent = this._safeText(t.name, 80);
+        const templateName = this._safeText(t.name, 80);
+        name.dataset.i18n = templateName;
+        name.textContent = this._t(templateName);
         const dims = document.createElement('div');
         dims.className = 'tpl-dims';
         dims.textContent = `${t.w} x ${t.h}`;
