@@ -291,4 +291,89 @@ describe('Hstar OpenShop multilingual text tools', () => {
     });
     controller.destroy();
   });
+
+  it('restores completed unapplied OCR results for review after reopening a project', async () => {
+    const blocks = [{
+      id:'ocr-restored', text:'恢复的 Mixed 文本', language:'mixed', confidence:0.91, lowConfidence:false,
+      quad:[{x:0.15,y:0.2},{x:0.55,y:0.2},{x:0.55,y:0.3},{x:0.15,y:0.3}],
+      font:{familyCandidates:['Microsoft YaHei UI', 'Arial'], size:42, weight:400, style:'normal'},
+      color:'#223344', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+    }];
+    const {controller, editor, aiClient} = createHarness();
+    editor.__hstarAiTaskRecords = [{
+      taskId:'task-restored-ocr', toolId:'text-extract', status:'succeeded',
+      apiConfigId:'vision-api', modelId:'gemini-3.1-pro-high', mode:'layer',
+      sourceAssetId:SOURCE_ASSET_ID, maskAssetId:'', outputAssetId:'',
+      createdAt:1, updatedAt:2, completedAt:2, appliedAt:0, error:'',
+      result:{schemaVersion:1, width:1920, height:1080, blocks},
+    }];
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {detail:{project:{projectId:'project-1'}}}));
+    await vi.waitFor(() => expect(controller.getState().status).toBe('review'));
+
+    expect(controller.getState()).toMatchObject({activeTool:'text-extract', reviewBlocks:blocks});
+    expect(document.querySelector('.hstar-ocr-preview img')?.getAttribute('src'))
+      .toBe(`/api/openshop/assets/${SOURCE_ASSET_ID}`);
+    expect(aiClient.pollTask).not.toHaveBeenCalled();
+
+    controller.applyTextExtraction();
+    expect(editor.__hstarAiTaskRecords[0].appliedAt).toBeGreaterThan(0);
+    controller.destroy();
+  });
+
+  it('resumes an unfinished removal task and applies its output only once', async () => {
+    const output = {
+      assetId:OUTPUT_ASSET_ID,
+      url:`/api/openshop/assets/${OUTPUT_ASSET_ID}`,
+      name:'restored-removal.png', width:1920, height:1080,
+    };
+    const {controller, editor, aiClient} = createHarness();
+    const record = {
+      taskId:'task-restored-removal', toolId:'text-remove', status:'running',
+      apiConfigId:'image-api', modelId:'gemini-3-pro-image', mode:'layer',
+      sourceAssetId:SOURCE_ASSET_ID, maskAssetId:'', outputAssetId:'',
+      createdAt:1, updatedAt:1, completedAt:0, appliedAt:0, error:'',
+    };
+    editor.__hstarAiTaskRecords = [record];
+    aiClient.pollTask.mockResolvedValue({
+      taskId:record.taskId, status:'succeeded', outputAssetId:OUTPUT_ASSET_ID, result:output,
+    });
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {detail:{project:{projectId:'project-1'}}}));
+    await vi.waitFor(() => expect(editor.layers).toHaveLength(2));
+
+    expect(aiClient.pollTask).toHaveBeenCalledWith(context, record.taskId);
+    expect(aiClient.createTask).not.toHaveBeenCalled();
+    expect(record).toMatchObject({status:'succeeded', outputAssetId:OUTPUT_ASSET_ID});
+    expect(record.appliedAt).toBeGreaterThan(0);
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {detail:{project:{projectId:'project-1'}}}));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(editor.layers).toHaveLength(2);
+    expect(aiClient.pollTask).toHaveBeenCalledTimes(1);
+    controller.destroy();
+  });
+
+  it('reports a restored output decode failure without losing the retryable task record', async () => {
+    const {controller, editor, imageLoader} = createHarness();
+    const record = {
+      taskId:'task-restored-output', toolId:'text-remove', status:'succeeded',
+      apiConfigId:'image-api', modelId:'gemini-3-pro-image', mode:'layer',
+      sourceAssetId:SOURCE_ASSET_ID, maskAssetId:'', outputAssetId:OUTPUT_ASSET_ID,
+      createdAt:1, updatedAt:2, completedAt:2, appliedAt:0, error:'',
+    };
+    editor.__hstarAiTaskRecords = [record];
+    imageLoader.mockRejectedValue(new Error('image decode failed'));
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {detail:{project:{projectId:'project-1'}}}));
+    await vi.waitFor(() => expect(controller.getState().status).toBe('failed'));
+
+    expect(controller.getState().error).toContain('image decode failed');
+    expect(record).toMatchObject({status:'succeeded', appliedAt:0});
+    expect(editor.layers).toHaveLength(1);
+    controller.destroy();
+  });
 });

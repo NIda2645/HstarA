@@ -106,6 +106,20 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     updated["layers"] = [{"layerId": "layer-a", "name": "标题", "assetRef": first_asset["assetId"]}]
     updated["assetRefs"] = [first_asset["assetId"]]
     updated["previewAssetId"] = first_asset["assetId"]
+    updated["fontRefs"] = [{"family": "Microsoft YaHei UI", "status": "available"}]
+    updated["aiToolPreferences"] = {
+        "text-extract": {
+            "toolId": "text-extract", "mode": "project",
+            "apiConfigId": "vision", "modelId": "gemini-3.1-pro-high",
+        }
+    }
+    updated["aiTaskRecords"] = [{
+        "taskId": "task-source-running", "toolId": "text-extract",
+        "apiConfigId": "vision", "modelId": "gemini-3.1-pro-high",
+        "status": "running", "mode": "layer",
+        "sourceAssetId": first_asset["assetId"], "maskAssetId": "", "outputAssetId": "",
+        "createdAt": 1, "updatedAt": 1, "completedAt": 0, "appliedAt": 0, "error": "",
+    }]
     saved = store.save("project-a", owner_a, updated, base_version=1)
     assert saved["autosaveVersion"] == 2
     assert saved["layers"][0]["name"] == "标题"
@@ -128,6 +142,9 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     assert clone["autosaveVersion"] == 1
     assert clone["layers"][0]["name"] == "标题"
     assert clone["assetRefs"] == [first_asset["assetId"]]
+    assert clone["fontRefs"] == saved["fontRefs"]
+    assert clone["aiToolPreferences"] == saved["aiToolPreferences"]
+    assert clone["aiTaskRecords"] == []
 
     clone_update = copy.deepcopy(clone)
     clone_update["layers"][0]["name"] = "副本标题"

@@ -47,6 +47,7 @@
       error:'',
       reviewBlocks:[],
       reviewSourceDataUrl:'',
+      reviewTaskRecord:null,
       activeTaskId:'',
       activeTaskRecord:null,
       runGeneration:0,
@@ -292,6 +293,28 @@
       return layer;
     }
 
+    function pendingOcrRecord(){
+      return taskRecords().find(record => (
+        record?.toolId === TOOL_EXTRACT
+        && record.status === 'succeeded'
+        && !record.appliedAt
+        && Array.isArray(record.result?.blocks)
+        && record.result.blocks.length
+      )) || null;
+    }
+
+    function showOcrReview(record){
+      if(!record) return false;
+      state.activeTool = TOOL_EXTRACT;
+      state.reviewTaskRecord = record;
+      state.reviewBlocks = clone(record.result.blocks);
+      state.reviewSourceDataUrl = record.sourceAssetId
+        ? `/api/openshop/assets/${encodeURIComponent(record.sourceAssetId)}`
+        : '';
+      setStatus('review');
+      return true;
+    }
+
     function applyTextExtraction(blocks = state.reviewBlocks){
       if(!Array.isArray(blocks) || !blocks.length) throw new Error('没有可确认的文字提取结果');
       const layerId = createId('hstar-text-layer').replaceAll('-', '_');
@@ -337,15 +360,18 @@
       editor.updateLayersPanel?.();
       editor.saveHistory?.('文字提取');
       fontManager.scanEditor(editor);
-      const record = [...taskRecords()].reverse().find(item => item.toolId === TOOL_EXTRACT && item.status === 'succeeded' && !item.appliedAt);
+      const record = state.reviewTaskRecord
+        || [...taskRecords()].reverse().find(item => item.toolId === TOOL_EXTRACT && item.status === 'succeeded' && !item.appliedAt);
       if(record){ record.appliedAt = Date.now(); record.updatedAt = record.appliedAt; }
       state.reviewBlocks = [];
-      setStatus('applied');
+      state.reviewSourceDataUrl = '';
+      state.reviewTaskRecord = null;
+      if(!showOcrReview(pendingOcrRecord())) setStatus('applied');
       markDirty('Apply extracted text');
       return layer;
     }
 
-    async function createRemovedImageLayer(result){
+    async function createRemovedImageLayer(result, taskRecord = null){
       if(!result?.assetId || !result?.url) throw new Error('去字结果资源无效');
       const image = await imageLoader(result, fabricRef);
       if(!image) throw new Error('去字结果无法载入');
@@ -374,10 +400,69 @@
       editor.canvas.renderAll?.();
       editor.updateLayersPanel?.();
       editor.saveHistory?.('去除文字');
-      const record = [...taskRecords()].reverse().find(item => item.toolId === TOOL_REMOVE && item.status === 'succeeded' && !item.appliedAt);
+      const record = taskRecord
+        || [...taskRecords()].reverse().find(item => item.toolId === TOOL_REMOVE && item.status === 'succeeded' && !item.appliedAt);
       if(record){ record.appliedAt = Date.now(); record.updatedAt = record.appliedAt; }
       markDirty('Apply text removal');
       return layer;
+    }
+
+    function hasOutputAsset(assetId){
+      const normalized = clean(assetId);
+      return Boolean(normalized && editor.layers?.some(layer => (
+        (layer?.objects || []).some(object => clean(object?.hstarAssetId) === normalized)
+      )));
+    }
+
+    async function restoreTaskRecords(generation){
+      const context = currentContext();
+      const records = [...taskRecords()];
+      for(const record of records){
+        if(generation !== state.runGeneration) return;
+        if(['queued', 'running'].includes(record?.status)){
+          state.activeTaskId = clean(record.taskId);
+          state.activeTaskRecord = record;
+          setStatus('running');
+          try {
+            const task = await aiClient.pollTask(context, record.taskId);
+            if(generation !== state.runGeneration) return;
+            updateTaskRecord(record, task);
+          } catch(error){
+            if(generation !== state.runGeneration) return;
+            updateTaskRecord(record, {
+              status:'failed',
+              error:`恢复任务失败：${clean(error?.message || error)}`,
+            });
+          } finally {
+            if(generation === state.runGeneration){
+              state.activeTaskId = '';
+              state.activeTaskRecord = null;
+            }
+          }
+        }
+        if(generation !== state.runGeneration) return;
+        if(record.status !== 'succeeded' || record.appliedAt || record.toolId !== TOOL_REMOVE) continue;
+        const assetId = clean(record.outputAssetId);
+        if(!assetId){
+          updateTaskRecord(record, {status:'failed', error:'恢复任务失败：去字结果资源不存在'});
+          continue;
+        }
+        if(hasOutputAsset(assetId)){
+          record.appliedAt = Date.now();
+          record.updatedAt = record.appliedAt;
+          markDirty('Restore existing text removal output');
+          continue;
+        }
+        await createRemovedImageLayer({
+          assetId,
+          url:`/api/openshop/assets/${encodeURIComponent(assetId)}`,
+          name:'去除文字',
+          width:Number(editor.canvasW || 1),
+          height:Number(editor.canvasH || 1),
+        }, record);
+      }
+      if(generation !== state.runGeneration) return;
+      if(!showOcrReview(pendingOcrRecord()) && state.status === 'running') setStatus('idle');
     }
 
     async function runTextRemoval(runOptions = {}){
@@ -695,12 +780,26 @@
       state.activeTaskRecord = null;
       aiClient.startSession(event.detail?.session?.context || currentContext());
       state.reviewBlocks = [];
+      state.reviewSourceDataUrl = '';
+      state.reviewTaskRecord = null;
       setStatus('idle');
     }
 
     function onProjectLoaded(){
+      const generation = ++state.runGeneration;
+      state.activeTaskId = '';
+      state.activeTaskRecord = null;
+      state.reviewBlocks = [];
+      state.reviewSourceDataUrl = '';
+      state.reviewTaskRecord = null;
       fontManager.scanEditor(editor);
       renderPanel();
+      void restoreTaskRecords(generation).catch(error => {
+        if(generation !== state.runGeneration) return;
+        state.activeTaskId = '';
+        state.activeTaskRecord = null;
+        setStatus('failed', `恢复任务失败：${clean(error?.message || error)}`);
+      });
     }
 
     function onSessionStopped(){

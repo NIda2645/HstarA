@@ -167,6 +167,7 @@ class OpenShopProjectStore:
             clone["autosaveVersion"] = 1
             clone["createdAt"] = timestamp
             clone["updatedAt"] = timestamp
+            clone["aiTaskRecords"] = []
             self._atomic_write_json(target_path, clone)
             return copy.deepcopy(clone)
 
