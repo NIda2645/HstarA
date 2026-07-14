@@ -14,6 +14,7 @@ export function loadOpenShop() {
   delete window.HstarOpenShopI18n;
   new Function(readFileSync(i18nRuntimePath, 'utf8'))();
   new Function(readFileSync(chineseLocalePath, 'utf8'))();
+  window.HstarOpenShopI18n.setLocale('en-US');
   const html = readFileSync(indexPath, 'utf8');
   const start = html.indexOf('const OS = {');
   const tail = html.slice(start);

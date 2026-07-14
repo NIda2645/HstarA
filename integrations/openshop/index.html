@@ -1445,6 +1445,11 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 // ================================================================
 //  OpenShop v0.19.1 — Core Engine (Phase 10: Pro Toolbar)
 // ================================================================
+const eventElementTarget = event => {
+    const target = event?.target;
+    return target instanceof Element ? target : target?.parentElement || null;
+};
+
 const OS = {
     _esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; },
     _downloadBlob(blob, filename) {
@@ -1460,7 +1465,13 @@ const OS = {
     },
     setLocale(lang) {
         const aliases = { en: 'en-US', zh: 'zh-CN' };
-        return window.HstarOpenShopI18n.setLocale(aliases[lang] || lang);
+        const changed = window.HstarOpenShopI18n.setLocale(aliases[lang] || lang);
+        if (changed && this.canvas) {
+            this.updateLayersPanel();
+            this.updateHistoryPanel();
+            this.updateStatus();
+        }
+        return changed;
     },
     canvas: null, layers: [], activeLayerIdx: 0,
     history: [], historyIdx: -1, maxHistory: 60,
@@ -1631,7 +1642,7 @@ const OS = {
     },
     newImage() {
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>New Image</h3>
+        o.innerHTML = `<div class="modal"><h3 data-i18n="New Image">New Image</h3>
             <div class="preset-grid">
                 <div class="preset-btn" data-pw="1920" data-ph="1080">1920x1080</div>
                 <div class="preset-btn" data-pw="1280" data-ph="720">1280x720</div>
@@ -1640,11 +1651,11 @@ const OS = {
                 <div class="preset-btn" data-pw="3840" data-ph="2160">4K</div>
                 <div class="preset-btn" data-pw="2480" data-ph="3508">A4 300dpi</div>
             </div>
-            <div class="modal-row"><label>Width</label><input id="ni-w" type="number" value="1920" min="1" max="8000"></div>
-            <div class="modal-row"><label>Height</label><input id="ni-h" type="number" value="1080" min="1" max="8000"></div>
-            <div class="modal-row"><label>Background</label><input id="ni-bg" type="color" value="#ffffff"></div>
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button>
-            <button class="btn btn-primary" data-modal-create>Create</button></div></div>`;
+            <div class="modal-row"><label data-i18n="Width">Width</label><input id="ni-w" type="number" value="1920" min="1" max="8000"></div>
+            <div class="modal-row"><label data-i18n="Height">Height</label><input id="ni-h" type="number" value="1080" min="1" max="8000"></div>
+            <div class="modal-row"><label data-i18n="Background">Background</label><input id="ni-bg" type="color" value="#ffffff"></div>
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
+            <button class="btn btn-primary" data-modal-create data-i18n="Create">Create</button></div></div>`;
         o.querySelectorAll('[data-pw]').forEach(btn => btn.addEventListener('click', () => {
             o.querySelector('#ni-w').value = btn.dataset.pw;
             o.querySelector('#ni-h').value = btn.dataset.ph;
@@ -1652,7 +1663,7 @@ const OS = {
         o.querySelector('[data-modal-create]').addEventListener('click', () => this.doNewImage(o));
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
-    doNewImage(o) { const w=+o.querySelector('#ni-w').value||1920, h=+o.querySelector('#ni-h').value||1080; this.createNewDocument(w,h); o.remove(); this.toast(`Created ${w} × ${h} canvas`, 'success'); },
+    doNewImage(o) { const w=+o.querySelector('#ni-w').value||1920, h=+o.querySelector('#ni-h').value||1080; this.createNewDocument(w,h); o.remove(); this.toast(this._t("Created {width} × {height} canvas", { width: w, height: h }), 'success'); },
 
     // ====================== FILE I/O ======================
     _assertJsonFileBudget(file, label = 'JSON') {
@@ -1723,14 +1734,16 @@ const OS = {
             img.set({ left:0, top:0, selectable:true, name:this._safeText(name, 120) });
             this.canvas.add(img); this.layers[this.activeLayerIdx].objects.push(img);
             this.zoomFit(); this.saveHistory('Open Image'); this.updateLayersPanel();
-            this.toast(`Opened: ${this._safeText(name, 80)}`, 'success');
+            this.toast(this._t("Opened: {name}", { name: this._safeText(name, 80) }), 'success');
             return;
         }
         if (width > this.canvasW) img.scaleToWidth(this.canvasW * 0.8);
         img.set({ left:50, top:50, selectable:true, name:this._safeText(name, 120) });
         this.canvas.add(img); this.layers[this.activeLayerIdx].objects.push(img);
         this.canvas.setActiveObject(img); this.saveHistory(mode === 'paste' ? 'Paste Image' : 'Drop Image'); this.updateLayersPanel();
-        this.toast(mode === 'paste' ? 'Image pasted from clipboard' : `Added: ${this._safeText(name, 80)}`, 'success');
+        this.toast(mode === 'paste'
+            ? this._t('Image pasted from clipboard')
+            : this._t('Added: {name}', { name: this._safeText(name, 80) }), 'success');
     },
     async openFile() {
         if (window.showOpenFilePicker) {
@@ -1746,7 +1759,7 @@ const OS = {
         document.getElementById('file-input').click();
     },
     _handleFileLoad(file) {
-        try { this._validateImageFile(file); } catch(e) { this.toast(e.message, 'error'); return; }
+        try { this._validateImageFile(file); } catch(e) { this.toast(this._t(e.message), 'error'); return; }
         this._docName = this._safeText(file.name.replace(/\.[^.]+$/, ''), 100);
         if (file.type === 'image/gif' && typeof ImageDecoder !== 'undefined') {
             this._importGifFrames(file);
@@ -1755,7 +1768,7 @@ const OS = {
         const r = new FileReader(); r.onload = ev => {
             fabric.Image.fromURL(ev.target.result, img => {
                 try { this._addDecodedImageToCanvas(img, { name:file.name, mode:'open' }); }
-                catch(err) { this.toast(err.message, 'error'); }
+                catch(err) { this.toast(this._t(err.message), 'error'); }
             });
         }; r.readAsDataURL(file);
     },
@@ -1768,12 +1781,12 @@ const OS = {
                 const r = new FileReader(); r.onload = ev => {
                     fabric.Image.fromURL(ev.target.result, img => {
                         try { this._addDecodedImageToCanvas(img, { name: file.name, mode: 'open' }); }
-                        catch (err) { this.toast(err.message, 'error'); }
+                        catch (err) { this.toast(this._t(err.message), 'error'); }
                     });
                 }; r.readAsDataURL(file);
                 return;
             }
-            this.toast(`Importing ${count} GIF frames...`, 'info');
+            this.toast(this._t("Importing {count} GIF frames...", { count: count }), 'info');
             this._animFrames = [];
             for (let i = 0; i < count; i++) {
                 const result = await decoder.decode({ frameIndex: i });
@@ -1791,20 +1804,20 @@ const OS = {
                 this.createNewDocument(decoder.tracks.selectedTrack.frameWidth || this.canvasW, decoder.tracks.selectedTrack.frameHeight || this.canvasH);
                 fabric.Image.fromURL(first, img => {
                     try { this._addDecodedImageToCanvas(img, { name: file.name, mode: 'open' }); }
-                    catch (err) { this.toast(err.message, 'error'); }
+                    catch (err) { this.toast(this._t(err.message), 'error'); }
                 });
             }
             this._animIdx = 0;
             this._renderFrames();
             document.getElementById('timeline-panel')?.classList.add('visible');
-            this.toast(`Imported ${this._animFrames.length} frames from GIF`, 'success');
+            this.toast(this._t("Imported {count} frames from GIF", { count: this._animFrames.length }), 'success');
             decoder.close();
         } catch (e) {
             console.warn('GIF frame import failed, loading as static:', e.message);
             const r = new FileReader(); r.onload = ev => {
                 fabric.Image.fromURL(ev.target.result, img => {
                     try { this._addDecodedImageToCanvas(img, { name: file.name, mode: 'open' }); }
-                    catch (err) { this.toast(err.message, 'error'); }
+                    catch (err) { this.toast(this._t(err.message), 'error'); }
                 });
             }; r.readAsDataURL(file);
         }
@@ -1818,11 +1831,11 @@ const OS = {
         const file = e.dataTransfer.files[0];
         if (!file) return;
         if (file.name.toLowerCase().endsWith('.psd')) { this._loadPSDFile(file); return; }
-        try { this._validateImageFile(file); } catch(err) { this.toast(err.message, 'error'); return; }
+        try { this._validateImageFile(file); } catch(err) { this.toast(this._t(err.message), 'error'); return; }
         const r = new FileReader(); r.onload = ev => {
             fabric.Image.fromURL(ev.target.result, img => {
                 try { this._addDecodedImageToCanvas(img, { name:file.name, mode:'drop' }); }
-                catch(err) { this.toast(err.message, 'error'); }
+                catch(err) { this.toast(this._t(err.message), 'error'); }
             });
         }; r.readAsDataURL(file);
     },
@@ -1851,7 +1864,7 @@ const OS = {
             const docName = (this._docName || 'openshop-export').replace(/[^a-zA-Z0-9_-]/g, '_');
             const a = document.createElement('a'); a.download = `${docName}.${fmt}`; a.href = url; a.click();
         }
-        this.toast(`Exported as ${fmt.toUpperCase()}`, 'success');
+        this.toast(this._t("Exported as {format}", { format: fmt.toUpperCase() }), 'success');
     },
     _sanitizeSVG(svg) {
         const parser = new DOMParser();
@@ -1881,22 +1894,22 @@ const OS = {
         this.canvas.viewportTransform = vpt; this.canvas.renderAll();
         const blob = new Blob([svg], { type:'image/svg+xml' });
         this._downloadBlob(blob, 'openshop-export.svg');
-        this.toast('Exported as SVG', 'success');
+        this.toast(this._t("Exported as SVG"), 'success');
     },
     batchExport() {
         const fmts = ['png','jpeg','webp','svg','pdf'];
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>Batch Export</h3>
-            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">Export canvas to multiple formats at once.</p>
-            ${fmts.map(f => `<div class="modal-row"><label style="width:60px">${f.toUpperCase()}</label><label><input type="checkbox" id="batch-${f}" checked> Export</label></div>`).join('')}
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button>
-            <button class="btn btn-primary" data-modal-action>Export All</button></div></div>`;
+        o.innerHTML = `<div class="modal"><h3 data-i18n="Batch Export">Batch Export</h3>
+            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px" data-i18n="Export canvas to multiple formats at once.">Export canvas to multiple formats at once.</p>
+            ${fmts.map(f => `<div class="modal-row"><label style="width:60px">${f.toUpperCase()}</label><label><input type="checkbox" id="batch-${f}" checked> <span data-i18n="Export">Export</span></label></div>`).join('')}
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
+            <button class="btn btn-primary" data-modal-action data-i18n="Export All">Export All</button></div></div>`;
         o.querySelector('[data-modal-action]').addEventListener('click', () => this.doBatchExport(o));
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
     doBatchExport(o) {
         ['png','jpeg','webp','svg','pdf'].forEach(f => { if (o.querySelector('#batch-'+f).checked) { if(f==='pdf') this.exportPDF(); else this.saveFile(f); } });
-        o.remove(); this.toast('Batch export complete', 'success');
+        o.remove(); this.toast(this._t("Batch export complete"), 'success');
     },
     _projectFileHandle: null,
     async saveProject() {
@@ -1934,7 +1947,7 @@ const OS = {
     openProject() { document.getElementById('project-input').click(); },
     handleProjectOpen(e) {
         const file = e.target.files[0]; if (!file) return;
-        try { this._assertJsonFileBudget(file, 'Project'); } catch(err) { this.toast(err.message, 'error'); e.target.value=''; return; }
+        try { this._assertJsonFileBudget(file, 'Project'); } catch(err) { this.toast(this._t(err.message), 'error'); e.target.value=''; return; }
         const r = new FileReader(); r.onload = ev => {
             try {
                 const json = JSON.parse(ev.target.result);
@@ -1944,7 +1957,7 @@ const OS = {
                     this.canvas.renderAll(); this.rebuildLayersFromCanvas();
                     this.zoomFit(); this.saveHistory('Open Project'); this.toast(this._t('Project loaded'),'success');
                 });
-            } catch(err) { this.toast('Invalid project: ' + err.message,'error'); }
+            } catch(err) { this.toast(this._t("Invalid project: {message}", { message: err.message }),'error'); }
         }; r.readAsText(file); e.target.value='';
     },
 
@@ -2082,18 +2095,18 @@ self.onmessage = function(e) {
         return null;
     },
     _loadPSDFile(file) {
-        this.toast('Parsing PSD...', 'info');
+        this.toast(this._t("Parsing PSD..."), 'info');
         const reader = new FileReader();
         reader.onload = async (ev) => {
             try {
                 if (typeof agPsd === 'undefined' && typeof window.agPsd === 'undefined') {
-                    this.toast('PSD library not loaded', 'error'); return;
+                    this.toast(this._t("PSD library not loaded"), 'error'); return;
                 }
                 const lib = window.agPsd || agPsd;
                 const buffer = ev.target.result;
                 const bytes = new Uint8Array(buffer);
                 const header = await this._preflightPSD(lib, bytes, file.size || bytes.byteLength);
-                this.toast(`PSD preflight passed: ${header.width} x ${header.height}`, 'info');
+                this.toast(this._t("PSD preflight passed: {width} x {height}", { width: header.width, height: header.height }), 'info');
                 const psd = lib.readPsd(bytes);
                 this._validatePSDStructure(psd);
                 this.createNewDocument(psd.width, psd.height);
@@ -2131,10 +2144,10 @@ self.onmessage = function(e) {
                     }
                 }
                 this.zoomFit(); this.saveHistory('Import PSD'); this.updateLayersPanel();
-                this.toast(`PSD imported: ${psd.children?psd.children.length:0} layers`, 'success');
+                this.toast(this._t('PSD imported: {count} layers', { count: psd.children ? psd.children.length : 0 }), 'success');
             } catch(err) {
                 console.error('PSD parse error:', err);
-                this.toast('PSD import failed: ' + err.message, 'error');
+                this.toast(this._t("PSD import failed: {message}", { message: err.message }), 'error');
             }
         };
         reader.readAsArrayBuffer(file);
@@ -2149,7 +2162,7 @@ self.onmessage = function(e) {
     deleteLayer() {
         if (this.layers.length === 0) return;
         const layer = this.layers[this.activeLayerIdx];
-        if (layer.locked) { this.toast('Unlock layer first', 'error'); return; }
+        if (layer.locked) { this.toast(this._t("Unlock layer first"), 'error'); return; }
         layer.objects.forEach(o => this.canvas.remove(o));
         this.layers.splice(this.activeLayerIdx, 1);
         if (this.layers.length === 0) {
@@ -2219,7 +2232,7 @@ self.onmessage = function(e) {
             img.set({ left:0, top:0, selectable:true, name:'Flattened' });
             this.canvas.add(img); this.layers[this.activeLayerIdx].objects.push(img);
             this.canvas.renderAll(); this.saveHistory('Flatten'); this.updateLayersPanel();
-            this.toast('Image flattened', 'success');
+            this.toast(this._t("Image flattened"), 'success');
         });
     },
     updateLayersPanel() {
@@ -2236,11 +2249,18 @@ self.onmessage = function(e) {
             const hasMask = l.objects.some(o => o._hasMask);
             const isBg = l.objects.some(o => o.name === '__boundary__');
             const thumbStyle = isBg ? 'layer-thumb-checker' : '';
-            d.innerHTML = `<div class="layer-drag-handle" title="Drag to reorder">&#9776;</div>
+            const objectCount = l.objects.filter(o => o.name !== '__boundary__').length;
+            const layerState = [
+                l.locked ? this._t('Locked') : '',
+                l.blend !== 'source-over' ? this._esc(l.blend) : '',
+                this._t('{count} objects', { count: objectCount }),
+                hasMask ? 'M' : ''
+            ].filter(Boolean).join(' &middot; ');
+            d.innerHTML = `<div class="layer-drag-handle" title="${this._esc(this._t('Drag to reorder'))}">&#9776;</div>
                 <button class="layer-vis ${l.visible?'':'hidden'}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${eyeSvg}</svg></button>
-                <button class="layer-lock ${l.locked?'locked':''}" title="${l.locked?'Unlock layer':'Lock layer'}">${lockSvg}</button>
+                <button class="layer-lock ${l.locked?'locked':''}" title="${this._esc(this._t(l.locked ? 'Unlock layer' : 'Lock layer'))}">${lockSvg}</button>
                 <div class="layer-thumb"><div class="${thumbStyle}" style="width:32px;height:32px;${isBg?'':'background:var(--bg-depth-4);'}border-radius:2px"></div></div>
-                <div class="layer-info"><div class="layer-name">${this._esc(l.name)}</div><div class="layer-type">${l.locked?'Locked &middot; ':''}${l.blend!=='source-over'?this._esc(l.blend)+' &middot; ':''}${l.objects.filter(o=>o.name!=='__boundary__').length} obj${hasMask?' &middot; M':''}</div></div>`;
+                <div class="layer-info"><div class="layer-name">${this._esc(l.name)}</div><div class="layer-type">${layerState}</div></div>`;
             d.querySelector('.layer-vis').addEventListener('click', e => { e.stopPropagation(); this.toggleLayerVisibility(i); });
             d.querySelector('.layer-lock').addEventListener('click', e => { e.stopPropagation(); this.toggleLayerLock(i); });
             d.querySelector('.layer-name').addEventListener('dblclick', function() { OS.startRenameLayer(this, i); });
@@ -2265,7 +2285,7 @@ self.onmessage = function(e) {
             o.selectable = !l.locked; o.evented = !l.locked;
         });
         this.canvas.renderAll(); this.updateLayersPanel();
-        this.toast(l.locked ? 'Layer locked' : 'Layer unlocked', 'info');
+        this.toast(l.locked ? this._t('Layer locked') : this._t('Layer unlocked'), 'info');
     },
     startRenameLayer(el, idx) {
         const inp = document.createElement('input'); inp.className = 'layer-name-input';
@@ -2325,7 +2345,8 @@ self.onmessage = function(e) {
             face.removeAttribute('onclick');
         });
         document.addEventListener('mousedown', e => {
-            if (!e.target.closest('.tool-flyout') && !e.target.closest('.tool-group > .tool-btn')) {
+            const target = eventElementTarget(e);
+            if (!target || (!target.closest('.tool-flyout') && !target.closest('.tool-group > .tool-btn'))) {
                 this._closeAllFlyouts();
             }
         });
@@ -2531,14 +2552,14 @@ self.onmessage = function(e) {
         if (tool==='eyedropper') {
             if (window.EyeDropper) {
                 new EyeDropper().open().then(r => {
-                    this.setFgColor(r.sRGBHex); this.toast(`Picked: ${r.sRGBHex}`,'info');
+                    this.setFgColor(r.sRGBHex); this.toast(this._t("Picked: {sRGBHex}", { sRGBHex: r.sRGBHex }),'info');
                 }).catch(() => {});
             } else {
                 const ctx=this.canvas.getContext('2d'), vpt=this.canvas.viewportTransform;
                 const sx=ptr.x*vpt[0]+vpt[4], sy=ptr.y*vpt[3]+vpt[5];
                 const px=ctx.getImageData(sx,sy,1,1).data;
                 const hex='#'+[px[0],px[1],px[2]].map(c=>c.toString(16).padStart(2,'0')).join('');
-                this.setFgColor(hex); this.toast(`Picked: ${hex}`,'info');
+                this.setFgColor(hex); this.toast(this._t("Picked: {hex}", { hex: hex }),'info');
             }
             return;
         }
@@ -2611,7 +2632,7 @@ self.onmessage = function(e) {
             if(sw>2&&sh>2){
                 this._selectionBounds={x:parseFloat(el.style.left)||0,y:parseFloat(el.style.top)||0,w:sw,h:sh};
                 this._selectionMask=null;
-                this.toast('Selection: '+Math.round(sw/vpt[0])+' x '+Math.round(sh/vpt[3])+' px','info');
+                this.toast(this._t("Selection: {width} x {height} px", { width: Math.round(sw/vpt[0]), height: Math.round(sh/vpt[3]) }),'info');
             } else { el.style.display='none'; this._selectionBounds=null; }
             this._marqueeStart=null;this.state.isDrawing=false; return;
         }
@@ -2714,14 +2735,14 @@ self.onmessage = function(e) {
     // ====================== CLONE STAMP ======================
     _cloneOC: null, _cloneSrcOC: null, _cloneTarget: null,
     _cloneStart(ptr, evt) {
-        if (!this._cloneSource) { this.toast('Alt+click to set source first', 'info'); return; }
+        if (!this._cloneSource) { this.toast(this._t("Alt+click to set source first"), 'info'); return; }
         if (!this._cloneOffset) this._cloneOffset = { x: ptr.x - this._cloneSource.x, y: ptr.y - this._cloneSource.y };
         let target = this.canvas.getActiveObject();
         if (!target || target.type !== 'image') {
             const objs = this.canvas.getObjects().filter(o => o.type === 'image' && o.containsPoint(ptr));
             target = objs.length ? objs[objs.length - 1] : null;
         }
-        if (!target || target.type !== 'image') { this.toast('Click on an image to clone', 'info'); return; }
+        if (!target || target.type !== 'image') { this.toast(this._t("Click on an image to clone"), 'info'); return; }
         const el = target.getElement();
         const oc = document.createElement('canvas');
         oc.width = el.naturalWidth || el.width; oc.height = el.naturalHeight || el.height;
@@ -2830,7 +2851,7 @@ self.onmessage = function(e) {
         if(count>0){el.style.display='block';el.style.left=minX+'px';el.style.top=minY+'px';
             el.style.width=(maxX-minX+1)+'px';el.style.height=(maxY-minY+1)+'px';el.style.borderRadius='0';}
         else el.style.display='none';
-        this.toast('Selected '+count.toLocaleString()+' px','info');
+        this.toast(this._t("Selected {count} px", { count: count.toLocaleString() }),'info');
     },
     clearSelection(){
         this._storeLastSelection();
@@ -2862,7 +2883,7 @@ self.onmessage = function(e) {
 
     // Reselect: restore last cleared selection
     reselectSelection() {
-        if (!this._lastSelection) { this.toast('No previous selection to restore', 'info'); return; }
+        if (!this._lastSelection) { this.toast(this._t("No previous selection to restore"), 'info'); return; }
         this._selectionMask = this._lastSelection.mask;
         this._selectionBounds = this._lastSelection.bounds;
         if (this._selectionBounds) {
@@ -2875,7 +2896,7 @@ self.onmessage = function(e) {
             el.style.borderRadius = '0';
         }
         if (this._selectionMask) this._showMaskOverlay(this._selectionMask);
-        this.toast('Selection restored', 'info');
+        this.toast(this._t("Selection restored"), 'info');
     },
 
     // Inverse selection: flip the mask
@@ -2892,7 +2913,7 @@ self.onmessage = function(e) {
                 }
                 this._selectionMask = { mask, w: cw, h: ch };
             } else {
-                this.toast('No selection to invert', 'info');
+                this.toast(this._t("No selection to invert"), 'info');
                 return;
             }
         }
@@ -2915,12 +2936,12 @@ self.onmessage = function(e) {
             el.style.width = (maxX - minX + 1) + 'px'; el.style.height = (maxY - minY + 1) + 'px';
         } else { el.style.display = 'none'; }
         this._showMaskOverlay(this._selectionMask);
-        this.toast('Selection inverted: ' + count.toLocaleString() + ' px', 'info');
+        this.toast(this._t("Selection inverted: {count} px", { count: count.toLocaleString() }), 'info');
     },
 
     // Grow: expand selection to include adjacent similar pixels
     growSelection() {
-        if (!this._selectionMask) { this.toast('No pixel selection to grow', 'info'); return; }
+        if (!this._selectionMask) { this.toast(this._t("No pixel selection to grow"), 'info'); return; }
         const m = this._selectionMask;
         const ctx = this.canvas.getContext('2d');
         const snap = ctx.getImageData(0, 0, m.w, m.h);
@@ -2947,12 +2968,12 @@ self.onmessage = function(e) {
         m.mask = newMask;
         this._recalcSelectionBounds(m);
         this._showMaskOverlay(m);
-        this.toast('Selection grown', 'info');
+        this.toast(this._t("Selection grown"), 'info');
     },
 
     // Similar: select all pixels with similar color to current selection
     similarSelection() {
-        if (!this._selectionMask) { this.toast('No pixel selection', 'info'); return; }
+        if (!this._selectionMask) { this.toast(this._t("No pixel selection"), 'info'); return; }
         const m = this._selectionMask;
         const ctx = this.canvas.getContext('2d');
         const snap = ctx.getImageData(0, 0, m.w, m.h);
@@ -2974,12 +2995,12 @@ self.onmessage = function(e) {
         }
         this._recalcSelectionBounds(m);
         this._showMaskOverlay(m);
-        this.toast('Selected similar: ' + count.toLocaleString() + ' px', 'info');
+        this.toast(this._t("Selected similar: {count} px", { count: count.toLocaleString() }), 'info');
     },
 
     // Modify selection (expand, contract, feather, border, smooth)
     modifySelection(type) {
-        if (!this._selectionMask && !this._selectionBounds) { this.toast('No selection to modify', 'info'); return; }
+        if (!this._selectionMask && !this._selectionBounds) { this.toast(this._t("No selection to modify"), 'info'); return; }
         if (type === 'smooth') {
             this._doModifySelection('smooth', 1);
             return;
@@ -2987,10 +3008,12 @@ self.onmessage = function(e) {
         const labels = { expand: 'Expand', contract: 'Contract', feather: 'Feather', border: 'Border' };
         const defaults = { expand: 2, contract: 2, feather: 3, border: 2 };
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>${labels[type]} Selection</h3>
-            <div class="modal-row"><label>Pixels</label><input id="mod-sel-px" type="number" value="${defaults[type]}" min="1" max="100"></div>
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button>
-            <button class="btn btn-primary" data-modal-action>OK</button></div></div>`;
+        const title = `${labels[type]} Selection`;
+        o.innerHTML = `<div class="modal"><h3>${this._esc(this._t(title))}</h3>
+            <div class="modal-row"><label data-i18n="Pixels">Pixels</label><input id="mod-sel-px" type="number" value="${defaults[type]}" min="1" max="100"></div>
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
+            <button class="btn btn-primary" data-modal-action data-i18n="OK">OK</button></div></div>`;
+        o.querySelector('h3').dataset.i18n = title;
         o.querySelector('[data-modal-action]').addEventListener('click', () => {
             this._doModifySelection(type, +o.querySelector('#mod-sel-px').value);
             o.remove();
@@ -3086,7 +3109,14 @@ self.onmessage = function(e) {
         m.mask = newMask;
         this._recalcSelectionBounds(m);
         this._showMaskOverlay(m);
-        this.toast('Selection ' + type + (type === 'smooth' ? 'ed' : 'ed by ' + px + 'px'), 'info');
+        const messages = {
+            expand: 'Selection expanded by {pixels}px',
+            contract: 'Selection contracted by {pixels}px',
+            feather: 'Selection feathered by {pixels}px',
+            border: 'Selection border set to {pixels}px',
+            smooth: 'Selection smoothed'
+        };
+        this.toast(this._t(messages[type] || 'Selection modified', { pixels: px }), 'info');
     },
 
     // Recalculate bounding box from mask
@@ -3141,26 +3171,26 @@ self.onmessage = function(e) {
 
         const o = document.createElement('div'); o.className = 'modal-overlay'; o.id = 'cr-overlay';
         o.innerHTML = `<div class="modal" style="min-width:auto;max-width:600px;padding:16px">
-            <h3 style="margin-bottom:12px">Color Range</h3>
+            <h3 style="margin-bottom:12px" data-i18n="Color Range">Color Range</h3>
             <div class="cr-dialog">
                 <div class="cr-left">
                     <div class="cr-select-row">
-                        <label>Select:</label>
+                        <label data-i18n="Select:">Select:</label>
                         <select id="cr-mode-select">
-                            <option value="sampled" selected>Sampled Colors</option>
-                            <option value="reds">Reds</option>
-                            <option value="yellows">Yellows</option>
-                            <option value="greens">Greens</option>
-                            <option value="cyans">Cyans</option>
-                            <option value="blues">Blues</option>
-                            <option value="magentas">Magentas</option>
-                            <option value="highlights">Highlights</option>
-                            <option value="midtones">Midtones</option>
-                            <option value="shadows">Shadows</option>
+                            <option value="sampled" selected data-i18n="Sampled Colors">Sampled Colors</option>
+                            <option value="reds" data-i18n="Reds">Reds</option>
+                            <option value="yellows" data-i18n="Yellows">Yellows</option>
+                            <option value="greens" data-i18n="Greens">Greens</option>
+                            <option value="cyans" data-i18n="Cyans">Cyans</option>
+                            <option value="blues" data-i18n="Blues">Blues</option>
+                            <option value="magentas" data-i18n="Magentas">Magentas</option>
+                            <option value="highlights" data-i18n="Highlights">Highlights</option>
+                            <option value="midtones" data-i18n="Midtones">Midtones</option>
+                            <option value="shadows" data-i18n="Shadows">Shadows</option>
                         </select>
                     </div>
                     <div class="cr-fuzz-row">
-                        <label>Fuzziness:</label>
+                        <label data-i18n="Fuzziness:">Fuzziness:</label>
                         <input type="range" id="cr-fuzz" min="0" max="200" value="80">
                         <input type="number" id="cr-fuzz-num" min="0" max="200" value="80">
                     </div>
@@ -3168,22 +3198,22 @@ self.onmessage = function(e) {
                         <canvas id="cr-preview-canvas"></canvas>
                     </div>
                     <div class="cr-preview-mode">
-                        <label><input type="radio" name="cr-prev" value="selection" checked> Selection</label>
-                        <label><input type="radio" name="cr-prev" value="image"> Image</label>
+                        <label><input type="radio" name="cr-prev" value="selection" checked> <span data-i18n="Selection">Selection</span></label>
+                        <label><input type="radio" name="cr-prev" value="image"> <span data-i18n="Image">Image</span></label>
                     </div>
                 </div>
                 <div class="cr-right">
-                    <button class="btn btn-primary" id="cr-ok-btn">OK</button>
-                    <button class="btn" data-modal-close>Cancel</button>
+                    <button class="btn btn-primary" id="cr-ok-btn" data-i18n="OK">OK</button>
+                    <button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
                     <div style="height:8px"></div>
                     <div class="cr-eyedroppers">
-                        <button class="cr-eyedrop-btn active" id="cr-eye-add" title="Add to sample">+</button>
-                        <button class="cr-eyedrop-btn" id="cr-eye-sub" title="Subtract from sample">-</button>
+                        <button class="cr-eyedrop-btn active" id="cr-eye-add" title="Add to sample" data-i18n-title="Add to sample">+</button>
+                        <button class="cr-eyedrop-btn" id="cr-eye-sub" title="Subtract from sample" data-i18n-title="Subtract from sample">-</button>
                     </div>
                     <div style="height:4px"></div>
                     <div class="cr-invert-row">
                         <input type="checkbox" id="cr-invert">
-                        <label for="cr-invert">Invert</label>
+                        <label for="cr-invert" data-i18n="Invert">Invert</label>
                     </div>
                 </div>
             </div>
@@ -3327,7 +3357,7 @@ self.onmessage = function(e) {
 
         let count = 0;
         for (let i = 0; i < mask.length; i++) if (mask[i]) count++;
-        this.toast('Color Range: ' + count.toLocaleString() + ' px selected', 'success');
+        this.toast(this._t("Color Range: {count} px selected", { count: count.toLocaleString() }), 'success');
 
         document.getElementById('cr-overlay').remove();
         this._crSnap = null; this._crMask = null; this._crSamples = [];
@@ -3540,7 +3570,7 @@ self.onmessage = function(e) {
             img.set({left:0,top:0,selectable:true,name:'Cropped'});
             this.canvas.add(img); this.layers[this.activeLayerIdx].objects.push(img);
             this.canvas.renderAll(); this.zoomFit(); this.saveHistory('Crop'); this.updateLayersPanel();
-            this.toast('Cropped to '+Math.round(cw)+' x '+Math.round(ch), 'success');
+            this.toast(this._t("Cropped to {width} x {height}", { width: Math.round(cw), height: Math.round(ch) }), 'success');
         });
         this.cancelCrop();
     },
@@ -3565,7 +3595,7 @@ self.onmessage = function(e) {
             document.getElementById('adj-blur-val').textContent=bl;
             const active=this.canvas.getActiveObject();
             if(!active||active.type!=='image') {
-                this.toast('Select an image to adjust', 'info');
+                this.toast(this._t("Select an image to adjust"), 'info');
                 return;
             }
             active.filters=[];
@@ -3603,7 +3633,7 @@ self.onmessage = function(e) {
         this._filterBackupRaw = active.filters.slice();
         this._filterTarget = active;
         this._filterName = name;
-        const rows=p.map(r=>`<div class="modal-row"><label>${r.label}</label><input id="${r.id}" type="range" min="${r.min}" max="${r.max}" value="${r.val}" oninput="OS._filterPreview('${name}')"><span class="opt-val" style="min-width:32px">${r.val}</span></div>`).join('');
+        const rows=p.map(r=>`<div class="modal-row"><label>${this._esc(this._t(r.label))}</label><input id="${r.id}" type="range" min="${r.min}" max="${r.max}" value="${r.val}" oninput="OS._filterPreview('${name}')"><span class="opt-val" style="min-width:32px">${r.val}</span></div>`).join('');
         this._openFilterPanel('filter-dialog-overlay', 'Filter: '+name, rows,
             ()=>this._filterCancel(), ()=>this._filterApply());
     },
@@ -3614,9 +3644,10 @@ self.onmessage = function(e) {
         const panel = document.createElement('div');
         panel.className = 'filter-panel';
         panel.id = id;
-        panel.innerHTML = `<div class="filter-panel-header"><h3>${title}</h3><button class="fp-close" title="Cancel">&times;</button></div>
+        const displayTitle = this._historyActionLabel(title);
+        panel.innerHTML = `<div class="filter-panel-header"><h3>${this._esc(displayTitle)}</h3><button class="fp-close" title="${this._esc(this._t('Cancel'))}">&times;</button></div>
             <div class="filter-panel-body">${bodyHTML}</div>
-            <div class="filter-panel-footer"><button class="btn" data-fp-cancel>Cancel</button><button class="btn btn-primary" data-fp-apply>Apply</button></div>`;
+            <div class="filter-panel-footer"><button class="btn" data-fp-cancel>${this._esc(this._t('Cancel'))}</button><button class="btn btn-primary" data-fp-apply>${this._esc(this._t('Apply'))}</button></div>`;
         document.body.appendChild(panel);
         // Position: top-right of canvas area
         const ca = document.getElementById('canvas-area');
@@ -3709,7 +3740,7 @@ self.onmessage = function(e) {
     _filterApply() {
         const name = this._filterName || 'Applied';
         this.saveHistory('Filter: ' + name);
-        this.toast(`Applied ${name}`, 'success');
+        this.toast(this._t("Applied {name}", { name: name }), 'success');
         this._lastFilter = name;
         this._removeFilterPanel('filter-dialog-overlay');
         this._filterBackup = null; this._filterBackupRaw = null; this._filterTarget = null;
@@ -3734,10 +3765,10 @@ self.onmessage = function(e) {
     },
     async _applyImageDataFilterDirect(name, spec) {
         const info = this._getActiveImageData(); if (!info) return false;
-        this.toast('Applying ' + name.replace('BlackWhite', 'Black & White') + '...', 'info');
+        this.toast(this._t("Applying {name}...", { name: name.replace('BlackWhite', 'Black & White') }), 'info');
         info.imgData = await this._runFilterWithPhoton(spec.op, info.imgData, info.canvas.width, info.canvas.height, spec.params || {});
         this._commitImageData(info, 'Filter: ' + name);
-        this.toast(`Applied ${name.replace('BlackWhite', 'Black & White')}`, 'success');
+        this.toast(this._t("Applied {name}", { name: name.replace('BlackWhite', 'Black & White') }), 'success');
         this._lastFilter = name;
         return true;
     },
@@ -3755,7 +3786,7 @@ self.onmessage = function(e) {
             case 'Sharpen': f=new fabric.Image.filters.Convolute({matrix:[0,-1,0,-1,5,-1,0,-1,0]}); break;
             case 'Emboss': f=new fabric.Image.filters.Convolute({matrix:[-2,-1,0,-1,1,1,0,1,2]}); break;
         }
-        if(f){ active.filters.push(f); active.applyFilters(); this.canvas.renderAll(); this.saveHistory('Filter: '+name); this.toast(`Applied ${name}`,'success'); this._lastFilter = name; }
+        if(f){ active.filters.push(f); active.applyFilters(); this.canvas.renderAll(); this.saveHistory('Filter: '+name); this.toast(this._t("Applied {name}", { name: name }),'success'); this._lastFilter = name; }
     },
     clearFilters() {
         const active=this.canvas.getActiveObject();
@@ -3792,10 +3823,35 @@ self.onmessage = function(e) {
         this.history.forEach((e,i)=>{
             const d=document.createElement('div');
             d.className='history-item'+(i===this.historyIdx?' current':'')+(i>this.historyIdx?' future':'');
-            d.textContent=e.action; d.addEventListener('click',()=>{this.historyIdx=i;this._restoreHistory();});
+            d.textContent=this._historyActionLabel(e.action); d.addEventListener('click',()=>{this.historyIdx=i;this._restoreHistory();});
             list.appendChild(d);
         });
         list.scrollTop=list.scrollHeight;
+    },
+    _historyActionLabel(action) {
+        const value = String(action || '');
+        const translatedParameter = (prefix, key, parameterName = 'name') => {
+            if (!value.startsWith(prefix)) return null;
+            const parameter = value.slice(prefix.length);
+            return this._t(key, { [parameterName]: this._t(parameter) });
+        };
+        const parameterized =
+            translatedParameter('Filter: ', 'Filter: {name}') ||
+            translatedParameter('Blend: ', 'Blend: {name}') ||
+            (value.startsWith('Draw ') ? this._t('Draw: {name}', { name: this._t(this._toolLabel(value.slice(5))) }) : null) ||
+            translatedParameter('Align ', 'Align: {name}') ||
+            translatedParameter('Distribute ', 'Distribute: {name}');
+        if (parameterized) return parameterized;
+        if (value.startsWith('Preset: ')) return this._t('Preset: {name}', { name: value.slice(8) });
+        let match = value.match(/^Rotate Canvas (-?\d+)$/);
+        if (match) return this._t('Rotate Canvas {degrees}°', { degrees: match[1] });
+        match = value.match(/^Rotate (-?\d+)$/);
+        if (match) return this._t('Rotate {degrees}°', { degrees: match[1] });
+        match = value.match(/^Flip Canvas ([hv])$/);
+        if (match) return this._t('Flip Canvas: {direction}', { direction: this._t(match[1] === 'h' ? 'Horizontal' : 'Vertical') });
+        match = value.match(/^Upscale (\d+)x$/);
+        if (match) return this._t('Upscale {factor}x', { factor: match[1] });
+        return this._t(value);
     },
 
     // ====================== ZOOM ======================
@@ -3819,19 +3875,19 @@ self.onmessage = function(e) {
     zoomActual() { this.zoomReset(); },
     _layerViaCopy() {
         const active = this.canvas.getActiveObject();
-        if (!active) { this.toast('Select an object first', 'info'); return; }
+        if (!active) { this.toast(this._t("Select an object first"), 'info'); return; }
         active.clone(c => {
             const idx = this.layers.length;
             this.layers.push({ name: 'Layer ' + idx + ' (copy)', visible: true, locked: false, opacity: 100, blend: 'source-over', objects: [c] });
             this.canvas.add(c); this.activeLayerIdx = idx;
             this.canvas.setActiveObject(c); this.canvas.renderAll();
             this.saveHistory('Layer Via Copy'); this.updateLayersPanel();
-            this.toast('Layer via copy', 'success');
+            this.toast(this._t("Layer via copy"), 'success');
         });
     },
     _layerViaCut() {
         const active = this.canvas.getActiveObject();
-        if (!active) { this.toast('Select an object first', 'info'); return; }
+        if (!active) { this.toast(this._t("Select an object first"), 'info'); return; }
         active.clone(c => {
             // Remove from current layer
             const curLayer = this.layers[this.activeLayerIdx];
@@ -3844,12 +3900,12 @@ self.onmessage = function(e) {
             this.canvas.add(c); this.activeLayerIdx = idx;
             this.canvas.setActiveObject(c); this.canvas.renderAll();
             this.saveHistory('Layer Via Cut'); this.updateLayersPanel();
-            this.toast('Layer via cut', 'success');
+            this.toast(this._t("Layer via cut"), 'success');
         });
     },
     _lastFilter: null,
     _reapplyLastFilter() {
-        if (!this._lastFilter) { this.toast('No filter to reapply', 'info'); return; }
+        if (!this._lastFilter) { this.toast(this._t("No filter to reapply"), 'info'); return; }
         // Try to apply as direct filter first
         const directFilters = ['Grayscale', 'Invert', 'Sepia', 'BlackWhite', 'Sharpen', 'Emboss'];
         if (directFilters.includes(this._lastFilter)) {
@@ -3870,7 +3926,7 @@ self.onmessage = function(e) {
     rotateObj(deg) { const a=this.canvas.getActiveObject(); if(a){a.rotate((a.angle||0)+deg);this.canvas.renderAll();this.saveHistory('Rotate '+deg);} else{this.toast(this._t('Select an object first'),'info');} },
     showResize() {
         const o=document.createElement('div'); o.className='modal-overlay';
-        o.innerHTML=`<div class="modal"><h3>Resize Canvas</h3><div class="modal-row"><label>Width</label><input id="rs-w" type="number" value="${this.canvasW}" min="1" max="8000"></div><div class="modal-row"><label>Height</label><input id="rs-h" type="number" value="${this.canvasH}" min="1" max="8000"></div><div class="modal-btns"><button class="btn" data-modal-close>Cancel</button><button class="btn btn-primary" data-modal-action>Apply</button></div></div>`;
+        o.innerHTML=`<div class="modal"><h3 data-i18n="Resize Canvas">Resize Canvas</h3><div class="modal-row"><label data-i18n="Width">Width</label><input id="rs-w" type="number" value="${this.canvasW}" min="1" max="8000"></div><div class="modal-row"><label data-i18n="Height">Height</label><input id="rs-h" type="number" value="${this.canvasH}" min="1" max="8000"></div><div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button><button class="btn btn-primary" data-modal-action data-i18n="Apply">Apply</button></div></div>`;
         o.querySelector('[data-modal-action]').addEventListener('click', () => this.doResize(o));
         document.body.appendChild(o); requestAnimationFrame(()=>o.classList.add('show'));
     },
@@ -3878,7 +3934,7 @@ self.onmessage = function(e) {
         const w=+o.querySelector('#rs-w').value||this.canvasW, h=+o.querySelector('#rs-h').value||this.canvasH;
         const bd=this.canvas.getObjects().find(x=>x.name==='__boundary__'); if(bd) bd.set({width:w,height:h});
         this.canvasW=w; this.canvasH=h; this.canvas.renderAll(); this.zoomFit();
-        document.getElementById('canvas-dims').textContent=`${w} x ${h}`; this.saveHistory('Resize'); o.remove(); this.toast(`Resized to ${w}x${h}`,'success');
+        document.getElementById('canvas-dims').textContent=`${w} x ${h}`; this.saveHistory('Resize'); o.remove(); this.toast(this._t("Resized to {width}x{height}", { width: w, height: h }),'success');
     },
 
     // ====================== COLORS ======================
@@ -3924,7 +3980,7 @@ self.onmessage = function(e) {
 
     // ====================== PDF EXPORT ======================
     exportPDF() {
-        if (typeof jspdf === 'undefined' && typeof window.jspdf === 'undefined') { this.toast('jsPDF not loaded', 'error'); return; }
+        if (typeof jspdf === 'undefined' && typeof window.jspdf === 'undefined') { this.toast(this._t("jsPDF not loaded"), 'error'); return; }
         const { jsPDF } = window.jspdf;
         const landscape = this.canvasW > this.canvasH;
         const pdf = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'px', format: [this.canvasW, this.canvasH] });
@@ -3934,12 +3990,12 @@ self.onmessage = function(e) {
         this.canvas.viewportTransform = vpt; this.canvas.renderAll();
         pdf.addImage(dataUrl, 'PNG', 0, 0, this.canvasW, this.canvasH);
         pdf.save('openshop-export.pdf');
-        this.toast('Exported as PDF', 'success');
+        this.toast(this._t("Exported as PDF"), 'success');
     },
     exportPSD() {
         const lib = window.agPsd || (typeof agPsd !== 'undefined' ? agPsd : null);
-        if (!lib || !lib.writePsd) { this.toast('PSD library not loaded or does not support writing', 'error'); return; }
-        this.toast('Generating PSD...', 'info');
+        if (!lib || !lib.writePsd) { this.toast(this._t("PSD library not loaded or does not support writing"), 'error'); return; }
+        this.toast(this._t("Generating PSD..."), 'info');
         const vpt = this.canvas.viewportTransform.slice();
         this.canvas.viewportTransform = [1,0,0,1,0,0]; this.canvas.renderAll();
         const psd = { width: this.canvasW, height: this.canvasH, children: [] };
@@ -3977,10 +4033,10 @@ self.onmessage = function(e) {
             const blob = new Blob([buffer], { type: 'application/octet-stream' });
             const docName = (this._docName || 'openshop-export').replace(/[^a-zA-Z0-9_-]/g, '_');
             this._downloadBlob(blob, `${docName}.psd`);
-            this.toast('Exported as PSD', 'success');
+            this.toast(this._t("Exported as PSD"), 'success');
         } catch(e) {
             console.error('PSD export error:', e);
-            this.toast('PSD export failed: ' + e.message, 'error');
+            this.toast(this._t("PSD export failed: {message}", { message: e.message }), 'error');
         }
     },
 
@@ -4035,7 +4091,7 @@ self.onmessage = function(e) {
         const el = document.getElementById('welcome-overlay');
         el.classList.add('hidden');
         setTimeout(() => el.style.display = 'none', 400);
-        this.toast('Ready to edit', 'success');
+        this.toast(this._t("Ready to edit"), 'success');
         // Capture initial state for before/after
         setTimeout(() => this._captureBA(), 500);
         // Phase 8
@@ -4059,7 +4115,7 @@ self.onmessage = function(e) {
             grid.appendChild(this._createTemplateCard(t, () => {
                 this.dismissWelcome();
                 this.createNewDocument(t.w, t.h);
-                this.toast(`Created: ${t.name}`, 'success');
+                this.toast(this._t("Created: {name}", { name: t.name }), 'success');
             }));
         });
     },
@@ -4071,19 +4127,20 @@ self.onmessage = function(e) {
         modal.style.minWidth = '500px';
         modal.style.maxWidth = '620px';
         const title = document.createElement('h3');
-        title.textContent = 'Templates';
+        title.dataset.i18n = 'Templates';
+        title.textContent = this._t('Templates');
         modal.appendChild(title);
         for (const [cat, tpls] of Object.entries(cats)) {
             const heading = document.createElement('div');
             heading.style.cssText = 'font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:12px 0 6px';
-            heading.textContent = this._safeText(cat, 40);
+            heading.textContent = this._t(this._safeText(cat, 40));
             const grid = document.createElement('div');
             grid.className = 'template-grid';
             tpls.forEach(t => {
                 grid.appendChild(this._createTemplateCard(t, () => {
                     this.createNewDocument(t.w, t.h);
                     o.remove();
-                    this.toast(`Created: ${t.name}`, 'success');
+                    this.toast(this._t("Created: {name}", { name: t.name }), 'success');
                 }));
             });
             modal.append(heading, grid);
@@ -4092,7 +4149,7 @@ self.onmessage = function(e) {
         btns.className = 'modal-btns';
         const close = document.createElement('button');
         close.className = 'btn';
-        close.textContent = 'Close';
+        close.textContent = this._t('Close');
         close.addEventListener('click', () => o.remove());
         btns.appendChild(close);
         modal.appendChild(btns);
@@ -4109,13 +4166,14 @@ self.onmessage = function(e) {
         this._clearNode(area);
         if (!Array.isArray(recent) || !recent.length) return;
         const title = document.createElement('h3');
-        title.textContent = 'Recent';
+        title.dataset.i18n = 'Recent';
+        title.textContent = this._t('Recent');
         area.appendChild(title);
         recent.slice(0, 5).forEach(r => {
             const item = document.createElement('div');
             item.className = 'recent-item';
             const name = document.createElement('span');
-            name.textContent = this._safeText(r?.name, 100) || 'Untitled';
+            name.textContent = this._safeText(r?.name, 100) || this._t('Untitled');
             const meta = document.createElement('span');
             meta.className = 'ri-date';
             meta.textContent = `${this._safeText(r?.dims, 30)} · ${this._safeText(r?.date, 30)}`;
@@ -4136,7 +4194,7 @@ self.onmessage = function(e) {
         this.gridVisible = !this.gridVisible;
         document.getElementById('grid-overlay').classList.toggle('visible', this.gridVisible);
         if (this.gridVisible) this.drawGrid();
-        this.toast(this.gridVisible ? 'Grid on' : 'Grid off', 'info');
+        this.toast(this.gridVisible ? this._t('Grid on') : this._t('Grid off'), 'info');
     },
     drawGrid() {
         if (!this.gridVisible) return;
@@ -4177,7 +4235,7 @@ self.onmessage = function(e) {
         document.body.classList.toggle('rulers-on', this.rulersVisible);
         if (this.rulersVisible) this.drawRulers();
         this.resizeCanvas();
-        this.toast(this.rulersVisible ? 'Rulers on' : 'Rulers off', 'info');
+        this.toast(this.rulersVisible ? this._t('Rulers on') : this._t('Rulers off'), 'info');
     },
     drawRulers() {
         if (!this.rulersVisible) return;
@@ -4224,7 +4282,9 @@ self.onmessage = function(e) {
     // ====================== SNAP ======================
     toggleSnap() {
         this.snapEnabled = !this.snapEnabled;
-        this.toast(this.snapEnabled ? `Snap on (${this.gridSize}px grid)` : 'Snap off', 'info');
+        this.toast(this.snapEnabled
+            ? this._t('Snap on ({size}px grid)', { size: this.gridSize })
+            : this._t('Snap off'), 'info');
     },
 
     // ====================== FULLSCREEN ======================
@@ -4232,7 +4292,9 @@ self.onmessage = function(e) {
         document.body.classList.toggle('fullscreen');
         const fs = document.body.classList.contains('fullscreen');
         this.resizeCanvas();
-        this.toast(fs ? 'Fullscreen (click View > Fullscreen to exit)' : 'Normal view', 'info');
+        this.toast(fs
+            ? this._t('Fullscreen (click View > Fullscreen to exit)')
+            : this._t('Normal view'), 'info');
         if (!fs) { this.drawGrid(); this.drawRulers(); }
     },
 
@@ -4291,7 +4353,7 @@ self.onmessage = function(e) {
             if (info.exists && info.text && info.ageMs < 86400000 && !info.corrupt) {
                 this._offerRecovery(info.text);
             } else if (info.corrupt) {
-                this.toast('Corrupt recovery data found. Open Recovery Storage to export or discard it.', 'error');
+                this.toast(this._t("Corrupt recovery data found. Open Recovery Storage to export or discard it."), 'error');
             }
         } catch(e) { console.warn('Auto-save check failed:', e); }
         this._autoSaveTimer = setInterval(() => this._autoSave(), 30000);
@@ -4304,13 +4366,13 @@ self.onmessage = function(e) {
         return n + ' B';
     },
     _formatAge(ms) {
-        if (!Number.isFinite(ms)) return 'Unknown';
+        if (!Number.isFinite(ms)) return this._t('Unknown');
         const minutes = Math.max(0, Math.round(ms / 60000));
-        if (minutes < 1) return 'Just now';
-        if (minutes < 60) return `${minutes} min ago`;
+        if (minutes < 1) return this._t('Just now');
+        if (minutes < 60) return this._t('{minutes} min ago', { minutes });
         const hours = Math.round(minutes / 60);
-        if (hours < 48) return `${hours} hr ago`;
-        return `${Math.round(hours / 24)} days ago`;
+        if (hours < 48) return this._t('{hours} hr ago', { hours });
+        return this._t('{days} days ago', { days: Math.round(hours / 24) });
     },
     async _getRecoveryInfo() {
         const estimate = navigator.storage?.estimate ? await navigator.storage.estimate().catch(() => ({})) : {};
@@ -4341,24 +4403,25 @@ self.onmessage = function(e) {
         const info = await this._getRecoveryInfo().catch(err => ({ supported:false, exists:false, error:err.message, usage:0, quota:0 }));
         const o = document.createElement('div'); o.className = 'modal-overlay';
         const modal = document.createElement('div'); modal.className = 'modal'; modal.style.minWidth = '430px';
-        const title = document.createElement('h3'); title.textContent = 'Recovery Storage';
+        const title = document.createElement('h3'); title.dataset.i18n = 'Recovery Storage'; title.textContent = this._t('Recovery Storage');
         const summary = document.createElement('dl');
         summary.className = 'info-grid';
+        const translatedValues = new Set(['Available', 'Unavailable', 'Corrupt', 'None', 'Unknown']);
         [
             ['Storage', info.supported ? 'Available' : 'Unavailable'],
             ['Autosave', info.exists ? (info.corrupt ? 'Corrupt' : 'Available') : 'None'],
             ['Age', info.exists ? this._formatAge(info.ageMs) : 'None'],
             ['Autosave Size', this._formatBytes(info.size)],
-            ['Storage Used', `${this._formatBytes(info.usage)} / ${info.quota ? this._formatBytes(info.quota) : 'Unknown'}`]
+            ['Storage Used', `${this._formatBytes(info.usage)} / ${info.quota ? this._formatBytes(info.quota) : this._t('Unknown')}`]
         ].forEach(([k, v]) => {
-            const dt = document.createElement('dt'); dt.textContent = k;
-            const dd = document.createElement('dd'); dd.textContent = v;
+            const dt = document.createElement('dt'); dt.textContent = this._t(k);
+            const dd = document.createElement('dd'); dd.textContent = translatedValues.has(v) ? this._t(v) : v;
             summary.append(dt, dd);
         });
         if (info.error) {
             const err = document.createElement('p');
             err.style.cssText = 'font-size:12px;color:var(--danger);margin:10px 0';
-            err.textContent = `Recovery issue: ${this._safeText(info.error, 160)}`;
+            err.textContent = this._t('Recovery issue: {message}', { message: this._safeText(info.error, 160) });
             modal.append(title, summary, err);
         } else {
             modal.append(title, summary);
@@ -4367,13 +4430,13 @@ self.onmessage = function(e) {
         const addBtn = (label, cls, fn, disabled = false) => {
             const btn = document.createElement('button');
             btn.className = cls;
-            btn.textContent = label;
+            btn.textContent = this._t(label);
             btn.disabled = disabled;
             btn.addEventListener('click', fn);
             btns.appendChild(btn);
         };
         addBtn('Export', 'btn', () => this._exportRecovery(info), !info.exists);
-        addBtn(info.corrupt ? 'Discard Corrupt' : 'Discard', 'btn btn-danger', async () => { await this._discardRecovery(); o.remove(); this.toast('Recovery data discarded', 'info'); }, !info.exists);
+        addBtn(info.corrupt ? 'Discard Corrupt' : 'Discard', 'btn btn-danger', async () => { await this._discardRecovery(); o.remove(); this.toast(this._t("Recovery data discarded"), 'info'); }, !info.exists);
         addBtn('Restore', 'btn btn-primary', () => this._restoreRecoveryText(info.text, o), !info.exists || info.corrupt);
         addBtn('Close', 'btn', () => o.remove());
         modal.appendChild(btns);
@@ -4381,19 +4444,19 @@ self.onmessage = function(e) {
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
     _exportRecovery(info) {
-        if (!info?.text) { this.toast('No recovery data to export', 'info'); return; }
+        if (!info?.text) { this.toast(this._t("No recovery data to export"), 'info'); return; }
         const blob = new Blob([info.text], { type:'application/json' });
         this._downloadBlob(blob, info.corrupt ? 'openshop-corrupt-recovery.json' : 'openshop-recovery.json');
-        this.toast('Recovery data exported', 'success');
+        this.toast(this._t("Recovery data exported"), 'success');
     },
 
     _offerRecovery(jsonText) {
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>Recover Unsaved Work?</h3>
-            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:16px">An auto-saved project was found. Would you like to restore it?</p>
+        o.innerHTML = `<div class="modal"><h3 data-i18n="Recover Unsaved Work?">Recover Unsaved Work?</h3>
+            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:16px" data-i18n="An auto-saved project was found. Would you like to restore it?">An auto-saved project was found. Would you like to restore it?</p>
             <div class="modal-btns">
-                <button class="btn btn-danger" data-recovery-discard>Discard</button>
-                <button class="btn btn-primary" data-recovery-restore>Restore</button>
+                <button class="btn btn-danger" data-recovery-discard data-i18n="Discard">Discard</button>
+                <button class="btn btn-primary" data-recovery-restore data-i18n="Restore">Restore</button>
             </div></div>`;
         o.querySelector('[data-recovery-discard]').addEventListener('click', () => { this._discardRecovery(); o.remove(); });
         o.querySelector('[data-recovery-restore]').addEventListener('click', () => this._restoreRecovery(o));
@@ -4414,9 +4477,9 @@ self.onmessage = function(e) {
             this.canvas.loadFromJSON(json, () => {
                 this.canvas.renderAll(); this.rebuildLayersFromCanvas();
                 this.zoomFit(); this.saveHistory('Recovered Project');
-                this.toast('Project restored from auto-save', 'success');
+                this.toast(this._t("Project restored from auto-save"), 'success');
             });
-        } catch(e) { this.toast('Recovery failed: ' + e.message, 'error'); }
+        } catch(e) { this.toast(this._t("Recovery failed: {message}", { message: e.message }), 'error'); }
         this._recoveryData = null;
         if (overlay) overlay.remove();
     },
@@ -4510,7 +4573,7 @@ self.onmessage = async function(e) {
         el.style.left = minX + 'px'; el.style.top = minY + 'px';
         el.style.width = (maxX - minX) + 'px'; el.style.height = (maxY - minY) + 'px';
         el.style.borderRadius = '0';
-        this.toast('Lasso selection: ' + this._lassoPoints.length + ' points', 'info');
+        this.toast(this._t("Lasso selection: {count} points", { count: this._lassoPoints.length }), 'info');
     },
 
     // ====================== HEALING BRUSH ======================
@@ -4521,7 +4584,7 @@ self.onmessage = async function(e) {
             const objs = this.canvas.getObjects().filter(o => o.type === 'image' && o.containsPoint(ptr));
             target = objs.length ? objs[objs.length - 1] : null;
         }
-        if (!target || target.type !== 'image') { this.toast('Click on an image to heal', 'info'); return; }
+        if (!target || target.type !== 'image') { this.toast(this._t("Click on an image to heal"), 'info'); return; }
         const el = target.getElement();
         const oc = document.createElement('canvas');
         oc.width = el.naturalWidth || el.width; oc.height = el.naturalHeight || el.height;
@@ -4576,7 +4639,7 @@ self.onmessage = async function(e) {
     _measureClick(ptr, evt) {
         if (!this._measureStart) {
             this._measureStart = { x: ptr.x, y: ptr.y, sx: evt.offsetX, sy: evt.offsetY };
-            this.toast('Click second point', 'info');
+            this.toast(this._t("Click second point"), 'info');
         } else {
             const from = this._measureStart, to = { x: ptr.x, y: ptr.y, sx: evt.offsetX, sy: evt.offsetY };
             const dx = to.x - from.x, dy = to.y - from.y;
@@ -4599,7 +4662,7 @@ self.onmessage = async function(e) {
     // ====================== CURVES DIALOG ======================
     showCurvesDialog() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         this._curvesChannel = 'rgb';
         this._curvesPoints = { rgb: [[0,0],[64,64],[128,128],[192,192],[255,255]], r: [[0,0],[255,255]], g: [[0,0],[255,255]], b: [[0,0],[255,255]] };
         this._curvesActivePoint = -1;
@@ -4611,11 +4674,11 @@ self.onmessage = async function(e) {
             </div>
             <canvas id="curves-canvas" class="curves-canvas" width="256" height="256"></canvas>
             <div class="curves-presets">
-                <button class="btn" onclick="OS._curvesPreset('linear')">Reset</button>
-                <button class="btn" onclick="OS._curvesPreset('brighten')">Brighten</button>
-                <button class="btn" onclick="OS._curvesPreset('darken')">Darken</button>
-                <button class="btn" onclick="OS._curvesPreset('contrast')">S-Curve</button>
-                <button class="btn" onclick="OS._curvesPreset('invert')">Invert</button>
+                <button class="btn" onclick="OS._curvesPreset('linear')">${this._esc(this._t('Reset'))}</button>
+                <button class="btn" onclick="OS._curvesPreset('brighten')">${this._esc(this._t('Brighten'))}</button>
+                <button class="btn" onclick="OS._curvesPreset('darken')">${this._esc(this._t('Darken'))}</button>
+                <button class="btn" onclick="OS._curvesPreset('contrast')">${this._esc(this._t('S-Curve'))}</button>
+                <button class="btn" onclick="OS._curvesPreset('invert')">${this._esc(this._t('Invert'))}</button>
             </div>`;
         this._openFilterPanel('curves-dialog-overlay', 'Curves', body,
             ()=>this._removeFilterPanel('curves-dialog-overlay'),
@@ -4707,13 +4770,13 @@ self.onmessage = async function(e) {
         }
         octx.putImageData(imgData, 0, 0);
         this._replaceActiveImage(active, oc.toDataURL(), 'Curves');
-        this._removeFilterPanel('curves-dialog-overlay'); this.toast('Curves applied', 'success');
+        this._removeFilterPanel('curves-dialog-overlay'); this.toast(this._t("Curves applied"), 'success');
     },
 
     // ====================== LEVELS DIALOG ======================
     showLevelsDialog() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         const el = active.getElement();
         const snapW = el.naturalWidth || el.width, snapH = el.naturalHeight || el.height;
         const snapOC = document.createElement('canvas'); snapOC.width = snapW; snapOC.height = snapH;
@@ -4789,7 +4852,7 @@ self.onmessage = async function(e) {
     },
     _levelsApply() {
         this.saveHistory('Levels');
-        this.toast('Levels applied', 'success');
+        this.toast(this._t("Levels applied"), 'success');
         this._removeFilterPanel('levels-dialog-overlay');
         this._lvlSnap = null; this._lvlTarget = null;
     },
@@ -4797,7 +4860,7 @@ self.onmessage = async function(e) {
     // ====================== COLOR BALANCE ======================
     showColorBalanceDialog() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         const el = active.getElement();
         const snapW = el.naturalWidth || el.width, snapH = el.naturalHeight || el.height;
         const snapOC = document.createElement('canvas'); snapOC.width = snapW; snapOC.height = snapH;
@@ -4867,7 +4930,7 @@ self.onmessage = async function(e) {
     },
     _cbApply() {
         this.saveHistory('Color Balance');
-        this.toast('Color balance applied', 'success');
+        this.toast(this._t("Color balance applied"), 'success');
         this._removeFilterPanel('cb-dialog-overlay');
         this._cbSnap = null; this._cbTarget = null;
     },
@@ -4875,7 +4938,7 @@ self.onmessage = async function(e) {
     // ====================== AUTO ENHANCEMENTS ======================
     autoLevels() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         const el = active.getElement();
         const oc = document.createElement('canvas'); oc.width = el.naturalWidth || el.width; oc.height = el.naturalHeight || el.height;
         const octx = oc.getContext('2d'); octx.drawImage(el, 0, 0);
@@ -4893,11 +4956,11 @@ self.onmessage = async function(e) {
         }
         octx.putImageData(imgData, 0, 0);
         this._replaceActiveImage(active, oc.toDataURL(), 'Auto Levels');
-        this.toast('Auto levels applied', 'success');
+        this.toast(this._t("Auto levels applied"), 'success');
     },
     autoContrast() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         const el = active.getElement();
         const oc = document.createElement('canvas'); oc.width = el.naturalWidth || el.width; oc.height = el.naturalHeight || el.height;
         const octx = oc.getContext('2d'); octx.drawImage(el, 0, 0);
@@ -4913,11 +4976,11 @@ self.onmessage = async function(e) {
         }
         octx.putImageData(imgData, 0, 0);
         this._replaceActiveImage(active, oc.toDataURL(), 'Auto Contrast');
-        this.toast('Auto contrast applied', 'success');
+        this.toast(this._t("Auto contrast applied"), 'success');
     },
     autoEnhance() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         const el = active.getElement();
         const oc = document.createElement('canvas'); oc.width = el.naturalWidth || el.width; oc.height = el.naturalHeight || el.height;
         const ctx = oc.getContext('2d'); ctx.drawImage(el, 0, 0);
@@ -4939,7 +5002,7 @@ self.onmessage = async function(e) {
         }
         ctx.putImageData(imgData, 0, 0);
         this._replaceActiveImage(active, oc.toDataURL(), 'Auto Enhance');
-        this.toast('Auto enhance applied', 'success');
+        this.toast(this._t("Auto enhance applied"), 'success');
     },
     _replaceActiveImage(active, dataUrl, histName) {
         fabric.Image.fromURL(dataUrl, newImg => {
@@ -4974,13 +5037,13 @@ self.onmessage = async function(e) {
         }
         ctx.putImageData(imgData,0,0);
         this._replaceActiveImage(target,oc.toDataURL(),'Flood Fill');
-        this.toast('Filled '+count.toLocaleString()+' px','success');
+        this.toast(this._t("Filled {count} px", { count: count.toLocaleString() }),'success');
     },
 
     // ====================== ALIGN & DISTRIBUTE ======================
     alignObjects(dir) {
         const objs = this.canvas.getActiveObjects();
-        if (objs.length < 2) { this.toast('Select 2+ objects', 'info'); return; }
+        if (objs.length < 2) { this.toast(this._t("Select 2+ objects"), 'info'); return; }
         const bounds = objs.map(o => o.getBoundingRect());
         switch (dir) {
             case 'left': { const m = Math.min(...bounds.map(b => b.left)); objs.forEach((o, i) => o.set('left', o.left + m - bounds[i].left)); break; }
@@ -4994,7 +5057,7 @@ self.onmessage = async function(e) {
     },
     distributeObjects(dir) {
         const objs = this.canvas.getActiveObjects();
-        if (objs.length < 3) { this.toast('Select 3+ objects', 'info'); return; }
+        if (objs.length < 3) { this.toast(this._t("Select 3+ objects"), 'info'); return; }
         const bounds = objs.map((o, i) => ({ i, ...o.getBoundingRect() }));
         if (dir === 'horizontal') {
             bounds.sort((a, b) => a.left - b.left);
@@ -5048,17 +5111,17 @@ self.onmessage = async function(e) {
         guide._cleanup = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
         el.addEventListener('dblclick', () => {
             el.remove(); guide._cleanup(); this.guides = this.guides.filter(g => g !== guide);
-            this.toast('Guide removed', 'info');
+            this.toast(this._t("Guide removed"), 'info');
         });
         document.getElementById('guides-container').appendChild(el);
         this.guides.push(guide);
-        this.toast(`${orientation} guide added (double-click to remove)`, 'info');
+        this.toast(this._t("{orientation} guide added (double-click to remove)", { orientation: orientation }), 'info');
     },
     clearGuides() {
         this.guides.forEach(g => { if (g._cleanup) g._cleanup(); });
         document.getElementById('guides-container').innerHTML = '';
         this.guides = [];
-        this.toast('All guides cleared', 'info');
+        this.toast(this._t("All guides cleared"), 'info');
     },
 
     // ====================== TEXT EFFECTS ======================
@@ -5086,16 +5149,16 @@ self.onmessage = async function(e) {
     // ====================== FREE TRANSFORM ======================
     showFreeTransform() {
         const active = this.canvas.getActiveObject();
-        if (!active) { this.toast('Select an object first', 'info'); return; }
+        if (!active) { this.toast(this._t("Select an object first"), 'info'); return; }
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>Free Transform</h3>
-            <div class="modal-row"><label>Scale X</label><input id="ft-sx" type="range" min="10" max="300" value="${Math.round((active.scaleX||1)*100)}" data-suffix="%"><span class="opt-val">${Math.round((active.scaleX||1)*100)}%</span></div>
-            <div class="modal-row"><label>Scale Y</label><input id="ft-sy" type="range" min="10" max="300" value="${Math.round((active.scaleY||1)*100)}" data-suffix="%"><span class="opt-val">${Math.round((active.scaleY||1)*100)}%</span></div>
-            <div class="modal-row"><label>Rotation</label><input id="ft-rot" type="range" min="-180" max="180" value="${Math.round(active.angle||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.angle||0)}°</span></div>
-            <div class="modal-row"><label>Skew X</label><input id="ft-skx" type="range" min="-60" max="60" value="${Math.round(active.skewX||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.skewX||0)}°</span></div>
-            <div class="modal-row"><label>Skew Y</label><input id="ft-sky" type="range" min="-60" max="60" value="${Math.round(active.skewY||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.skewY||0)}°</span></div>
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button>
-            <button class="btn btn-primary" data-modal-action>Apply</button></div></div>`;
+        o.innerHTML = `<div class="modal"><h3 data-i18n="Free Transform">Free Transform</h3>
+            <div class="modal-row"><label data-i18n="Scale X">Scale X</label><input id="ft-sx" type="range" min="10" max="300" value="${Math.round((active.scaleX||1)*100)}" data-suffix="%"><span class="opt-val">${Math.round((active.scaleX||1)*100)}%</span></div>
+            <div class="modal-row"><label data-i18n="Scale Y">Scale Y</label><input id="ft-sy" type="range" min="10" max="300" value="${Math.round((active.scaleY||1)*100)}" data-suffix="%"><span class="opt-val">${Math.round((active.scaleY||1)*100)}%</span></div>
+            <div class="modal-row"><label data-i18n="Rotation">Rotation</label><input id="ft-rot" type="range" min="-180" max="180" value="${Math.round(active.angle||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.angle||0)}°</span></div>
+            <div class="modal-row"><label data-i18n="Skew X">Skew X</label><input id="ft-skx" type="range" min="-60" max="60" value="${Math.round(active.skewX||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.skewX||0)}°</span></div>
+            <div class="modal-row"><label data-i18n="Skew Y">Skew Y</label><input id="ft-sky" type="range" min="-60" max="60" value="${Math.round(active.skewY||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.skewY||0)}°</span></div>
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
+            <button class="btn btn-primary" data-modal-action data-i18n="Apply">Apply</button></div></div>`;
         o.querySelector('[data-modal-action]').addEventListener('click', () => this._applyFreeTransform(o));
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
@@ -5109,17 +5172,17 @@ self.onmessage = async function(e) {
             skewY: +overlay.querySelector('#ft-sky').value,
         });
         active.setCoords(); this.canvas.renderAll(); this.saveHistory('Free Transform');
-        overlay.remove(); this.toast('Transform applied', 'success');
+        overlay.remove(); this.toast(this._t("Transform applied"), 'success');
     },
     skewObject() {
         const active = this.canvas.getActiveObject();
-        if (!active) { this.toast('Select an object first', 'info'); return; }
+        if (!active) { this.toast(this._t("Select an object first"), 'info'); return; }
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>Skew</h3>
-            <div class="modal-row"><label>Skew X</label><input id="sk-x" type="range" min="-60" max="60" value="${Math.round(active.skewX||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.skewX||0)}°</span></div>
-            <div class="modal-row"><label>Skew Y</label><input id="sk-y" type="range" min="-60" max="60" value="${Math.round(active.skewY||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.skewY||0)}°</span></div>
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button>
-            <button class="btn btn-primary" data-modal-action>Apply</button></div></div>`;
+        o.innerHTML = `<div class="modal"><h3 data-i18n="Skew">Skew</h3>
+            <div class="modal-row"><label data-i18n="Skew X">Skew X</label><input id="sk-x" type="range" min="-60" max="60" value="${Math.round(active.skewX||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.skewX||0)}°</span></div>
+            <div class="modal-row"><label data-i18n="Skew Y">Skew Y</label><input id="sk-y" type="range" min="-60" max="60" value="${Math.round(active.skewY||0)}" data-suffix="°"><span class="opt-val">${Math.round(active.skewY||0)}°</span></div>
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
+            <button class="btn btn-primary" data-modal-action data-i18n="Apply">Apply</button></div></div>`;
         o.querySelector('[data-modal-action]').addEventListener('click', () => this._applySkew(o));
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
@@ -5127,13 +5190,13 @@ self.onmessage = async function(e) {
         const active = this.canvas.getActiveObject(); if (!active) { overlay.remove(); return; }
         active.set({ skewX: +overlay.querySelector('#sk-x').value, skewY: +overlay.querySelector('#sk-y').value });
         active.setCoords(); this.canvas.renderAll(); this.saveHistory('Skew');
-        overlay.remove(); this.toast('Skew applied', 'success');
+        overlay.remove(); this.toast(this._t("Skew applied"), 'success');
     },
 
     // ====================== LAYER MASKS (BASIC) ======================
     addLayerMask() {
         const active = this.canvas.getActiveObject();
-        if (!active) { this.toast('Select an object first', 'info'); return; }
+        if (!active) { this.toast(this._t("Select an object first"), 'info'); return; }
         // Create a circular clipPath as a basic mask
         const rect = active.getBoundingRect();
         const clipRect = new fabric.Rect({
@@ -5144,7 +5207,7 @@ self.onmessage = async function(e) {
         active.clipPath = clipRect;
         active._hasMask = true;
         this.canvas.renderAll(); this.saveHistory('Add Mask'); this.updateLayersPanel();
-        this.toast('Layer mask added (rectangular). Select object to adjust.', 'success');
+        this.toast(this._t("Layer mask added (rectangular). Select object to adjust."), 'success');
     },
     removeLayerMask() {
         const active = this.canvas.getActiveObject();
@@ -5152,7 +5215,7 @@ self.onmessage = async function(e) {
         active.clipPath = null;
         active._hasMask = false;
         this.canvas.renderAll(); this.saveHistory('Remove Mask'); this.updateLayersPanel();
-        this.toast('Mask removed', 'info');
+        this.toast(this._t("Mask removed"), 'info');
     },
 
     // ====================== PEN / BEZIER TOOL ======================
@@ -5187,7 +5250,7 @@ self.onmessage = async function(e) {
         this._penPoints = [];
         const svg = document.querySelector('#pen-overlay svg path');
         if (svg) svg.setAttribute('d', '');
-        this.toast('Path created ('+segCount+' segments)', 'success');
+        this.toast(this._t("Path created ({segCount} segments)", { segCount: segCount }), 'success');
     },
 
     // ====================== HISTOGRAM ======================
@@ -5300,7 +5363,7 @@ self.onmessage = async function(e) {
     // ====================== CHANNEL MIXER ======================
     showChannelMixer() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         const body = `
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;text-align:center">Red Output</div>
             <div class="modal-row"><label>R</label><input id="cm-rr" type="range" min="-200" max="200" value="100" oninput="this.nextElementSibling.textContent=this.value+'%'"><span class="opt-val">100%</span></div>
@@ -5338,13 +5401,13 @@ self.onmessage = async function(e) {
         }
         octx.putImageData(imgData, 0, 0);
         this._replaceActiveImage(active, oc.toDataURL(), 'Channel Mixer');
-        this._removeFilterPanel('cm-dialog-overlay'); this.toast('Channel mixer applied', 'success');
+        this._removeFilterPanel('cm-dialog-overlay'); this.toast(this._t("Channel mixer applied"), 'success');
     },
 
     // ====================== PERSPECTIVE TRANSFORM ======================
     showPerspective() {
         const active = this.canvas.getActiveObject();
-        if (!active) { this.toast('Select an object first', 'info'); return; }
+        if (!active) { this.toast(this._t("Select an object first"), 'info'); return; }
         const body = `<div class="modal-row"><label>Skew X</label><input id="persp-sx" type="range" min="-60" max="60" value="${Math.round(active.skewX||0)}" oninput="this.nextElementSibling.textContent=this.value+'&deg;'"><span class="opt-val">${Math.round(active.skewX||0)}&deg;</span></div>
             <div class="modal-row"><label>Skew Y</label><input id="persp-sy" type="range" min="-60" max="60" value="${Math.round(active.skewY||0)}" oninput="this.nextElementSibling.textContent=this.value+'&deg;'"><span class="opt-val">${Math.round(active.skewY||0)}&deg;</span></div>
             <div class="modal-row"><label>Scale X</label><input id="persp-scx" type="range" min="10" max="300" value="${Math.round((active.scaleX||1)*100)}" oninput="this.nextElementSibling.textContent=this.value+'%'"><span class="opt-val">${Math.round((active.scaleX||1)*100)}%</span></div>
@@ -5363,21 +5426,21 @@ self.onmessage = async function(e) {
             scaleY: +(panel.querySelector('#persp-scy')?.value||100) / 100,
         });
         active.setCoords(); this.canvas.renderAll(); this.saveHistory('Perspective');
-        this._removeFilterPanel('persp-overlay'); this.toast('Perspective applied', 'success');
+        this._removeFilterPanel('persp-overlay'); this.toast(this._t("Perspective applied"), 'success');
     },
 
     // ====================== WATERMARK ======================
     addWatermark() {
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>Add Watermark</h3>
-            <div class="modal-row"><label>Text</label><input id="wm-text" type="text" value="WATERMARK" style="flex:1;background:var(--bg-depth-3);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:12px"></div>
-            <div class="modal-row"><label>Size</label><input id="wm-size" type="range" min="12" max="200" value="48" data-suffix="px"><span class="opt-val">48px</span></div>
-            <div class="modal-row"><label>Opacity</label><input id="wm-opacity" type="range" min="5" max="100" value="30" data-suffix="%"><span class="opt-val">30%</span></div>
-            <div class="modal-row"><label>Color</label><input id="wm-color" type="color" value="#ffffff"></div>
-            <div class="modal-row"><label>Rotation</label><input id="wm-angle" type="range" min="-90" max="90" value="-30" data-suffix="°"><span class="opt-val">-30°</span></div>
-            <div class="modal-row"><label><input type="checkbox" id="wm-tiled"> Tiled / Repeat</label></div>
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button>
-            <button class="btn btn-primary" data-modal-action>Apply</button></div></div>`;
+        o.innerHTML = `<div class="modal"><h3 data-i18n="Add Watermark">Add Watermark</h3>
+            <div class="modal-row"><label data-i18n="Text">Text</label><input id="wm-text" type="text" value="${this._esc(this._t('Watermark'))}" style="flex:1;background:var(--bg-depth-3);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:12px"></div>
+            <div class="modal-row"><label data-i18n="Size">Size</label><input id="wm-size" type="range" min="12" max="200" value="48" data-suffix="px"><span class="opt-val">48px</span></div>
+            <div class="modal-row"><label data-i18n="Opacity">Opacity</label><input id="wm-opacity" type="range" min="5" max="100" value="30" data-suffix="%"><span class="opt-val">30%</span></div>
+            <div class="modal-row"><label data-i18n="Color">Color</label><input id="wm-color" type="color" value="#ffffff"></div>
+            <div class="modal-row"><label data-i18n="Rotation">Rotation</label><input id="wm-angle" type="range" min="-90" max="90" value="-30" data-suffix="°"><span class="opt-val">-30°</span></div>
+            <div class="modal-row"><label><input type="checkbox" id="wm-tiled"> <span data-i18n="Tiled / Repeat">Tiled / Repeat</span></label></div>
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
+            <button class="btn btn-primary" data-modal-action data-i18n="Apply">Apply</button></div></div>`;
         o.querySelector('[data-modal-action]').addEventListener('click', () => this._applyWatermark(o));
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
@@ -5411,7 +5474,7 @@ self.onmessage = async function(e) {
             this.layers[this.activeLayerIdx].objects.push(wm);
         }
         this.canvas.renderAll(); this.saveHistory('Watermark'); this.updateLayersPanel();
-        overlay.remove(); this.toast('Watermark added', 'success');
+        overlay.remove(); this.toast(this._t("Watermark added"), 'success');
     },
 
     // ====================== IMAGE INFO DIALOG ======================
@@ -5420,48 +5483,48 @@ self.onmessage = async function(e) {
         const imgObjs = objs.filter(o => o.type === 'image');
         const textObjs = objs.filter(o => o.type === 'i-text' || o.type === 'text' || o.type === 'textbox');
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>Image Information</h3>
+        o.innerHTML = `<div class="modal"><h3 data-i18n="Image Information">Image Information</h3>
             <dl class="info-grid" style="font-size:12px">
-                <dt>Canvas Size</dt><dd>${this.canvasW} x ${this.canvasH} px</dd>
-                <dt>Layers</dt><dd>${this.layers.length}</dd>
-                <dt>Total Objects</dt><dd>${objs.length}</dd>
-                <dt>Images</dt><dd>${imgObjs.length}</dd>
-                <dt>Text Objects</dt><dd>${textObjs.length}</dd>
-                <dt>Shapes</dt><dd>${objs.length - imgObjs.length - textObjs.length}</dd>
-                <dt>History States</dt><dd>${this.history.length} / ${this.maxHistory}</dd>
-                <dt>Zoom</dt><dd>${Math.round(this.zoom * 100)}%</dd>
-                <dt>Color Mode</dt><dd>RGB 8-bit</dd>
-                <dt>Est. Memory</dt><dd>~${Math.round(this.canvasW * this.canvasH * 4 / 1024 / 1024)} MB (uncompressed)</dd>
+                <dt data-i18n="Canvas Size">Canvas Size</dt><dd>${this.canvasW} x ${this.canvasH} px</dd>
+                <dt data-i18n="Layers">Layers</dt><dd>${this.layers.length}</dd>
+                <dt data-i18n="Total Objects">Total Objects</dt><dd>${objs.length}</dd>
+                <dt data-i18n="Images">Images</dt><dd>${imgObjs.length}</dd>
+                <dt data-i18n="Text Objects">Text Objects</dt><dd>${textObjs.length}</dd>
+                <dt data-i18n="Shapes">Shapes</dt><dd>${objs.length - imgObjs.length - textObjs.length}</dd>
+                <dt data-i18n="History States">History States</dt><dd>${this.history.length} / ${this.maxHistory}</dd>
+                <dt data-i18n="Zoom">Zoom</dt><dd>${Math.round(this.zoom * 100)}%</dd>
+                <dt data-i18n="Color Mode">Color Mode</dt><dd>RGB 8-bit</dd>
+                <dt data-i18n="Est. Memory">Est. Memory</dt><dd>~${Math.round(this.canvasW * this.canvasH * 4 / 1024 / 1024)} ${this._t('MB (uncompressed)')}</dd>
             </dl>
-            <div class="modal-btns"><button class="btn" data-modal-close>Close</button></div></div>`;
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Close">Close</button></div></div>`;
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
 
     // ====================== PREFERENCES ======================
     showPreferences() {
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal" style="min-width:380px"><h3>Preferences</h3>
+        o.innerHTML = `<div class="modal" style="min-width:380px"><h3 data-i18n="Preferences">Preferences</h3>
             <div class="pref-section">
-                <h4>Canvas</h4>
-                <div class="pref-row"><label>Default Width</label><input id="pref-dw" type="number" value="${this._prefs.defaultW}" min="1" max="10000"></div>
-                <div class="pref-row"><label>Default Height</label><input id="pref-dh" type="number" value="${this._prefs.defaultH}" min="1" max="10000"></div>
+                <h4 data-i18n="Canvas">Canvas</h4>
+                <div class="pref-row"><label data-i18n="Default Width">Default Width</label><input id="pref-dw" type="number" value="${this._prefs.defaultW}" min="1" max="10000"></div>
+                <div class="pref-row"><label data-i18n="Default Height">Default Height</label><input id="pref-dh" type="number" value="${this._prefs.defaultH}" min="1" max="10000"></div>
             </div>
             <div class="pref-section">
-                <h4>Grid & Snap</h4>
-                <div class="pref-row"><label>Grid Size (px)</label><input id="pref-grid" type="number" value="${this.gridSize}" min="2" max="200"></div>
-                <div class="pref-row"><label>Snap Tolerance</label><input id="pref-snap" type="number" value="${this._prefs.snapTolerance}" min="1" max="50"></div>
+                <h4 data-i18n="Grid & Snap">Grid & Snap</h4>
+                <div class="pref-row"><label data-i18n="Grid Size (px)">Grid Size (px)</label><input id="pref-grid" type="number" value="${this.gridSize}" min="2" max="200"></div>
+                <div class="pref-row"><label data-i18n="Snap Tolerance">Snap Tolerance</label><input id="pref-snap" type="number" value="${this._prefs.snapTolerance}" min="1" max="50"></div>
             </div>
             <div class="pref-section">
-                <h4>Performance</h4>
-                <div class="pref-row"><label>History States</label><input id="pref-hist" type="number" value="${this.maxHistory}" min="10" max="200"></div>
+                <h4 data-i18n="Performance">Performance</h4>
+                <div class="pref-row"><label data-i18n="History States">History States</label><input id="pref-hist" type="number" value="${this.maxHistory}" min="10" max="200"></div>
             </div>
             <div class="pref-section">
-                <h4>Interface</h4>
-                <div class="pref-row"><label>Accent Color</label><input id="pref-accent" type="color" value="#6c8cff"></div>
-                <div class="pref-row"><label>Language</label><select id="pref-lang"><option value="zh-CN" ${this._lang === 'zh-CN' ? 'selected' : ''}>简体中文</option><option value="en-US" ${this._lang === 'en-US' ? 'selected' : ''}>English</option></select></div>
+                <h4 data-i18n="Interface">Interface</h4>
+                <div class="pref-row"><label data-i18n="Accent Color">Accent Color</label><input id="pref-accent" type="color" value="#6c8cff"></div>
+                <div class="pref-row"><label data-i18n="Language">Language</label><select id="pref-lang"><option value="zh-CN" ${this._lang === 'zh-CN' ? 'selected' : ''}>简体中文</option><option value="en-US" ${this._lang === 'en-US' ? 'selected' : ''}>English</option></select></div>
             </div>
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button>
-            <button class="btn btn-primary" data-modal-action>Apply</button></div></div>`;
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
+            <button class="btn btn-primary" data-modal-action data-i18n="Apply">Apply</button></div></div>`;
         o.querySelector('[data-modal-action]').addEventListener('click', () => this._applyPreferences(o));
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
@@ -5507,7 +5570,7 @@ self.onmessage = async function(e) {
             else if (fromIdx < this.activeLayerIdx && toIdx >= this.activeLayerIdx) this.activeLayerIdx--;
             else if (fromIdx > this.activeLayerIdx && toIdx <= this.activeLayerIdx) this.activeLayerIdx++;
             this.updateLayersPanel(); this.saveHistory('Reorder Layers');
-            this.toast('Layer moved', 'info');
+            this.toast(this._t("Layer moved"), 'info');
         });
     },
 
@@ -5798,7 +5861,7 @@ self.onmessage = async function(e) {
     // ====================== PHASE 7: ADVANCED FILTERS ======================
     _getActiveImageData() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return null; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return null; }
         const el = active.getElement();
         const oc = document.createElement('canvas'); oc.width = el.naturalWidth||el.width; oc.height = el.naturalHeight||el.height;
         const ctx = oc.getContext('2d'); ctx.drawImage(el, 0, 0);
@@ -5817,9 +5880,9 @@ self.onmessage = async function(e) {
         const panel = document.getElementById('posterize-overlay');
         const info = this._getActiveImageData(); if (!info) { this._removeFilterPanel('posterize-overlay'); return; }
         const levels = +(panel.querySelector('#fp-lvl')?.value||6);
-        this.toast('Applying posterize...', 'info');
+        this.toast(this._t("Applying posterize..."), 'info');
         info.imgData = await this._runFilterInWorker('posterize', info.imgData, info.canvas.width, info.canvas.height, {levels});
-        this._commitImageData(info, 'Posterize'); this._removeFilterPanel('posterize-overlay'); this.toast('Posterize applied', 'success');
+        this._commitImageData(info, 'Posterize'); this._removeFilterPanel('posterize-overlay'); this.toast(this._t("Posterize applied"), 'success');
     },
     filterThreshold() {
         const body = `<div class="modal-row"><label>Level</label><input id="ft-thr" type="range" min="0" max="255" value="128" oninput="this.nextElementSibling.textContent=this.value"><span class="opt-val">128</span></div>`;
@@ -5831,19 +5894,19 @@ self.onmessage = async function(e) {
         const info = this._getActiveImageData(); if (!info) { this._removeFilterPanel('threshold-overlay'); return; }
         const thr = +(panel.querySelector('#ft-thr')?.value||128);
         info.imgData = await this._runFilterWithPhoton('threshold', info.imgData, info.canvas.width, info.canvas.height, {thr});
-        this._commitImageData(info, 'Threshold'); this._removeFilterPanel('threshold-overlay'); this.toast('Threshold applied', 'success');
+        this._commitImageData(info, 'Threshold'); this._removeFilterPanel('threshold-overlay'); this.toast(this._t("Threshold applied"), 'success');
     },
     filterSolarize() {
         const info = this._getActiveImageData(); if (!info) return;
         const d = info.imgData.data;
         for (let i = 0; i < d.length; i += 4) { for (let c = 0; c < 3; c++) { if (d[i+c] > 128) d[i+c] = 255 - d[i+c]; } }
-        this._commitImageData(info, 'Solarize'); this.toast('Solarize applied', 'success');
+        this._commitImageData(info, 'Solarize'); this.toast(this._t("Solarize applied"), 'success');
     },
     async filterEdgeDetect() {
         const info = this._getActiveImageData(); if (!info) return;
-        this.toast('Detecting edges...', 'info');
+        this.toast(this._t("Detecting edges..."), 'info');
         info.imgData = await this._runFilterWithPhoton('edgeDetect', info.imgData, info.canvas.width, info.canvas.height);
-        this._commitImageData(info, 'Edge Detect'); this.toast('Edge detect applied', 'success');
+        this._commitImageData(info, 'Edge Detect'); this.toast(this._t("Edge detect applied"), 'success');
     },
     filterVignette() {
         const body = `<div class="modal-row"><label>Amount</label><input id="fv-amt" type="range" min="10" max="100" value="50" oninput="this.nextElementSibling.textContent=this.value+'%'"><span class="opt-val">50%</span></div><div class="modal-row"><label>Softness</label><input id="fv-soft" type="range" min="10" max="100" value="60" oninput="this.nextElementSibling.textContent=this.value+'%'"><span class="opt-val">60%</span></div>`;
@@ -5854,9 +5917,9 @@ self.onmessage = async function(e) {
         const panel = document.getElementById('vignette-overlay');
         const info = this._getActiveImageData(); if (!info) { this._removeFilterPanel('vignette-overlay'); return; }
         const amt = +(panel.querySelector('#fv-amt')?.value||50) / 100, soft = +(panel.querySelector('#fv-soft')?.value||60) / 100;
-        this.toast('Applying vignette...', 'info');
+        this.toast(this._t("Applying vignette..."), 'info');
         info.imgData = await this._runFilterInWorker('vignette', info.imgData, info.canvas.width, info.canvas.height, {amt, soft});
-        this._commitImageData(info, 'Vignette'); this._removeFilterPanel('vignette-overlay'); this.toast('Vignette applied', 'success');
+        this._commitImageData(info, 'Vignette'); this._removeFilterPanel('vignette-overlay'); this.toast(this._t("Vignette applied"), 'success');
     },
     filterUnsharpMask() {
         const body = `<div class="modal-row"><label>Amount</label><input id="fu-amt" type="range" min="10" max="300" value="100" oninput="this.nextElementSibling.textContent=this.value+'%'"><span class="opt-val">100%</span></div><div class="modal-row"><label>Radius</label><input id="fu-rad" type="range" min="1" max="10" value="2" oninput="this.nextElementSibling.textContent=this.value+'px'"><span class="opt-val">2px</span></div>`;
@@ -5867,10 +5930,10 @@ self.onmessage = async function(e) {
         const panel = document.getElementById('unsharpmask-overlay');
         const info = this._getActiveImageData(); if (!info) { this._removeFilterPanel('unsharpmask-overlay'); return; }
         const amount = +(panel.querySelector('#fu-amt')?.value||100) / 100, radius = +(panel.querySelector('#fu-rad')?.value||2);
-        this.toast('Applying unsharp mask...', 'info');
+        this.toast(this._t("Applying unsharp mask..."), 'info');
         const result = await this._runFilterInWorker('unsharpMask', info.imgData, info.canvas.width, info.canvas.height, {amount, radius});
         info.imgData = result;
-        this._commitImageData(info, 'Unsharp Mask'); this._removeFilterPanel('unsharpmask-overlay'); this.toast('Unsharp mask applied', 'success');
+        this._commitImageData(info, 'Unsharp Mask'); this._removeFilterPanel('unsharpmask-overlay'); this.toast(this._t("Unsharp mask applied"), 'success');
     },
     filterOilPaint() {
         const body = `<div class="modal-row"><label>Radius</label><input id="fo-rad" type="range" min="1" max="6" value="3" oninput="this.nextElementSibling.textContent=this.value"><span class="opt-val">3</span></div><div class="modal-row"><label>Levels</label><input id="fo-lvl" type="range" min="4" max="32" value="16" oninput="this.nextElementSibling.textContent=this.value"><span class="opt-val">16</span></div>`;
@@ -5881,10 +5944,10 @@ self.onmessage = async function(e) {
         const panel = document.getElementById('oilpaint-overlay');
         const info = this._getActiveImageData(); if (!info) { this._removeFilterPanel('oilpaint-overlay'); return; }
         const radius = +(panel.querySelector('#fo-rad')?.value||3), levels = +(panel.querySelector('#fo-lvl')?.value||16);
-        this.toast('Applying oil paint...', 'info');
+        this.toast(this._t("Applying oil paint..."), 'info');
         const result = await this._runFilterInWorker('oilPaint', info.imgData, info.canvas.width, info.canvas.height, {radius, levels});
         info.imgData = result;
-        this._commitImageData(info, 'Oil Paint'); this._removeFilterPanel('oilpaint-overlay'); this.toast('Oil paint applied', 'success');
+        this._commitImageData(info, 'Oil Paint'); this._removeFilterPanel('oilpaint-overlay'); this.toast(this._t("Oil paint applied"), 'success');
     },
     filterHalftone() {
         const body = `<div class="modal-row"><label>Dot Size</label><input id="fh-size" type="range" min="2" max="16" value="6" oninput="this.nextElementSibling.textContent=this.value+'px'"><span class="opt-val">6px</span></div>`;
@@ -5911,7 +5974,7 @@ self.onmessage = async function(e) {
             }
         }
         info.imgData = ctx.getImageData(0, 0, w, h);
-        this._commitImageData(info, 'Halftone'); this._removeFilterPanel('halftone-overlay'); this.toast('Halftone applied', 'success');
+        this._commitImageData(info, 'Halftone'); this._removeFilterPanel('halftone-overlay'); this.toast(this._t("Halftone applied"), 'success');
     },
     filterDuotone() {
         const body = `<div class="modal-row"><label>Shadow</label><input id="fd-shadow" type="color" value="#1a1a2e"></div><div class="modal-row"><label>Highlight</label><input id="fd-high" type="color" value="#e94560"></div>`;
@@ -5925,7 +5988,7 @@ self.onmessage = async function(e) {
         const sr=parseInt(sc.slice(1,3),16),sg=parseInt(sc.slice(3,5),16),sb=parseInt(sc.slice(5,7),16);
         const hr=parseInt(hc.slice(1,3),16),hg=parseInt(hc.slice(3,5),16),hb=parseInt(hc.slice(5,7),16);
         info.imgData = await this._runFilterInWorker('duotone', info.imgData, info.canvas.width, info.canvas.height, {sr,sg,sb,hr,hg,hb});
-        this._commitImageData(info, 'Duotone'); this._removeFilterPanel('duotone-overlay'); this.toast('Duotone applied', 'success');
+        this._commitImageData(info, 'Duotone'); this._removeFilterPanel('duotone-overlay'); this.toast(this._t("Duotone applied"), 'success');
     },
     filterTiltShift() {
         const body = `<div class="modal-row"><label>Focus Y</label><input id="fts-y" type="range" min="0" max="100" value="50" oninput="this.nextElementSibling.textContent=this.value+'%'"><span class="opt-val">50%</span></div><div class="modal-row"><label>Focus Width</label><input id="fts-w" type="range" min="5" max="60" value="20" oninput="this.nextElementSibling.textContent=this.value+'%'"><span class="opt-val">20%</span></div><div class="modal-row"><label>Blur</label><input id="fts-blur" type="range" min="1" max="10" value="4" oninput="this.nextElementSibling.textContent=this.value+'px'"><span class="opt-val">4px</span></div>`;
@@ -5936,10 +5999,10 @@ self.onmessage = async function(e) {
         const panel = document.getElementById('tiltshift-overlay');
         const info = this._getActiveImageData(); if (!info) { this._removeFilterPanel('tiltshift-overlay'); return; }
         const focusY = +(panel.querySelector('#fts-y')?.value||50)/100, focusW = +(panel.querySelector('#fts-w')?.value||20)/100, blurR = +(panel.querySelector('#fts-blur')?.value||4);
-        this.toast('Applying tilt shift...', 'info');
+        this.toast(this._t("Applying tilt shift..."), 'info');
         const result = await this._runFilterInWorker('tiltShift', info.imgData, info.canvas.width, info.canvas.height, {focusY, focusW, blurR});
         info.imgData = result;
-        this._commitImageData(info, 'Tilt Shift'); this._removeFilterPanel('tiltshift-overlay'); this.toast('Tilt shift applied', 'success');
+        this._commitImageData(info, 'Tilt Shift'); this._removeFilterPanel('tiltshift-overlay'); this.toast(this._t("Tilt shift applied"), 'success');
     },
     filterChromaticAberration() {
         const body = `<div class="modal-row"><label>Offset</label><input id="fca-off" type="range" min="1" max="15" value="4" oninput="this.nextElementSibling.textContent=this.value+'px'"><span class="opt-val">4px</span></div>`;
@@ -5951,7 +6014,7 @@ self.onmessage = async function(e) {
         const info = this._getActiveImageData(); if (!info) { this._removeFilterPanel('chromab-overlay'); return; }
         const off = +(panel.querySelector('#fca-off')?.value||4);
         info.imgData = await this._runFilterInWorker('chromaticAberration', info.imgData, info.canvas.width, info.canvas.height, {off});
-        this._commitImageData(info, 'Chromatic Aberration'); this._removeFilterPanel('chromab-overlay'); this.toast('Chromatic aberration applied', 'success');
+        this._commitImageData(info, 'Chromatic Aberration'); this._removeFilterPanel('chromab-overlay'); this.toast(this._t("Chromatic aberration applied"), 'success');
     },
     filterNoiseGen() {
         const body = `<div class="modal-row"><label>Type</label><select id="fn-type"><option value="uniform">Uniform</option><option value="gaussian">Gaussian</option><option value="salt-pepper">Salt & Pepper</option></select></div><div class="modal-row"><label>Amount</label><input id="fn-amt" type="range" min="1" max="100" value="30" oninput="this.nextElementSibling.textContent=this.value+'%'"><span class="opt-val">30%</span></div><div class="modal-row"><label><input type="checkbox" id="fn-mono" checked> Monochrome</label></div>`;
@@ -5981,13 +6044,13 @@ self.onmessage = async function(e) {
                 }
             }
         }
-        this._commitImageData(info, 'Noise'); this._removeFilterPanel('noisegen-overlay'); this.toast('Noise applied', 'success');
+        this._commitImageData(info, 'Noise'); this._removeFilterPanel('noisegen-overlay'); this.toast(this._t("Noise applied"), 'success');
     },
 
     // ====================== GRADIENT MAP ======================
     showGradientMap() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         const body = `<div class="gm-preview" id="gm-preview" style="background:linear-gradient(to right,#000,#6c8cff,#fff)"></div>
             <div class="modal-row"><label>Shadow</label><input id="gm-c1" type="color" value="#000000" onchange="OS._updateGMPreview()"></div>
             <div class="modal-row"><label>Midtone</label><input id="gm-c2" type="color" value="#6c8cff" onchange="OS._updateGMPreview()"></div>
@@ -6012,7 +6075,7 @@ self.onmessage = async function(e) {
             else { const t=(l-0.5)*2; r=c2[0]+(c3[0]-c2[0])*t; g=c2[1]+(c3[1]-c2[1])*t; b=c2[2]+(c3[2]-c2[2])*t; }
             d[i]=Math.round(r); d[i+1]=Math.round(g); d[i+2]=Math.round(b);
         }
-        this._commitImageData(info, 'Gradient Map'); this._removeFilterPanel('gradmap-overlay'); this.toast('Gradient map applied', 'success');
+        this._commitImageData(info, 'Gradient Map'); this._removeFilterPanel('gradmap-overlay'); this.toast(this._t("Gradient map applied"), 'success');
     },
 
     // ====================== LAYER STYLES ======================
@@ -6039,31 +6102,31 @@ self.onmessage = async function(e) {
     applyLayerStyle() {
         this.previewLayerStyle();
         this.saveHistory('Layer Style');
-        this.toast('Layer style applied', 'success');
+        this.toast(this._t("Layer style applied"), 'success');
     },
     clearLayerStyle() {
         const active = this.canvas.getActiveObject(); if (!active) return;
         active.set({ shadow: null, stroke: null, strokeWidth: 0 });
         this.canvas.renderAll(); this.saveHistory('Clear Layer Style');
-        this.toast('Layer style cleared', 'info');
+        this.toast(this._t("Layer style cleared"), 'info');
     },
 
     // ====================== EXPORT SETTINGS ======================
     showExportSettings() {
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal" style="min-width:380px"><h3>Export Settings</h3>
+        o.innerHTML = `<div class="modal" style="min-width:380px"><h3 data-i18n="Export Settings">Export Settings</h3>
             <div class="export-format-row">
                 <button class="btn active" id="es-png" data-fmt="png">PNG</button>
                 <button class="btn" id="es-jpeg" data-fmt="jpeg">JPEG</button>
                 <button class="btn" id="es-webp" data-fmt="webp">WebP</button>
             </div>
-            <div class="modal-row" id="es-quality-row" style="display:none"><label>Quality</label><input id="es-quality" type="range" min="1" max="100" value="92" data-suffix="%"><span class="opt-val">92%</span></div>
-            <div class="modal-row"><label>Scale</label><select id="es-scale"><option value="1">1x (Original)</option><option value="0.5">0.5x (Half)</option><option value="2">2x (Double)</option><option value="0.25">0.25x (Quarter)</option></select></div>
-            <div class="modal-row"><label><input type="checkbox" id="es-transparent"> Transparent Background</label></div>
-            <div class="export-size-est" id="es-size">Est. size: calculating...</div>
+            <div class="modal-row" id="es-quality-row" style="display:none"><label data-i18n="Quality">Quality</label><input id="es-quality" type="range" min="1" max="100" value="92" data-suffix="%"><span class="opt-val">92%</span></div>
+            <div class="modal-row"><label data-i18n="Scale">Scale</label><select id="es-scale"><option value="1">1x (${this._t('Original')})</option><option value="0.5">0.5x (${this._t('Half')})</option><option value="2">2x (${this._t('Double')})</option><option value="0.25">0.25x (${this._t('Quarter')})</option></select></div>
+            <div class="modal-row"><label><input type="checkbox" id="es-transparent"> <span data-i18n="Transparent Background">Transparent Background</span></label></div>
+            <div class="export-size-est" id="es-size" data-i18n="Est. size: calculating...">Est. size: calculating...</div>
             <div class="export-preview" id="es-preview"></div>
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button>
-            <button class="btn btn-primary" data-modal-action>Export</button></div></div>`;
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button>
+            <button class="btn btn-primary" data-modal-action data-i18n="Export">Export</button></div></div>`;
         o.querySelectorAll('[data-fmt]').forEach(btn => btn.addEventListener('click', () => this._esFormat(btn.dataset.fmt, btn)));
         o.querySelector('#es-quality').addEventListener('input', () => this._esUpdateSize());
         o.querySelector('[data-modal-action]').addEventListener('click', () => this._doExportSettings(o));
@@ -6085,7 +6148,11 @@ self.onmessage = async function(e) {
         const ratio = fmt === 'png' ? 0.5 : fmt === 'jpeg' ? 0.1 : 0.08;
         const est = Math.round(raw * ratio / 1024);
         const el = document.getElementById('es-size');
-        if (el) el.textContent = `${w}x${h} — Est. ~${est > 1024 ? (est/1024).toFixed(1)+'MB' : est+'KB'}`;
+        if (el) el.textContent = this._t('{width}x{height} — Est. ~{size}', {
+            width: w,
+            height: h,
+            size: est > 1024 ? (est / 1024).toFixed(1) + ' MB' : est + ' KB'
+        });
     },
     _doExportSettings(overlay) {
         const fmt = document.querySelector('.export-format-row .btn.active')?.textContent?.toLowerCase() || 'png';
@@ -6100,7 +6167,7 @@ self.onmessage = async function(e) {
         this.canvas.viewportTransform = vpt; this.canvas.renderAll();
         const link = document.createElement('a'); link.download = `openshop-export.${fmt==='jpeg'?'jpg':fmt}`;
         link.href = dataUrl; link.click();
-        overlay.remove(); this.toast(`Exported ${fmt.toUpperCase()} @ ${Math.round(scale*100)}%`, 'success');
+        overlay.remove(); this.toast(this._t("Exported {format} @ {percent}%", { format: fmt.toUpperCase(), percent: Math.round(scale*100) }), 'success');
     },
 
     // ====================== BEFORE / AFTER COMPARE ======================
@@ -6116,7 +6183,7 @@ self.onmessage = async function(e) {
     },
     showBeforeAfter() {
         if (!this._baSnapshot) { this._captureBA(); }
-        if (!this._baSnapshot) { this.toast('Could not capture state', 'error'); return; }
+        if (!this._baSnapshot) { this.toast(this._t("Could not capture state"), 'error'); return; }
         const overlay = document.getElementById('ba-overlay');
         overlay.classList.add('visible');
         const container = document.getElementById('ba-container');
@@ -6193,7 +6260,9 @@ self.onmessage = async function(e) {
                 this.updateLayersPanel();
             });
         }; img.src = data;
-        this.toast(`Canvas rotated ${deg > 0 ? 'CW' : 'CCW'}`, 'success');
+        this.toast(deg > 0
+            ? this._t('Canvas rotated clockwise')
+            : this._t('Canvas rotated counterclockwise'), 'success');
     },
     canvasFlip(dir) {
         const vpt = this.canvas.viewportTransform.slice();
@@ -6219,7 +6288,9 @@ self.onmessage = async function(e) {
                 this.updateLayersPanel();
             });
         }; img.src = data;
-        this.toast(`Canvas flipped ${dir === 'h' ? 'horizontally' : 'vertically'}`, 'success');
+        this.toast(dir === 'h'
+            ? this._t('Canvas flipped horizontally')
+            : this._t('Canvas flipped vertically'), 'success');
     },
 
     // ====================== PHASE 8: COMMAND PALETTE ======================
@@ -6551,9 +6622,11 @@ self.onmessage = async function(e) {
 
         // Viewport-aware submenu positioning: flip left when submenu would overflow right edge, shift up if below viewport
         document.addEventListener('mouseenter', (e) => {
+            const target = eventElementTarget(e);
+            if (!target) return;
             // Handle top-level menu dropdowns near right edge
-            const menuItem = e.target.closest('.menu-item');
-            if (menuItem && e.target === menuItem) {
+            const menuItem = target.closest('.menu-item');
+            if (menuItem && target === menuItem) {
                 const dd = menuItem.querySelector(':scope > .menu-dropdown');
                 if (dd) {
                     dd.style.left = ''; dd.style.right = '';
@@ -6566,7 +6639,7 @@ self.onmessage = async function(e) {
                 }
             }
             // Handle submenus
-            const sub = e.target.closest('.dd-sub, .ctx-sub');
+            const sub = target.closest('.dd-sub, .ctx-sub');
             if (!sub) return;
             const child = sub.querySelector('.menu-dropdown, .ctx-submenu');
             if (!child) return;
@@ -6609,12 +6682,12 @@ self.onmessage = async function(e) {
             if (e.target.closest('#canvas-area')) return; // already handled
             const file = e.dataTransfer.files[0];
             if (file) {
-                try { this._validateImageFile(file); } catch(err) { this.toast(err.message, 'error'); return; }
+                try { this._validateImageFile(file); } catch(err) { this.toast(this._t(err.message), 'error'); return; }
                 const reader = new FileReader();
                 reader.onload = ev => {
                     fabric.Image.fromURL(ev.target.result, img => {
                         try { this._addDecodedImageToCanvas(img, { name:file.name, mode:'drop' }); }
-                        catch(err) { this.toast(err.message, 'error'); }
+                        catch(err) { this.toast(this._t(err.message), 'error'); }
                     });
                 }; reader.readAsDataURL(file);
             }
@@ -6630,12 +6703,12 @@ self.onmessage = async function(e) {
                 if (item.type.startsWith('image/')) {
                     e.preventDefault();
                     const blob = item.getAsFile();
-                    try { this._validateImageFile(blob); } catch(err) { this.toast(err.message, 'error'); return; }
+                    try { this._validateImageFile(blob); } catch(err) { this.toast(this._t(err.message), 'error'); return; }
                     const reader = new FileReader();
                     reader.onload = ev => {
                         fabric.Image.fromURL(ev.target.result, img => {
                             try { this._addDecodedImageToCanvas(img, { name:blob.name || 'Pasted Image', mode:'paste' }); }
-                            catch(err) { this.toast(err.message, 'error'); }
+                            catch(err) { this.toast(this._t(err.message), 'error'); }
                         });
                     }; reader.readAsDataURL(blob);
                     return;
@@ -6731,7 +6804,7 @@ self.onmessage = async function(e) {
         container.appendChild(note);
         this._stickyNotes.push(note);
         note.querySelector('textarea').focus();
-        this.toast('Note added', 'info');
+        this.toast(this._t("Note added"), 'info');
     },
 
     // ====================== COLOR PALETTES ======================
@@ -6779,27 +6852,27 @@ self.onmessage = async function(e) {
             this._savedPalette.push(color);
             try { localStorage.setItem('os_palette', JSON.stringify(this._savedPalette)); } catch(e) { console.warn('Palette save failed:', e.message); }
             this._renderSavedPalette();
-            this.toast(`Added ${color} to palette`, 'success');
+            this.toast(this._t("Added {color} to palette", { color: color }), 'success');
         }
     },
     clearPalette() {
         this._savedPalette = [];
         try { localStorage.setItem('os_palette', '[]'); } catch(e) { console.warn('Palette clear failed:', e.message); }
         this._renderSavedPalette();
-        this.toast('Palette cleared', 'info');
+        this.toast(this._t("Palette cleared"), 'info');
     },
     exportPalette() {
         const all = this._savedPalette.length > 0 ? this._savedPalette : ['#ffffff','#000000'];
         const data = JSON.stringify({ name: 'OpenShop Palette', colors: all }, null, 2);
         const blob = new Blob([data], { type: 'application/json' });
         this._downloadBlob(blob, 'openshop-palette.json');
-        this.toast('Palette exported', 'success');
+        this.toast(this._t("Palette exported"), 'success');
     },
     importPalette() {
         const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,.gpl,.ase';
         input.onchange = e => {
             const file = e.target.files[0]; if (!file) return;
-            try { this._assertJsonFileBudget(file, 'Palette'); } catch(err) { this.toast(err.message, 'error'); return; }
+            try { this._assertJsonFileBudget(file, 'Palette'); } catch(err) { this.toast(this._t(err.message), 'error'); return; }
             const reader = new FileReader();
             reader.onload = ev => {
                 try {
@@ -6809,9 +6882,9 @@ self.onmessage = async function(e) {
                         this._savedPalette = [...this._savedPalette, ...safeColors].slice(0, this._importLimits.maxPaletteColors);
                         try { localStorage.setItem('os_palette', JSON.stringify(this._savedPalette)); } catch(e) { console.warn('Palette save failed:', e.message); }
                         this._renderSavedPalette();
-                        this.toast(`Imported ${safeColors.length} colors`, 'success');
+                        this.toast(this._t("Imported {count} colors", { count: safeColors.length }), 'success');
                     }
-                } catch(e) { this.toast('Invalid palette file', 'error'); }
+                } catch(e) { this.toast(this._t("Invalid palette file"), 'error'); }
             }; reader.readAsText(file);
         }; input.click();
     },
@@ -6845,9 +6918,9 @@ self.onmessage = async function(e) {
             ['N','Sticky Note'],['Alt+Click','Set Clone Source'],
         ];
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal" style="min-width:400px"><h3>Keyboard Shortcuts</h3>
-            <dl class="shortcut-grid">${shortcuts.map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
-            <div class="modal-btns"><button class="btn" data-modal-close>Close</button></div></div>`;
+        o.innerHTML = `<div class="modal" style="min-width:400px"><h3 data-i18n="Keyboard Shortcuts">Keyboard Shortcuts</h3>
+            <dl class="shortcut-grid">${shortcuts.map(([k,v]) => `<dt>${k}</dt><dd>${this._esc(this._t(v))}</dd>`).join('')}</dl>
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Close">Close</button></div></div>`;
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
 
@@ -6976,7 +7049,7 @@ self.onmessage = async function(e) {
                 case 'd':
                 case 'D':
                     this.setFgColor('#000000'); this.setBgColor('#ffffff');
-                    this.toast('Colors reset', 'info'); return;
+                    this.toast(this._t("Colors reset"), 'info'); return;
             }
 
             // Tool switch shortcuts (single letter)
@@ -7012,17 +7085,17 @@ self.onmessage = async function(e) {
     },
     _copySelection() {
         const active = this.canvas.getActiveObject();
-        if (!active) { this.toast('Nothing selected', 'info'); return; }
+        if (!active) { this.toast(this._t("Nothing selected"), 'info'); return; }
         active.clone(cloned => { this._clipboard = cloned; });
-        this.toast('Copied', 'info');
+        this.toast(this._t("Copied"), 'info');
     },
     _cutSelection() {
         this._copySelection();
         this._deleteSelected();
-        this.toast('Cut', 'info');
+        this.toast(this._t("Cut"), 'info');
     },
     _pasteSelection() {
-        if (!this._clipboard) { this.toast('Nothing to paste', 'info'); return; }
+        if (!this._clipboard) { this.toast(this._t("Nothing to paste"), 'info'); return; }
         this._clipboard.clone(cloned => {
             this.canvas.discardActiveObject();
             cloned.set({ left: cloned.left + 20, top: cloned.top + 20, evented: true });
@@ -7133,7 +7206,7 @@ self.onmessage = async function(e) {
         }
         this._replaceActiveImage(target, oc.toDataURL('image/png'), 'Delete Pixels');
         this.clearSelection();
-        this.toast('Deleted selected pixels', 'success');
+        this.toast(this._t("Deleted selected pixels"), 'success');
     },
     setZoom(level) {
         const center = { x: this.canvas.width / 2, y: this.canvas.height / 2 };
@@ -7144,15 +7217,15 @@ self.onmessage = async function(e) {
     },
     freeTransform() {
         const active = this.canvas.getActiveObject();
-        if (!active || active.name === '__boundary__') { this.toast('Select an object first', 'info'); return; }
+        if (!active || active.name === '__boundary__') { this.toast(this._t("Select an object first"), 'info'); return; }
         active.set({ hasControls: true, hasBorders: true, lockRotation: false, lockScalingX: false, lockScalingY: false, cornerStyle: 'circle', cornerColor: 'var(--accent, #6c8cff)', transparentCorners: false });
         this.canvas.setActiveObject(active);
         this.canvas.requestRenderAll();
-        this.toast('Free Transform - drag handles to resize/rotate', 'info');
+        this.toast(this._t("Free Transform - drag handles to resize/rotate"), 'info');
     },
     mergeVisibleLayers() {
         const visible = this.layers.filter(l => l.visible);
-        if (visible.length < 2) { this.toast('Need 2+ visible layers', 'info'); return; }
+        if (visible.length < 2) { this.toast(this._t("Need 2+ visible layers"), 'info'); return; }
         this.flattenImage();
     },
     newDocument() { this.newImage(); },
@@ -7166,7 +7239,15 @@ self.onmessage = async function(e) {
     // ====================== SYMMETRY ======================
     setSymmetryMode(mode) {
         this._symmetryMode = mode;
-        this.toast(mode === 'off' ? 'Symmetry off' : `Symmetry: ${mode}`, 'info');
+        const labels = {
+            horizontal: this._t('Horizontal'),
+            vertical: this._t('Vertical'),
+            both: this._t('Both Axes'),
+            radial: this._t('Radial')
+        };
+        this.toast(mode === 'off'
+            ? this._t('Symmetry off')
+            : this._t('Symmetry: {mode}', { mode: labels[mode] || mode }), 'info');
     },
     _mirrorPath(path) {
         const cx = this.canvasW / 2, cy = this.canvasH / 2;
@@ -7215,7 +7296,7 @@ self.onmessage = async function(e) {
         document.documentElement.classList.remove('theme-midnight', 'theme-oled');
         if (theme !== 'default') document.documentElement.classList.add('theme-' + theme);
         this._currentTheme = theme;
-        this.toast(`Theme: ${theme.charAt(0).toUpperCase() + theme.slice(1)}`, 'info');
+        this.toast(this._t("Theme: {theme}", { theme: theme.charAt(0).toUpperCase() + theme.slice(1) }), 'info');
     },
 
 
@@ -7228,7 +7309,7 @@ self.onmessage = async function(e) {
             const objs = this.canvas.getObjects().filter(o => o.type === 'image' && o.containsPoint(ptr));
             target = objs.length ? objs[objs.length-1] : null;
         }
-        if (!target || target.type !== 'image') { this.toast('Select an image to retouch', 'info'); return; }
+        if (!target || target.type !== 'image') { this.toast(this._t("Select an image to retouch"), 'info'); return; }
         const el = target.getElement();
         const oc = document.createElement('canvas');
         oc.width = el.naturalWidth || el.width; oc.height = el.naturalHeight || el.height;
@@ -7553,14 +7634,14 @@ self.onmessage = async function(e) {
     // ====================== CURVED TEXT ======================
     showCurvedText() {
         const o = document.createElement('div'); o.className = 'modal-overlay';
-        o.innerHTML = `<div class="modal"><h3>Curved Text</h3>
+        o.innerHTML = `<div class="modal"><h3 data-i18n="Curved Text">Curved Text</h3>
             <div class="curved-text-preview"><canvas id="ct-preview" width="280" height="120"></canvas></div>
-            <div class="modal-row"><label>Text</label><input id="ct-text" type="text" value="Curved Text" style="flex:1;background:var(--bg-depth-3);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:4px 8px"></div>
-            <div class="modal-row"><label>Radius</label><input id="ct-radius" type="range" min="50" max="500" value="150" data-suffix="px"><span class="opt-val">150px</span></div>
-            <div class="modal-row"><label>Start Angle</label><input id="ct-angle" type="range" min="-180" max="180" value="-90" data-suffix="°"><span class="opt-val">-90°</span></div>
-            <div class="modal-row"><label>Size</label><input id="ct-size" type="range" min="10" max="80" value="24" data-suffix="px"><span class="opt-val">24px</span></div>
-            <div class="modal-row"><label>Color</label><input id="ct-color" type="color" value="#ffffff"></div>
-            <div class="modal-btns"><button class="btn" data-modal-close>Cancel</button><button class="btn btn-primary" data-modal-action>Apply</button></div></div>`;
+            <div class="modal-row"><label data-i18n="Text">Text</label><input id="ct-text" type="text" value="${this._esc(this._t('Curved Text'))}" style="flex:1;background:var(--bg-depth-3);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:4px 8px"></div>
+            <div class="modal-row"><label data-i18n="Radius">Radius</label><input id="ct-radius" type="range" min="50" max="500" value="150" data-suffix="px"><span class="opt-val">150px</span></div>
+            <div class="modal-row"><label data-i18n="Start Angle">Start Angle</label><input id="ct-angle" type="range" min="-180" max="180" value="-90" data-suffix="°"><span class="opt-val">-90°</span></div>
+            <div class="modal-row"><label data-i18n="Size">Size</label><input id="ct-size" type="range" min="10" max="80" value="24" data-suffix="px"><span class="opt-val">24px</span></div>
+            <div class="modal-row"><label data-i18n="Color">Color</label><input id="ct-color" type="color" value="#ffffff"></div>
+            <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Cancel">Cancel</button><button class="btn btn-primary" data-modal-action data-i18n="Apply">Apply</button></div></div>`;
         o.querySelector('#ct-text').addEventListener('input', () => this._updateCurvedPreview());
         o.querySelectorAll('#ct-radius, #ct-angle, #ct-size').forEach(el => el.addEventListener('input', () => this._updateCurvedPreview()));
         o.querySelector('#ct-color').addEventListener('change', () => this._updateCurvedPreview());
@@ -7621,7 +7702,9 @@ self.onmessage = async function(e) {
     // ====================== PIXEL GRID ======================
     togglePixelGrid() {
         this._pixelGridVisible = !this._pixelGridVisible;
-        this.toast(this._pixelGridVisible ? 'Pixel grid on (visible at high zoom)' : 'Pixel grid off', 'info');
+        this.toast(this._pixelGridVisible
+            ? this._t('Pixel grid on (visible at high zoom)')
+            : this._t('Pixel grid off'), 'info');
         this._drawPixelGrid();
     },
     _drawPixelGrid() {
@@ -7653,7 +7736,7 @@ self.onmessage = async function(e) {
         this._animFrames.push(data);
         this._animIdx = this._animFrames.length - 1;
         this._renderFrames();
-        this.toast(`Frame ${this._animFrames.length} added`, 'info');
+        this.toast(this._t("Frame {count} added", { count: this._animFrames.length }), 'info');
     },
     dupFrame() {
         if (this._animFrames.length === 0) return;
@@ -7738,17 +7821,17 @@ self.onmessage = async function(e) {
         });
     },
     async exportGIF() {
-        if (this._animFrames.length < 2) { this.toast('Add at least 2 frames', 'info'); return; }
+        if (this._animFrames.length < 2) { this.toast(this._t("Add at least 2 frames"), 'info'); return; }
         const fps = +document.getElementById('tl-fps').value || 12;
         const delay = Math.round(1000 / fps);
-        this.toast('Loading GIF encoder...', 'info');
+        this.toast(this._t("Loading GIF encoder..."), 'info');
         let GIFConstructor;
         try { GIFConstructor = await this._loadGifJs(); } catch (e) {
             console.warn('gif.js load failed, falling back to spritesheet:', e.message);
             this._exportSpritesheet(fps);
             return;
         }
-        this.toast(`Encoding ${this._animFrames.length} frames...`, 'info');
+        this.toast(this._t("Encoding {count} frames...", { count: this._animFrames.length }), 'info');
         const gif = new GIFConstructor({
             workers: 2,
             quality: 10,
@@ -7759,14 +7842,14 @@ self.onmessage = async function(e) {
             const img = await this._loadImage(data);
             gif.addFrame(img, { delay, copy: true });
             added++;
-            if (added % 5 === 0) this.toast(`Encoding frame ${added}/${this._animFrames.length}...`, 'info');
+            if (added % 5 === 0) this.toast(this._t("Encoding frame {added}/{count}...", { added: added, count: this._animFrames.length }), 'info');
         }
         gif.on('finished', blob => {
             const a = document.createElement('a');
             a.download = `${(this._docName || 'openshop-animation').replace(/[^a-zA-Z0-9_-]/g, '_')}.gif`;
             a.href = URL.createObjectURL(blob);
             a.click();
-            this.toast(`GIF exported (${this._animFrames.length} frames @ ${fps}fps)`, 'success');
+            this.toast(this._t("GIF exported ({count} frames @ {fps}fps)", { count: this._animFrames.length, fps: fps }), 'success');
         });
         gif.render();
     },
@@ -7798,7 +7881,7 @@ self.onmessage = async function(e) {
                         link.download = `openshop-spritesheet-${cols}x${rows}-${fps}fps.png`;
                         link.href = oc.toDataURL('image/png');
                         link.click();
-                        this.toast(`Spritesheet exported (${cols}x${rows}, ${this._animFrames.length} frames @ ${fps}fps)`, 'success');
+                        this.toast(this._t("Spritesheet exported ({cols}x{rows}, {count} frames @ {fps}fps)", { cols: cols, rows: rows, count: this._animFrames.length, fps: fps }), 'success');
                     }
                 }; img.src = data;
             });
@@ -7814,13 +7897,13 @@ self.onmessage = async function(e) {
         const btn = document.getElementById('macro-rec-btn');
         const indicator = document.getElementById('macro-rec-indicator');
         if (this._macroRecording) {
-            btn.textContent = 'Stop'; btn.style.color = 'var(--danger)';
+            btn.textContent = this._t('Stop'); btn.style.color = 'var(--danger)';
             indicator.style.display = 'flex';
-            this.toast('Recording actions...', 'info');
+            this.toast(this._t("Recording actions..."), 'info');
         } else {
-            btn.textContent = 'Record'; btn.style.color = '';
+            btn.textContent = this._t('Record'); btn.style.color = '';
             indicator.style.display = 'none';
-            this.toast(`Recorded ${this._macroSteps.length} steps`, 'success');
+            this.toast(this._t("Recorded {count} steps", { count: this._macroSteps.length }), 'success');
         }
     },
     recordMacroStep(action, params) {
@@ -7840,10 +7923,10 @@ self.onmessage = async function(e) {
     },
     playMacro() {
         if (this._macroSteps.length === 0) { this.toast(this._t('No actions recorded'),'info'); return; }
-        this.toast(`Playing ${this._macroSteps.length} actions...`, 'info');
+        this.toast(this._t("Playing {count} actions...", { count: this._macroSteps.length }), 'info');
         let i = 0;
         const playNext = () => {
-            if (i >= this._macroSteps.length) { this.toast('Macro complete', 'success'); return; }
+            if (i >= this._macroSteps.length) { this.toast(this._t("Macro complete"), 'success'); return; }
             const step = this._macroSteps[i++];
             // Execute by calling named functions
             if (typeof this[step.action] === 'function' && !step.action.startsWith('_')) {
@@ -7853,13 +7936,13 @@ self.onmessage = async function(e) {
         };
         playNext();
     },
-    clearMacro() { this._macroSteps = []; this._renderMacroList(); this.toast('Actions cleared', 'info'); },
+    clearMacro() { this._macroSteps = []; this._renderMacroList(); this.toast(this._t("Actions cleared"), 'info'); },
     saveMacro() {
         if (this._macroSteps.length === 0) return;
         const data = JSON.stringify(this._macroSteps, null, 2);
         const blob = new Blob([data], { type: 'application/json' });
         this._downloadBlob(blob, 'openshop-action.json');
-        this.toast('Action saved', 'success');
+        this.toast(this._t("Action saved"), 'success');
     },
     loadMacro() {
         const input = document.createElement('input'); input.type = 'file'; input.accept = '.json';
@@ -7872,8 +7955,8 @@ self.onmessage = async function(e) {
                     if (!Array.isArray(parsed)) throw new Error('not an array');
                     this._macroSteps = parsed.filter(s => s && typeof s.action === 'string' && !s.action.startsWith('_') && typeof this[s.action] === 'function');
                     this._renderMacroList();
-                    this.toast(`Loaded ${this._macroSteps.length} actions`, 'success');
-                } catch(e) { this.toast('Invalid action file', 'error'); }
+                    this.toast(this._t("Loaded {count} actions", { count: this._macroSteps.length }), 'success');
+                } catch(e) { this.toast(this._t("Invalid action file"), 'error'); }
             }; reader.readAsText(file);
         }; input.click();
     },
@@ -7915,7 +7998,7 @@ self.onmessage = async function(e) {
             return this._aiLib;
         } catch(e) {
             this._hideAIProgress();
-            this.toast('Failed to load AI library: ' + e.message, 'error');
+            this.toast(this._t("Failed to load AI library: {message}", { message: e.message }), 'error');
             throw e;
         }
     },
@@ -7929,10 +8012,10 @@ self.onmessage = async function(e) {
     async _loadPipeline(task, model, label) {
         const key = task + ':' + model;
         if (this._aiPipelines[key]) {
-            this.toast(label + ' model ready (cached)', 'info');
+            this.toast(this._t("{label} model ready (cached)", { label: label }), 'info');
             return this._aiPipelines[key];
         }
-        if (this._aiLoading) { this.toast('Another AI model is loading, please wait', 'info'); return null; }
+        if (this._aiLoading) { this.toast(this._t("Another AI model is loading, please wait"), 'info'); return null; }
         this._aiLoading = true;
         try {
             const lib = await this._loadTransformers();
@@ -7956,12 +8039,12 @@ self.onmessage = async function(e) {
             this._aiPipelines[key] = pipe;
             this._aiLoading = false;
             this._hideAIProgress();
-            this.toast(label + ' model ready', 'success');
+            this.toast(this._t("{label} model ready", { label: label }), 'success');
             return pipe;
         } catch(e) {
             this._aiLoading = false;
             this._hideAIProgress();
-            this.toast('Failed to load ' + label + ': ' + e.message, 'error');
+            this.toast(this._t("Failed to load {label}: {message}", { label: label, message: e.message }), 'error');
             console.error('AI model load error:', e);
             return null;
         }
@@ -7972,8 +8055,8 @@ self.onmessage = async function(e) {
         if (target && target.type === 'image') return target;
         const imgs = this.canvas.getObjects().filter(o => o.type === 'image');
         if (imgs.length === 1) return imgs[0];
-        if (imgs.length > 1) { this.toast('Select an image first', 'info'); return null; }
-        this.toast('No image found on canvas', 'info');
+        if (imgs.length > 1) { this.toast(this._t("Select an image first"), 'info'); return null; }
+        this.toast(this._t("No image found on canvas"), 'info');
         return null;
     },
 
@@ -7988,7 +8071,7 @@ self.onmessage = async function(e) {
 
     activateSegmentSelect() {
         this.setTool('ai-segment');
-        this.toast('Segment Select active', 'info');
+        this.toast(this._t("Segment Select active"), 'info');
     },
 
     _imageSize(target) {
@@ -8159,7 +8242,7 @@ self.onmessage = async function(e) {
 
     async aiSegmentSelectAt(ptr) {
         const hit = this._segmentTargetAtPoint(ptr);
-        if (!hit) { this.toast('Click inside an image layer', 'info'); return; }
+        if (!hit) { this.toast(this._t("Click inside an image layer"), 'info'); return; }
         if (this.canvas.setActiveObject) this.canvas.setActiveObject(hit.target);
         const pipe = await this._loadPipeline(
             'image-segmentation', 'Xenova/detr-resnet-50-panoptic', 'Segment Select'
@@ -8172,17 +8255,17 @@ self.onmessage = async function(e) {
             const segment = this._selectSegmentFromResults(results, hit.clickX, hit.clickY, hit.imageW, hit.imageH);
             if (!segment) {
                 this._hideAIProgress();
-                this.toast('No segment found at click point', 'info');
+                this.toast(this._t("No segment found at click point"), 'info');
                 return;
             }
             const count = this._applySegmentSelection(hit.target, segment, hit.imageW, hit.imageH);
             this._hideAIProgress();
-            if (!count) { this.toast('Segment mask was empty', 'info'); return; }
+            if (!count) { this.toast(this._t("Segment mask was empty"), 'info'); return; }
             const label = segment.label ? ': ' + segment.label : '';
-            this.toast('Selected segment' + label + ' (' + count.toLocaleString() + ' px)', 'success');
+            this.toast(this._t("Selected segment{label} ({count} px)", { label: label, count: count.toLocaleString() }), 'success');
         } catch(e) {
             this._hideAIProgress();
-            this.toast('Segment Select error: ' + e.message, 'error');
+            this.toast(this._t("Segment Select error: {message}", { message: e.message }), 'error');
             console.error('AI Segment error:', e);
         }
     },
@@ -8193,7 +8276,7 @@ self.onmessage = async function(e) {
     _aiRmbgProcessor: null,
     async _loadRmbgModel() {
         if (this._aiRmbgModel) return true;
-        if (this._aiLoading) { this.toast('Another AI model is loading', 'info'); return false; }
+        if (this._aiLoading) { this.toast(this._t("Another AI model is loading"), 'info'); return false; }
         this._aiLoading = true;
         try {
             const lib = await this._loadTransformers();
@@ -8221,12 +8304,12 @@ self.onmessage = async function(e) {
             });
             this._aiLoading = false;
             this._hideAIProgress();
-            this.toast('Background Removal model ready', 'success');
+            this.toast(this._t("Background Removal model ready"), 'success');
             return true;
         } catch(e) {
             this._aiLoading = false;
             this._hideAIProgress();
-            this.toast('Failed to load BG model: ' + e.message, 'error');
+            this.toast(this._t("Failed to load BG model: {message}", { message: e.message }), 'error');
             console.error('MODNet load error:', e);
             return false;
         }
@@ -8264,10 +8347,10 @@ self.onmessage = async function(e) {
             const newUrl = resultCanvas.toDataURL('image/png');
             this._replaceActiveImage(target, newUrl, 'AI BG Remove');
             this._hideAIProgress();
-            this.toast('Background removed (AI)', 'success');
+            this.toast(this._t("Background removed (AI)"), 'success');
         } catch(e) {
             this._hideAIProgress();
-            this.toast('Background removal error: ' + e.message, 'error');
+            this.toast(this._t("Background removal error: {message}", { message: e.message }), 'error');
             console.error('AI BG Remove error:', e);
         }
     },
@@ -8325,11 +8408,11 @@ self.onmessage = async function(e) {
                 this.layers[this.activeLayerIdx].objects.push(img);
                 this.canvas.renderAll(); this.saveHistory('AI Depth Map'); this.updateLayersPanel();
                 this._hideAIProgress();
-                this.toast('Depth map generated — added as overlay', 'success');
+                this.toast(this._t("Depth map generated — added as overlay"), 'success');
             });
         } catch(e) {
             this._hideAIProgress();
-            this.toast('Depth map error: ' + e.message, 'error');
+            this.toast(this._t("Depth map error: {message}", { message: e.message }), 'error');
             console.error('AI Depth error:', e);
         }
     },
@@ -8348,7 +8431,7 @@ self.onmessage = async function(e) {
             const results = await pipe(dataUrl, { threshold: 0.7, percentage: true });
             this._hideAIProgress();
             if (!results || results.length === 0) {
-                this.toast('No objects detected', 'info'); return;
+                this.toast(this._t("No objects detected"), 'info'); return;
             }
             // Draw bounding boxes as fabric objects
             const el = target.getElement();
@@ -8386,10 +8469,10 @@ self.onmessage = async function(e) {
                 this.layers[this.activeLayerIdx].objects.push(rect, label);
             });
             this.canvas.renderAll(); this.saveHistory('AI Object Detection'); this.updateLayersPanel();
-            this.toast('Detected ' + results.length + ' object(s)', 'success');
+            this.toast(this._t("Detected {count} object(s)", { count: results.length }), 'success');
         } catch(e) {
             this._hideAIProgress();
-            this.toast('Object detection error: ' + e.message, 'error');
+            this.toast(this._t("Object detection error: {message}", { message: e.message }), 'error');
             console.error('AI Detect error:', e);
         }
     },
@@ -8405,7 +8488,7 @@ self.onmessage = async function(e) {
         const dstW = srcW * factor;
         const dstH = srcH * factor;
         if (dstW * dstH > 16000000) {
-            this.toast('Result would be ' + dstW + 'x' + dstH + ' (' + Math.round(dstW*dstH/1e6) + 'MP) — too large for browser', 'error');
+            this.toast(this._t("Result would be {width}x{height} ({megapixels}MP) — too large for browser", { width: dstW, height: dstH, megapixels: Math.round(dstW*dstH/1e6) }), 'error');
             return;
         }
         this._showAIProgress('Smart Upscale ' + factor + 'x', 'Resizing ' + srcW + 'x' + srcH + ' to ' + dstW + 'x' + dstH);
@@ -8462,10 +8545,10 @@ self.onmessage = async function(e) {
             const newUrl = current.toDataURL('image/png');
             this._replaceActiveImage(target, newUrl, 'Upscale ' + factor + 'x');
             this._hideAIProgress();
-            this.toast('Upscaled to ' + dstW + 'x' + dstH, 'success');
+            this.toast(this._t("Upscaled to {width}x{height}", { width: dstW, height: dstH }), 'success');
         } catch(e) {
             this._hideAIProgress();
-            this.toast('Upscale error: ' + e.message, 'error');
+            this.toast(this._t("Upscale error: {message}", { message: e.message }), 'error');
             console.error('Upscale error:', e);
         }
     },
@@ -8493,14 +8576,16 @@ self.onmessage = async function(e) {
         modal.className = 'modal';
         modal.style.minWidth = '420px';
         const title = document.createElement('h3');
-        title.textContent = 'Photo Presets';
+        title.dataset.i18n = 'Photo Presets';
+        title.textContent = this._t('Photo Presets');
         const grid = document.createElement('div');
         grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px';
         all.forEach((p, i) => {
             const btn = document.createElement('button');
             btn.className = 'btn';
             btn.style.fontSize = '11px';
-            btn.textContent = this._safeText(p.name, 80);
+            const presetName = this._safeText(p.name, 80);
+            btn.textContent = p.custom ? presetName : this._t(presetName);
             btn.addEventListener('click', () => this.applyPreset(i));
             grid.appendChild(btn);
         });
@@ -8513,7 +8598,7 @@ self.onmessage = async function(e) {
         ].forEach(([label, fn]) => {
             const btn = document.createElement('button');
             btn.className = 'btn';
-            btn.textContent = label;
+            btn.textContent = this._t(label);
             btn.addEventListener('click', fn);
             actions.appendChild(btn);
         });
@@ -8521,7 +8606,7 @@ self.onmessage = async function(e) {
         btns.className = 'modal-btns';
         const close = document.createElement('button');
         close.className = 'btn';
-        close.textContent = 'Close';
+        close.textContent = this._t('Close');
         close.addEventListener('click', () => o.remove());
         btns.appendChild(close);
         modal.append(title, grid, actions, btns);
@@ -8532,7 +8617,7 @@ self.onmessage = async function(e) {
         const all = [...this._builtinPresets, ...this._presets];
         const preset = all[idx]; if (!preset) return;
         const active = this.canvas.getActiveObject();
-        if (!active || active.type !== 'image') { this.toast('Select an image first', 'info'); return; }
+        if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return; }
         const el = active.getElement();
         const oc = document.createElement('canvas'); oc.width = el.naturalWidth || el.width; oc.height = el.naturalHeight || el.height;
         const ctx = oc.getContext('2d'); ctx.drawImage(el, 0, 0);
@@ -8552,7 +8637,7 @@ self.onmessage = async function(e) {
         }
         ctx.putImageData(imgData, 0, 0);
         this._replaceActiveImage(active, oc.toDataURL(), 'Preset: ' + preset.name);
-        this.toast(`Applied: ${preset.name}`, 'success');
+        this.toast(this._t("Applied: {name}", { name: preset.name }), 'success');
     },
     saveCurrentAsPreset(overlay) {
         if (overlay) overlay.remove();
@@ -8560,26 +8645,27 @@ self.onmessage = async function(e) {
         const modal = document.createElement('div');
         modal.className = 'modal';
         const title = document.createElement('h3');
-        title.textContent = 'Save Preset';
+        title.dataset.i18n = 'Save Preset';
+        title.textContent = this._t('Save Preset');
         const row = document.createElement('div');
         row.className = 'modal-row';
         const label = document.createElement('label');
-        label.textContent = 'Name';
+        label.textContent = this._t('Name');
         const input = document.createElement('input');
         input.id = 'preset-name-input';
         input.type = 'text';
-        input.placeholder = 'My Preset';
+        input.placeholder = this._t('My Preset');
         input.autofocus = true;
         row.append(label, input);
         const btns = document.createElement('div');
         btns.className = 'modal-btns';
         const cancel = document.createElement('button');
         cancel.className = 'btn';
-        cancel.textContent = 'Cancel';
+        cancel.textContent = this._t('Cancel');
         cancel.addEventListener('click', () => { o.remove(); this.showPresets(); });
         const save = document.createElement('button');
         save.className = 'btn btn-primary';
-        save.textContent = 'Save';
+        save.textContent = this._t('Save');
         save.addEventListener('click', () => this._doSavePreset(o));
         btns.append(cancel, save);
         modal.append(title, row, btns);
@@ -8588,25 +8674,25 @@ self.onmessage = async function(e) {
     },
     _doSavePreset(overlay) {
         const name = overlay.querySelector('#preset-name-input').value.trim();
-        if (!name) { this.toast('Enter a preset name', 'info'); return; }
+        if (!name) { this.toast(this._t("Enter a preset name"), 'info'); return; }
         this._presets.push({ name: this._safeText(name, 80), adjustments:{brightness:0,contrast:0,saturation:0,hue:0,vibrance:0}, custom:true });
         try { localStorage.setItem('os_presets', JSON.stringify(this._presets)); } catch(e) { console.warn('Preset save:', e.message); }
-        this.toast(`Saved: ${name}`, 'success');
+        this.toast(this._t("Saved: {name}", { name: name }), 'success');
         overlay.remove(); this.showPresets();
     },
     importPreset() {
         const input = document.createElement('input'); input.type = 'file'; input.accept = '.json';
         input.onchange = e => {
             const f = e.target.files[0]; if (!f) return;
-            try { this._assertJsonFileBudget(f, 'Preset'); } catch(err) { this.toast(err.message, 'error'); return; }
+            try { this._assertJsonFileBudget(f, 'Preset'); } catch(err) { this.toast(this._t(err.message), 'error'); return; }
             const r = new FileReader(); r.onload = ev => {
                 try {
                     const data = JSON.parse(ev.target.result);
                     const safePresets = this._sanitizePresetList(data);
                     this._presets = [...this._presets, ...safePresets].slice(0, this._importLimits.maxPresets);
                     try { localStorage.setItem('os_presets', JSON.stringify(this._presets)); } catch(e2) { console.warn('Preset save:', e2.message); }
-                    this.toast(`Imported ${safePresets.length} preset(s)`, 'success');
-                } catch(e2) { this.toast('Invalid preset file', 'error'); }
+                    this.toast(this._t("Imported {count} preset(s)", { count: safePresets.length }), 'success');
+                } catch(e2) { this.toast(this._t("Invalid preset file"), 'error'); }
             }; r.readAsText(f);
         }; input.click();
     },
@@ -8614,14 +8700,14 @@ self.onmessage = async function(e) {
         const all = [...this._builtinPresets, ...this._presets];
         const blob = new Blob([JSON.stringify(all, null, 2)], {type:'application/json'});
         this._downloadBlob(blob, 'openshop-presets.json');
-        this.toast('Presets exported', 'success');
+        this.toast(this._t("Presets exported"), 'success');
     },
 
     // ====================== PLUGIN SYSTEM ======================
     registerPlugin(plugin) {
         if(!plugin.name||!plugin.init) { console.error('Plugin must have name and init'); return; }
         this.plugins.push(plugin); plugin.init(this);
-        this.toast(`Plugin: ${plugin.name}`, 'info');
+        this.toast(this._t("Plugin: {name}", { name: plugin.name }), 'info');
     },
 
     // ====================== STATUS / TOAST ======================
@@ -8636,43 +8722,51 @@ self.onmessage = async function(e) {
     },
     _activeLayerSummary() {
         const layer = this.layers[this.activeLayerIdx];
-        if (!layer) return 'none';
+        if (!layer) return this._t('none');
         const objectCount = layer.objects.filter(o => o.name !== '__boundary__').length;
         const state = [
-            layer.visible === false ? 'hidden' : 'visible',
-            layer.locked ? 'locked' : 'unlocked',
-            `${layer.opacity}% opacity`,
-            layer.blend && layer.blend !== 'source-over' ? layer.blend : 'normal blend',
-            `${objectCount} object${objectCount !== 1 ? 's' : ''}`
+            this._t(layer.visible === false ? 'hidden' : 'visible'),
+            this._t(layer.locked ? 'locked' : 'unlocked'),
+            this._t('{percent}% opacity', { percent: layer.opacity }),
+            layer.blend && layer.blend !== 'source-over' ? layer.blend : this._t('normal blend'),
+            this._t('{count} objects', { count: objectCount })
         ];
         return `${layer.name}, ${state.join(', ')}`;
     },
     _selectionSummary() {
-        if (!this._selectionBounds) return 'none';
+        if (!this._selectionBounds) return this._t('none');
         const b = this._selectionBounds;
         const count = this._selectionMask ? this._selectionMask.mask.reduce((sum, v) => sum + (v ? 1 : 0), 0) : null;
-        const size = `${Math.round(b.w)} by ${Math.round(b.h)} pixels at ${Math.round(b.x)}, ${Math.round(b.y)}`;
-        return count ? `${count.toLocaleString()} pixels selected, ${size}` : `selection bounds ${size}`;
+        const size = this._t('{width} by {height} pixels at {x}, {y}', {
+            width: Math.round(b.w), height: Math.round(b.h), x: Math.round(b.x), y: Math.round(b.y)
+        });
+        return count
+            ? this._t('{count} pixels selected, {size}', { count: count.toLocaleString(), size })
+            : this._t('selection bounds {size}', { size });
     },
     _objectSummary() {
         const objs = this.canvas ? this.canvas.getObjects().filter(o => o.name !== '__boundary__' && !o._wandOverlay) : [];
-        return `${objs.length} object${objs.length !== 1 ? 's' : ''}`;
+        return this._t('{count} objects', { count: objs.length });
     },
     _renderAccessibilityTree() {
         const root = document.getElementById('canvas-a11y-tree');
         if (!root || !this.canvas) return;
-        const tool = this._toolLabel(this.state.tool);
+        const tool = this._t(this._toolLabel(this.state.tool));
         const layer = this._activeLayerSummary();
         const selection = this._selectionSummary();
         const objects = this._objectSummary();
-        const action = this._lastAction ? ` Last action: ${this._lastAction}.` : '';
-        const summary = `Tool: ${tool}. Active layer: ${layer}. Selection: ${selection}. ${objects}.${action}`;
+        const action = this._lastAction
+            ? this._t('Last action: {action}.', { action: this._t(this._lastAction) })
+            : '';
+        const summary = this._t('Tool: {tool}. Active layer: {layer}. Selection: {selection}. {objects}.{action}', {
+            tool, layer, selection, objects, action
+        });
         const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
         setText('canvas-a11y-summary', summary);
-        setText('canvas-a11y-tool', `Tool: ${tool}`);
-        setText('canvas-a11y-layer', `Active layer: ${layer}`);
-        setText('canvas-a11y-selection', `Selection: ${selection}`);
-        setText('canvas-a11y-objects', `Objects: ${objects}`);
+        setText('canvas-a11y-tool', this._t('Tool: {tool}', { tool }));
+        setText('canvas-a11y-layer', this._t('Active layer: {layer}', { layer }));
+        setText('canvas-a11y-selection', this._t('Selection: {selection}', { selection }));
+        setText('canvas-a11y-objects', this._t('Objects: {objects}', { objects }));
         const canvasArea = document.getElementById('canvas-area');
         if (canvasArea) canvasArea.setAttribute('aria-label', summary);
         const list = document.getElementById('canvas-a11y-layers');
@@ -8681,7 +8775,18 @@ self.onmessage = async function(e) {
             this.layers.forEach((l, i) => {
                 const item = document.createElement('li');
                 const objectCount = l.objects.filter(o => o.name !== '__boundary__').length;
-                item.textContent = `${i === this.activeLayerIdx ? 'Active layer' : 'Layer'} ${i}: ${l.name}, ${l.visible === false ? 'hidden' : 'visible'}, ${l.locked ? 'locked' : 'unlocked'}, ${objectCount} object${objectCount !== 1 ? 's' : ''}`;
+                item.textContent = this._t(
+                    i === this.activeLayerIdx
+                        ? 'Active layer {index}: {name}, {visibility}, {lock}, {count} objects'
+                        : 'Layer {index}: {name}, {visibility}, {lock}, {count} objects',
+                    {
+                        index: i,
+                        name: l.name,
+                        visibility: this._t(l.visible === false ? 'hidden' : 'visible'),
+                        lock: this._t(l.locked ? 'locked' : 'unlocked'),
+                        count: objectCount
+                    }
+                );
                 list.appendChild(item);
             });
         }
@@ -8693,7 +8798,7 @@ self.onmessage = async function(e) {
     },
     updateStatus() {
         const objs=this.canvas.getObjects().filter(o=>o.name!=='__boundary__');
-        document.getElementById('object-count').textContent=`${objs.length} object${objs.length!==1?'s':''}`;
+        document.getElementById('object-count').textContent=this._t('{count} objects', { count: objs.length });
         this.updateInfoPanel();
         this._renderAccessibilityTree();
     },
@@ -8707,7 +8812,8 @@ self.onmessage = async function(e) {
 };
 
 document.addEventListener('click', e => {
-    const c = e.target.closest('[data-modal-close]');
+    const target = eventElementTarget(e);
+    const c = target?.closest('[data-modal-close]');
     if (c) { const o = c.closest('.modal-overlay'); if (o) o.remove(); }
 });
 document.addEventListener('input', e => {
@@ -8715,8 +8821,8 @@ document.addEventListener('input', e => {
         e.target.nextElementSibling.textContent = e.target.value + e.target.dataset.suffix;
 });
 
-window.addEventListener('error', e => { console.error('Unhandled error:', e.error || e.message); if (typeof OS !== 'undefined' && OS.toast) OS.toast('Something went wrong — see console', 'error'); });
-window.addEventListener('unhandledrejection', e => { console.error('Unhandled promise rejection:', e.reason); if (typeof OS !== 'undefined' && OS.toast) OS.toast('Something went wrong — see console', 'error'); });
+window.addEventListener('error', e => { console.error('Unhandled error:', e.error || e.message); if (typeof OS !== 'undefined' && OS.toast) OS.toast(OS._t('Something went wrong — see console'), 'error'); });
+window.addEventListener('unhandledrejection', e => { console.error('Unhandled promise rejection:', e.reason); if (typeof OS !== 'undefined' && OS.toast) OS.toast(OS._t('Something went wrong — see console'), 'error'); });
 window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
 <script src="./host/openshop-protocol.js"></script>

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { parse } from 'acorn';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const indexPath = resolve(packageRoot, 'index.html');
@@ -29,6 +30,42 @@ if (!dictionary) throw new Error('zh-CN.js did not register a zh-CN dictionary')
 
 const failures = [];
 const messageKeys = new Set();
+
+function walkAst(node, visit) {
+  if (!node || typeof node !== 'object') return;
+  visit(node);
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'parent') continue;
+    if (Array.isArray(value)) value.forEach((child) => walkAst(child, visit));
+    else if (value && typeof value.type === 'string') walkAst(value, visit);
+  }
+}
+
+function calleeName(callee) {
+  if (callee?.type === 'Identifier') return callee.name;
+  if (callee?.type !== 'MemberExpression') return '';
+  if (!callee.computed && callee.property?.type === 'Identifier') return callee.property.name;
+  if (callee.computed && callee.property?.type === 'Literal') return String(callee.property.value || '');
+  return '';
+}
+
+const messageArgumentIndexes = new Map([
+  ['_t', 0],
+  ['saveHistory', 0],
+  ['_commitImageData', 1],
+  ['_replaceActiveImage', 2],
+]);
+for (const match of indexSource.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) {
+  if (!match[1].trim()) continue;
+  const ast = parse(match[1], { ecmaVersion: 'latest', sourceType: 'script' });
+  walkAst(ast, (node) => {
+    if (node.type !== 'CallExpression') return;
+    const argumentIndex = messageArgumentIndexes.get(calleeName(node.callee));
+    if (argumentIndex === undefined) return;
+    const argument = node.arguments[argumentIndex];
+    if (argument?.type === 'Literal' && typeof argument.value === 'string') messageKeys.add(argument.value);
+  });
+}
 
 function lineNumberAt(source, offset) {
   return source.slice(0, offset).split('\n').length;
