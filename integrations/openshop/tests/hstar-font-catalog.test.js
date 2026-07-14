@@ -1,0 +1,86 @@
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const testDir = dirname(fileURLToPath(import.meta.url));
+const catalogPath = resolve(testDir, '..', 'host', 'openshop-font-catalog.js');
+
+describe('Hstar OpenShop font catalog', () => {
+  beforeEach(async () => {
+    expect(existsSync(catalogPath), `${catalogPath} should exist`).toBe(true);
+    vi.resetModules();
+    delete window.HstarOpenShopFontCatalog;
+    await import(`${pathToFileURL(catalogPath).href}?test=${Date.now()}-${Math.random()}`);
+  });
+
+  it('detects and deduplicates Chinese, English and missing project fonts', () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fontProbe:family => !family.includes('Missing'),
+    });
+    const nested = {type:'i-text', fontFamily:'Arial', text:'English'};
+    const editor = {
+      __hstarFontRefs:[{family:'Missing Poster Font', status:'missing'}],
+      canvas:{
+        getObjects:() => [
+          {type:'i-text', fontFamily:'Microsoft YaHei UI', text:'中文'},
+          {type:'group', _objects:[nested]},
+          {type:'i-text', fontFamily:'Microsoft YaHei UI', text:'重复'},
+        ],
+      },
+    };
+
+    expect(manager.scanEditor(editor)).toEqual([
+      {family:'Microsoft YaHei UI', status:'available'},
+      {family:'Arial', status:'available'},
+      {family:'Missing Poster Font', status:'missing'},
+    ]);
+    expect(editor.__hstarFontRefs).toEqual([
+      {family:'Microsoft YaHei UI', status:'available'},
+      {family:'Arial', status:'available'},
+      {family:'Missing Poster Font', status:'missing'},
+    ]);
+  });
+
+  it('keeps missing fonts unchanged until the user explicitly replaces them', () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fontProbe:family => !family.includes('Missing'),
+    });
+    const missingText = {type:'i-text', fontFamily:'Missing Poster Font', text:'海报标题', set:vi.fn(function set(values){ Object.assign(this, values); })};
+    const otherText = {type:'i-text', fontFamily:'Arial', text:'Keep me'};
+    const editor = {
+      __hstarFontRefs:[{family:'Missing Poster Font', status:'missing'}],
+      canvas:{getObjects:() => [missingText, otherText], renderAll:vi.fn()},
+      updateLayersPanel:vi.fn(),
+      saveHistory:vi.fn(),
+    };
+
+    manager.scanEditor(editor);
+    expect(missingText.fontFamily).toBe('Missing Poster Font');
+    expect(() => manager.replaceFont(editor, 'Missing Poster Font', 'Another Missing Font')).toThrow('替代字体不可用');
+
+    const changed = manager.replaceFont(editor, 'Missing Poster Font', 'Microsoft YaHei UI');
+
+    expect(changed).toBe(1);
+    expect(missingText.fontFamily).toBe('Microsoft YaHei UI');
+    expect(otherText.fontFamily).toBe('Arial');
+    expect(editor.__hstarFontRefs).toEqual([
+      {family:'Microsoft YaHei UI', status:'available'},
+      {family:'Arial', status:'available'},
+      {family:'Missing Poster Font', status:'substituted', replacementFamily:'Microsoft YaHei UI'},
+    ]);
+    expect(editor.canvas.renderAll).toHaveBeenCalledTimes(1);
+    expect(editor.saveHistory).toHaveBeenCalledWith('替换缺失字体');
+  });
+
+  it('exposes a restrained common font catalog for mixed-language editing', () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({fontProbe:() => true});
+    const families = manager.listCommonFonts().map(item => item.family);
+
+    expect(families).toContain('Microsoft YaHei UI');
+    expect(families).toContain('SimSun');
+    expect(families).toContain('Arial');
+    expect(families).toContain('Georgia');
+    expect(new Set(families).size).toBe(families.length);
+  });
+});
