@@ -55,7 +55,8 @@ function createEditor() {
           src: object.src,
           hstarAssetId: object.hstarAssetId,
           hstarEdgeId: object.hstarEdgeId,
-          hstarSourceNodeId: object.hstarSourceNodeId
+          hstarSourceNodeId: object.hstarSourceNodeId,
+          hstarLayerId: object.hstarLayerId
         }))
       }))
     },
@@ -315,6 +316,129 @@ describe('Hstar OpenShop project adapter', () => {
     expect(disconnected.detached.map(layer => layer.layerId)).toContain(existingLayer.layerId);
     expect(existingLayer.objects[0]).toBe(existingImage);
     expect(editor.canvas.getObjects()).toContain(existingImage);
+  });
+
+  it('keeps one active binding per source edge after adding, saving and restoring an update', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceV1 = {
+      assetId: 'asset-v1', assetVersion: 'v1', edgeId: 'edge-stable',
+      sourceNodeId: 'image-node-1', name: 'source-v1.png',
+      url: '/api/openshop/assets/asset-v1', sequence: 0,
+    };
+    const sourceV2 = {
+      ...sourceV1,
+      assetId: 'asset-v2',
+      assetVersion: 'v2',
+      name: 'source-v2.png',
+      url: '/api/openshop/assets/asset-v2',
+    };
+    const sourceV3 = {
+      ...sourceV1,
+      assetId: 'asset-v3',
+      assetVersion: 'v3',
+      name: 'source-v3.png',
+      url: '/api/openshop/assets/asset-v3',
+    };
+    const imageLoader = async source => createImage(source);
+
+    await adapter.queueSourceImageLayer({editor, source: sourceV1, imageLoader});
+    await adapter.reconcileSources({editor, sources: [sourceV2], imageLoader});
+    await adapter.resolveSourceUpdate({editor, edgeId: sourceV2.edgeId, mode: 'add', imageLoader});
+
+    const saved = adapter.serializeProject({editor, context, now: () => 4000});
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => restored.canvas.add({...object}));
+      callback();
+    });
+    restored.rebuildLayersFromCanvas = vi.fn(() => {
+      const layersById = new Map();
+      restored.canvas.getObjects().forEach(object => {
+        const layerId = object.hstarLayerId;
+        if(!layersById.has(layerId)){
+          layersById.set(layerId, {
+            layerId,
+            name: object.name,
+            visible: true,
+            opacity: 100,
+            blend: 'source-over',
+            objects: [],
+          });
+        }
+        layersById.get(layerId).objects.push(object);
+      });
+      restored.layers = [...layersById.values()];
+    });
+    await adapter.restoreProject({
+      editor: restored,
+      project: saved,
+      assetResolver: async assetId => `/api/openshop/assets/${assetId}`,
+    });
+
+    const repeated = await adapter.reconcileSources({editor: restored, sources: [sourceV2], imageLoader});
+    expect(repeated.added).toHaveLength(0);
+    expect(restored.layers.filter(layer => (
+      layer.sourceBinding?.edgeId === sourceV2.edgeId
+      && layer.sourceBinding.state !== 'detached'
+    ))).toHaveLength(1);
+
+    const next = await adapter.reconcileSources({editor: restored, sources: [sourceV3], imageLoader});
+    expect(next.added).toHaveLength(0);
+    expect(next.pendingUpdates).toHaveLength(1);
+    expect(restored.layers.filter(layer => (
+      layer.sourceBinding?.edgeId === sourceV3.edgeId
+      && layer.sourceBinding.state !== 'detached'
+    ))).toHaveLength(1);
+  });
+
+  it('heals multiple active bindings left by an interrupted source restore', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceV1 = {
+      assetId: 'asset-v1', assetVersion: 'v1', edgeId: 'edge-legacy',
+      sourceNodeId: 'image-node-1', name: 'source-v1.png',
+      url: '/api/openshop/assets/asset-v1', sequence: 0,
+    };
+    const sourceV2 = {
+      ...sourceV1,
+      assetId: 'asset-v2',
+      assetVersion: 'v2',
+      name: 'source-v2.png',
+      url: '/api/openshop/assets/asset-v2',
+    };
+    const sourceV3 = {
+      ...sourceV1,
+      assetId: 'asset-v3',
+      assetVersion: 'v3',
+      name: 'source-v3.png',
+      url: '/api/openshop/assets/asset-v3',
+    };
+    const imageLoader = async source => createImage(source);
+
+    const oldLayer = await adapter.queueSourceImageLayer({editor, source: sourceV1, imageLoader});
+    await adapter.reconcileSources({editor, sources: [sourceV2], imageLoader});
+    const currentLayer = await adapter.resolveSourceUpdate({
+      editor,
+      edgeId: sourceV2.edgeId,
+      mode: 'add',
+      imageLoader,
+    });
+    oldLayer.sourceBinding.state = 'bound';
+
+    const repeated = await adapter.reconcileSources({editor, sources: [sourceV2], imageLoader});
+    expect(repeated.added).toHaveLength(0);
+    expect(repeated.pendingUpdates).toHaveLength(0);
+    expect(currentLayer.sourceBinding.state).toBe('bound');
+    expect(oldLayer.sourceBinding.state).toBe('detached');
+    expect(editor.layers.filter(layer => (
+      layer.sourceBinding?.edgeId === sourceV2.edgeId
+      && layer.sourceBinding.state !== 'detached'
+    ))).toHaveLength(1);
+
+    const next = await adapter.reconcileSources({editor, sources: [sourceV3], imageLoader});
+    expect(next.pendingUpdates).toHaveLength(1);
+    expect(next.pendingUpdates[0].layerId).toBe(currentLayer.layerId);
   });
 
   it('replaces an updated source in place and preserves its image transform', async () => {

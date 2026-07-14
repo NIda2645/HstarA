@@ -238,17 +238,36 @@
     return layer.sourceBinding;
   }
 
-  function sourceLayersByEdge(editor){
-    const layersByEdge = new Map();
+  function sourceLayersByEdge(editor, sources = []){
+    const candidatesByEdge = new Map();
     editor.layers.forEach(layer => {
       const edgeId = clean(layer?.sourceBinding?.edgeId);
       if(!edgeId) return;
-      const current = layersByEdge.get(edgeId);
-      if(!current || (current.sourceBinding?.state === 'detached' && layer.sourceBinding?.state !== 'detached')){
-        layersByEdge.set(edgeId, layer);
-      }
+      const candidates = candidatesByEdge.get(edgeId) || [];
+      candidates.push(layer);
+      candidatesByEdge.set(edgeId, candidates);
     });
-    return layersByEdge;
+
+    const sourcesByEdge = new Map(sources.map(source => [source.edgeId, source]));
+    const layersByEdge = new Map();
+    const detached = [];
+    candidatesByEdge.forEach((candidates, edgeId) => {
+      const expectedVersion = sourceVersion(sourcesByEdge.get(edgeId));
+      const newestFirst = [...candidates].reverse();
+      const active = newestFirst.filter(layer => layer.sourceBinding?.state !== 'detached');
+      const selected = active.find(layer => sourceVersion(layer.sourceBinding) === expectedVersion)
+        || active[0]
+        || newestFirst.find(layer => sourceVersion(layer.sourceBinding) === expectedVersion)
+        || newestFirst[0];
+      layersByEdge.set(edgeId, selected);
+      candidates.forEach(layer => {
+        if(layer === selected || layer.sourceBinding?.state === 'detached') return;
+        layer.sourceBinding.state = 'detached';
+        clearPendingSource(layer);
+        detached.push(layer);
+      });
+    });
+    return {layersByEdge, detached};
   }
 
   function pendingUpdateSummary(layer){
@@ -274,9 +293,11 @@
     const initiallyBlank = editor.layers.every(layer => (
       !layer?.sourceBinding && !(Array.isArray(layer?.objects) && layer.objects.length)
     ));
-    const layersByEdge = sourceLayersByEdge(editor);
     const currentEdges = new Set(normalizedSources.map(source => source.edgeId));
     const result = {added:[], pendingUpdates:[], detached:[]};
+    const indexedLayers = sourceLayersByEdge(editor, normalizedSources);
+    const layersByEdge = indexedLayers.layersByEdge;
+    result.detached.push(...indexedLayers.detached);
 
     for(const source of normalizedSources){
       const layer = layersByEdge.get(source.edgeId);

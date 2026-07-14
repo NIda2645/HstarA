@@ -1,4 +1,5 @@
-import { copyFile, mkdir, readFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +53,13 @@ const runtimeFiles = [...new Set([
   ...licenseFiles,
 ])].sort();
 
+for(const file of runtimeFiles){
+  if(/(^|\/)(?:tests?|node_modules|__pycache__|\.cache|projects?|runtime-data)(?:\/|$)/i.test(file)
+    || /\.(?:tmp|log|pyc)$/i.test(file)){
+    throw new Error(`Forbidden OpenShop runtime entry: ${file}`);
+  }
+}
+
 await rm(destination, {recursive:true, force:true});
 
 for(const file of runtimeFiles){
@@ -69,3 +77,28 @@ for(const file of runtimeFiles){
   await copyFile(source, target);
   console.log(relative(projectRoot, target).replaceAll('\\', '/'));
 }
+
+async function listFiles(root, directory = root){
+  const entries = await readdir(directory, {withFileTypes:true});
+  const files = [];
+  for(const entry of entries){
+    const absolute = resolve(directory, entry.name);
+    if(entry.isDirectory()) files.push(...await listFiles(root, absolute));
+    else files.push(relative(root, absolute).replaceAll('\\', '/'));
+  }
+  return files.sort();
+}
+
+const builtFiles = await listFiles(destination);
+if(JSON.stringify(builtFiles) !== JSON.stringify(runtimeFiles)){
+  throw new Error(`OpenShop build tree differs from the approved manifest: ${JSON.stringify(builtFiles)}`);
+}
+
+const treeHash = createHash('sha256');
+for(const file of builtFiles){
+  treeHash.update(file, 'utf8');
+  treeHash.update('\0');
+  treeHash.update(await readFile(resolve(destination, file)));
+  treeHash.update('\0');
+}
+console.log(`OPENSHOP_BUILD_SHA256=${treeHash.digest('hex')}`);

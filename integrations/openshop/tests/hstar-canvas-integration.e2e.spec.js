@@ -89,6 +89,7 @@ async function openNode(page, canvasFrame, kind, nodeId, expectedSources = null)
   }, {id:nodeId});
   const editor = page.frames().find(frame => frame.url().includes('/static/openshop/index.html'));
   await editor.waitForFunction(() => Boolean(typeof OS !== 'undefined' && OS.canvas && window.HstarOpenShopRuntime?.getState?.().activeSession));
+  await expect(editor.locator('#welcome-overlay')).toBeHidden();
   if(expectedSources !== null){
     await editor.waitForFunction(count => OS.layers.filter(layer => layer.sourceBinding).length >= count, expectedSources);
   }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
 
 const integrationRoot = 'integrations/openshop';
@@ -79,5 +80,23 @@ assert.ok(dictionary, 'static runtime should register the zh-CN dictionary');
 for (const [key, value] of Object.entries(glossary)) {
   assert.equal(dictionary[key], value, `${key} should match the Photoshop glossary`);
 }
+
+function runBuild(){
+  const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npm';
+  const args = process.platform === 'win32'
+    ? ['/d', '/s', '/c', 'npm.cmd run build:hstar']
+    : ['run', 'build:hstar'];
+  const result = spawnSync(command, args, {
+    cwd:integrationRoot,
+    encoding:'utf8',
+    shell:false,
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const match = String(result.stdout || '').match(/OPENSHOP_BUILD_SHA256=([a-f0-9]{64})/);
+  assert.ok(match, 'build should report a deterministic OpenShop tree fingerprint');
+  return match[1];
+}
+
+assert.equal(runBuild(), runBuild(), 'repeated OpenShop builds should have identical tree fingerprints');
 
 console.log(`OpenShop localization build tests passed (${expectedFiles.length} approved files)`);

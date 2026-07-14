@@ -58,6 +58,7 @@ describe('Hstar OpenShop editor host runtime', () => {
         this.canvasW = width;
         this.canvasH = height;
       }),
+      dismissWelcome: vi.fn(),
       canvas: {
         toDataURL: vi.fn(() => 'data:image/png;base64,COMPOSITE_BYTES'),
         discardActiveObject: vi.fn(),
@@ -199,6 +200,7 @@ describe('Hstar OpenShop editor host runtime', () => {
     await flushMessages();
 
     expect(projectAdapter.restoreProject).toHaveBeenCalledTimes(1);
+    expect(editor.dismissWelcome).toHaveBeenCalledTimes(1);
 
     dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-2', {}, {
       sessionId: 'session-2'
@@ -211,7 +213,44 @@ describe('Hstar OpenShop editor host runtime', () => {
     await flushMessages();
 
     expect(projectAdapter.restoreProject).toHaveBeenCalledTimes(2);
+    expect(editor.dismissWelcome).toHaveBeenCalledTimes(1);
     expect(runtime.getState().activeSession.sessionId).toBe('session-2');
+  });
+
+  it('waits for project restoration before reconciling the source snapshot', async () => {
+    const restoration = deferred();
+    const callOrder = [];
+    projectAdapter.restoreProject.mockImplementationOnce(async () => {
+      callOrder.push('restore-start');
+      await restoration.promise;
+      callOrder.push('restore-end');
+    });
+    projectAdapter.reconcileSources.mockImplementationOnce(async () => {
+      callOrder.push('reconcile');
+      return {added: [], pendingUpdates: [], detached: []};
+    });
+
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    dispatch(envelope(protocol.TYPES.LOAD_PROJECT, 'load-ordered', {
+      project: {schemaVersion: 1, projectId: 'project-1'},
+    }));
+    dispatch(envelope(protocol.TYPES.SYNC_SOURCES, 'sync-ordered', {
+      sources: [{
+        assetId: 'asset-v1', assetVersion: 'v1', edgeId: 'edge-1',
+        sourceNodeId: 'image-node-1', name: 'source.png',
+        url: '/static/assets/asset-v1.png', sequence: 0,
+      }],
+    }));
+    await flushAsync();
+
+    expect(callOrder).toEqual(['restore-start']);
+    expect(projectAdapter.reconcileSources).not.toHaveBeenCalled();
+
+    restoration.resolve();
+    await flushMessages();
+    await flushMessages();
+
+    expect(callOrder).toEqual(['restore-start', 'restore-end', 'reconcile']);
   });
 
   it('reports a terminal error when an active request fails', async () => {

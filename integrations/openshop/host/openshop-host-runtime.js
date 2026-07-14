@@ -26,6 +26,10 @@
     saveTimer: null,
     pendingSave: null,
     queuedSaveOptions: null,
+    messageQueue: Promise.resolve(),
+    queuedMutationCount: 0,
+    runtimeGeneration: 0,
+    workspaceInitialized: false,
   };
 
   function uuid(prefix){
@@ -185,6 +189,12 @@
     } finally {
       state.applying = previous;
     }
+  }
+
+  function revealEditorWorkspace(){
+    if(state.workspaceInitialized) return;
+    state.editor.dismissWelcome?.();
+    state.workspaceInitialized = true;
   }
 
   function renderPng(maxEdge = 0){
@@ -427,6 +437,7 @@
         project,
         assetResolver: state.assetResolver,
       }));
+      revealEditorWorkspace();
       reason = 'project-loaded';
     } else if(envelope.type === types.SYNC_SOURCES){
       await whileApplying(() => state.projectAdapter.reconcileSources({
@@ -487,6 +498,35 @@
     }
   }
 
+  function requiresOrderedEditorMutation(envelope){
+    const types = state.protocol?.TYPES || {};
+    return [
+      types.OPEN_SESSION,
+      types.LOAD_PROJECT,
+      types.SYNC_SOURCES,
+      types.RESOLVE_SOURCE_UPDATE,
+      types.ADD_IMAGE_LAYER,
+    ].includes(envelope?.type);
+  }
+
+  function enqueueEditorMutation(event){
+    const generation = state.runtimeGeneration;
+    state.queuedMutationCount += 1;
+    const operation = state.messageQueue.then(async () => {
+      if(!state.started || generation !== state.runtimeGeneration) return;
+      await handleMessage(event);
+    }).finally(() => {
+      if(generation === state.runtimeGeneration){
+        state.queuedMutationCount = Math.max(0, state.queuedMutationCount - 1);
+      }
+    });
+    state.messageQueue = operation.catch(error => {
+      if(state.started && generation === state.runtimeGeneration){
+        root.console?.error?.('[HstarOpenShopRuntime] ordered message failed', error);
+      }
+    });
+  }
+
   function stop(){
     if(state.listener) root.removeEventListener('message', state.listener);
     if(state.dirtyListener) root.removeEventListener('openshop:project-dirty', state.dirtyListener);
@@ -507,6 +547,10 @@
     state.previewWriter = null;
     state.outputWriter = null;
     state.applying = false;
+    state.runtimeGeneration += 1;
+    state.messageQueue = Promise.resolve();
+    state.queuedMutationCount = 0;
+    state.workspaceInitialized = false;
   }
 
   function start({
@@ -536,7 +580,14 @@
     state.previewWriter = previewWriter;
     state.outputWriter = outputWriter;
     state.listener = event => {
-      void handleMessage(event);
+      const envelope = event?.data;
+      if(envelope?.type === state.protocol?.TYPES?.OPEN_SESSION && state.queuedMutationCount === 0){
+        void handleMessage(event);
+      } else if(requiresOrderedEditorMutation(envelope)) {
+        enqueueEditorMutation(event);
+      } else {
+        void handleMessage(event);
+      }
     };
     state.dirtyListener = event => {
       markDirty(event?.detail?.action || 'editor-change');

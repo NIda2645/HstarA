@@ -1,5 +1,6 @@
 (function bootstrapOpenShopProjectAdapter(root){
   const SCHEMA_VERSION = 1;
+  let layerSequence = 0;
 
   function clean(value){
     return String(value || '').trim();
@@ -36,6 +37,30 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function createLayerId(){
+    const randomId = root.crypto?.randomUUID?.();
+    if(randomId) return `layer_${randomId.replaceAll('-', '_')}`;
+    layerSequence += 1;
+    return `layer_${Date.now().toString(36)}_${layerSequence.toString(36)}`;
+  }
+
+  function ensureLayerId(layer){
+    if(!layer || typeof layer !== 'object') throw new Error('OpenShop layer is invalid');
+    const objects = Array.isArray(layer.objects) ? layer.objects : [];
+    const objectLayerId = objects.map(object => clean(object?.hstarLayerId)).find(Boolean);
+    const layerId = clean(layer.layerId) || objectLayerId || createLayerId();
+    layer.layerId = layerId;
+    objects.forEach(object => {
+      if(object && typeof object === 'object') object.hstarLayerId = layerId;
+    });
+    return layerId;
+  }
+
+  function ensureEditorLayerIds(editor){
+    if(!Array.isArray(editor?.layers)) throw new Error('OpenShop editor is unavailable');
+    editor.layers.forEach(ensureLayerId);
+  }
+
   function createEmptyProject({context, width = 1920, height = 1080, now = Date.now}){
     const owner = normalizeContext(context);
     const timestamp = Number(now());
@@ -57,6 +82,8 @@
       layers: [],
       sourceBindings: [],
       assetRefs: [],
+      previewAssetId: '',
+      autosaveVersion: 0,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -119,6 +146,7 @@
     layer.opacity = 100;
     layer.blend = 'source-over';
     layer.objects = Array.isArray(layer.objects) ? layer.objects : [];
+    ensureLayerId(layer);
     layer.sourceBinding = {
       assetId: source.assetId,
       edgeId: source.edgeId,
@@ -161,6 +189,7 @@
       name: source.name,
       selectable: true,
       hstarAssetId: source.assetId,
+      hstarAssetRole: 'source',
       hstarEdgeId: source.edgeId,
       hstarSourceNodeId: source.sourceNodeId,
     };
@@ -169,6 +198,7 @@
     if(!image.src) image.src = source.url;
 
     const layer = createLayer(editor, source);
+    image.hstarLayerId = layer.layerId;
     layer.objects.push(image);
     editor.canvas.add(image);
     if(source.placement === 'initial-source-order') sortInitialSourceLayers(editor);
@@ -178,6 +208,294 @@
     editor.updateLayersPanel?.();
     editor.saveHistory?.('Add source image layer');
     return layer;
+  }
+
+  function sourceVersion(value){
+    return clean(value?.assetVersion) || clean(value?.assetId);
+  }
+
+  function clearPendingSource(layer){
+    const binding = layer?.sourceBinding;
+    if(!binding) return;
+    binding.pendingAssetId = '';
+    binding.pendingAssetVersion = '';
+    delete layer.__hstarPendingSource;
+  }
+
+  function bindLayerToSource(layer, source, state = 'bound'){
+    ensureLayerId(layer);
+    layer.sourceBinding = {
+      assetId: source.assetId,
+      edgeId: source.edgeId,
+      sourceNodeId: source.sourceNodeId,
+      assetVersion: source.assetVersion,
+      sequence: source.sequence,
+      state,
+      pendingAssetId: '',
+      pendingAssetVersion: '',
+      ignoredAssetVersion: clean(layer.sourceBinding?.ignoredAssetVersion),
+    };
+    return layer.sourceBinding;
+  }
+
+  function sourceLayersByEdge(editor, sources = []){
+    const candidatesByEdge = new Map();
+    editor.layers.forEach(layer => {
+      const edgeId = clean(layer?.sourceBinding?.edgeId);
+      if(!edgeId) return;
+      const candidates = candidatesByEdge.get(edgeId) || [];
+      candidates.push(layer);
+      candidatesByEdge.set(edgeId, candidates);
+    });
+
+    const sourcesByEdge = new Map(sources.map(source => [source.edgeId, source]));
+    const layersByEdge = new Map();
+    const detached = [];
+    candidatesByEdge.forEach((candidates, edgeId) => {
+      const expectedVersion = sourceVersion(sourcesByEdge.get(edgeId));
+      const newestFirst = [...candidates].reverse();
+      const active = newestFirst.filter(layer => layer.sourceBinding?.state !== 'detached');
+      const selected = active.find(layer => sourceVersion(layer.sourceBinding) === expectedVersion)
+        || active[0]
+        || newestFirst.find(layer => sourceVersion(layer.sourceBinding) === expectedVersion)
+        || newestFirst[0];
+      layersByEdge.set(edgeId, selected);
+      candidates.forEach(layer => {
+        if(layer === selected || layer.sourceBinding?.state === 'detached') return;
+        layer.sourceBinding.state = 'detached';
+        clearPendingSource(layer);
+        detached.push(layer);
+      });
+    });
+    return {layersByEdge, detached};
+  }
+
+  function pendingUpdateSummary(layer){
+    const binding = layer.sourceBinding || {};
+    return {
+      layerId: layer.layerId,
+      edgeId: clean(binding.edgeId),
+      currentAssetId: clean(binding.assetId),
+      currentAssetVersion: clean(binding.assetVersion),
+      pendingAssetId: clean(binding.pendingAssetId),
+      pendingAssetVersion: clean(binding.pendingAssetVersion),
+    };
+  }
+
+  async function reconcileSources({editor, sources = [], imageLoader = defaultImageLoader}){
+    if(!editor?.canvas || !Array.isArray(editor.layers)){
+      throw new Error('OpenShop editor is unavailable');
+    }
+    ensureEditorLayerIds(editor);
+    const normalizedSources = sources.map(normalizeSource).sort((left, right) => (
+      left.sequence - right.sequence || left.edgeId.localeCompare(right.edgeId)
+    ));
+    const initiallyBlank = editor.layers.every(layer => (
+      !layer?.sourceBinding && !(Array.isArray(layer?.objects) && layer.objects.length)
+    ));
+    const currentEdges = new Set(normalizedSources.map(source => source.edgeId));
+    const result = {added:[], pendingUpdates:[], detached:[]};
+    const indexedLayers = sourceLayersByEdge(editor, normalizedSources);
+    const layersByEdge = indexedLayers.layersByEdge;
+    result.detached.push(...indexedLayers.detached);
+
+    for(const source of normalizedSources){
+      const layer = layersByEdge.get(source.edgeId);
+      if(!layer){
+        const addedLayer = await queueSourceImageLayer({
+          editor,
+          source: {...source, placement:initiallyBlank ? 'initial-source-order' : 'top'},
+          imageLoader,
+        });
+        layersByEdge.set(source.edgeId, addedLayer);
+        result.added.push(addedLayer);
+        continue;
+      }
+
+      const binding = layer.sourceBinding;
+      const nextVersion = sourceVersion(source);
+      const currentVersion = sourceVersion(binding);
+      if(nextVersion === currentVersion){
+        bindLayerToSource(layer, source, 'bound');
+        clearPendingSource(layer);
+        continue;
+      }
+      if(clean(binding.ignoredAssetVersion) === nextVersion){
+        binding.state = 'bound';
+        binding.sequence = source.sequence;
+        binding.sourceNodeId = source.sourceNodeId;
+        clearPendingSource(layer);
+        continue;
+      }
+      binding.state = 'update-available';
+      binding.sequence = source.sequence;
+      binding.sourceNodeId = source.sourceNodeId;
+      binding.pendingAssetId = source.assetId;
+      binding.pendingAssetVersion = source.assetVersion;
+      layer.__hstarPendingSource = source;
+      result.pendingUpdates.push(pendingUpdateSummary(layer));
+    }
+
+    editor.layers.forEach(layer => {
+      const binding = layer?.sourceBinding;
+      if(!binding?.edgeId || currentEdges.has(binding.edgeId)) return;
+      binding.state = 'detached';
+      clearPendingSource(layer);
+      result.detached.push(layer);
+    });
+    editor.canvas.renderAll?.();
+    editor.updateLayersPanel?.();
+    return result;
+  }
+
+  const TRANSFORM_PROPERTIES = [
+    'left', 'top', 'scaleX', 'scaleY', 'angle', 'flipX', 'flipY',
+    'skewX', 'skewY', 'originX', 'originY', 'opacity', 'visible',
+    'cropX', 'cropY', 'globalCompositeOperation',
+  ];
+
+  async function resolveSourceUpdate({editor, edgeId, mode, imageLoader = defaultImageLoader}){
+    if(!['replace', 'add', 'ignore'].includes(mode)){
+      throw new Error('OpenShop source update mode is invalid');
+    }
+    ensureEditorLayerIds(editor);
+    const normalizedEdgeId = clean(edgeId);
+    const layer = [...editor.layers].reverse().find(candidate => (
+      clean(candidate?.sourceBinding?.edgeId) === normalizedEdgeId
+      && candidate.sourceBinding?.state === 'update-available'
+    ));
+    if(!layer) throw new Error(`OpenShop source update is unavailable: ${normalizedEdgeId}`);
+    const source = layer.__hstarPendingSource;
+    if(!source?.url) throw new Error('OpenShop pending source image is unavailable');
+
+    if(mode === 'ignore'){
+      layer.sourceBinding.ignoredAssetVersion = sourceVersion(source);
+      layer.sourceBinding.state = 'bound';
+      clearPendingSource(layer);
+      editor.updateLayersPanel?.();
+      return layer;
+    }
+
+    if(mode === 'add'){
+      layer.sourceBinding.state = 'detached';
+      clearPendingSource(layer);
+      return queueSourceImageLayer({
+        editor,
+        source: {...source, placement:'top'},
+        imageLoader,
+      });
+    }
+
+    const replacement = await imageLoader(source);
+    if(!replacement) throw new Error('OpenShop updated source image could not be decoded');
+    const objectIndex = layer.objects.findIndex(object => (
+      clean(object?.hstarEdgeId) === normalizedEdgeId || clean(object?.hstarAssetId) === clean(layer.sourceBinding.assetId)
+    ));
+    const original = objectIndex >= 0 ? layer.objects[objectIndex] : layer.objects[0];
+    const transform = {};
+    TRANSFORM_PROPERTIES.forEach(property => {
+      if(original?.[property] !== undefined) transform[property] = original[property];
+    });
+    const values = {
+      ...transform,
+      name: source.name,
+      selectable: true,
+      hstarAssetId: source.assetId,
+      hstarAssetRole: 'source',
+      hstarEdgeId: source.edgeId,
+      hstarSourceNodeId: source.sourceNodeId,
+      hstarLayerId: layer.layerId,
+    };
+    if(typeof replacement.set === 'function') replacement.set(values);
+    Object.assign(replacement, values);
+    if(!replacement.src) replacement.src = source.url;
+    if(original) editor.canvas.remove?.(original);
+    if(objectIndex >= 0) layer.objects.splice(objectIndex, 1, replacement);
+    else layer.objects.splice(0, layer.objects.length, replacement);
+    editor.canvas.add(replacement);
+    bindLayerToSource(layer, source, 'bound');
+    layer.name = source.name;
+    clearPendingSource(layer);
+    syncCanvasObjectOrder(editor);
+    editor.canvas.renderAll?.();
+    editor.updateLayersPanel?.();
+    editor.saveHistory?.('Replace source image');
+    return layer;
+  }
+
+  function imageObjectSource(object){
+    if(typeof object?.getSrc === 'function'){
+      const source = clean(object.getSrc());
+      if(source) return source;
+    }
+    return clean(
+      object?.src
+      || object?._element?.currentSrc
+      || object?._element?.src
+      || object?._originalElement?.currentSrc
+      || object?._originalElement?.src
+    );
+  }
+
+  function fabricObjectsInOrder(editor){
+    const ordered = [];
+    const visited = new Set();
+    function visit(object, inheritedLayerId = ''){
+      if(!object || typeof object !== 'object' || visited.has(object)) return;
+      visited.add(object);
+      if(!clean(object.hstarLayerId) && inheritedLayerId){
+        object.hstarLayerId = inheritedLayerId;
+      }
+      ordered.push(object);
+      const children = Array.isArray(object._objects)
+        ? object._objects
+        : (typeof object.getObjects === 'function' ? object.getObjects() : []);
+      children.forEach(child => visit(child, clean(object.hstarLayerId) || inheritedLayerId));
+    }
+    editor.canvas.getObjects().forEach(object => visit(object));
+    return ordered;
+  }
+
+  async function persistEditorAssets({editor, assetWriter}){
+    if(!editor?.canvas?.getObjects || !Array.isArray(editor.layers)){
+      throw new Error('OpenShop editor is unavailable');
+    }
+    if(typeof assetWriter !== 'function'){
+      throw new Error('OpenShop asset writer is unavailable');
+    }
+    ensureEditorLayerIds(editor);
+    const persisted = [];
+    for(const object of fabricObjectsInOrder(editor)){
+      if(clean(object?.type).toLowerCase() !== 'image' || clean(object?.hstarAssetId)) continue;
+      const dataUrl = imageObjectSource(object);
+      if(!dataUrl){
+        throw new Error(`OpenShop image cannot be externalized: ${safeName(object?.name, 'unnamed image')}`);
+      }
+      const role = clean(object.hstarAssetRole) || (object.hstarEdgeId ? 'source' : 'layer');
+      let asset;
+      try {
+        asset = await assetWriter({
+          dataUrl,
+          role,
+          name: safeName(object.name, 'OpenShop image'),
+          object,
+        });
+      } catch(error){
+        throw new Error(`OpenShop image could not be externalized: ${error?.message || error}`);
+      }
+      const assetId = clean(asset?.assetId);
+      if(!assetId){
+        throw new Error('OpenShop asset writer returned no asset id');
+      }
+      const values = {
+        hstarAssetId: assetId,
+        hstarAssetRole: clean(asset.role) || role,
+      };
+      if(typeof object.set === 'function') object.set(values);
+      Object.assign(object, values);
+      persisted.push({assetId, role:values.hstarAssetRole});
+    }
+    return persisted;
   }
 
   function externalizeAssets(value, assetRefs){
@@ -191,10 +509,29 @@
       assetRefs.add(assetId);
       value.assetRef = assetId;
       delete value.src;
-    } else if(typeof value.src === 'string' && value.src.startsWith('data:image/')){
+    } else if(typeof value.src === 'string' && /^(?:data:image\/|blob:)/i.test(value.src)){
       throw new Error('OpenShop project contains inline image data without an asset id');
     }
     Object.values(value).forEach(child => externalizeAssets(child, assetRefs));
+  }
+
+  function serializeSourceBinding(binding, layerId){
+    if(!binding) return null;
+    const sequence = Number(binding.sequence);
+    return {
+      layerId,
+      edgeId: clean(binding.edgeId),
+      sourceNodeId: clean(binding.sourceNodeId),
+      assetId: clean(binding.assetId),
+      assetVersion: clean(binding.assetVersion),
+      sequence: Number.isInteger(sequence) && sequence >= 0 ? sequence : 0,
+      state: ['bound', 'update-available', 'detached'].includes(binding.state)
+        ? binding.state
+        : 'bound',
+      pendingAssetId: clean(binding.pendingAssetId),
+      pendingAssetVersion: clean(binding.pendingAssetVersion),
+      ignoredAssetVersion: clean(binding.ignoredAssetVersion),
+    };
   }
 
   function serializeProject({editor, context, now = Date.now}){
@@ -205,29 +542,38 @@
     const timestamp = Number(now());
     const createdAt = Number(editor.__hstarProjectCreatedAt || timestamp);
     editor.__hstarProjectCreatedAt = createdAt;
+    ensureEditorLayerIds(editor);
     const editorJson = clone(editor.canvas.toJSON([
       'name',
       'excludeFromExport',
       'globalCompositeOperation',
       'hstarAssetId',
+      'hstarAssetRole',
       'hstarEdgeId',
       'hstarSourceNodeId',
+      'hstarLayerId',
     ]));
     const assetRefs = new Set();
     externalizeAssets(editorJson, assetRefs);
 
     const layers = editor.layers.map(layer => ({
+      layerId: ensureLayerId(layer),
       name: safeName(layer.name, '图层'),
       visible: layer.visible !== false,
       opacity: Number.isFinite(Number(layer.opacity)) ? Number(layer.opacity) : 100,
       blend: clean(layer.blend) || 'source-over',
-      sourceBinding: layer.sourceBinding ? clone(layer.sourceBinding) : null,
+      sourceBinding: serializeSourceBinding(layer.sourceBinding, layer.layerId),
     }));
     const sourceBindings = layers
       .map((layer, layerIndex) => layer.sourceBinding ? {...layer.sourceBinding, layerIndex} : null)
       .filter(Boolean)
       .sort((left, right) => left.sequence - right.sequence);
-    sourceBindings.forEach(binding => assetRefs.add(binding.assetId));
+    sourceBindings.forEach(binding => {
+      if(binding.assetId) assetRefs.add(binding.assetId);
+      if(binding.pendingAssetId) assetRefs.add(binding.pendingAssetId);
+    });
+    const previewAssetId = clean(editor.__hstarPreviewAssetId);
+    if(previewAssetId) assetRefs.add(previewAssetId);
 
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -247,6 +593,8 @@
       layers,
       sourceBindings,
       assetRefs: [...assetRefs].sort(),
+      previewAssetId,
+      autosaveVersion: Number(editor.__hstarAutosaveVersion || 0),
       createdAt,
       updatedAt: timestamp,
     };
@@ -276,6 +624,8 @@
     editor.canvasW = positiveDimension(project.document?.width, 'width');
     editor.canvasH = positiveDimension(project.document?.height, 'height');
     editor.__hstarProjectCreatedAt = Number(project.createdAt || Date.now());
+    editor.__hstarPreviewAssetId = clean(project.previewAssetId);
+    editor.__hstarAutosaveVersion = Number(project.autosaveVersion || 0);
     await new Promise((resolve, reject) => {
       try {
         const result = editor.canvas.loadFromJSON(project.editor, () => resolve());
@@ -285,10 +635,15 @@
       }
     });
     editor.rebuildLayersFromCanvas?.();
+    ensureEditorLayerIds(editor);
     if(Array.isArray(project.layers)){
+      const layersById = new Map(editor.layers.map(layer => [clean(layer.layerId), layer]));
       project.layers.forEach((metadata, index) => {
-        const layer = editor.layers?.[index];
+        const metadataLayerId = clean(metadata.layerId);
+        const layer = layersById.get(metadataLayerId) || editor.layers?.[index];
         if(!layer) return;
+        if(metadataLayerId) layer.layerId = metadataLayerId;
+        ensureLayerId(layer);
         layer.name = safeName(metadata.name, `Layer ${index}`);
         layer.visible = metadata.visible !== false;
         layer.opacity = Number(metadata.opacity ?? 100);
@@ -307,5 +662,8 @@
     serializeProject,
     restoreProject,
     queueSourceImageLayer,
+    persistEditorAssets,
+    reconcileSources,
+    resolveSourceUpdate,
   });
 })(window);
