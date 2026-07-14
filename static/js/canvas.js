@@ -3383,12 +3383,37 @@ function addDirector3DNode(point){
     const sceneKey = protocol?.createSceneKey?.('classic', canvasId, id) || `director:classic:${canvasId}:${id}`;
     return addNode({id, type:'director-3d', x:p.x, y:p.y, w:320, h:230, sceneKey});
 }
+function addOpenShopLayeredNode(point){
+    const p = point || defaultPoint(100, 0);
+    const node = window.HstarClassicOpenShopAdapter?.createNode?.(p);
+    return node ? addNode(node) : null;
+}
+function openOpenShopLayeredNode(nodeId){
+    return window.HstarClassicOpenShopAdapter?.openNode?.(nodeId);
+}
 function openDirector3DNode(nodeId){
     return window.HstarClassicDirectorAdapter?.openDirectorNode?.(nodeId);
 }
 function importDirector3DCaptures(payload){
     return window.HstarClassicDirectorAdapter?.importDirectorCaptures?.(payload);
 }
+window.HstarClassicOpenShopHooks = Object.freeze({
+    uid,
+    getCanvasId:() => canvas?.id || new URLSearchParams(window.location.search).get('id') || '',
+    getNodes:() => nodes,
+    getConnections:() => connections,
+    mediaRefsFromNode,
+    mediaKindForRef,
+    displayMediaUrl:canvasDisplayMediaUrl,
+    t:tr,
+    addNode:node => { nodes.push(node); return node; },
+    addConnection:connection => { connections.push(connection); return connection; },
+    pushUndo,
+    render,
+    scheduleSave,
+    saveCanvas,
+    selectOnly:id => { selected.clear(); selected.add(id); },
+});
 function openCreateMenu(clientX, clientY){
     menuPoint = screenToWorld(clientX, clientY);
     closeLinkCreateMenu();
@@ -3408,6 +3433,7 @@ function linkCreateOptions(state){
     if(state.originKind === 'out'){
         if(['image','prompt','controller','loop','group','promptGroup','llm','output'].includes(node.type)){
             return [
+                ...(['image','group','output'].includes(node.type) ? [{type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'}] : []),
                 {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
                 {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
                 {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
@@ -3792,6 +3818,7 @@ function createNodeByType(type, point){
     if(type === 'comfy') return addComfyNode(point);
     if(type === 'ltxDirector') return addLTXDirectorNode(point);
     if(type === 'director-3d') return addDirector3DNode(point);
+    if(type === 'openshop-layered') return addOpenShopLayeredNode(point);
     if(type === 'output') return addOutputNode(point);
     return null;
 }
@@ -3809,6 +3836,7 @@ function menuAdd(type){
     if(type === 'comfy') addComfyNode(menuPoint);
     if(type === 'ltxDirector') addLTXDirectorNode(menuPoint);
     if(type === 'director-3d') addDirector3DNode(menuPoint);
+    if(type === 'openshop-layered') addOpenShopLayeredNode(menuPoint);
     if(type === 'output') addOutputNode(menuPoint);
 }
 function mediaKindForUpload(file){
@@ -8881,14 +8909,15 @@ function renderNode(node){
         refreshSelectionVisuals();
     };
     el.oncontextmenu = e => {
-    if(!CANVAS_GENERATOR_TYPES.includes(node.type) && node.type !== 'output' && node.type !== 'director-3d') return;
+    if(!CANVAS_GENERATOR_TYPES.includes(node.type) && node.type !== 'output' && node.type !== 'director-3d' && node.type !== 'openshop-layered') return;
         e.preventDefault();
         e.stopPropagation();
         if(node.type === 'output') openOutputNodeMenu(node.id, e.clientX, e.clientY);
         else if(node.type === 'director-3d') return;
+        else if(node.type === 'openshop-layered') return;
         else openGeneratorNodeMenu(node.id, e.clientX, e.clientY);
     };
-    const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'controller' ? '\u7efc\u5408\u63a7\u5236\u5668' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'director-3d' ? '3D导演台' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : tr('canvas.apiGenerate');
+    const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'controller' ? '\u7efc\u5408\u63a7\u5236\u5668' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'director-3d' ? '3D导演台' : node.type === 'openshop-layered' ? tr('canvas.openshopLayered') : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : tr('canvas.apiGenerate');
     const displayTitle = node.type === 'image' && node.url ? nodeTitleForMedia(node) : title;
     // 失败徽章只在一键运行模式中显示，单节点失败已通过 alert 提示
     const showStatus = ['generator','msgen','comfy','ltxDirector','llm','video','rh'].includes(node.type) && node.runStatus
@@ -9055,6 +9084,11 @@ function renderNode(node){
         if(directorBody) body.appendChild(directorBody);
         else body.innerHTML = `<div class="director-node-body"><button class="director-node-action" type="button" onclick="openDirector3DNode('${node.id}')"><i data-lucide="box"></i><span>打开3D导演台</span></button></div>`;
     }
+    if(node.type === 'openshop-layered') {
+        const openshopBody = window.HstarClassicOpenShopAdapter?.renderNode?.(node);
+        if(openshopBody) body.appendChild(openshopBody);
+        else body.innerHTML = `<button class="openshop-layered-open" type="button" onclick="openOpenShopLayeredNode('${node.id}')"><i data-lucide="panel-top-open"></i><span>${escapeHtml(tr('canvas.openshopOpen'))}</span></button>`;
+    }
     if(node.type === 'output') {
         const pendingHtml = (node._pending || []).map(p =>
             renderPendingOutput(p)
@@ -9074,8 +9108,8 @@ function renderNode(node){
         if(e.button !== 0 || !isNodeDragSurface(e.target)) return;
         startNodeDrag(e, node);
     };
-    const canInput = ['generator','comfy','ltxDirector','director-3d','output','llm','msgen','video','rh'].includes(node.type) || (node.type === 'loop' && (node.imageInput || node.showPrompt));
-    const canOutput = ['image','prompt','controller','loop','group','promptGroup','generator','comfy','ltxDirector','director-3d','llm','msgen','video','rh','output'].includes(node.type);
+    const canInput = ['generator','comfy','ltxDirector','director-3d','openshop-layered','output','llm','msgen','video','rh'].includes(node.type) || (node.type === 'loop' && (node.imageInput || node.showPrompt));
+    const canOutput = ['image','prompt','controller','loop','group','promptGroup','generator','comfy','ltxDirector','director-3d','openshop-layered','llm','msgen','video','rh','output'].includes(node.type);
     if(canInput) el.insertAdjacentHTML('beforeend', `<div class="port in" title="${tr('canvas.connectHere')}"></div>`);
     if(canOutput) el.insertAdjacentHTML('beforeend', `<div class="port out" title="${tr('canvas.dragConnect')}"></div>`);
     el.insertAdjacentHTML('beforeend', `<div class="resize-handle" title="${tr('canvas.resize')}"></div>`);
@@ -9252,6 +9286,7 @@ function defaultNodeSize(type){
     if(type === 'comfy') return {w:420, h:460};
     if(type === 'ltxDirector') return {w:1000, h:800};
     if(type === 'director-3d') return {w:320, h:230};
+    if(type === 'openshop-layered') return {w:340, h:260};
     if(type === 'output') return {w:460, h:0};
     return {w:260, h:0};
 }
@@ -17116,6 +17151,9 @@ function cloneNode(n, dx, dy){
     copy.x = n.x + dx;
     copy.y = n.y + dy;
     copy.running = false;
+    if(n.type === 'openshop-layered'){
+        window.HstarClassicOpenShopAdapter?.prepareClone?.(n, copy);
+    }
     return copy;
 }
 function duplicateNodesForAltDrag(node, preserveConnections=false){
@@ -17629,6 +17667,9 @@ function canConnect(fromId, toId){
     if(!from || !to) return false;
     if(from.type === 'director-3d' || to.type === 'director-3d'){
         return Boolean(window.HstarClassicDirectorAdapter?.canConnect?.(from, to));
+    }
+    if(from.type === 'openshop-layered' || to.type === 'openshop-layered'){
+        return Boolean(window.HstarClassicOpenShopAdapter?.canConnect?.(from, to));
     }
     if(CANVAS_GENERATOR_TYPES.includes(from.type)){
         if(to.type === 'output') return true;
