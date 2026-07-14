@@ -173,6 +173,16 @@ test('dynamic UI localizes without changing user layer or canvas text', async ({
   await page.evaluate(() => OS.toggleMacroRec());
   await expect(page.locator('#macro-rec-btn')).toHaveText('录制');
 
+  await page.evaluate(() => OS.toggleCmdPalette());
+  await expect(page.locator('#cmd-results .cmd-label').first()).toHaveText('新建文档');
+  await expect(page.locator('#cmd-results .cmd-cat').first()).toHaveText('文件');
+  const untranslatedCommands = await page.locator('#cmd-results .cmd-item').evaluateAll((items) => items
+    .map((item) => `${item.querySelector('.cmd-label')?.textContent || ''} ${item.querySelector('.cmd-cat')?.textContent || ''}`
+      .replace(/PNG|JPEG|WebP|PSD|PDF|SVG|AI/gi, ''))
+    .filter((text) => /[A-Za-z]/.test(text)));
+  expect(untranslatedCommands).toEqual([]);
+  await page.evaluate(() => OS.closeCmdPalette());
+
   await page.evaluate(() => {
     document.querySelector('.modal-overlay')?.remove();
     OS.setLocale('en-US');
@@ -300,4 +310,35 @@ test('built runtime supports core editing with every external request blocked', 
   expect(result.previewBytes).toBeGreaterThan(100);
   expect(result.preferencesVisible).toBe(true);
   expect(result.historyAction).toBe('Filter: Sharpen');
+});
+
+test('mobile welcome actions stay in the initial viewport', async ({ page }) => {
+  for (const viewport of [{ width: 375, height: 667 }, { width: 430, height: 932 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto(editorUrl, { waitUntil: 'load' });
+    await page.waitForFunction(() => typeof OS !== 'undefined' && Boolean(OS.canvas));
+    const actions = page.locator('#welcome-overlay .welcome-actions button');
+    await expect(actions).toHaveCount(4);
+    for (const button of await actions.all()) {
+      const box = await button.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    }
+    await actions.last().click();
+    await expect(page.locator('#welcome-overlay')).toBeHidden();
+  }
+});
+
+test('mobile preferences modal stays inside the viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.goto(editorUrl, { waitUntil: 'load' });
+  await page.waitForFunction(() => typeof OS !== 'undefined' && Boolean(OS.canvas));
+  await page.locator('#welcome-overlay .welcome-actions button').last().click();
+  await page.evaluate(() => OS.showPreferences());
+
+  const box = await page.locator('.modal-overlay .modal').boundingBox();
+  expect(box).not.toBeNull();
+  expect(box.x).toBeGreaterThanOrEqual(12);
+  expect(box.x + box.width).toBeLessThanOrEqual(363);
 });

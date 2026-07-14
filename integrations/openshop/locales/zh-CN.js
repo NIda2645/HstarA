@@ -848,6 +848,13 @@
     "Brighten": "提亮",
     "S-Curve": "S 曲线",
     "Stop": "停止",
+    "Export PNG": "导出 PNG",
+    "Export JPEG": "导出 JPEG",
+    "Export WebP": "导出 WebP",
+    "Export SVG": "导出 SVG",
+    "Export PDF": "导出 PDF",
+    "Export PSD": "导出 PSD",
+    "Save Project": "保存项目",
   });
 
   i18n.register('zh-CN', messages);

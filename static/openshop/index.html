@@ -557,6 +557,15 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 /* === MOBILE RESPONSIVE === */
 @media(max-width:767px){
   :root{--panel-width:0px;--toolbar-w:0px;--topbar-h:36px;--tool-size:32px;--statusbar-h:0px}
+  #welcome-overlay{justify-content:flex-start;overflow-y:auto;overscroll-behavior:contain;padding:20px 0 28px}
+  .welcome-inner{width:calc(100% - 24px);max-width:520px;flex:none}
+  .welcome-inner h1{font-size:24px;letter-spacing:0}
+  .welcome-inner p{font-size:12px;margin-bottom:18px}
+  .welcome-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:24px}
+  .welcome-actions .btn{width:100%;min-height:40px;padding:9px 8px;font-size:12px;white-space:nowrap}
+  .template-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .template-card{padding:10px 8px}
+  .template-card .tpl-preview{height:48px;margin-bottom:8px}
   #panels{position:fixed;right:-260px;top:var(--topbar-h);bottom:48px;width:260px;z-index:200;transition:right .25s var(--ease-out);display:flex}
   #panels.mobile-open{right:0}
   .mobile-panel-toggle{display:flex !important}
@@ -575,7 +584,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
   #topbar{padding:0 6px}
   .menu-item{font-size:11px;padding:4px 6px}
   .logo{display:none}
-  .modal{min-width:auto;max-width:calc(100vw - 32px);padding:16px;border-radius:10px}
+  .modal{box-sizing:border-box;width:calc(100vw - 24px);min-width:0 !important;max-width:520px;padding:16px;border-radius:10px}
   .modal h3{font-size:14px;margin-bottom:12px}
   .modal-row label{width:auto;min-width:50px}
   .cr-dialog{min-width:auto;flex-wrap:wrap}
@@ -6438,7 +6447,10 @@ self.onmessage = async function(e) {
         const results = document.getElementById('cmd-results');
         const cmds = this._getCommands();
         const lower = q.toLowerCase();
-        const filtered = lower ? cmds.filter(c => c.label.toLowerCase().includes(lower) || c.cat.toLowerCase().includes(lower)) : cmds.slice(0, 20);
+        const filtered = lower ? cmds.filter(c => {
+            const searchable = [c.label, c.cat, this._commandLabel(c.label), this._t(c.cat)].join(' ').toLowerCase();
+            return searchable.includes(lower);
+        }) : cmds.slice(0, 20);
         this._cmdIdx = 0;
         this._cmdFiltered = filtered.slice(0, 20);
         this._clearNode(results);
@@ -6449,7 +6461,7 @@ self.onmessage = async function(e) {
             item.addEventListener('click', () => this._cmdExec(i));
             const label = document.createElement('span');
             label.className = 'cmd-label';
-            label.textContent = this._safeText(c.label, 80);
+            label.textContent = this._commandLabel(this._safeText(c.label, 80));
             item.appendChild(label);
             if (c.key) {
                 const shortcut = document.createElement('span');
@@ -6459,10 +6471,16 @@ self.onmessage = async function(e) {
             }
             const cat = document.createElement('span');
             cat.className = 'cmd-cat';
-            cat.textContent = this._safeText(c.cat, 40);
+            cat.textContent = this._t(this._safeText(c.cat, 40));
             item.appendChild(cat);
             results.appendChild(item);
         });
+    },
+    _commandLabel(label) {
+        const value = String(label || '');
+        if (!value.startsWith('Tool: ')) return this._t(value);
+        const toolId = value.slice(6).toLowerCase().replace(/\s+/g, '-');
+        return this._t('Tool: {tool}', { tool: this._t(this._toolLabel(toolId)) });
     },
     _cmdHover(i) {
         this._cmdIdx = i;
