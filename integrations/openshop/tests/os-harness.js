@@ -5,9 +5,15 @@ import { vi } from 'vitest';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const indexPath = join(__dirname, '..', 'index.html');
+const i18nRuntimePath = join(__dirname, '..', 'host', 'openshop-i18n.js');
+const chineseLocalePath = join(__dirname, '..', 'locales', 'zh-CN.js');
 
 export function loadOpenShop() {
   delete globalThis.OS;
+  window.HstarOpenShopI18n?.stopObserver();
+  delete window.HstarOpenShopI18n;
+  new Function(readFileSync(i18nRuntimePath, 'utf8'))();
+  new Function(readFileSync(chineseLocalePath, 'utf8'))();
   const html = readFileSync(indexPath, 'utf8');
   const start = html.indexOf('const OS = {');
   const tail = html.slice(start);
