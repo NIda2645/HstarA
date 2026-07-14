@@ -5,6 +5,7 @@
   "description": "Single-file browser image editor test harness",
   "type": "module",
   "scripts": {
+    "audit:i18n": "node scripts/audit-i18n.mjs",
     "build:hstar": "node scripts/build-hstar.mjs",
     "vendor:runtime": "node scripts/vendor-runtime.mjs",
     "test": "vitest run",

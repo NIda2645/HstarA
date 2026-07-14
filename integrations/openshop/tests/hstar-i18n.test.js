@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const runtimePath = resolve(testDir, '..', 'host', 'openshop-i18n.js');
 const localePath = resolve(testDir, '..', 'locales', 'zh-CN.js');
+const glossaryPath = resolve(testDir, '..', 'locales', 'photoshop-zh-CN-glossary.json');
 const indexHtml = readFileSync(resolve(testDir, '..', 'index.html'), 'utf8');
 
 async function loadI18n() {
@@ -67,6 +68,18 @@ describe('Hstar OpenShop localization runtime', () => {
     expect(coreEngine).toBeGreaterThan(localeScript);
     expect(indexHtml).not.toContain('_locales:');
     expect(indexHtml).toContain('_t(key, params) { return window.HstarOpenShopI18n.t(key, params); }');
+  });
+
+  it('uses the approved Simplified Chinese Photoshop terminology', async () => {
+    const glossaryExists = existsSync(glossaryPath);
+    expect(glossaryExists, `${glossaryPath} should exist`).toBe(true);
+    if (!glossaryExists || !requireI18nFiles()) return;
+    const glossary = JSON.parse(readFileSync(glossaryPath, 'utf8'));
+    const i18n = await loadI18n();
+
+    for (const [messageId, translation] of Object.entries(glossary)) {
+      expect(i18n.t(messageId), messageId).toBe(translation);
+    }
   });
 
   it('translates only explicitly marked application UI', async () => {
