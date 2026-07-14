@@ -139,6 +139,9 @@
     state.processedRequestIds.clear();
     state.processedRequestIds.add(envelope.requestId);
     resetEditorSession(envelope.payload);
+    root.dispatchEvent?.(new CustomEvent('openshop:session-opened', {
+      detail:{session:{sessionId:state.activeSession.sessionId, context:{...context}}},
+    }));
     post(state.protocol.TYPES.READY, {
       requestId: uuid('openshop-ready'),
       payload: {
@@ -437,6 +440,7 @@
         project,
         assetResolver: state.assetResolver,
       }));
+      root.dispatchEvent?.(new CustomEvent('openshop:project-loaded', {detail:{project}}));
       revealEditorWorkspace();
       reason = 'project-loaded';
     } else if(envelope.type === types.SYNC_SOURCES){
@@ -528,6 +532,7 @@
   }
 
   function stop(){
+    const shouldNotify = state.started || Boolean(state.activeSession);
     if(state.listener) root.removeEventListener('message', state.listener);
     if(state.dirtyListener) root.removeEventListener('openshop:project-dirty', state.dirtyListener);
     resetSaveState();
@@ -551,6 +556,7 @@
     state.messageQueue = Promise.resolve();
     state.queuedMutationCount = 0;
     state.workspaceInitialized = false;
+    if(shouldNotify) root.dispatchEvent?.(new CustomEvent('openshop:session-stopped'));
   }
 
   function start({

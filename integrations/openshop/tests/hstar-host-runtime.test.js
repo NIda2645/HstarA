@@ -217,6 +217,34 @@ describe('Hstar OpenShop editor host runtime', () => {
     expect(runtime.getState().activeSession.sessionId).toBe('session-2');
   });
 
+  it('emits session and project lifecycle events for project-scoped tools', async () => {
+    const opened = vi.fn();
+    const loaded = vi.fn();
+    const stopped = vi.fn();
+    window.addEventListener('openshop:session-opened', opened);
+    window.addEventListener('openshop:project-loaded', loaded);
+    window.addEventListener('openshop:session-stopped', stopped);
+    try {
+      dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-events'));
+      dispatch(envelope(protocol.TYPES.LOAD_PROJECT, 'load-events', {
+        project:{schemaVersion:1, projectId:'project-1'},
+      }));
+      await flushMessages();
+
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(opened.mock.calls[0][0].detail.session.context).toEqual(context);
+      expect(loaded).toHaveBeenCalledTimes(1);
+      expect(loaded.mock.calls[0][0].detail.project.projectId).toBe('project-1');
+
+      runtime.stop();
+      expect(stopped).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('openshop:session-opened', opened);
+      window.removeEventListener('openshop:project-loaded', loaded);
+      window.removeEventListener('openshop:session-stopped', stopped);
+    }
+  });
+
   it('waits for project restoration before reconciling the source snapshot', async () => {
     const restoration = deferred();
     const callOrder = [];
