@@ -1,0 +1,155 @@
+.openshop-host {
+    --openshop-bar: #111418;
+    --openshop-panel: #181c22;
+    --openshop-border: rgba(255, 255, 255, 0.12);
+    --openshop-text: #f5f7fa;
+    --openshop-muted: #9ba5b2;
+    --openshop-accent: #4d8dff;
+    position: absolute;
+    inset: 0;
+    z-index: 80;
+    display: none;
+    grid-template-rows: 48px minmax(0, 1fr);
+    overflow: hidden;
+    background: #0d1014;
+    color: var(--openshop-text);
+}
+
+.openshop-host.is-open {
+    display: grid;
+}
+
+.openshop-host-bar {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--openshop-border);
+    background: var(--openshop-bar);
+    scrollbar-width: thin;
+}
+
+.openshop-host-title {
+    flex: 0 0 auto;
+    max-width: 260px;
+    overflow: hidden;
+    color: var(--openshop-text);
+    font-size: 13px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.openshop-host-state {
+    flex: 0 0 auto;
+    min-width: 62px;
+    color: var(--openshop-muted);
+    font-size: 11px;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.openshop-host-state[data-state="saved"] { color: #79dba3; }
+.openshop-host-state[data-state="saving"],
+.openshop-host-state[data-state="syncing"] { color: #8bb5ff; }
+.openshop-host-state[data-state="error"] { color: #ff8b8b; }
+
+.openshop-host-spacer {
+    flex: 1 1 auto;
+    min-width: 12px;
+}
+
+.openshop-host-command {
+    flex: 0 0 auto;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 11px;
+    border: 1px solid var(--openshop-border);
+    border-radius: 6px;
+    background: #1b2027;
+    color: var(--openshop-text);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.openshop-host-command:hover:not(:disabled) { background: #252b34; }
+.openshop-host-command:focus-visible { outline: 2px solid #8bb5ff; outline-offset: 1px; }
+.openshop-host-command:disabled { cursor: default; opacity: 0.45; }
+.openshop-host-command svg { width: 15px; height: 15px; }
+.openshop-host-primary { border-color: #6d9fff; background: var(--openshop-accent); color: #fff; }
+.openshop-host-primary:hover:not(:disabled) { background: #3e7fe8; }
+
+.openshop-host > iframe {
+    position: relative;
+    inset: auto;
+    grid-row: 2;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    opacity: 1;
+    transform: none;
+    filter: none;
+    pointer-events: auto;
+    background: #0d1014;
+}
+
+.openshop-source-panel {
+    position: absolute;
+    top: 48px;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
+    width: min(360px, 92%);
+    display: none;
+    align-content: start;
+    gap: 10px;
+    overflow: auto;
+    padding: 14px;
+    border-left: 1px solid var(--openshop-border);
+    background: var(--openshop-panel);
+    box-shadow: -18px 0 36px rgba(0, 0, 0, 0.28);
+}
+
+.openshop-source-panel.is-open { display: grid; }
+.openshop-source-panel-head { font-size: 13px; font-weight: 700; }
+.openshop-source-empty { margin: 0; color: var(--openshop-muted); font-size: 12px; }
+
+.openshop-source-item {
+    display: grid;
+    gap: 6px;
+    padding: 10px;
+    border: 1px solid var(--openshop-border);
+    border-radius: 6px;
+    background: #20252c;
+}
+
+.openshop-source-item strong { font-size: 12px; }
+.openshop-source-item > span { color: var(--openshop-muted); font-size: 11px; }
+.openshop-source-item.is-processing { opacity: 0.65; }
+.openshop-source-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.openshop-source-actions button {
+    min-height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--openshop-border);
+    border-radius: 5px;
+    background: #2b313a;
+    color: var(--openshop-text);
+    font-size: 11px;
+    cursor: pointer;
+}
+
+@media (max-width: 640px) {
+    .openshop-host { grid-template-rows: 46px minmax(0, 1fr); }
+    .openshop-host-bar { padding: 6px 8px; }
+    .openshop-host-title { max-width: 150px; }
+    .openshop-host-spacer { min-width: 0; }
+    .openshop-source-panel { top: 46px; }
+}

@@ -349,6 +349,19 @@
     return true;
   }
 
+  function rejectSave(envelope){
+    const pending = state.pendingSave;
+    if(!pending || envelope.requestId !== pending.requestId) return false;
+    const error = new Error(envelope.payload?.message || 'OpenShop save was rejected');
+    state.pendingSave = null;
+    state.saving = false;
+    state.saveAgain = false;
+    state.dirty = true;
+    state.queuedSaveOptions = null;
+    pending.reject(error);
+    return true;
+  }
+
   async function requestSendToCanvas({requestId = uuid('openshop-send')} = {}){
     const session = captureSession();
     const saveResult = await requestSave({reason:'send-to-canvas'});
@@ -387,6 +400,10 @@
     let reason = '';
     if(envelope.type === types.SAVE_CONFIRMED){
       confirmSave(envelope);
+      return;
+    }
+    if(envelope.type === types.ERROR){
+      rejectSave(envelope);
       return;
     }
     if(envelope.type === types.REQUEST_SAVE){

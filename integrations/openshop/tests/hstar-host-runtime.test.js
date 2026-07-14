@@ -422,4 +422,23 @@ describe('Hstar OpenShop editor host runtime', () => {
     expect(outputWriter).not.toHaveBeenCalled();
     expect(posted(protocol.TYPES.SEND_TO_CANVAS)).toHaveLength(0);
   });
+
+  it('unlocks the save queue when the host rejects the active save', async () => {
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    await flushMessages();
+    parentWindow.postMessage.mockClear();
+    const savePromise = runtime.requestSave({reason:'manual'});
+    await flushMessages();
+    const save = posted(protocol.TYPES.SAVE_PROJECT)[0];
+    expect(runtime.getState().saving).toBe(true);
+
+    dispatch(envelope(protocol.TYPES.ERROR, save.requestId, {
+      code:'SAVE_CONFLICT',
+      requestId:save.requestId,
+      message:'项目版本冲突',
+    }));
+    await expect(savePromise).rejects.toThrow('项目版本冲突');
+
+    expect(runtime.getState()).toMatchObject({saving:false, dirty:true});
+  });
 });
