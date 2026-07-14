@@ -130,6 +130,7 @@ let createMenuPoint = {x:0, y:0};
 let createMenuGroupId = '';
 const DIRECTOR_3D_NODE_TYPE = 'director-3d';
 const DIRECTOR_3D_LABEL = '3D导演台';
+const OPENSHOP_LAYERED_NODE_TYPE = 'openshop-layered';
 const DIRECTOR_SCENE_STORAGE_KEY_PREFIX = 'storyai-3d-director-desk-demo:';
 const DIRECTOR_STANDALONE_HANDOFF_PREFIX = 'hstar-director-standalone-handoff:';
 let directorStandaloneHandoffQueue = [];
@@ -1950,6 +1951,16 @@ function imageLayout(images, scale=1, node=null){
             rows:1,
             width:Math.round(Number(node.w) || 320),
             height:Math.round(Number(node.h) || 220),
+            thumb:96,
+            single:true
+        };
+    }
+    if(node?.type === OPENSHOP_LAYERED_NODE_TYPE){
+        return {
+            cols:1,
+            rows:1,
+            width:Math.round(Number(node.w) || 340),
+            height:Math.round(Number(node.h) || 260),
             thumb:96,
             single:true
         };
@@ -6807,6 +6818,9 @@ function cloneSmartNode(node, dx=0, dy=0){
     delete copy.runFinishedAt;
     delete copy.runElapsedMs;
     delete copy.runTimerHidden;
+    if(node.type === OPENSHOP_LAYERED_NODE_TYPE){
+        window.HstarSmartOpenShopAdapter?.prepareClone?.(node, copy);
+    }
     return copy;
 }
 function copySelectedNodes(){
@@ -9246,6 +9260,19 @@ function createDirector3DNode(x, y, options={}){
     scheduleSave();
     return node;
 }
+function createOpenShopLayeredNode(x, y, options={}){
+    if(!options.skipUndo) pushUndo();
+    const node = window.HstarSmartOpenShopAdapter?.createNode?.({x, y});
+    if(!node) return null;
+    nodes.push(node);
+    if(options.select !== false){
+        selectedId = node.id;
+        selectedIds = [];
+    }
+    render();
+    scheduleSave();
+    return node;
+}
 function cloneSmartNode(node, dx=0, dy=0){
     const copy = JSON.parse(JSON.stringify(node));
     copy.id = uid(
@@ -9261,6 +9288,9 @@ function cloneSmartNode(node, dx=0, dy=0){
     copy.y = (Number(node.y) || 0) + dy;
     clearSmartNodeTransientRunState(copy, {clearRunHistory:true});
     if(copy.type === 'smart-group') copy.title = copy.title || '智能分组';
+    if(node.type === OPENSHOP_LAYERED_NODE_TYPE){
+        window.HstarSmartOpenShopAdapter?.prepareClone?.(node, copy);
+    }
     return copy;
 }
 function copySelectedNodes(){
@@ -10487,6 +10517,10 @@ function nodeBodyHtml(node, layout){
     if(node.type === 'smart-controller') return smartControllerBodyHtml(node);
     if(node.type === 'smart-prompt') return promptNodeBodyHtml(node);
     if(node.type === 'smart-loop') return smartLoopBodyHtml(node);
+    if(node.type === OPENSHOP_LAYERED_NODE_TYPE){
+        return window.HstarSmartOpenShopAdapter?.renderNode?.(node, {layout})
+            || `<div class="openshop-layered-card"><button class="openshop-layered-open" type="button" data-openshop-open="${escapeHtml(node.id)}">${escapeHtml(tr('smart.openshopOpen'))}</button></div>`;
+    }
     if(node.type === DIRECTOR_3D_NODE_TYPE){
         if(window.HstarSmartDirectorAdapter && typeof window.HstarSmartDirectorAdapter.renderDirectorNode === 'function'){
             return window.HstarSmartDirectorAdapter.renderDirectorNode(node, {layout});
@@ -11326,7 +11360,8 @@ function render(){
         .map(node => {
         const imgs = node.images || [];
         const isDirector = node.type === DIRECTOR_3D_NODE_TYPE;
-        const title = isDirector ? (node.title || DIRECTOR_3D_LABEL) : node.type === 'smart-controller' ? '综合控制器' : node.type === 'smart-group' ? (node.title === '万能分组' ? '智能分组' : (node.title || '智能分组')) : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : escapeHtml(tr('smart.createImportNode')));
+        const isOpenShop = node.type === OPENSHOP_LAYERED_NODE_TYPE;
+        const title = isOpenShop ? tr('smart.openshopLayered') : isDirector ? (node.title || DIRECTOR_3D_LABEL) : node.type === 'smart-controller' ? '综合控制器' : node.type === 'smart-group' ? (node.title === '万能分组' ? '智能分组' : (node.title || '智能分组')) : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : escapeHtml(tr('smart.createImportNode')));
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
         const isPrompt = node.type === 'smart-prompt';
@@ -11334,7 +11369,7 @@ function render(){
         const isController = node.type === 'smart-controller';
         const isSmartGroup = node.type === 'smart-group';
         const isCompactMember = isSmartGroupCompactMember(node);
-        const isImageNode = !isDirector && (node.type === 'smart-image' || !node.type);
+        const isImageNode = !isDirector && !isOpenShop && (node.type === 'smart-image' || !node.type);
         const isJimengPending = Boolean(node.jimengPending && node.jimengPending.submitId && imgs.length === 0);
         const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending && !isJimengPending);
         const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued && !isJimengPending;
@@ -11343,8 +11378,8 @@ function render(){
         const isPending = ((node.pending || isQueued || isJimengPending) && imgs.length === 0);
         const body = nodeBodyHtml(node, layout);
         const deleteBtn = isGroup ? '' : `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
-        const hint = isDirector ? '连接一张图片作为全景，打开导演台布景' : isSmartGroup ? '双击添加 · 拖入归组 · 选中后生成' : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
-        const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isController ? 'controller-node smart-controller-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isDirector ? 'director-3d-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
+        const hint = isOpenShop ? tr('smart.openshopHint') : isDirector ? '连接一张图片作为全景，打开导演台布景' : isSmartGroup ? '双击添加 · 拖入归组 · 选中后生成' : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
+        const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isController ? 'controller-node smart-controller-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isDirector ? 'director-3d-node' : ''} ${isOpenShop ? 'openshop-layered-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
             <div class="node-head"><div class="node-title">${title}</div><div class="node-actions">${deleteBtn}</div></div>
             ${!isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button></div>` : ''}
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
@@ -11352,7 +11387,7 @@ function render(){
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="拖动移出分组"></div>' : ''}
             <div class="node-hint">${hint}</div>
-            ${imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isController || isSmartGroup || isDirector ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isController || isSmartGroup || isDirector || isOpenShop ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
             <div class="node-port port-out" data-port="out" title="output"></div>
         </div>`;
@@ -12013,6 +12048,19 @@ function bindNodeEvents(){
                 });
             });
         }
+        if(nodeForControls?.type === OPENSHOP_LAYERED_NODE_TYPE) {
+            el.querySelectorAll('[data-openshop-open]').forEach(btn => {
+                btn.addEventListener('mousedown', event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }, true);
+                btn.addEventListener('click', event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    window.HstarSmartOpenShopAdapter?.openNode?.(id);
+                });
+            });
+        }
         if(nodeForControls?.type === 'smart-group') {
             el.ondblclick = e => {
                 e.preventDefault();
@@ -12362,6 +12410,13 @@ function canAutoConnectDraggedNode(sourceNode, targetNode){
     if(!sourceNode || !targetNode || sourceNode.id === targetNode.id) return false;
     if(isHistoryGroupNode(sourceNode) || isHistoryGroupNode(targetNode)) return false;
     if(isSmartGroupNode(targetNode)) return false;
+    if(sourceNode.type === OPENSHOP_LAYERED_NODE_TYPE || targetNode.type === OPENSHOP_LAYERED_NODE_TYPE){
+        return window.HstarSmartOpenShopAdapter?.canConnect?.(sourceNode, targetNode, {
+            kind:'input',
+            connections:canvas?.connections || [],
+            inputNodes:inputNodesFor(targetNode)
+        }) === true;
+    }
     if(sourceNode.type === DIRECTOR_3D_NODE_TYPE || targetNode.type === DIRECTOR_3D_NODE_TYPE){
         return window.HstarSmartDirectorAdapter?.canConnect?.(sourceNode, targetNode, {
             kind:'input',
@@ -16562,6 +16617,14 @@ function addConnection(fromId, toId, kind='flow'){
     if(!fromId || !toId || fromId === toId) return;
     const from = nodes.find(n => n.id === fromId);
     const to = nodes.find(n => n.id === toId);
+    if(from?.type === OPENSHOP_LAYERED_NODE_TYPE || to?.type === OPENSHOP_LAYERED_NODE_TYPE){
+        const allowed = window.HstarSmartOpenShopAdapter?.canConnect?.(from, to, {
+            kind,
+            connections:canvas?.connections || [],
+            inputNodes:inputNodesFor(to)
+        }) === true;
+        if(!allowed) return;
+    }
     if(from?.type === 'director-3d' || to?.type === 'director-3d'){
         const allowed = window.HstarSmartDirectorAdapter
             && typeof window.HstarSmartDirectorAdapter.canConnect === 'function'
@@ -16580,6 +16643,17 @@ function connectInputNode(fromId, toId){
     const from = nodes.find(n => n.id === fromId);
     const to = nodes.find(n => n.id === toId);
     if(!from || !to || from.id === to.id) return false;
+    if(from.type === OPENSHOP_LAYERED_NODE_TYPE || to.type === OPENSHOP_LAYERED_NODE_TYPE){
+        const allowed = window.HstarSmartOpenShopAdapter?.canConnect?.(from, to, {
+            kind:'input',
+            connections:canvas?.connections || [],
+            inputNodes:inputNodesFor(to)
+        }) === true;
+        if(!allowed) return false;
+        to.inputNodeIds = Array.from(new Set([...(to.inputNodeIds || []), from.id]));
+        addConnection(from.id, to.id, 'input');
+        return true;
+    }
     if(from.type === 'director-3d' || to.type === 'director-3d'){
         const allowed = window.HstarSmartDirectorAdapter
             && typeof window.HstarSmartDirectorAdapter.canConnect === 'function'
@@ -17886,6 +17960,47 @@ window.HstarSmartCanvasDirectorHooks = {
     importDirectorCapturesAsGroup,
     removeDirectorPanorama,
     saveCanvas,
+    toast
+};
+window.HstarSmartCanvasOpenShopHooks = {
+    uid,
+    getCanvasId:() => canvasId || canvas?.id || '',
+    getNode:id => nodes.find(node => node.id === id) || null,
+    getConnections:() => canvas?.connections || [],
+    inputImagesForNode:node => inputImagesFor(node).filter(image => image?.url && mediaKindForItem(image) === 'image'),
+    imagesForNode:node => imagesForNode(node).filter(image => image?.url && mediaKindForItem(image) === 'image'),
+    displayMediaUrl,
+    createImageOutput({sourceNode, output, requestId}){
+        const existingCount = nodes.filter(node => node.openshopSourceNodeId === sourceNode.id).length;
+        const image = {
+            url:output.url,
+            name:output.name || '图文分层输出.png',
+            kind:'image',
+            openshopAssetId:output.assetId,
+        };
+        const node = createNode(
+            Number(sourceNode.x || 0) + Number(sourceNode.w || 340) + 90,
+            Number(sourceNode.y || 0) + existingCount * 34,
+            [image],
+            {skipUndo:true, select:false}
+        );
+        node.sourceType = OPENSHOP_LAYERED_NODE_TYPE;
+        node.openshopSourceNodeId = sourceNode.id;
+        node.openshopProjectId = sourceNode.projectId;
+        node.openshopRequestId = requestId || '';
+        addConnection(sourceNode.id, node.id, 'flow');
+        return node;
+    },
+    pushUndo,
+    selectOnly:id => {
+        selectedId = id;
+        selectedIds = [];
+        selectedImage = {nodeId:'', index:-1};
+    },
+    render,
+    scheduleSave,
+    saveCanvas,
+    t:tr,
     toast
 };
 function handleSmartDirectorHostMessage(event){
@@ -20329,6 +20444,7 @@ function createNodeFromMenu(type){
     else if(type === 'loop') created = createLoopNode(p.x - 135, p.y - 95);
     else if(type === 'controller') created = createControllerNode(p.x - 150, p.y - 113);
     else if(type === 'director-3d') created = createDirector3DNode(p.x - 160, p.y - 110);
+    else if(type === 'openshop-layered') created = createOpenShopLayeredNode(p.x - 170, p.y - 130);
     else created = createImageNodeAt(p);
     createMenuGroupId = groupId;
     addCreatedNodeToMenuGroup(created);

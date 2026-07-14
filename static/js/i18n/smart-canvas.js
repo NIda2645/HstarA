@@ -2,6 +2,17 @@
     if(!window.StudioI18n) return;
     window.StudioI18n.register({
         "smart.title": { zh: "智能画布", en: "Smart Canvas" },
+        "smart.openshopLayered": { zh: "图文分层", en: "Layered Graphics" },
+        "smart.openshopProjectName": { zh: "图文分层项目", en: "Layered Graphics Project" },
+        "smart.openshopOpen": { zh: "打开编辑器", en: "Open Editor" },
+        "smart.openshopLayers": { zh: "图层", en: "Layers" },
+        "smart.openshopSaved": { zh: "已保存", en: "Saved" },
+        "smart.openshopSaving": { zh: "正在保存", en: "Saving" },
+        "smart.openshopUnsaved": { zh: "未保存", en: "Unsaved" },
+        "smart.openshopSaveFailed": { zh: "保存失败", en: "Save Failed" },
+        "smart.openshopSourceUpdates": { zh: "来源更新", en: "Source Updates" },
+        "smart.openshopHint": { zh: "连接图片后打开编辑器", en: "Connect images, then open the editor" },
+        "smart.openshopCreateHint": { zh: "多张图片按连接顺序转为独立图层", en: "Convert connected images into ordered layers" },
         "smart.engineApi": { zh: "API生成", en: "API" },
         "smart.engineVolcengine": { zh: "火山引擎", en: "Volcengine" },
         "smart.engineMs": { zh: "Modelscope生成", en: "Modelscope" },
