@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build:hstar": "node scripts/build-hstar.mjs",
+    "vendor:runtime": "node scripts/vendor-runtime.mjs",
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:e2e": "playwright test tests/openshop.e2e.spec.js",
