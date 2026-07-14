@@ -9,6 +9,9 @@ const requiredFiles = [
   'host/openshop-protocol.js',
   'host/openshop-project-adapter.js',
   'host/openshop-host-runtime.js',
+  'host/openshop-i18n.js',
+  'locales/zh-CN.js',
+  'vendor/runtime-manifest.json',
 ];
 
 for(const relativePath of requiredFiles){

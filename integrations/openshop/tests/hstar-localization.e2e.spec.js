@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const editorUrl = pathToFileURL(resolve('index.html')).href;
+const hstarBaseUrl = process.env.HSTAR_BASE_URL || 'http://127.0.0.1:3010';
+const hstarEditorUrl = `${hstarBaseUrl}/static/openshop/index.html`;
 
 test('default shell uses Simplified Chinese application text', async ({ page }) => {
   const pageErrors = [];
@@ -185,4 +187,117 @@ test('dynamic UI localizes without changing user layer or canvas text', async ({
     text: 'Do not translate me',
   });
   expect(pageErrors).toEqual([]);
+});
+
+test('language preference persists while query override stays temporary', async ({ page }) => {
+  await page.goto(editorUrl, { waitUntil: 'load' });
+  await page.waitForFunction(() => typeof OS !== 'undefined' && Boolean(OS.canvas));
+  await page.locator('#welcome-overlay .welcome-actions button').last().click();
+
+  await page.evaluate(() => OS.showPreferences());
+  const modal = page.locator('.modal-overlay .modal');
+  await modal.locator('#pref-lang').selectOption('en-US');
+  await modal.locator('[data-modal-action]').click();
+  await expect(page.getByRole('menuitem', { name: 'File', exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('openshop_locale'))).toBe('en-US');
+
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction(() => typeof OS !== 'undefined' && Boolean(OS.canvas));
+  await expect(page.getByRole('menuitem', { name: 'File', exact: true })).toBeVisible();
+
+  await page.goto(`${editorUrl}?lang=zh-CN`, { waitUntil: 'load' });
+  await page.waitForFunction(() => typeof OS !== 'undefined' && Boolean(OS.canvas));
+  await expect(page.getByRole('menuitem', { name: '文件', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('openshop_locale'))).toBe('en-US');
+});
+
+test('built runtime supports core editing with every external request blocked', async ({ page }) => {
+  const allowedOrigin = new URL(hstarEditorUrl).origin;
+  const blockedExternalRequests = [];
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.stack || error.message));
+  await page.route('**/*', async (route) => {
+    const requestUrl = route.request().url();
+    const parsed = new URL(requestUrl);
+    if (['data:', 'blob:'].includes(parsed.protocol) || parsed.origin === allowedOrigin) {
+      await route.continue();
+      return;
+    }
+    blockedExternalRequests.push(requestUrl);
+    await route.abort('blockedbyclient');
+  });
+
+  await page.goto(hstarEditorUrl, { waitUntil: 'load' });
+  await page.waitForFunction(() => typeof OS !== 'undefined' && Boolean(OS.canvas));
+  await page.getByRole('button', { name: '跳过' }).click();
+
+  const result = await page.evaluate(async () => {
+    OS.createNewDocument(320, 240);
+    const source = document.createElement('canvas');
+    source.width = 32;
+    source.height = 32;
+    const context = source.getContext('2d');
+    const gradient = context.createLinearGradient(0, 0, 32, 32);
+    gradient.addColorStop(0, '#15304a');
+    gradient.addColorStop(1, '#f2c94c');
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 32, 32);
+
+    await new Promise((resolve, reject) => {
+      fabric.Image.fromURL(source.toDataURL('image/png'), (image) => {
+        if (!image) {
+          reject(new Error('Generated raster could not be decoded'));
+          return;
+        }
+        image.set({ name: 'Offline Raster', left: 24, top: 24, selectable: true });
+        OS.canvas.add(image);
+        OS.layers[OS.activeLayerIdx].objects.push(image);
+        OS.canvas.setActiveObject(image);
+        OS.canvas.renderAll();
+        OS.saveHistory('Add Raster');
+        resolve();
+      });
+    });
+
+    await OS.applyFilterDirect('Sharpen');
+    await new Promise((resolve, reject) => {
+      const started = performance.now();
+      const poll = () => {
+        if (OS.history.at(-1)?.action === 'Filter: Sharpen') resolve();
+        else if (performance.now() - started > 10000) reject(new Error('Filter history timed out'));
+        else setTimeout(poll, 50);
+      };
+      poll();
+    });
+    OS.undo();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    OS.redo();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    OS.showPreferences();
+    const preferencesVisible = Boolean(document.querySelector('.modal-overlay .modal'));
+    document.querySelector('.modal-overlay')?.remove();
+    const boundary = OS.canvas.getObjects().find((object) => object.name === '__boundary__');
+    if (boundary) boundary.set('opacity', 0);
+    OS.canvas.renderAll();
+    const preview = OS.canvas.toDataURL({
+      format: 'png', left: 0, top: 0, width: OS.canvasW, height: OS.canvasH, multiplier: 0.5,
+    });
+    if (boundary) boundary.set('opacity', 1);
+    OS.canvas.renderAll();
+
+    return {
+      layerCount: OS.layers.length,
+      previewBytes: new TextEncoder().encode(preview).byteLength,
+      preferencesVisible,
+      historyAction: OS.history.at(-1)?.action,
+    };
+  });
+
+  expect(blockedExternalRequests).toEqual([]);
+  expect(pageErrors).toEqual([]);
+  expect(result.layerCount).toBeGreaterThan(0);
+  expect(result.previewBytes).toBeGreaterThan(100);
+  expect(result.preferencesVisible).toBe(true);
+  expect(result.historyAction).toBe('Filter: Sharpen');
 });

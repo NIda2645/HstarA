@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "package": "ag-psd",
+      "version": "22.0.2",
+      "license": "MIT",
+      "source": "node_modules/ag-psd/dist/bundle.js",
+      "path": "vendor/ag-psd-22.0.2.bundle.js",
+      "sha256": "3482b3e204c55d441b80e327da8c25cd7a3a9a3f8237487e458076d45e7578d8",
+      "bytes": 751412
+    },
+    {
+      "package": "fabric",
+      "version": "5.3.1",
+      "license": "MIT",
+      "source": "https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js",
+      "path": "vendor/fabric-5.3.1.min.js",
+      "sha256": "bb0442d69a4d4673320f689bc6e16c05a0e3f16ccfbf551f394d90a7e7cfc772",
+      "bytes": 311096
+    },
+    {
+      "package": "gif.js",
+      "version": "0.2.0",
+      "license": "MIT",
+      "source": "node_modules/gif.js/dist/gif.js",
+      "path": "vendor/gif/gif.js",
+      "sha256": "a8b111071bb3b123c302e6182c01d6b3550f93a4b627398b07c46875d84090bb",
+      "bytes": 13451
+    },
+    {
+      "package": "gif.js",
+      "version": "0.2.0",
+      "license": "MIT",
+      "source": "node_modules/gif.js/dist/gif.worker.js",
+      "path": "vendor/gif/gif.worker.js",
+      "sha256": "ca9e3048557ec05d619e18b83403cd3669c88939e5fa2d6034ce7625d445970d",
+      "bytes": 16636
+    },
+    {
+      "package": "jspdf",
+      "version": "4.2.1",
+      "license": "MIT",
+      "source": "node_modules/jspdf/dist/jspdf.umd.min.js",
+      "path": "vendor/jspdf-4.2.1.umd.min.js",
+      "sha256": "e6551fcdc32f09d6853b2c5126d18d01d9447e0da618a41a11ebeee0f6c20d54",
+      "bytes": 420165
+    },
+    {
+      "package": "@silvia-odwyer/photon",
+      "version": "0.3.3",
+      "license": "Apache-2.0",
+      "source": "node_modules/@silvia-odwyer/photon/photon_rs_bg.wasm",
+      "path": "vendor/photon/photon_rs_bg.wasm",
+      "sha256": "06e9f6b245d53b488244e04dfe30e6731c029526101c6400e6490057fcfbdd04",
+      "bytes": 1880773
+    },
+    {
+      "package": "@silvia-odwyer/photon",
+      "version": "0.3.3",
+      "license": "Apache-2.0",
+      "source": "node_modules/@silvia-odwyer/photon/photon_rs.js",
+      "path": "vendor/photon/photon_rs.js",
+      "sha256": "d51ba7a7ef9c23fbfec5423e01afd3fa9f6ad9c7ac4c20789aa9e4b3f9e0c157",
+      "bytes": 139647
+    },
+    {
+      "package": "onnxruntime-web",
+      "version": "1.25.0-dev.20260327-722743c0e2",
+      "license": "MIT",
+      "source": "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.mjs",
+      "path": "vendor/transformers/ort-wasm-simd-threaded.jsep.mjs",
+      "sha256": "1596a6f8f261093fa35d4967b83e31705dd03a393170ac3183fecbdd7cad59f9",
+      "bytes": 46595
+    },
+    {
+      "package": "onnxruntime-web",
+      "version": "1.25.0-dev.20260327-722743c0e2",
+      "license": "MIT",
+      "source": "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm",
+      "path": "vendor/transformers/ort-wasm-simd-threaded.jsep.wasm",
+      "sha256": "74d9472bf82a9777474c511db98f1c014fcf3cbf779ca8709758ccf45ef97077",
+      "bytes": 25415321
+    },
+    {
+      "package": "@huggingface/transformers",
+      "version": "4.0.0",
+      "license": "Apache-2.0",
+      "source": "node_modules/@huggingface/transformers/dist/transformers.web.min.js",
+      "path": "vendor/transformers/transformers.web.min.js",
+      "sha256": "603619c4023fddf978569ff239364d8352584c548ea44af2c918b15c67325536",
+      "bytes": 425240
+    }
+  ]
+}
