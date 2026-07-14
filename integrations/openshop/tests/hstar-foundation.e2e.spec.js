@@ -17,9 +17,8 @@ test('uses the same-origin iframe bridge with stable source layer order', async 
     document.body.appendChild(iframe);
   }, openshopUrl);
 
-  const openshopFrame = await page.waitForEvent('framenavigated', {
-    predicate: frame => frame.url() === openshopUrl,
-  });
+  await expect.poll(() => page.frames().some(frame => frame.url() === openshopUrl)).toBe(true);
+  const openshopFrame = page.frames().find(frame => frame.url() === openshopUrl);
   await openshopFrame.waitForFunction(() => Boolean(
     typeof OS !== 'undefined'
     && OS.canvas
