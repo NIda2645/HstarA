@@ -37,6 +37,10 @@ function createEditor() {
     ],
     canvas: {
       add: vi.fn(object => canvasObjects.push(object)),
+      remove: vi.fn(object => {
+        const index = canvasObjects.indexOf(object);
+        if(index >= 0) canvasObjects.splice(index, 1);
+      }),
       moveTo: vi.fn((object, index) => {
         const current = canvasObjects.indexOf(object);
         if(current >= 0) canvasObjects.splice(current, 1);
@@ -186,6 +190,7 @@ describe('Hstar OpenShop project adapter', () => {
 
     expect(project.layers.map(layer => layer.name)).toEqual(['第一张.png']);
     expect(project.sourceBindings.map(binding => binding.sequence)).toEqual([0]);
+    expect(project.sourceBindings[0].layerId).toBe(editor.layers[0].layerId);
     expect(project.assetRefs).toEqual(['asset-1']);
     expect(project.editor.objects[0].assetRef).toBe('asset-1');
     expect(project.editor.objects[0]).not.toHaveProperty('src');
@@ -206,5 +211,235 @@ describe('Hstar OpenShop project adapter', () => {
       context,
       now: () => 2000
     })).toThrow('inline image data without an asset id');
+  });
+
+  it('persists local image objects before serializing the project', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const image = createImage({ url: 'blob:http://localhost/local-layer' });
+    image.name = '本地图层.png';
+    editor.canvas.add(image);
+    editor.layers[0].objects.push(image);
+    const assetWriter = vi.fn(async ({dataUrl, role}) => ({
+      assetId: 'asset-local',
+      url: '/api/openshop/assets/asset-local',
+      role,
+      received: dataUrl,
+    }));
+
+    const persisted = await adapter.persistEditorAssets({editor, assetWriter});
+
+    expect(persisted).toEqual([{assetId: 'asset-local', role: 'layer'}]);
+    expect(assetWriter).toHaveBeenCalledWith(expect.objectContaining({
+      dataUrl: 'blob:http://localhost/local-layer',
+      role: 'layer',
+    }));
+    expect(image.hstarAssetId).toBe('asset-local');
+    expect(image.hstarAssetRole).toBe('layer');
+
+    editor.__hstarPreviewAssetId = 'asset-local';
+    editor.__hstarAutosaveVersion = 7;
+    const project = adapter.serializeProject({editor, context, now: () => 3000});
+    expect(project.previewAssetId).toBe('asset-local');
+    expect(project.autosaveVersion).toBe(7);
+    expect(project.layers[0].layerId).toMatch(/^layer_/);
+    expect(JSON.stringify(project)).not.toMatch(/data:image\/|blob:/);
+  });
+
+  it('persists image assets nested inside Fabric groups', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const nestedImage = createImage({ url: 'data:image/png;base64,NESTED' });
+    nestedImage.name = '组内图像.png';
+    const group = {type: 'group', name: '图像组', _objects: [nestedImage]};
+    editor.canvas.add(group);
+    editor.layers[0].objects.push(group);
+
+    const persisted = await adapter.persistEditorAssets({
+      editor,
+      assetWriter: async ({role}) => ({assetId: 'asset-nested', role}),
+    });
+
+    expect(persisted).toEqual([{assetId: 'asset-nested', role: 'layer'}]);
+    expect(nestedImage.hstarAssetId).toBe('asset-nested');
+  });
+
+  it('reconciles new, updated and disconnected canvas sources without losing pixels', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceV1 = {
+      assetId: 'asset-v1',
+      assetVersion: 'v1',
+      edgeId: 'edge-1',
+      sourceNodeId: 'image-node-1',
+      name: '来源一.png',
+      url: '/api/openshop/assets/asset-v1',
+      sequence: 0,
+    };
+    const sourceV2 = {...sourceV1, assetId: 'asset-v2', assetVersion: 'v2', url: '/api/openshop/assets/asset-v2'};
+    const newSource = {
+      assetId: 'asset-new',
+      assetVersion: 'v1',
+      edgeId: 'edge-2',
+      sourceNodeId: 'image-node-2',
+      name: '来源二.png',
+      url: '/api/openshop/assets/asset-new',
+      sequence: 1,
+    };
+    const imageLoader = vi.fn(async source => createImage(source));
+
+    const existingLayer = await adapter.queueSourceImageLayer({editor, source: sourceV1, imageLoader});
+    const existingImage = existingLayer.objects[0];
+    const result = await adapter.reconcileSources({
+      editor,
+      sources: [sourceV2, newSource],
+      imageLoader,
+    });
+
+    expect(result.pendingUpdates).toHaveLength(1);
+    expect(result.added).toHaveLength(1);
+    expect(existingLayer.sourceBinding.state).toBe('update-available');
+    expect(existingLayer.sourceBinding.pendingAssetId).toBe('asset-v2');
+    expect(editor.layers.at(-1).sourceBinding.edgeId).toBe('edge-2');
+
+    await adapter.resolveSourceUpdate({editor, edgeId: 'edge-1', mode: 'add', imageLoader});
+    expect(editor.layers.at(-1).sourceBinding.assetVersion).toBe('v2');
+    expect(existingLayer.sourceBinding.state).toBe('detached');
+    expect(existingLayer.objects[0]).toBe(existingImage);
+
+    const disconnected = await adapter.reconcileSources({
+      editor,
+      sources: [newSource],
+      imageLoader,
+    });
+    expect(disconnected.detached.map(layer => layer.layerId)).toContain(existingLayer.layerId);
+    expect(existingLayer.objects[0]).toBe(existingImage);
+    expect(editor.canvas.getObjects()).toContain(existingImage);
+  });
+
+  it('replaces an updated source in place and preserves its image transform', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceV1 = {
+      assetId: 'asset-v1', assetVersion: 'v1', edgeId: 'edge-replace',
+      sourceNodeId: 'image-node-1', name: '待替换.png',
+      url: '/api/openshop/assets/asset-v1', sequence: 0,
+    };
+    const sourceV2 = {
+      ...sourceV1,
+      assetId: 'asset-v2',
+      assetVersion: 'v2',
+      url: '/api/openshop/assets/asset-v2',
+    };
+    const original = createImage(sourceV1);
+    original.left = 123;
+    original.top = 45;
+    original.scaleX = 1.5;
+    original.scaleY = 0.75;
+    const layer = await adapter.queueSourceImageLayer({
+      editor,
+      source: sourceV1,
+      imageLoader: async () => original,
+    });
+    await adapter.reconcileSources({editor, sources: [sourceV2], imageLoader: async source => createImage(source)});
+
+    await adapter.resolveSourceUpdate({
+      editor,
+      edgeId: 'edge-replace',
+      mode: 'replace',
+      imageLoader: async source => createImage(source),
+    });
+
+    const replacement = layer.objects[0];
+    expect(replacement).not.toBe(original);
+    expect(replacement).toMatchObject({left: 123, top: 45, scaleX: 1.5, scaleY: 0.75});
+    expect(layer.sourceBinding).toMatchObject({
+      assetId: 'asset-v2', assetVersion: 'v2', state: 'bound',
+    });
+    expect(editor.canvas.getObjects()).not.toContain(original);
+    expect(editor.canvas.getObjects()).toContain(replacement);
+  });
+
+  it('remembers an ignored source version without replacing the current pixels', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceV1 = {
+      assetId: 'asset-v1', assetVersion: 'v1', edgeId: 'edge-ignore',
+      sourceNodeId: 'image-node-1', name: '保留版本.png',
+      url: '/api/openshop/assets/asset-v1', sequence: 0,
+    };
+    const sourceV2 = {
+      ...sourceV1,
+      assetId: 'asset-v2',
+      assetVersion: 'v2',
+      url: '/api/openshop/assets/asset-v2',
+    };
+    const layer = await adapter.queueSourceImageLayer({
+      editor,
+      source: sourceV1,
+      imageLoader: async source => createImage(source),
+    });
+    await adapter.reconcileSources({editor, sources: [sourceV2], imageLoader: async source => createImage(source)});
+
+    await adapter.resolveSourceUpdate({editor, edgeId: 'edge-ignore', mode: 'ignore'});
+    const repeated = await adapter.reconcileSources({
+      editor,
+      sources: [sourceV2],
+      imageLoader: async source => createImage(source),
+    });
+
+    expect(layer.sourceBinding).toMatchObject({
+      assetId: 'asset-v1',
+      assetVersion: 'v1',
+      ignoredAssetVersion: 'v2',
+      state: 'bound',
+      pendingAssetId: '',
+    });
+    expect(repeated.pendingUpdates).toHaveLength(0);
+  });
+
+  it('restores layer metadata by stable layer id after layer order changes', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => editor.canvas.add({...object}));
+      callback();
+    });
+    editor.rebuildLayersFromCanvas = vi.fn(() => {
+      const objects = editor.canvas.getObjects();
+      editor.layers = [
+        {name: 'temporary-a', visible: true, opacity: 100, blend: 'source-over', objects: [objects[1]]},
+        {name: 'temporary-b', visible: true, opacity: 100, blend: 'source-over', objects: [objects[0]]},
+      ];
+    });
+    const project = {
+      schemaVersion: 1,
+      projectId: 'project-1',
+      owner: {canvasType: 'classic', canvasId: 'canvas-1', nodeId: 'node-1'},
+      document: {width: 800, height: 600},
+      editor: {objects: [
+        {type: 'image', assetRef: 'asset-b', hstarLayerId: 'layer-b'},
+        {type: 'image', assetRef: 'asset-a', hstarLayerId: 'layer-a'},
+      ]},
+      layers: [
+        {layerId: 'layer-a', name: '图层 A', visible: true, opacity: 90, blend: 'source-over'},
+        {layerId: 'layer-b', name: '图层 B', visible: false, opacity: 70, blend: 'multiply'},
+      ],
+      previewAssetId: 'asset-a',
+      autosaveVersion: 9,
+      createdAt: 1000,
+    };
+
+    await adapter.restoreProject({
+      editor,
+      project,
+      assetResolver: async assetId => `/api/openshop/assets/${assetId}`,
+    });
+
+    const byId = Object.fromEntries(editor.layers.map(layer => [layer.layerId, layer]));
+    expect(byId['layer-a']).toMatchObject({name: '图层 A', opacity: 90, visible: true});
+    expect(byId['layer-b']).toMatchObject({name: '图层 B', opacity: 70, visible: false, blend: 'multiply'});
+    expect(editor.__hstarPreviewAssetId).toBe('asset-a');
+    expect(editor.__hstarAutosaveVersion).toBe(9);
   });
 });
