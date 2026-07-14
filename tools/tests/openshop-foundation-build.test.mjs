@@ -11,6 +11,9 @@ const requiredFiles = [
   'host/openshop-protocol.js',
   'host/openshop-project-adapter.js',
   'host/openshop-host-runtime.js',
+  'host/openshop-ai-client.js',
+  'host/openshop-font-catalog.js',
+  'host/openshop-text-tools.js',
   'host/openshop-i18n.js',
   'locales/zh-CN.js',
   'vendor/runtime-manifest.json',
@@ -45,6 +48,9 @@ for(const relativePath of [
   'host/openshop-protocol.js',
   'host/openshop-project-adapter.js',
   'host/openshop-host-runtime.js',
+  'host/openshop-ai-client.js',
+  'host/openshop-font-catalog.js',
+  'host/openshop-text-tools.js',
 ]){
   assert.equal(
     digest(`${runtimeRoot}/${relativePath}`),
@@ -65,15 +71,23 @@ const index = readFileSync(`${runtimeRoot}/index.html`, 'utf8');
 const protocolIndex = index.indexOf('./host/openshop-protocol.js');
 const adapterIndex = index.indexOf('./host/openshop-project-adapter.js');
 const runtimeIndex = index.indexOf('./host/openshop-host-runtime.js');
+const aiClientIndex = index.indexOf('./host/openshop-ai-client.js');
+const fontCatalogIndex = index.indexOf('./host/openshop-font-catalog.js');
+const textToolsIndex = index.indexOf('./host/openshop-text-tools.js');
 const bodyEndIndex = index.lastIndexOf('</body>');
 
 assert.ok(protocolIndex > 0, 'runtime index should load the OpenShop protocol');
 assert.ok(adapterIndex > protocolIndex, 'runtime index should load the project adapter after the protocol');
 assert.ok(runtimeIndex > adapterIndex, 'runtime index should load the host runtime after the project adapter');
-assert.ok(bodyEndIndex > runtimeIndex, 'host scripts should load before the closing body tag');
+assert.ok(aiClientIndex > runtimeIndex, 'runtime index should load the API client after the host runtime');
+assert.ok(fontCatalogIndex > aiClientIndex, 'runtime index should load the font catalog after the API client');
+assert.ok(textToolsIndex > fontCatalogIndex, 'runtime index should load text tools after their dependencies');
+assert.ok(bodyEndIndex > textToolsIndex, 'host scripts should load before the closing body tag');
 assert.match(index, /HstarOpenShopAssetApi\.upload/, 'runtime should expose same-origin asset persistence');
 assert.match(index, /previewWriter:/, 'runtime should configure preview persistence');
 assert.match(index, /outputWriter:/, 'runtime should configure output persistence');
+assert.match(index, /HstarOpenShopAiClient\.createClient/, 'runtime should start the global API client');
+assert.match(index, /HstarOpenShopTextTools\.createController/, 'runtime should start multilingual text tools');
 
 const shell = readFileSync('static/index.html', 'utf8');
 const classic = readFileSync('static/canvas.html', 'utf8');

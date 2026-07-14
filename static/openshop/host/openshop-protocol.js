@@ -13,6 +13,7 @@
     SAVE_CONFIRMED: `${PREFIX}save-confirmed`,
     REQUEST_SEND_TO_CANVAS: `${PREFIX}request-send-to-canvas`,
     SEND_TO_CANVAS: `${PREFIX}send-to-canvas`,
+    OPEN_API_SETTINGS: `${PREFIX}open-api-settings`,
     PROJECT_CHANGED: `${PREFIX}project-changed`,
     CLOSE: `${PREFIX}close`,
     ERROR: `${PREFIX}error`,

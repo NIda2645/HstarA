@@ -9,6 +9,7 @@
     started: false,
     listener: null,
     dirtyListener: null,
+    apiSettingsListener: null,
     editor: null,
     protocol: null,
     projectAdapter: null,
@@ -139,6 +140,9 @@
     state.processedRequestIds.clear();
     state.processedRequestIds.add(envelope.requestId);
     resetEditorSession(envelope.payload);
+    root.dispatchEvent?.(new CustomEvent('openshop:session-opened', {
+      detail:{session:{sessionId:state.activeSession.sessionId, context:{...context}}},
+    }));
     post(state.protocol.TYPES.READY, {
       requestId: uuid('openshop-ready'),
       payload: {
@@ -437,6 +441,7 @@
         project,
         assetResolver: state.assetResolver,
       }));
+      root.dispatchEvent?.(new CustomEvent('openshop:project-loaded', {detail:{project}}));
       revealEditorWorkspace();
       reason = 'project-loaded';
     } else if(envelope.type === types.SYNC_SOURCES){
@@ -528,14 +533,17 @@
   }
 
   function stop(){
+    const shouldNotify = state.started || Boolean(state.activeSession);
     if(state.listener) root.removeEventListener('message', state.listener);
     if(state.dirtyListener) root.removeEventListener('openshop:project-dirty', state.dirtyListener);
+    if(state.apiSettingsListener) root.removeEventListener('openshop:open-api-settings', state.apiSettingsListener);
     resetSaveState();
     state.activeSession = null;
     state.processedRequestIds.clear();
     state.started = false;
     state.listener = null;
     state.dirtyListener = null;
+    state.apiSettingsListener = null;
     state.editor = null;
     state.protocol = null;
     state.projectAdapter = null;
@@ -551,6 +559,7 @@
     state.messageQueue = Promise.resolve();
     state.queuedMutationCount = 0;
     state.workspaceInitialized = false;
+    if(shouldNotify) root.dispatchEvent?.(new CustomEvent('openshop:session-stopped'));
   }
 
   function start({
@@ -592,9 +601,14 @@
     state.dirtyListener = event => {
       markDirty(event?.detail?.action || 'editor-change');
     };
+    state.apiSettingsListener = () => {
+      if(!state.activeSession) return;
+      post(state.protocol.TYPES.OPEN_API_SETTINGS, {payload:{}});
+    };
     state.started = true;
     root.addEventListener('message', state.listener);
     root.addEventListener('openshop:project-dirty', state.dirtyListener);
+    root.addEventListener('openshop:open-api-settings', state.apiSettingsListener);
   }
 
   function requestClose(){

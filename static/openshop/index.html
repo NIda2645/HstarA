@@ -8888,6 +8888,9 @@ window.addEventListener('DOMContentLoaded', () => OS.init());
 <script src="./host/openshop-protocol.js"></script>
 <script src="./host/openshop-project-adapter.js"></script>
 <script src="./host/openshop-host-runtime.js"></script>
+<script src="./host/openshop-ai-client.js"></script>
+<script src="./host/openshop-font-catalog.js"></script>
+<script src="./host/openshop-text-tools.js"></script>
 <script>
 function hstarOpenShopDataUrlToBlob(dataUrl) {
     const match = String(dataUrl || '').match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/i);
@@ -8956,6 +8959,18 @@ window.addEventListener('DOMContentLoaded', () => {
         previewWriter: payload => window.HstarOpenShopAssetApi.upload({...payload, role:'preview'}),
         outputWriter: payload => window.HstarOpenShopAssetApi.upload({...payload, role:'output'}),
     });
+    window.HstarOpenShopTextToolsController?.destroy?.();
+    const aiClient = window.HstarOpenShopAiClient.createClient();
+    const fontManager = window.HstarOpenShopFontCatalog.createManager();
+    window.HstarOpenShopTextToolsController = window.HstarOpenShopTextTools.createController({
+        editor: OS,
+        runtime: window.HstarOpenShopRuntime,
+        aiClient,
+        assetApi: window.HstarOpenShopAssetApi,
+        fontManager,
+        fabricRef: window.fabric,
+    });
+    void window.HstarOpenShopTextToolsController.start();
 });
 </script>
 </body>

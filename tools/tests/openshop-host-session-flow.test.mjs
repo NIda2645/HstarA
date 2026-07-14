@@ -62,6 +62,7 @@ const listeners = new Map();
 const editorMessages = [];
 const canvasMessages = [];
 const fetchCalls = [];
+const switchUICalls = [];
 let uploadedSourceCount = 0;
 
 const editorWindow = {
@@ -174,6 +175,7 @@ const windowRef = {
   },
   removeEventListener() {},
   lucide: {createIcons() {}},
+  switchUI(trigger, pageId) { switchUICalls.push({trigger, pageId}); },
 };
 
 function dispatchEditorMessage(data) {
@@ -298,9 +300,23 @@ assert.equal(outputMessage.message.output.assetId, 'asset-output');
 assert.equal(outputMessage.message.output.url, '/api/openshop/assets/asset-output');
 assert.doesNotMatch(JSON.stringify(outputMessage.message), /data:image\/|blob:/);
 
+dispatchEditorMessage(protocol.createEnvelope({
+  type:protocol.TYPES.OPEN_API_SETTINGS,
+  sessionId,
+  requestId:'open-api-settings-1',
+  context:{...project.owner, projectId:'project-1'},
+  payload:{},
+}));
+await flushAsync();
+
+assert.equal(overlay.classList.contains('is-open'), false, 'API settings command should close the full-screen editor overlay');
+assert.equal(switchUICalls.length, 1, 'API settings command should route through the Studio shell');
+assert.equal(switchUICalls[0].pageId, 'api-settings');
+
 assert.match(hostSource, /mode:\s*['"]replace['"]/);
 assert.match(hostSource, /mode:\s*['"]add['"]/);
 assert.match(hostSource, /mode:\s*['"]ignore['"]/);
+assert.match(hostSource, /Protocol\.TYPES\.OPEN_API_SETTINGS/);
 assert.match(hostSource, /Object\.freeze\(\{[\s\S]*openNodeSession[\s\S]*requestSave[\s\S]*requestSendToCanvas[\s\S]*refreshSources[\s\S]*close[\s\S]*getState/);
 
 console.log('OpenShop full-screen host session flow tests passed');

@@ -414,6 +414,16 @@
         originFrame()?.contentWindow?.postMessage(message, window.location.origin);
     }
 
+    function openApiSettings(){
+        hideOverlay();
+        const trigger = document.querySelector?.(`[onclick*="'api-settings'"],[onclick*='"api-settings"']`);
+        if(typeof window.switchUI === 'function'){
+            window.switchUI(trigger || null, 'api-settings');
+            return;
+        }
+        window.location.href = '/static/api-settings.html';
+    }
+
     async function persistProject(envelope){
         const snapshot = activeSnapshot();
         const project = envelope.payload?.project;
@@ -489,6 +499,8 @@
                     type:'hstar-openshop-output', requestId:envelope.requestId,
                     context:{...state.activeSession.context}, output,
                 });
+            } else if(envelope.type === Protocol.TYPES.OPEN_API_SETTINGS){
+                openApiSettings();
             } else if(envelope.type === Protocol.TYPES.ERROR){
                 setStatus('error', envelope.payload?.message || 'OpenShop 编辑器发生错误');
             }

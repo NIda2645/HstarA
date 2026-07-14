@@ -9,6 +9,7 @@
     started: false,
     listener: null,
     dirtyListener: null,
+    apiSettingsListener: null,
     editor: null,
     protocol: null,
     projectAdapter: null,
@@ -535,12 +536,14 @@
     const shouldNotify = state.started || Boolean(state.activeSession);
     if(state.listener) root.removeEventListener('message', state.listener);
     if(state.dirtyListener) root.removeEventListener('openshop:project-dirty', state.dirtyListener);
+    if(state.apiSettingsListener) root.removeEventListener('openshop:open-api-settings', state.apiSettingsListener);
     resetSaveState();
     state.activeSession = null;
     state.processedRequestIds.clear();
     state.started = false;
     state.listener = null;
     state.dirtyListener = null;
+    state.apiSettingsListener = null;
     state.editor = null;
     state.protocol = null;
     state.projectAdapter = null;
@@ -598,9 +601,14 @@
     state.dirtyListener = event => {
       markDirty(event?.detail?.action || 'editor-change');
     };
+    state.apiSettingsListener = () => {
+      if(!state.activeSession) return;
+      post(state.protocol.TYPES.OPEN_API_SETTINGS, {payload:{}});
+    };
     state.started = true;
     root.addEventListener('message', state.listener);
     root.addEventListener('openshop:project-dirty', state.dirtyListener);
+    root.addEventListener('openshop:open-api-settings', state.apiSettingsListener);
   }
 
   function requestClose(){
