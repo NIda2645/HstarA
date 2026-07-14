@@ -5,6 +5,7 @@
   "description": "Single-file browser image editor test harness",
   "type": "module",
   "scripts": {
+    "build:hstar": "node scripts/build-hstar.mjs",
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:e2e": "playwright test"
