@@ -12,8 +12,17 @@ describe('Hstar OpenShop offline runtime', () => {
     expect(html).toContain('./vendor/fabric-5.3.1.min.js');
     expect(html).toContain('./vendor/ag-psd-22.0.2.bundle.js');
     expect(html).toContain('./vendor/jspdf-4.2.1.umd.min.js');
+    expect(html).toContain("_psdLibUrl: './vendor/ag-psd-22.0.2.bundle.js'");
+    expect(html).toContain("_photonFilterUrl: './vendor/photon/photon_rs.js'");
+    expect(html).toContain('new URL(this._photonFilterUrl, window.location.href).href');
+    expect(html).toContain("'./vendor/gif/gif.js'");
+    expect(html).toContain("workerScript: './vendor/gif/gif.worker.js'");
+    expect(html).toContain("import('./vendor/transformers/transformers.web.min.js')");
+    expect(html).toContain('_precacheRuntime()');
     expect(html).not.toMatch(/<script[^>]+https?:\/\//i);
     expect(html).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com/i);
+    expect(html).not.toMatch(/cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com/i);
+    expect(html).toMatch(/script-src 'self' 'unsafe-inline' blob:/);
   });
 
   it('records every shipped dependency with a digest and license', () => {
@@ -24,6 +33,10 @@ describe('Hstar OpenShop offline runtime', () => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.files.length).toBeGreaterThanOrEqual(9);
+    expect(manifest.files.map((file) => file.path)).toEqual(expect.arrayContaining([
+      'vendor/transformers/ort-wasm-simd-threaded.jsep.mjs',
+      'vendor/transformers/ort-wasm-simd-threaded.jsep.wasm',
+    ]));
     for (const file of manifest.files) {
       expect(file.path).toMatch(/^vendor\//);
       expect(file.sha256).toMatch(/^[a-f0-9]{64}$/);
