@@ -8726,5 +8726,18 @@ window.addEventListener('error', e => { console.error('Unhandled error:', e.erro
 window.addEventListener('unhandledrejection', e => { console.error('Unhandled promise rejection:', e.reason); if (typeof OS !== 'undefined' && OS.toast) OS.toast('Something went wrong — see console', 'error'); });
 window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
+<script src="./host/openshop-protocol.js"></script>
+<script src="./host/openshop-project-adapter.js"></script>
+<script src="./host/openshop-host-runtime.js"></script>
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+    if (window.parent === window) return;
+    window.HstarOpenShopRuntime.start({
+        editor: OS,
+        protocol: window.HstarOpenShopProtocol,
+        projectAdapter: window.HstarOpenShopProjectAdapter,
+    });
+});
+</script>
 </body>
 </html>
