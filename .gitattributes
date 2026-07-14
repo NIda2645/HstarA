@@ -1,0 +1,3 @@
+# Checksum-controlled OpenShop runtime files must retain their original bytes.
+integrations/openshop/vendor/** -text whitespace=-trailing-space,cr-at-eol
+static/openshop/vendor/** -text whitespace=-trailing-space,cr-at-eol

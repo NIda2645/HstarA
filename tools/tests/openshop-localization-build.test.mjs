@@ -6,8 +6,20 @@ import vm from 'node:vm';
 
 const integrationRoot = 'integrations/openshop';
 const runtimeRoot = 'static/openshop';
+const gitAttributes = readFileSync('.gitattributes', 'utf8');
 const sourceManifest = JSON.parse(readFileSync(`${integrationRoot}/vendor/runtime-manifest.json`, 'utf8'));
 const glossary = JSON.parse(readFileSync(`${integrationRoot}/locales/photoshop-zh-CN-glossary.json`, 'utf8'));
+
+assert.match(
+  gitAttributes,
+  /^integrations\/openshop\/vendor\/\*\*\s+-text\b/m,
+  'source vendor runtime must bypass Git text normalization',
+);
+assert.match(
+  gitAttributes,
+  /^static\/openshop\/vendor\/\*\*\s+-text\b/m,
+  'built vendor runtime must bypass Git text normalization',
+);
 
 function listFiles(root, directory = root) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
