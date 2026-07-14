@@ -166,6 +166,78 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     except OpenShopValidationError:
         pass
 
+    metadata_project = store.initialize("project-metadata", owner_a, {"width": 640, "height": 480})
+    metadata_asset = store.store_image(
+        "project-metadata", owner_a, png_bytes((120, 40, 210, 255)), "image/png", "ai-output.png", "ai-output"
+    )
+    source_asset_id = metadata_asset["assetId"]
+    metadata_project["fontRefs"] = [
+        {"family": "Microsoft YaHei UI", "status": "available"},
+        {"family": "Missing Poster Font", "status": "missing"},
+    ]
+    metadata_project["aiToolPreferences"] = {
+        "text-extract": {
+            "toolId": "text-extract",
+            "mode": "project",
+            "apiConfigId": "vision",
+            "modelId": "gemini-3.1-pro-high",
+        },
+        "text-remove": {
+            "toolId": "text-remove",
+            "mode": "global",
+            "apiConfigId": "",
+            "modelId": "",
+        },
+    }
+    metadata_project["aiTaskRecords"] = [{
+        "taskId": "task-1",
+        "toolId": "text-remove",
+        "apiConfigId": "vision",
+        "modelId": "gemini-3-pro-image",
+        "status": "succeeded",
+        "mode": "layer",
+        "sourceAssetId": source_asset_id,
+        "outputAssetId": source_asset_id,
+        "createdAt": 1000,
+        "updatedAt": 2000,
+    }]
+    metadata_project["assetRefs"] = [source_asset_id]
+    saved_metadata = store.save("project-metadata", owner_a, metadata_project, base_version=1)
+    assert saved_metadata["fontRefs"] == metadata_project["fontRefs"]
+    assert saved_metadata["aiToolPreferences"] == metadata_project["aiToolPreferences"]
+    assert saved_metadata["aiTaskRecords"][0]["outputAssetId"] == source_asset_id
+
+    too_many_tasks = copy.deepcopy(saved_metadata)
+    too_many_tasks["aiTaskRecords"] = [
+        {
+            "taskId": f"task-{index}",
+            "toolId": "text-extract",
+            "status": "cancelled",
+        }
+        for index in range(101)
+    ]
+    try:
+        store.save("project-metadata", owner_a, too_many_tasks, base_version=2)
+        raise AssertionError("more than 100 AI task records should be rejected")
+    except OpenShopValidationError:
+        pass
+
+    invalid_font = copy.deepcopy(saved_metadata)
+    invalid_font["fontRefs"] = [{"family": "x" * 121, "status": "missing"}]
+    try:
+        store.save("project-metadata", owner_a, invalid_font, base_version=2)
+        raise AssertionError("overlong font names should be rejected")
+    except OpenShopValidationError:
+        pass
+
+    invalid_task = copy.deepcopy(saved_metadata)
+    invalid_task["aiTaskRecords"][0]["status"] = "ghost"
+    try:
+        store.save("project-metadata", owner_a, invalid_task, base_version=2)
+        raise AssertionError("invalid AI task states should be rejected")
+    except OpenShopValidationError:
+        pass
+
     assert not list(Path(data_dir).rglob("*.tmp"))
 
 

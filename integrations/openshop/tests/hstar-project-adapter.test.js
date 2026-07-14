@@ -247,6 +247,52 @@ describe('Hstar OpenShop project adapter', () => {
     expect(JSON.stringify(project)).not.toMatch(/data:image\/|blob:/);
   });
 
+  it('persists fonts, per-tool API preferences and bounded AI task records', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceAssetId = 'a'.repeat(64);
+    const maskAssetId = 'b'.repeat(64);
+    const outputAssetId = 'c'.repeat(64);
+    editor.__hstarFontRefs = [
+      {family:'Microsoft YaHei UI', status:'available'},
+      {family:'Missing Poster Font', status:'missing'},
+    ];
+    editor.__hstarAiToolPreferences = {
+      'text-extract': {
+        toolId:'text-extract', mode:'project', apiConfigId:'vision', modelId:'gemini-3.1-pro-high',
+      },
+      'text-remove': {
+        toolId:'text-remove', mode:'project', apiConfigId:'image', modelId:'gemini-3-pro-image',
+      },
+    };
+    editor.__hstarAiTaskRecords = [{
+      taskId:'task-1', toolId:'text-remove', apiConfigId:'image', modelId:'gemini-3-pro-image',
+      status:'succeeded', mode:'selection', sourceAssetId, maskAssetId, outputAssetId,
+      createdAt:1000, updatedAt:2000, completedAt:2000, appliedAt:0, error:'',
+    }];
+
+    const project = adapter.serializeProject({editor, context, now:() => 3000});
+
+    expect(project.fontRefs).toEqual(editor.__hstarFontRefs);
+    expect(project.aiToolPreferences).toEqual(editor.__hstarAiToolPreferences);
+    expect(project.aiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(project.assetRefs).toEqual([maskAssetId, sourceAssetId, outputAssetId].sort());
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((_json, callback) => callback());
+    await adapter.restoreProject({
+      editor:restored,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+
+    expect(restored.__hstarFontRefs).toEqual(editor.__hstarFontRefs);
+    expect(restored.__hstarAiToolPreferences).toEqual(editor.__hstarAiToolPreferences);
+    expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    restored.__hstarAiTaskRecords[0].status = 'failed';
+    expect(project.aiTaskRecords[0].status).toBe('succeeded');
+  });
+
   it('persists image assets nested inside Fabric groups', async () => {
     const adapter = window.HstarOpenShopProjectAdapter;
     const editor = createEditor();

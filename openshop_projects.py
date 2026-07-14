@@ -15,6 +15,12 @@ from typing import Any
 
 from PIL import Image
 
+from openshop_ai import (
+    OPENSHOP_AI_TOOL_IDS,
+    OpenShopAiValidationError,
+    normalize_ai_task_record,
+)
+
 
 class OpenShopStoreError(Exception):
     pass
@@ -321,10 +327,25 @@ class OpenShopProjectStore:
             raise OpenShopOwnershipError("OpenShop project owner cannot be changed")
 
         self._reject_embedded_data(candidate)
+        font_refs = self._normalize_font_refs(candidate.get("fontRefs", []))
+        ai_tool_preferences = self._normalize_ai_tool_preferences(
+            candidate.get("aiToolPreferences", {})
+        )
+        ai_task_records = self._normalize_ai_task_records(
+            candidate.get("aiTaskRecords", [])
+        )
         asset_refs = candidate.get("assetRefs", [])
         if not isinstance(asset_refs, list):
             raise OpenShopValidationError("assetRefs must be an array")
-        normalized_asset_refs = sorted({self._validate_asset_id(value) for value in asset_refs})
+        task_asset_refs = {
+            str(record.get(key) or "").strip()
+            for record in ai_task_records
+            for key in ("sourceAssetId", "maskAssetId", "outputAssetId")
+            if record.get(key)
+        }
+        normalized_asset_refs = sorted(
+            {self._validate_asset_id(value) for value in [*asset_refs, *task_asset_refs]}
+        )
         preview_asset_id = candidate.get("previewAssetId") or ""
         if preview_asset_id:
             preview_asset_id = self._validate_asset_id(preview_asset_id)
@@ -340,6 +361,9 @@ class OpenShopProjectStore:
         )
         candidate["assetRefs"] = normalized_asset_refs
         candidate["previewAssetId"] = preview_asset_id
+        candidate["fontRefs"] = font_refs
+        candidate["aiToolPreferences"] = ai_tool_preferences
+        candidate["aiTaskRecords"] = ai_task_records
         candidate["createdAt"] = current.get("createdAt")
         candidate.setdefault("editor", {"objects": []})
         candidate.setdefault("layers", [])
@@ -349,6 +373,81 @@ class OpenShopProjectStore:
         candidate.setdefault("aiTaskRecords", [])
         candidate.setdefault("exportRecords", [])
         return candidate
+
+    def _normalize_font_refs(self, value: Any) -> list[dict]:
+        if not isinstance(value, list):
+            raise OpenShopValidationError("fontRefs must be an array")
+        if len(value) > 128:
+            raise OpenShopValidationError("fontRefs exceeds the 128 item limit")
+        normalized = []
+        seen = set()
+        for item in value:
+            if not isinstance(item, dict):
+                raise OpenShopValidationError("fontRefs entries must be objects")
+            raw_family = str(item.get("family") or "").strip()
+            family = self._safe_label(raw_family, "")
+            if not family or family != raw_family or len(raw_family) > 120:
+                raise OpenShopValidationError("OpenShop font family is invalid")
+            if family.casefold() in seen:
+                continue
+            seen.add(family.casefold())
+            status = str(item.get("status") or "available").strip().lower()
+            if status not in {"available", "missing", "substituted"}:
+                raise OpenShopValidationError("OpenShop font status is invalid")
+            result = {"family": family, "status": status}
+            replacement = str(item.get("replacementFamily") or "").strip()
+            if replacement:
+                normalized_replacement = self._safe_label(replacement, "")
+                if normalized_replacement != replacement or len(replacement) > 120:
+                    raise OpenShopValidationError("OpenShop replacement font is invalid")
+                result["replacementFamily"] = normalized_replacement
+            normalized.append(result)
+        return normalized
+
+    def _normalize_ai_tool_preferences(self, value: Any) -> dict:
+        if not isinstance(value, dict):
+            raise OpenShopValidationError("aiToolPreferences must be an object")
+        normalized = {}
+        for tool_id, item in value.items():
+            if tool_id not in OPENSHOP_AI_TOOL_IDS or not isinstance(item, dict):
+                raise OpenShopValidationError("OpenShop AI tool preference is invalid")
+            supplied_tool_id = str(item.get("toolId") or tool_id).strip()
+            if supplied_tool_id != tool_id:
+                raise OpenShopValidationError("OpenShop AI tool preference does not match its key")
+            mode = str(item.get("mode") or "global").strip().lower()
+            if mode not in {"global", "project"}:
+                raise OpenShopValidationError("OpenShop AI preference mode is invalid")
+            api_config_id = self._metadata_text(item.get("apiConfigId"), 96, "apiConfigId")
+            model_id = self._metadata_text(item.get("modelId"), 240, "modelId")
+            if mode == "project" and (not api_config_id or not model_id):
+                raise OpenShopValidationError("Project-specific OpenShop AI preferences require an API and model")
+            normalized[tool_id] = {
+                "toolId": tool_id,
+                "mode": mode,
+                "apiConfigId": api_config_id,
+                "modelId": model_id,
+            }
+        return normalized
+
+    def _normalize_ai_task_records(self, value: Any) -> list[dict]:
+        if not isinstance(value, list):
+            raise OpenShopValidationError("aiTaskRecords must be an array")
+        if len(value) > 100:
+            raise OpenShopValidationError("aiTaskRecords exceeds the 100 item limit")
+        normalized = []
+        for item in value:
+            try:
+                normalized.append(normalize_ai_task_record(item))
+            except OpenShopAiValidationError as exc:
+                raise OpenShopValidationError(str(exc)) from exc
+        return normalized
+
+    @staticmethod
+    def _metadata_text(value: Any, limit: int, label: str) -> str:
+        text = str(value or "").strip()
+        if len(text) > limit or any(ord(char) < 32 or ord(char) == 127 for char in text):
+            raise OpenShopValidationError(f"OpenShop {label} is invalid")
+        return text
 
     def _verify_image(self, data: bytes, mime: str) -> tuple[int, int]:
         _, expected_format = self._MIME_DETAILS[mime]

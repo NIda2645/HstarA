@@ -81,6 +81,9 @@
       editor: {objects: []},
       layers: [],
       sourceBindings: [],
+      fontRefs: [],
+      aiToolPreferences: {},
+      aiTaskRecords: [],
       assetRefs: [],
       previewAssetId: '',
       autosaveVersion: 0,
@@ -574,6 +577,21 @@
     });
     const previewAssetId = clean(editor.__hstarPreviewAssetId);
     if(previewAssetId) assetRefs.add(previewAssetId);
+    const fontRefs = clone(Array.isArray(editor.__hstarFontRefs) ? editor.__hstarFontRefs : []);
+    const aiToolPreferences = clone(
+      editor.__hstarAiToolPreferences && typeof editor.__hstarAiToolPreferences === 'object'
+        ? editor.__hstarAiToolPreferences
+        : {}
+    );
+    const aiTaskRecords = clone(
+      Array.isArray(editor.__hstarAiTaskRecords) ? editor.__hstarAiTaskRecords.slice(-100) : []
+    );
+    aiTaskRecords.forEach(record => {
+      ['sourceAssetId', 'maskAssetId', 'outputAssetId'].forEach(key => {
+        const assetId = clean(record?.[key]);
+        if(assetId) assetRefs.add(assetId);
+      });
+    });
 
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -592,6 +610,9 @@
       editor: editorJson,
       layers,
       sourceBindings,
+      fontRefs,
+      aiToolPreferences,
+      aiTaskRecords,
       assetRefs: [...assetRefs].sort(),
       previewAssetId,
       autosaveVersion: Number(editor.__hstarAutosaveVersion || 0),
@@ -626,6 +647,15 @@
     editor.__hstarProjectCreatedAt = Number(project.createdAt || Date.now());
     editor.__hstarPreviewAssetId = clean(project.previewAssetId);
     editor.__hstarAutosaveVersion = Number(project.autosaveVersion || 0);
+    editor.__hstarFontRefs = clone(Array.isArray(project.fontRefs) ? project.fontRefs : []);
+    editor.__hstarAiToolPreferences = clone(
+      project.aiToolPreferences && typeof project.aiToolPreferences === 'object'
+        ? project.aiToolPreferences
+        : {}
+    );
+    editor.__hstarAiTaskRecords = clone(
+      Array.isArray(project.aiTaskRecords) ? project.aiTaskRecords.slice(-100) : []
+    );
     await new Promise((resolve, reject) => {
       try {
         const result = editor.canvas.loadFromJSON(project.editor, () => resolve());
