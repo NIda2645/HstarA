@@ -15,5 +15,8 @@
     "jsdom": "^27.2.0",
     "vitest": "^4.0.15",
     "vitest-canvas-mock": "^0.3.3"
+  },
+  "dependencies": {
+    "ag-psd": "22.0.2"
   }
 }
