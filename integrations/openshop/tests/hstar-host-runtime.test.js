@@ -1,11 +1,12 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const protocolPath = resolve(testDir, '..', 'host', 'openshop-protocol.js');
 const runtimePath = resolve(testDir, '..', 'host', 'openshop-host-runtime.js');
+const indexPath = resolve(testDir, '..', 'index.html');
 
 const context = {
   canvasType: 'classic',
@@ -18,12 +19,25 @@ function flushMessages() {
   return new Promise(resolvePromise => setTimeout(resolvePromise, 0));
 }
 
+function deferred() {
+  let resolvePromise;
+  let rejectPromise;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {promise, resolve: resolvePromise, reject: rejectPromise};
+}
+
 describe('Hstar OpenShop editor host runtime', () => {
   let protocol;
   let runtime;
   let parentWindow;
   let editor;
   let projectAdapter;
+  let assetWriter;
+  let previewWriter;
+  let outputWriter;
 
   beforeEach(async () => {
     expect(existsSync(runtimePath), `${runtimePath} should exist`).toBe(true);
@@ -35,10 +49,27 @@ describe('Hstar OpenShop editor host runtime', () => {
     protocol = window.HstarOpenShopProtocol;
     runtime = window.HstarOpenShopRuntime;
     parentWindow = { postMessage: vi.fn() };
-    editor = { canvasW: 1920, canvasH: 1080 };
+    editor = {
+      canvasW: 1920,
+      canvasH: 1080,
+      history: [{action: 'old'}],
+      historyIdx: 0,
+      createNewDocument: vi.fn(function createNewDocument(width, height) {
+        this.canvasW = width;
+        this.canvasH = height;
+      }),
+      canvas: {
+        toDataURL: vi.fn(() => 'data:image/png;base64,COMPOSITE_BYTES'),
+        discardActiveObject: vi.fn(),
+        renderAll: vi.fn(),
+      },
+    };
     projectAdapter = {
       restoreProject: vi.fn(async () => ({ project: { schemaVersion: 1 } })),
       queueSourceImageLayer: vi.fn(async () => ({ name: '来源图片' })),
+      reconcileSources: vi.fn(async () => ({added: [], pendingUpdates: [], detached: []})),
+      resolveSourceUpdate: vi.fn(async () => ({layerId: 'layer-1'})),
+      persistEditorAssets: vi.fn(async () => []),
       serializeProject: vi.fn(() => ({
         schemaVersion: 1,
         projectId: context.projectId,
@@ -46,9 +77,13 @@ describe('Hstar OpenShop editor host runtime', () => {
           canvasType: context.canvasType,
           canvasId: context.canvasId,
           nodeId: context.nodeId
-        }
+        },
+        autosaveVersion: Number(editor.__hstarAutosaveVersion || 0),
       }))
     };
+    assetWriter = vi.fn(async ({role}) => ({assetId: `asset-${role}`, url: `/api/assets/${role}`, role}));
+    previewWriter = vi.fn(async () => ({assetId: 'asset-preview', url: '/api/assets/preview', role: 'preview'}));
+    outputWriter = vi.fn(async () => ({assetId: 'asset-output', url: '/api/assets/output', name: '图文分层输出.png'}));
     runtime.start({
       editor,
       protocol,
@@ -56,8 +91,28 @@ describe('Hstar OpenShop editor host runtime', () => {
       parentWindow,
       origin: 'https://hstar.test',
       assetResolver: async assetId => `/static/assets/${assetId}.png`,
-      imageLoader: async source => ({ source })
+      imageLoader: async source => ({ source }),
+      assetWriter,
+      previewWriter,
+      outputWriter,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    runtime?.stop?.();
+  });
+
+  it('wires editor dirty events and same-origin asset APIs in the OpenShop page', () => {
+    const html = readFileSync(indexPath, 'utf8');
+    expect(html).toContain("new CustomEvent('openshop:project-dirty'");
+    expect(html).toContain("'hstarAssetId','hstarAssetRole','hstarEdgeId','hstarSourceNodeId','hstarLayerId'");
+    expect(html).toContain('window.HstarOpenShopAssetApi');
+    expect(html).toMatch(/\/api\/openshop\/projects\/.*\/assets/);
+    expect(html).toContain("assetResolver: assetId => `/api/openshop/assets/${encodeURIComponent(assetId)}`");
+    expect(html).toContain('assetWriter: payload => window.HstarOpenShopAssetApi.upload(payload)');
+    expect(html).toContain("previewWriter: payload => window.HstarOpenShopAssetApi.upload({...payload, role:'preview'})");
+    expect(html).toContain("outputWriter: payload => window.HstarOpenShopAssetApi.upload({...payload, role:'output'})");
   });
 
   function envelope(type, requestId, payload = {}, overrides = {}) {
@@ -72,6 +127,18 @@ describe('Hstar OpenShop editor host runtime', () => {
 
   function dispatch(data, { origin = 'https://hstar.test', source = parentWindow } = {}) {
     window.dispatchEvent(new MessageEvent('message', { data, origin, source }));
+  }
+
+  function posted(type) {
+    return parentWindow.postMessage.mock.calls
+      .map(call => call[0])
+      .filter(message => message.type === type);
+  }
+
+  async function flushAsync() {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
   }
 
   it('accepts a session only from the configured origin and parent window', async () => {
@@ -202,5 +269,157 @@ describe('Hstar OpenShop editor host runtime', () => {
     expect(projectAdapter.queueSourceImageLayer).toHaveBeenCalledWith(expect.objectContaining({
       imageLoader: undefined
     }));
+  });
+
+  it('debounces repeated dirty events into one autosave request', async () => {
+    vi.useFakeTimers();
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    parentWindow.postMessage.mockClear();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Move'}}));
+    window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Move'}}));
+    window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Move'}}));
+    await vi.advanceTimersByTimeAsync(1199);
+    expect(posted(protocol.TYPES.SAVE_PROJECT)).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flushAsync();
+    const saves = posted(protocol.TYPES.SAVE_PROJECT);
+    expect(saves).toHaveLength(1);
+    expect(projectAdapter.persistEditorAssets).toHaveBeenCalledTimes(1);
+    expect(previewWriter).toHaveBeenCalledTimes(1);
+    expect(saves[0].payload).toMatchObject({reason: 'autosave', closeAfter: false});
+
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, saves[0].requestId, {
+      project: {...saves[0].payload.project, autosaveVersion: 2},
+    }));
+    await flushAsync();
+    expect(runtime.getState()).toMatchObject({saving: false, dirty: false});
+  });
+
+  it('saves again immediately when the project changes during an active save', async () => {
+    vi.useFakeTimers();
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    parentWindow.postMessage.mockClear();
+    window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'First'}}));
+    await vi.advanceTimersByTimeAsync(1200);
+    await flushAsync();
+    const firstSave = posted(protocol.TYPES.SAVE_PROJECT)[0];
+    expect(firstSave).toBeTruthy();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Second'}}));
+    expect(runtime.getState()).toMatchObject({saving: true, saveAgain: true, dirty: true});
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, firstSave.requestId, {
+      project: {...firstSave.payload.project, autosaveVersion: 2},
+    }));
+    await flushAsync();
+
+    const saves = posted(protocol.TYPES.SAVE_PROJECT);
+    expect(saves).toHaveLength(2);
+    expect(saves[1].payload.reason).toBe('autosave');
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, saves[1].requestId, {
+      project: {...saves[1].payload.project, autosaveVersion: 3},
+    }));
+    await flushAsync();
+  });
+
+  it('ignores save confirmations from an obsolete session', async () => {
+    vi.useFakeTimers();
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    parentWindow.postMessage.mockClear();
+    window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Session one'}}));
+    await vi.advanceTimersByTimeAsync(1200);
+    await flushAsync();
+    const oldSave = posted(protocol.TYPES.SAVE_PROJECT)[0];
+
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-2', {document:{width:800, height:600}}, {
+      sessionId: 'session-2',
+    }));
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, oldSave.requestId, {
+      project: {...oldSave.payload.project, autosaveVersion: 99},
+    }));
+    await flushAsync();
+
+    expect(runtime.getState().activeSession.sessionId).toBe('session-2');
+    expect(runtime.getState().autosaveVersion).toBe(0);
+    expect(editor.createNewDocument).toHaveBeenLastCalledWith(800, 600);
+    expect(editor.history).toEqual([]);
+  });
+
+  it('saves before sending a composited image to the canvas', async () => {
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    await flushMessages();
+    parentWindow.postMessage.mockClear();
+
+    dispatch(envelope(protocol.TYPES.REQUEST_SEND_TO_CANVAS, 'send-1'));
+    await flushMessages();
+    const save = posted(protocol.TYPES.SAVE_PROJECT)[0];
+    expect(save).toBeTruthy();
+    expect(outputWriter).not.toHaveBeenCalled();
+
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, save.requestId, {
+      project: {...save.payload.project, autosaveVersion: 2},
+    }));
+    await flushMessages();
+    await flushMessages();
+
+    expect(outputWriter).toHaveBeenCalledWith(expect.objectContaining({
+      dataUrl: 'data:image/png;base64,COMPOSITE_BYTES',
+      role: 'output',
+    }));
+    const sent = posted(protocol.TYPES.SEND_TO_CANVAS);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual({
+      assetId: 'asset-output',
+      url: '/api/assets/output',
+      name: '图文分层输出.png',
+      width: 1920,
+      height: 1080,
+    });
+    expect(JSON.stringify(sent[0])).not.toContain('data:image/png;base64');
+  });
+
+  it('waits for a save that is still externalizing assets before sending output', async () => {
+    const persistence = deferred();
+    projectAdapter.persistEditorAssets.mockImplementationOnce(() => persistence.promise);
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    await flushMessages();
+    parentWindow.postMessage.mockClear();
+
+    const activeSave = runtime.requestSave({reason:'autosave'});
+    await flushAsync();
+    const send = runtime.requestSendToCanvas({requestId:'send-during-prepare'});
+    await flushAsync();
+    expect(outputWriter).not.toHaveBeenCalled();
+
+    persistence.resolve([]);
+    await flushAsync();
+    const save = posted(protocol.TYPES.SAVE_PROJECT)[0];
+    expect(save).toBeTruthy();
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, save.requestId, {
+      project: {...save.payload.project, autosaveVersion: 2},
+    }));
+    await activeSave;
+    await send;
+
+    expect(outputWriter).toHaveBeenCalledTimes(1);
+    expect(posted(protocol.TYPES.SEND_TO_CANVAS)).toHaveLength(1);
+  });
+
+  it('does not continue an old send request after switching node sessions', async () => {
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    await flushMessages();
+    parentWindow.postMessage.mockClear();
+    dispatch(envelope(protocol.TYPES.REQUEST_SEND_TO_CANVAS, 'send-old-session'));
+    await flushMessages();
+    expect(posted(protocol.TYPES.SAVE_PROJECT)).toHaveLength(1);
+
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-2', {}, {sessionId:'session-2'}));
+    await flushMessages();
+    await flushMessages();
+
+    expect(runtime.getState().activeSession.sessionId).toBe('session-2');
+    expect(outputWriter).not.toHaveBeenCalled();
+    expect(posted(protocol.TYPES.SEND_TO_CANVAS)).toHaveLength(0);
   });
 });
