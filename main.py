@@ -48,6 +48,15 @@ from openshop_projects import (
     OpenShopValidationError,
     OpenShopVersionConflict,
 )
+from openshop_ai import (
+    OpenShopAiTaskNotFound,
+    OpenShopAiTaskOwnershipError,
+    OpenShopAiTaskRegistry,
+    OpenShopAiValidationError,
+    build_capability_catalog,
+    build_ocr_prompt,
+    normalize_ocr_layout,
+)
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -316,6 +325,7 @@ SHARED_FOLDERS_FILE = RUNTIME_PATHS["shared_folders_file"]
 SOFTWARE_SETTINGS_FILE = RUNTIME_PATHS["software_settings_file"]
 GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
 OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR)
+OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 LOCAL_IMAGE_IMPORT_MAX_BYTES = int(os.getenv("LOCAL_IMAGE_IMPORT_MAX_BYTES", str(50 * 1024 * 1024)))
 LOCAL_IMAGE_IMPORT_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -2768,6 +2778,16 @@ class OpenShopProjectCloneRequest(BaseModel):
     source_project_id: str
     owner: Dict[str, Any]
 
+class OpenShopAiTaskRequest(BaseModel):
+    owner: Dict[str, Any]
+    tool_id: str
+    source_asset_id: str
+    mask_asset_id: str = ""
+    provider_id: str
+    model_id: str
+    mode: str = "layer"
+    options: Dict[str, Any] = Field(default_factory=dict)
+
 class CanvasAssetCheckRequest(BaseModel):
     urls: List[str] = []
 
@@ -3328,6 +3348,7 @@ def remove_openshop_projects(project_owners, canvas_type, canvas_id):
         }
         try:
             if OPENSHOP_STORE.delete(project_id, owner):
+                OPENSHOP_AI_TASKS.cancel_project(project_id)
                 removed.append(project_id)
         except OpenShopNotFound:
             continue
@@ -3478,10 +3499,13 @@ def cleanup_expired_canvas_trash():
                     data = json.load(f)
                 deleted_at = int(data.get("deleted_at") or 0)
                 if deleted_at and deleted_at < cutoff:
-                    removed_projects = bool(OPENSHOP_STORE.delete_canvas_projects(
+                    removed_ids = OPENSHOP_STORE.delete_canvas_projects(
                         normalize_canvas_kind(data.get("kind")),
                         str(data.get("id") or os.path.splitext(filename)[0]),
-                    )) or removed_projects
+                    )
+                    removed_projects = bool(removed_ids) or removed_projects
+                    for project_id in removed_ids:
+                        OPENSHOP_AI_TASKS.cancel_project(project_id)
                     os.remove(path)
             except Exception:
                 continue
@@ -16362,6 +16386,185 @@ async def read_bounded_upload(file: UploadFile, max_bytes: int) -> bytes:
     finally:
         await file.close()
 
+@app.get("/api/openshop/ai/catalog")
+async def openshop_ai_catalog():
+    providers = public_api_providers()
+    return build_capability_catalog(
+        providers,
+        primary_provider_id=get_primary_provider_id(providers),
+    )
+
+async def ensure_openshop_project_owner(project_id: str, owner: Dict[str, Any]):
+    try:
+        return await asyncio.to_thread(OPENSHOP_STORE.load, project_id, owner)
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+
+def openshop_ai_provider(payload: OpenShopAiTaskRequest) -> Dict[str, Any]:
+    provider = get_api_provider_exact(payload.provider_id)
+    model = selected_model(payload.model_id, "")
+    model_key = "chat_models" if payload.tool_id == "text-extract" else "image_models"
+    configured_models = [str(item or "").strip() for item in provider.get(model_key, []) if str(item or "").strip()]
+    if model not in configured_models:
+        raise HTTPException(
+            status_code=400,
+            detail=f"配置不可用：模型「{model}」不在 API「{provider.get('name') or provider['id']}」当前的{model_key}中。",
+        )
+    if payload.tool_id == "text-extract":
+        probe_provider = {**provider, "has_key": True, "enabled": True}
+        probe = build_capability_catalog([probe_provider], primary_provider_id=provider["id"])
+        compatible = {
+            item["id"]
+            for item in probe["tools"]["text-extract"]["providers"]
+            for item in item["models"]
+        }
+        if model not in compatible:
+            raise HTTPException(status_code=400, detail=f"配置不可用：模型「{model}」未声明视觉布局识别能力。")
+    return provider
+
+def openshop_ai_asset(asset_id: str, max_size: int = 0) -> Tuple[str, Dict[str, Any], str]:
+    try:
+        path, metadata = OPENSHOP_STORE.asset_path(asset_id)
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+    return path, metadata, image_path_to_data_url(path, max_size=max_size)
+
+def openshop_text_remove_prompt(mode: str, extra: str = "") -> str:
+    scope = (
+        "Remove visible text only inside the supplied mask. Preserve every pixel outside the selected area exactly."
+        if mode == "selection"
+        else "Remove all visible text from the supplied source layer."
+    )
+    prompt = (
+        f"{scope} Inpaint removed text naturally while preserving the original composition, objects, colors, "
+        "lighting, texture, spacing, and image style. Do not add new text, letters, logos, captions, or labels."
+    )
+    extra = re.sub(r"[\x00-\x1f\x7f]", " ", str(extra or "")).strip()[:2000]
+    return f"{prompt}\nAdditional requirement: {extra}" if extra else prompt
+
+async def store_openshop_ai_output(
+    project_id: str,
+    owner: Dict[str, Any],
+    image_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    output_url = await save_ai_image_to_output(image_data, prefix="openshop_ai_")
+    output_path = output_file_from_url(output_url)
+    if not output_path or not os.path.isfile(output_path):
+        raise HTTPException(status_code=502, detail="OpenShop 去字模型没有返回可读取的图片")
+    temporary = os.path.basename(output_path).startswith("openshop_ai_")
+    try:
+        with open(output_path, "rb") as handle:
+            content = handle.read()
+        mime = content_type_for_path(output_path)
+        if mime not in OPENSHOP_STORE.ALLOWED_IMAGE_MIME:
+            raise HTTPException(status_code=502, detail=f"OpenShop 去字模型返回了不支持的图片格式：{mime}")
+        asset = await asyncio.to_thread(
+            OPENSHOP_STORE.store_image,
+            project_id,
+            owner,
+            content,
+            mime,
+            f"{project_id}-text-removed{os.path.splitext(output_path)[1] or '.png'}",
+            "ai-output",
+        )
+        asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
+        return asset
+    finally:
+        if temporary:
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+
+async def run_openshop_ai_task(
+    task_id: str,
+    project_id: str,
+    payload: OpenShopAiTaskRequest,
+):
+    if not OPENSHOP_AI_TASKS.mark_running(task_id):
+        return
+    owner = payload.owner
+    try:
+        source_path, source_metadata, source_url = await asyncio.to_thread(
+            openshop_ai_asset,
+            payload.source_asset_id,
+            2048 if payload.tool_id == "text-extract" else 0,
+        )
+        if payload.tool_id == "text-extract":
+            prompt = build_ocr_prompt(source_metadata["width"], source_metadata["height"])
+            response = await canvas_llm(CanvasLLMRequest(
+                message=prompt,
+                system_prompt="You are a strict multilingual OCR layout engine. Return JSON only.",
+                provider=payload.provider_id,
+                model=payload.model_id,
+                images=[source_url],
+            ))
+            layout = normalize_ocr_layout(
+                response.get("text") if isinstance(response, dict) else "",
+                source_metadata["width"],
+                source_metadata["height"],
+            )
+            OPENSHOP_AI_TASKS.succeed(task_id, layout)
+            return
+
+        references = [{
+            "url": source_url,
+            "name": os.path.basename(source_path) or "source.png",
+            "role": "source",
+            "kind": "image",
+            "mime": source_metadata["mime"],
+        }]
+        if payload.mode == "selection":
+            _mask_path, mask_metadata, mask_url = await asyncio.to_thread(
+                openshop_ai_asset,
+                payload.mask_asset_id,
+                0,
+            )
+            references.append({
+                "url": mask_url,
+                "name": "selection_mask.png",
+                "role": "mask",
+                "kind": "image",
+                "mime": mask_metadata["mime"],
+            })
+        quality = str(payload.options.get("quality") or "auto").strip().lower()
+        if quality not in {"auto", "low", "medium", "high"}:
+            quality = "auto"
+        image_data, _raw = await generate_ai_image(
+            openshop_text_remove_prompt(payload.mode, payload.options.get("prompt")),
+            f"{source_metadata['width']}x{source_metadata['height']}",
+            quality,
+            payload.model_id,
+            references,
+            payload.provider_id,
+        )
+        if not OPENSHOP_AI_TASKS.can_complete(task_id):
+            return
+        asset = await store_openshop_ai_output(project_id, owner, image_data)
+        if not OPENSHOP_AI_TASKS.succeed(task_id, {
+            "assetId": asset["assetId"],
+            "url": asset["url"],
+            "name": asset["name"],
+            "width": asset["width"],
+            "height": asset["height"],
+            "mime": asset["mime"],
+        }):
+            await asyncio.to_thread(OPENSHOP_STORE.collect_garbage)
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        OPENSHOP_AI_TASKS.fail(task_id, detail)
+
+def raise_openshop_ai_task_error(exc: Exception):
+    if isinstance(exc, OpenShopAiTaskOwnershipError):
+        raise HTTPException(status_code=403, detail="OpenShop AI 任务属于另一个画布节点") from exc
+    if isinstance(exc, OpenShopAiTaskNotFound):
+        raise HTTPException(status_code=404, detail="OpenShop AI 任务不存在或已过期") from exc
+    if isinstance(exc, OpenShopAiValidationError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise exc
+
 @app.post("/api/openshop/projects/{project_id}/initialize")
 async def initialize_openshop_project(
     project_id: str,
@@ -16441,6 +16644,7 @@ async def delete_openshop_project(
             openshop_owner(canvas_type, canvas_id, node_id),
         )
         if deleted:
+            OPENSHOP_AI_TASKS.cancel_project(project_id)
             OPENSHOP_STORE.collect_garbage()
         return deleted
 
@@ -16481,6 +16685,70 @@ async def get_openshop_asset(asset_id: str):
         return FileResponse(path, media_type=metadata["mime"])
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
+
+@app.post("/api/openshop/projects/{project_id}/ai-tasks")
+async def create_openshop_ai_task(
+    project_id: str,
+    payload: OpenShopAiTaskRequest,
+):
+    await ensure_openshop_project_owner(project_id, payload.owner)
+    if payload.tool_id not in {"text-extract", "text-remove"}:
+        raise HTTPException(status_code=400, detail="OpenShop AI 功能不存在")
+    openshop_ai_provider(payload)
+    try:
+        await asyncio.to_thread(OPENSHOP_STORE.asset_path, payload.source_asset_id)
+        if payload.mode == "selection":
+            if payload.tool_id != "text-remove" or not payload.mask_asset_id:
+                raise HTTPException(status_code=400, detail="选区去字需要有效的选区蒙版")
+            await asyncio.to_thread(OPENSHOP_STORE.asset_path, payload.mask_asset_id)
+        record = OPENSHOP_AI_TASKS.create(
+            project_id=project_id,
+            owner=payload.owner,
+            tool_id=payload.tool_id,
+            provider_id=payload.provider_id,
+            model_id=payload.model_id,
+            source_asset_id=payload.source_asset_id,
+            mask_asset_id=payload.mask_asset_id,
+            mode=payload.mode,
+        )
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+    except OpenShopAiValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    future = asyncio.create_task(run_openshop_ai_task(record["taskId"], project_id, payload))
+    OPENSHOP_AI_TASKS.bind(record["taskId"], future)
+    return {"task_id": record["taskId"], "status": record["status"], "task": record}
+
+@app.get("/api/openshop/projects/{project_id}/ai-tasks/{task_id}")
+async def get_openshop_ai_task(
+    project_id: str,
+    task_id: str,
+    canvas_type: str,
+    canvas_id: str,
+    node_id: str,
+):
+    owner = openshop_owner(canvas_type, canvas_id, node_id)
+    await ensure_openshop_project_owner(project_id, owner)
+    try:
+        return {"task": OPENSHOP_AI_TASKS.get(task_id, project_id, owner)}
+    except (OpenShopAiTaskNotFound, OpenShopAiTaskOwnershipError, OpenShopAiValidationError) as exc:
+        raise_openshop_ai_task_error(exc)
+
+@app.delete("/api/openshop/projects/{project_id}/ai-tasks/{task_id}")
+async def cancel_openshop_ai_task(
+    project_id: str,
+    task_id: str,
+    canvas_type: str,
+    canvas_id: str,
+    node_id: str,
+):
+    owner = openshop_owner(canvas_type, canvas_id, node_id)
+    await ensure_openshop_project_owner(project_id, owner)
+    try:
+        task = OPENSHOP_AI_TASKS.cancel(task_id, project_id, owner)
+        return {"ok": True, "task": task}
+    except (OpenShopAiTaskNotFound, OpenShopAiTaskOwnershipError, OpenShopAiValidationError) as exc:
+        raise_openshop_ai_task_error(exc)
 
 # --- 画布管理 ---
 
@@ -17756,6 +18024,8 @@ async def purge_canvas(canvas_id: str):
                 canvas_id,
             )
             if removed:
+                for project_id in removed:
+                    OPENSHOP_AI_TASKS.cancel_project(project_id)
                 OPENSHOP_STORE.collect_garbage()
             return removed
         await asyncio.to_thread(delete_projects_and_collect)

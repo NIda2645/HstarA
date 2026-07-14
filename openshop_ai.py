@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
+import time
+import uuid
+from copy import deepcopy
 from typing import Any
 
 
@@ -18,6 +22,7 @@ OPENSHOP_AI_TASK_STATES = (
     "failed",
     "cancelled",
 )
+OPENSHOP_AI_TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 
 _CLI_PROTOCOLS = {"codex", "gemini-cli"}
 _ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -383,3 +388,223 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
         height = _positive_dimension(result.get("height"), "result height")
         record["result"] = normalize_ocr_layout(json.dumps(result), width, height)
     return record
+
+
+class OpenShopAiTaskNotFound(KeyError):
+    pass
+
+
+class OpenShopAiTaskOwnershipError(PermissionError):
+    pass
+
+
+class OpenShopAiTaskRegistry:
+    def __init__(self, retention_seconds: float = 3600.0):
+        self.retention_seconds = max(60.0, float(retention_seconds))
+        self._records: dict[str, dict[str, Any]] = {}
+        self._futures: dict[str, Any] = {}
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _owner(value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            raise OpenShopAiValidationError("OpenShop AI task owner is invalid")
+        owner = {
+            "canvasType": _clean_text(value.get("canvasType"), 32),
+            "canvasId": _clean_text(value.get("canvasId"), 96),
+            "nodeId": _clean_text(value.get("nodeId"), 96),
+        }
+        if not all(owner.values()):
+            raise OpenShopAiValidationError("OpenShop AI task owner is incomplete")
+        return owner
+
+    @staticmethod
+    def _public(record: dict[str, Any]) -> dict[str, Any]:
+        return deepcopy(record)
+
+    def create(
+        self,
+        project_id: str,
+        owner: dict[str, Any],
+        tool_id: str,
+        provider_id: str,
+        model_id: str,
+        source_asset_id: str,
+        mask_asset_id: str = "",
+        mode: str = "layer",
+    ) -> dict[str, Any]:
+        self.cleanup()
+        normalized_project_id = _clean_text(project_id, 96)
+        if not normalized_project_id:
+            raise OpenShopAiValidationError("OpenShop AI projectId is invalid")
+        normalized_owner = self._owner(owner)
+        if tool_id not in OPENSHOP_AI_TOOL_IDS:
+            raise OpenShopAiValidationError("OpenShop AI toolId is invalid")
+        timestamp = int(time.time() * 1000)
+        task_id = f"openshop_ai_{uuid.uuid4().hex}"
+        record = {
+            "taskId": task_id,
+            "projectId": normalized_project_id,
+            "owner": normalized_owner,
+            "toolId": tool_id,
+            "apiConfigId": _clean_text(provider_id, 96),
+            "modelId": _clean_text(model_id, 240),
+            "status": "queued",
+            "mode": "selection" if mode == "selection" else "layer",
+            "sourceAssetId": _task_asset_id(source_asset_id, "sourceAssetId"),
+            "maskAssetId": _task_asset_id(mask_asset_id, "maskAssetId"),
+            "outputAssetId": "",
+            "result": None,
+            "error": "",
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "completedAt": 0,
+        }
+        with self._lock:
+            self._records[task_id] = record
+        return self._public(record)
+
+    def bind(self, task_id: str, future: Any) -> None:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record:
+                raise OpenShopAiTaskNotFound(task_id)
+            if record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                if record["status"] == "cancelled":
+                    future.cancel()
+                return
+            self._futures[task_id] = future
+
+    def _assert_scope(
+        self,
+        record: dict[str, Any],
+        project_id: str,
+        owner: dict[str, Any],
+    ) -> None:
+        if record.get("projectId") != str(project_id or "").strip():
+            raise OpenShopAiTaskNotFound(record.get("taskId") or "")
+        if record.get("owner") != self._owner(owner):
+            raise OpenShopAiTaskOwnershipError(record.get("taskId") or "")
+
+    def get(
+        self,
+        task_id: str,
+        project_id: str,
+        owner: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.cleanup()
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record:
+                raise OpenShopAiTaskNotFound(task_id)
+            self._assert_scope(record, project_id, owner)
+            return self._public(record)
+
+    def mark_running(self, task_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            record["status"] = "running"
+            record["updatedAt"] = int(time.time() * 1000)
+            return True
+
+    def can_complete(self, task_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            return bool(record and record["status"] not in OPENSHOP_AI_TERMINAL_STATES)
+
+    def succeed(self, task_id: str, result: dict[str, Any]) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            timestamp = int(time.time() * 1000)
+            record["status"] = "succeeded"
+            record["result"] = deepcopy(result)
+            record["outputAssetId"] = _task_asset_id(
+                result.get("assetId") if isinstance(result, dict) else "",
+                "outputAssetId",
+            )
+            record["error"] = ""
+            record["updatedAt"] = timestamp
+            record["completedAt"] = timestamp
+            self._futures.pop(task_id, None)
+            return True
+
+    def fail(self, task_id: str, error: Any) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            timestamp = int(time.time() * 1000)
+            record["status"] = "failed"
+            record["result"] = None
+            record["error"] = _clean_text(error, 500, "OpenShop AI task failed")
+            record["updatedAt"] = timestamp
+            record["completedAt"] = timestamp
+            self._futures.pop(task_id, None)
+            return True
+
+    def cancel(
+        self,
+        task_id: str,
+        project_id: str | None = None,
+        owner: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        future = None
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record:
+                raise OpenShopAiTaskNotFound(task_id)
+            if project_id is not None and owner is not None:
+                self._assert_scope(record, project_id, owner)
+            if record["status"] not in OPENSHOP_AI_TERMINAL_STATES:
+                timestamp = int(time.time() * 1000)
+                record["status"] = "cancelled"
+                record["result"] = None
+                record["error"] = ""
+                record["updatedAt"] = timestamp
+                record["completedAt"] = timestamp
+            future = self._futures.pop(task_id, None)
+            public = self._public(record)
+        if future and not future.done():
+            future.cancel()
+        return public
+
+    def cancel_project(self, project_id: str) -> list[str]:
+        normalized = str(project_id or "").strip()
+        with self._lock:
+            task_ids = [
+                task_id
+                for task_id, record in self._records.items()
+                if record.get("projectId") == normalized
+                and record.get("status") not in OPENSHOP_AI_TERMINAL_STATES
+            ]
+        for task_id in task_ids:
+            self.cancel(task_id)
+        return task_ids
+
+    def active_for_project(self, project_id: str) -> int:
+        normalized = str(project_id or "").strip()
+        with self._lock:
+            return sum(
+                1
+                for record in self._records.values()
+                if record.get("projectId") == normalized
+                and record.get("status") not in OPENSHOP_AI_TERMINAL_STATES
+            )
+
+    def cleanup(self) -> list[str]:
+        cutoff = int((time.time() - self.retention_seconds) * 1000)
+        with self._lock:
+            expired = [
+                task_id
+                for task_id, record in self._records.items()
+                if record.get("status") in OPENSHOP_AI_TERMINAL_STATES
+                and int(record.get("updatedAt") or 0) < cutoff
+            ]
+            for task_id in expired:
+                self._records.pop(task_id, None)
+                self._futures.pop(task_id, None)
+        return expired
