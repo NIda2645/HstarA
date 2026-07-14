@@ -19,6 +19,10 @@
     "vitest-canvas-mock": "^0.3.3"
   },
   "dependencies": {
-    "ag-psd": "22.0.2"
+    "@huggingface/transformers": "4.0.0",
+    "@silvia-odwyer/photon": "0.3.3",
+    "ag-psd": "22.0.2",
+    "gif.js": "0.2.0",
+    "jspdf": "4.2.1"
   }
 }
