@@ -48,7 +48,7 @@ function createEditor() {
       }),
       getObjects: vi.fn(() => canvasObjects),
       renderAll: vi.fn(),
-      toJSON: vi.fn(() => ({
+      toJSON: vi.fn((properties=[]) => ({
         objects: canvasObjects.map(object => ({
           type: object.type,
           name: object.name,
@@ -56,7 +56,10 @@ function createEditor() {
           hstarAssetId: object.hstarAssetId,
           hstarEdgeId: object.hstarEdgeId,
           hstarSourceNodeId: object.hstarSourceNodeId,
-          hstarLayerId: object.hstarLayerId
+          hstarLayerId: object.hstarLayerId,
+          ...(properties.includes('hstarSnapAnchor')
+            ? {hstarSnapAnchor:object.hstarSnapAnchor}
+            : {}),
         }))
       }))
     },
@@ -492,6 +495,10 @@ describe('Hstar OpenShop project adapter', () => {
     const image = createImage({url:`/api/openshop/assets/${outputAssetId}`});
     image.hstarAssetId = outputAssetId;
     image.hstarLayerId = 'generated-layer';
+    image.hstarSnapAnchor = {
+      type:'selection', x:10, y:20, width:300, height:200,
+      documentWidth:1920, documentHeight:1080,
+    };
     editor.layers[0].objects.push(image);
     editor.canvas.add(image);
     editor.__hstarAiReferenceRecords = [{
@@ -517,6 +524,7 @@ describe('Hstar OpenShop project adapter', () => {
     expect(project.aiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
     expect(project.aiPendingResults).toEqual(editor.__hstarAiPendingResults);
     expect(project.layers[0].hstarAiGeneration).toEqual(editor.layers[0].hstarAiGeneration);
+    expect(project.editor.objects[0].hstarSnapAnchor).toEqual(image.hstarSnapAnchor);
     expect(project.assetRefs).toEqual([
       maskAssetId, outputAssetId, pendingAssetId, referenceAssetId, sourceAssetId,
     ].sort());
@@ -543,6 +551,7 @@ describe('Hstar OpenShop project adapter', () => {
     expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
     expect(restored.__hstarAiPendingResults).toEqual(editor.__hstarAiPendingResults);
     expect(restored.layers[0].hstarAiGeneration).toEqual(editor.layers[0].hstarAiGeneration);
+    expect(restored.layers[0].objects[0].hstarSnapAnchor).toEqual(image.hstarSnapAnchor);
     restored.__hstarAiPendingResults[0].child.status = 'failed';
     expect(project.aiPendingResults[0].child.status).toBe('succeeded');
   });

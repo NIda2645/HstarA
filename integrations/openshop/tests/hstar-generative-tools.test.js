@@ -337,6 +337,10 @@ describe('Hstar OpenShop inline generative tools', () => {
     ]);
     expect(generated.every(layer => layer.visible)).toBe(true);
     expect(generated.every(layer => layer.objects[0].left === 0 && layer.objects[0].top === 0)).toBe(true);
+    expect(generated.every(layer => JSON.stringify(layer.objects[0].hstarSnapAnchor) === JSON.stringify({
+      type:'selection', x:10, y:20, width:300, height:200,
+      documentWidth:1920, documentHeight:1080,
+    }))).toBe(true);
     expect(generated.every(layer => !JSON.stringify(layer.hstarAiGeneration).match(/seed/i))).toBe(true);
     expect(imageLoader).toHaveBeenCalledTimes(3);
     expect(runtime.requestSave).toHaveBeenCalledWith({reason:'ai-generation'});

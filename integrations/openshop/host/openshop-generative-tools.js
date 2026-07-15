@@ -213,6 +213,28 @@
       image.hstarAssetRole = 'ai-output';
       image.hstarLayerId = layerId;
       const snapshot = task.snapshot && typeof task.snapshot === 'object' ? task.snapshot : {};
+      if(task.toolId === 'local-redraw'){
+        const selection = snapshot.selection && typeof snapshot.selection === 'object'
+          ? snapshot.selection
+          : {};
+        const snapAnchor = {
+          type:'selection',
+          x:Number(selection.x),
+          y:Number(selection.y),
+          width:Number(selection.width),
+          height:Number(selection.height),
+          documentWidth:Number(snapshot.document?.width || editor.canvasW),
+          documentHeight:Number(snapshot.document?.height || editor.canvasH),
+        };
+        if(
+          Object.values(snapAnchor).slice(1).every(Number.isFinite)
+          && snapAnchor.x >= 0 && snapAnchor.y >= 0
+          && snapAnchor.width > 0 && snapAnchor.height > 0
+          && snapAnchor.documentWidth > 0 && snapAnchor.documentHeight > 0
+          && snapAnchor.x + snapAnchor.width <= snapAnchor.documentWidth
+          && snapAnchor.y + snapAnchor.height <= snapAnchor.documentHeight
+        ) image.hstarSnapAnchor = snapAnchor;
+      }
       const denominator = Math.max(1, Number(snapshot.originalTargetCount || task.targetCount || 1));
       const numerator = Math.max(0, Number(child.index || 0)) + 1;
       return {

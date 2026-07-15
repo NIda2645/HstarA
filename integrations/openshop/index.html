@@ -1918,7 +1918,7 @@ const OS = {
     },
     _projectFileHandle: null,
     async saveProject() {
-        const json = this.canvas.toJSON(['name','excludeFromExport','globalCompositeOperation']);
+        const json = this.canvas.toJSON(['name','excludeFromExport','globalCompositeOperation','hstarSnapAnchor']);
         json._openShop = { version:'0.19.1', w:this.canvasW, h:this.canvasH, layers:this.layers.map(l=>({name:l.name,visible:l.visible,opacity:l.opacity,blend:l.blend})) };
         const data = JSON.stringify(json);
         if (this._projectFileHandle) {
@@ -3858,7 +3858,7 @@ self.onmessage = function(e) {
     // ====================== HISTORY ======================
     saveHistory(action) {
         if(this.historyIdx<this.history.length-1) this.history=this.history.slice(0,this.historyIdx+1);
-        const snap=JSON.stringify(this.canvas.toJSON(['name','excludeFromExport','globalCompositeOperation','hstarAssetId','hstarAssetRole','hstarEdgeId','hstarSourceNodeId','hstarLayerId']));
+        const snap=JSON.stringify(this.canvas.toJSON(['name','excludeFromExport','globalCompositeOperation','hstarAssetId','hstarAssetRole','hstarEdgeId','hstarSourceNodeId','hstarLayerId','hstarSnapAnchor']));
         const layers=this.layers.map(layer=>({
             layerId:String(layer.layerId||''), name:layer.name, visible:layer.visible,
             locked:layer.locked, opacity:layer.opacity, blend:layer.blend,
@@ -4681,7 +4681,7 @@ self.onmessage = async function(e) {
         if (this.historyIdx <= 0) return;
         if (!navigator.storage || !navigator.storage.getDirectory) return;
         try {
-            const json = this.canvas.toJSON(['name','excludeFromExport','globalCompositeOperation']);
+            const json = this.canvas.toJSON(['name','excludeFromExport','globalCompositeOperation','hstarSnapAnchor']);
             json._openShop = { version:'0.19.1', w:this.canvasW, h:this.canvasH, layers:this.layers.map(l=>({name:l.name,visible:l.visible,opacity:l.opacity,blend:l.blend})) };
             const data = JSON.stringify(json);
             try {

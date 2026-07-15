@@ -769,6 +769,7 @@
       'hstarEdgeId',
       'hstarSourceNodeId',
       'hstarLayerId',
+      'hstarSnapAnchor',
       'assetRef',
     ]));
     removeBoundaryPatternBytes(editorJson);
