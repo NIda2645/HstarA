@@ -90,6 +90,8 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     assert created["owner"] == owner_a
     assert created["document"]["width"] == 1920
     assert created["autosaveVersion"] == 1
+    assert created["aiReferenceRecords"] == []
+    assert created["aiPendingResults"] == []
 
     first_asset = store.store_image(
         "project-a", owner_a, png_bytes((22, 91, 180, 255)), "image/png", "source.png", "source"
@@ -252,6 +254,150 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     try:
         store.save("project-metadata", owner_a, invalid_task, base_version=2)
         raise AssertionError("invalid AI task states should be rejected")
+    except OpenShopValidationError:
+        pass
+
+    generation_owner = {"canvasType": "smart", "canvasId": "canvas-generation", "nodeId": "node-generation"}
+    generation_clone_owner = {**generation_owner, "nodeId": "node-generation-clone"}
+    generation = store.initialize(
+        "project-generation", generation_owner, {"width": 8, "height": 6}
+    )
+    generation_source = store.store_image(
+        "project-generation", generation_owner, png_bytes((10, 20, 30, 255)),
+        "image/png", "generation-source.png", "ai-source",
+    )
+    generation_mask = store.store_image(
+        "project-generation", generation_owner, png_bytes((255, 255, 255, 255)),
+        "image/png", "generation-mask.png", "ai-mask",
+    )
+    generation_result = store.store_image(
+        "project-generation", generation_owner, png_bytes((200, 30, 50, 120)),
+        "image/png", "generation-result.png", "ai-output",
+    )
+    primary_reference = {
+        "assetId": generation_source["assetId"],
+        "alias": "参考图1",
+        "mention": "@参考图1",
+        "sourceType": "primary",
+        "order": 0,
+        "width": 8,
+        "height": 6,
+    }
+    snapshot = {
+        "toolId": "local-redraw",
+        "sourceAssetId": generation_source["assetId"],
+        "maskAssetId": generation_mask["assetId"],
+        "primaryReferenceAssetId": generation_source["assetId"],
+        "references": [primary_reference],
+        "prompt": "修改选区",
+        "size": "auto",
+        "quality": "high",
+        "targetCount": 2,
+        "originalTargetCount": 2,
+        "requestedIndexes": [0, 1],
+        "referenceMode": "full",
+        "sourceLayerId": "source-layer",
+        "sourceLayerIndex": 0,
+        "document": {"width": 8, "height": 6, "layerVersion": 4, "visibleCompositeVersion": 9},
+        "selection": {"x": 1, "y": 1, "width": 4, "height": 3, "feather": 0},
+    }
+    generation["layers"] = [{
+        "layerId": "generated-layer",
+        "name": "局部重绘 1/2",
+        "assetRef": generation_result["assetId"],
+        "hstarAiGeneration": {
+            "taskId": "openshop_ai_parent",
+            "childTaskId": "openshop_ai_child_0",
+            "toolId": "local-redraw",
+            "sourceLayerId": "source-layer",
+            "references": [primary_reference],
+        },
+    }]
+    generation["aiToolPreferences"] = {
+        "local-redraw": {
+            "toolId": "local-redraw",
+            "mode": "project",
+            "apiConfigId": "vision",
+            "modelId": "gemini-3-pro-image",
+            "size": "auto",
+            "quality": "high",
+            "count": 4,
+            "referenceMode": "full",
+            "lastSelectionTool": "lasso",
+        }
+    }
+    generation["aiReferenceRecords"] = [primary_reference]
+    generation["aiTaskRecords"] = [{
+        "taskId": "openshop_ai_parent",
+        "kind": "parent",
+        "toolId": "local-redraw",
+        "apiConfigId": "vision",
+        "modelId": "gemini-3-pro-image",
+        "status": "partial",
+        "targetCount": 2,
+        "completedCount": 1,
+        "failedCount": 1,
+        "retryOfTaskId": "",
+        "snapshot": snapshot,
+        "children": [{
+            "childTaskId": "openshop_ai_child_0",
+            "index": 0,
+            "status": "succeeded",
+            "outputAssetId": generation_result["assetId"],
+            "result": {
+                "assetId": generation_result["assetId"],
+                "url": f"/api/openshop/assets/{generation_result['assetId']}",
+                "name": "generation-result.png",
+                "width": 8,
+                "height": 6,
+                "mime": "image/png",
+            },
+            "error": "",
+        }, {
+            "childTaskId": "openshop_ai_child_1",
+            "index": 1,
+            "status": "failed",
+            "outputAssetId": "",
+            "error": "upstream failed",
+        }],
+        "createdAt": 1,
+        "updatedAt": 2,
+        "completedAt": 2,
+        "error": "",
+    }]
+    generation["aiPendingResults"] = [{
+        "taskId": "openshop_ai_parent",
+        "childTaskId": "openshop_ai_child_0",
+        "assetId": generation_result["assetId"],
+        "sourceLayerId": "deleted-layer",
+        "index": 0,
+    }]
+    generation["assetRefs"] = []
+    saved_generation = store.save(
+        "project-generation", generation_owner, generation, base_version=1
+    )
+    assert saved_generation["aiToolPreferences"]["local-redraw"]["count"] == 4
+    assert saved_generation["aiToolPreferences"]["local-redraw"]["lastSelectionTool"] == "lasso"
+    assert saved_generation["aiReferenceRecords"][0]["mention"] == "@参考图1"
+    assert saved_generation["aiTaskRecords"][0]["kind"] == "parent"
+    assert saved_generation["aiPendingResults"][0]["assetId"] == generation_result["assetId"]
+    assert set(saved_generation["assetRefs"]) == {
+        generation_source["assetId"], generation_mask["assetId"], generation_result["assetId"],
+    }
+
+    generation_clone = store.clone(
+        "project-generation", "project-generation-clone", generation_clone_owner
+    )
+    assert generation_clone["layers"][0]["name"] == "局部重绘 1/2"
+    assert generation_clone["aiReferenceRecords"] == []
+    assert generation_clone["aiTaskRecords"] == []
+    assert generation_clone["aiPendingResults"] == []
+
+    invalid_seed = copy.deepcopy(saved_generation)
+    invalid_seed["aiToolPreferences"]["local-redraw"]["seed"] = 123
+    try:
+        store.save("project-generation", generation_owner, invalid_seed, base_version=2)
+        raise AssertionError("seed fields should be rejected")
     except OpenShopValidationError:
         pass
 

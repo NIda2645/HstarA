@@ -17,8 +17,10 @@ from PIL import Image
 
 from openshop_ai import (
     OPENSHOP_AI_TOOL_IDS,
+    OPENSHOP_GENERATIVE_TOOL_IDS,
     OpenShopAiValidationError,
     normalize_ai_task_record,
+    normalize_reference_record,
 )
 
 
@@ -90,7 +92,9 @@ class OpenShopProjectStore:
                 "sourceBindings": [],
                 "fontRefs": [],
                 "aiToolPreferences": {},
+                "aiReferenceRecords": [],
                 "aiTaskRecords": [],
+                "aiPendingResults": [],
                 "assetRefs": [],
                 "previewAssetId": "",
                 "autosaveVersion": 1,
@@ -168,6 +172,8 @@ class OpenShopProjectStore:
             clone["createdAt"] = timestamp
             clone["updatedAt"] = timestamp
             clone["aiTaskRecords"] = []
+            clone["aiReferenceRecords"] = []
+            clone["aiPendingResults"] = []
             self._atomic_write_json(target_path, clone)
             return copy.deepcopy(clone)
 
@@ -332,20 +338,33 @@ class OpenShopProjectStore:
         ai_tool_preferences = self._normalize_ai_tool_preferences(
             candidate.get("aiToolPreferences", {})
         )
+        ai_reference_records = self._normalize_ai_reference_records(
+            candidate.get("aiReferenceRecords", [])
+        )
         ai_task_records = self._normalize_ai_task_records(
             candidate.get("aiTaskRecords", [])
+        )
+        ai_pending_results = self._normalize_ai_pending_results(
+            candidate.get("aiPendingResults", [])
         )
         asset_refs = candidate.get("assetRefs", [])
         if not isinstance(asset_refs, list):
             raise OpenShopValidationError("assetRefs must be an array")
-        task_asset_refs = {
-            str(record.get(key) or "").strip()
-            for record in ai_task_records
-            for key in ("sourceAssetId", "maskAssetId", "outputAssetId")
-            if record.get(key)
-        }
+        discovered_asset_refs: set[str] = set()
+        for value in (
+            candidate.get("editor"),
+            candidate.get("layers"),
+            candidate.get("sourceBindings"),
+            ai_reference_records,
+            ai_task_records,
+            ai_pending_results,
+        ):
+            self._collect_asset_refs(value, discovered_asset_refs)
         normalized_asset_refs = sorted(
-            {self._validate_asset_id(value) for value in [*asset_refs, *task_asset_refs]}
+            {
+                self._validate_asset_id(value)
+                for value in [*asset_refs, *discovered_asset_refs]
+            }
         )
         preview_asset_id = candidate.get("previewAssetId") or ""
         if preview_asset_id:
@@ -364,14 +383,18 @@ class OpenShopProjectStore:
         candidate["previewAssetId"] = preview_asset_id
         candidate["fontRefs"] = font_refs
         candidate["aiToolPreferences"] = ai_tool_preferences
+        candidate["aiReferenceRecords"] = ai_reference_records
         candidate["aiTaskRecords"] = ai_task_records
+        candidate["aiPendingResults"] = ai_pending_results
         candidate["createdAt"] = current.get("createdAt")
         candidate.setdefault("editor", {"objects": []})
         candidate.setdefault("layers", [])
         candidate.setdefault("sourceBindings", [])
         candidate.setdefault("fontRefs", [])
         candidate.setdefault("aiToolPreferences", {})
+        candidate.setdefault("aiReferenceRecords", [])
         candidate.setdefault("aiTaskRecords", [])
+        candidate.setdefault("aiPendingResults", [])
         candidate.setdefault("exportRecords", [])
         return candidate
 
@@ -428,6 +451,62 @@ class OpenShopProjectStore:
                 "apiConfigId": api_config_id,
                 "modelId": model_id,
             }
+            if tool_id in OPENSHOP_GENERATIVE_TOOL_IDS:
+                try:
+                    count = int(item.get("count") or 1)
+                except (TypeError, ValueError) as exc:
+                    raise OpenShopValidationError("OpenShop generation count is invalid") from exc
+                if count < 1 or count > 64:
+                    raise OpenShopValidationError("OpenShop generation count is invalid")
+                reference_mode = (
+                    "full"
+                    if tool_id == "generative-fill"
+                    else "selection" if item.get("referenceMode") == "selection" else "full"
+                )
+                selection_tool = self._metadata_text(
+                    item.get("lastSelectionTool") or "marquee-rect",
+                    40,
+                    "lastSelectionTool",
+                )
+                if selection_tool not in {
+                    "marquee-rect",
+                    "marquee-ellipse",
+                    "lasso",
+                    "magic-wand",
+                    "wand",
+                    "ai-segment",
+                }:
+                    raise OpenShopValidationError("OpenShop selection tool is invalid")
+                normalized[tool_id].update({
+                    "size": self._metadata_text(item.get("size") or "auto", 40, "size"),
+                    "quality": self._metadata_text(
+                        item.get("quality") or "auto", 40, "quality"
+                    ),
+                    "count": count,
+                    "referenceMode": reference_mode,
+                    "lastSelectionTool": selection_tool,
+                })
+        return normalized
+
+    def _normalize_ai_reference_records(self, value: Any) -> list[dict]:
+        if not isinstance(value, list):
+            raise OpenShopValidationError("aiReferenceRecords must be an array")
+        if len(value) > 64:
+            raise OpenShopValidationError("aiReferenceRecords exceeds the 64 item limit")
+        normalized = []
+        aliases = set()
+        for item in value:
+            try:
+                reference = normalize_reference_record(item)
+            except (OpenShopAiValidationError, TypeError, ValueError) as exc:
+                raise OpenShopValidationError(str(exc)) from exc
+            if reference["alias"] in aliases:
+                raise OpenShopValidationError("OpenShop reference aliases must be unique")
+            aliases.add(reference["alias"])
+            normalized.append(reference)
+        normalized.sort(key=lambda item: item["order"])
+        if [item["order"] for item in normalized] != list(range(len(normalized))):
+            raise OpenShopValidationError("OpenShop reference order must be contiguous")
         return normalized
 
     def _normalize_ai_task_records(self, value: Any) -> list[dict]:
@@ -442,6 +521,57 @@ class OpenShopProjectStore:
             except OpenShopAiValidationError as exc:
                 raise OpenShopValidationError(str(exc)) from exc
         return normalized
+
+    def _normalize_ai_pending_results(self, value: Any) -> list[dict]:
+        if not isinstance(value, list):
+            raise OpenShopValidationError("aiPendingResults must be an array")
+        if len(value) > 64:
+            raise OpenShopValidationError("aiPendingResults exceeds the 64 item limit")
+        normalized = []
+        seen = set()
+        for item in value:
+            if not isinstance(item, dict):
+                raise OpenShopValidationError("aiPendingResults entries must be objects")
+            task_id = self._metadata_text(item.get("taskId"), 160, "pending taskId")
+            child_task_id = self._metadata_text(
+                item.get("childTaskId"), 160, "pending childTaskId"
+            )
+            source_layer_id = self._metadata_text(
+                item.get("sourceLayerId"), 160, "pending sourceLayerId"
+            )
+            if not task_id or not child_task_id or not source_layer_id:
+                raise OpenShopValidationError("OpenShop pending result is incomplete")
+            key = (task_id, child_task_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append({
+                "taskId": task_id,
+                "childTaskId": child_task_id,
+                "assetId": self._validate_asset_id(item.get("assetId")),
+                "sourceLayerId": source_layer_id,
+                "index": max(0, int(item.get("index") or 0)),
+            })
+        return normalized
+
+    def _collect_asset_refs(self, value: Any, output: set[str]) -> None:
+        asset_keys = {
+            "assetId",
+            "assetRef",
+            "sourceAssetId",
+            "maskAssetId",
+            "outputAssetId",
+            "primaryReferenceAssetId",
+        }
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in asset_keys and child:
+                    output.add(self._validate_asset_id(child))
+                else:
+                    self._collect_asset_refs(child, output)
+        elif isinstance(value, list):
+            for child in value:
+                self._collect_asset_refs(child, output)
 
     @staticmethod
     def _metadata_text(value: Any, limit: int, label: str) -> str:
@@ -540,6 +670,8 @@ class OpenShopProjectStore:
             or project.get("projectId") != project_id
         ):
             raise OpenShopValidationError(f"Invalid OpenShop project manifest: {project_id}")
+        project.setdefault("aiReferenceRecords", [])
+        project.setdefault("aiPendingResults", [])
         return project
 
     def _project_path(self, project_id: str) -> Path:
@@ -560,6 +692,8 @@ class OpenShopProjectStore:
     def _reject_embedded_data(self, value: Any, key: str = "") -> None:
         if isinstance(value, dict):
             for child_key, child in value.items():
+                if str(child_key).strip().lower() == "seed":
+                    raise OpenShopValidationError("OpenShop project cannot store seed fields")
                 if (
                     self._SECRET_KEY_PATTERN.fullmatch(str(child_key))
                     and child is not None
