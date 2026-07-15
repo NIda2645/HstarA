@@ -19,6 +19,7 @@ describe('Hstar OpenShop protocol', () => {
 
     expect(protocol.PROTOCOL_VERSION).toBe(1);
     expect(protocol.TYPES).toMatchObject({
+      FIT_WORKSPACE: 'hstar:openshop:fit-workspace',
       SYNC_SOURCES: 'hstar:openshop:sync-sources',
       RESOLVE_SOURCE_UPDATE: 'hstar:openshop:resolve-source-update',
       REQUEST_SAVE: 'hstar:openshop:request-save',

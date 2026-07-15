@@ -58,6 +58,8 @@ describe('Hstar OpenShop editor host runtime', () => {
         this.canvasW = width;
         this.canvasH = height;
       }),
+      resizeCanvas: vi.fn(),
+      zoomFit: vi.fn(),
       dismissWelcome: vi.fn(),
       canvas: {
         toDataURL: vi.fn(() => 'data:image/png;base64,COMPOSITE_BYTES'),
@@ -254,6 +256,17 @@ describe('Hstar OpenShop editor host runtime', () => {
       window.removeEventListener('openshop:project-loaded', loaded);
       window.removeEventListener('openshop:session-stopped', stopped);
     }
+  });
+
+  it('refits the workspace after the parent reveals the editor frame', async () => {
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-fit'));
+    await flushMessages();
+
+    dispatch(envelope(protocol.TYPES.FIT_WORKSPACE, 'fit-visible'));
+    await flushMessages();
+
+    expect(editor.resizeCanvas).toHaveBeenCalledTimes(1);
+    expect(editor.zoomFit).toHaveBeenCalledTimes(1);
   });
 
   it('waits for project restoration before reconciling the source snapshot', async () => {

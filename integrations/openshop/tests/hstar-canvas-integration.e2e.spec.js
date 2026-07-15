@@ -218,8 +218,19 @@ test('opens empty OpenShop nodes on templates and sourced nodes directly in the 
   }, sourcedNode.projectId);
 
   const sourcedEditor = await openNode(page, frame, 'classic', sourcedNode.id, 2, {welcome:'hidden'});
+  await sourcedEditor.waitForFunction(() => {
+    const vpt = OS.canvas?.viewportTransform;
+    if(!Array.isArray(vpt) || !Number.isFinite(Number(vpt[0])) || Number(vpt[0]) <= 0) return false;
+    const documentCenter = {
+      x:Number(OS.canvasW) * Number(vpt[0]) / 2 + Number(vpt[4]),
+      y:Number(OS.canvasH) * Number(vpt[3]) / 2 + Number(vpt[5]),
+    };
+    return Math.abs(documentCenter.x - Number(OS.canvas.width) / 2) < 1
+      && Math.abs(documentCenter.y - Number(OS.canvas.height) / 2) < 1;
+  });
   const placement = await sourcedEditor.evaluate(() => {
     const sourceLayers = OS.layers.filter(layer => layer.sourceBinding);
+    const vpt = OS.canvas.viewportTransform.map(Number);
     return {
       layers:sourceLayers.map(layer => {
         const center = layer.objects?.[0]?.getCenterPoint?.();
@@ -229,6 +240,15 @@ test('opens empty OpenShop nodes on templates and sourced nodes directly in the 
         };
       }),
       document:{width:OS.canvasW, height:OS.canvasH},
+      viewport:{
+        zoom:vpt[0],
+        width:Number(OS.canvas.width),
+        height:Number(OS.canvas.height),
+        documentLeft:vpt[4],
+        documentTop:vpt[5],
+        documentRight:vpt[4] + Number(OS.canvasW) * vpt[0],
+        documentBottom:vpt[5] + Number(OS.canvasH) * vpt[3],
+      },
     };
   });
   const samples = await page.evaluate(() => {
@@ -238,6 +258,11 @@ test('opens empty OpenShop nodes on templates and sourced nodes directly in the 
 
   expect(samples.length).toBeGreaterThan(0);
   expect(samples.some(sample => !sample.frameHidden && sample.welcomeVisible)).toBe(false);
+  expect(placement.viewport.zoom).toBeGreaterThan(0);
+  expect(placement.viewport.documentLeft).toBeGreaterThanOrEqual(0);
+  expect(placement.viewport.documentTop).toBeGreaterThanOrEqual(0);
+  expect(placement.viewport.documentRight).toBeLessThanOrEqual(placement.viewport.width);
+  expect(placement.viewport.documentBottom).toBeLessThanOrEqual(placement.viewport.height);
   expect(placement.layers.map(layer => layer.sequence)).toEqual([0, 1]);
   placement.layers.forEach(layer => {
     expect(layer.center.x).toBeCloseTo(placement.document.width / 2, 3);

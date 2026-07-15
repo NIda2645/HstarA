@@ -334,8 +334,19 @@
         });
         state.sessions.set(scope, session);
         getOverlay().appendChild(frame);
-        frame.src = '/static/openshop/index.html?v=2026.07.15.1784118407';
+        frame.src = '/static/openshop/index.html?v=2026.07.15.1784120375';
         return session;
+    }
+
+    function fitRevealedWorkspace(session){
+        window.setTimeout(() => {
+            if(
+                session.scope !== state.activeScope
+                || session.frame.hidden
+                || !getOverlay().classList.contains('is-open')
+            ) return;
+            postToEditor(session, Protocol.TYPES.FIT_WORKSPACE, {}, uuid('openshop-fit'));
+        }, 0);
     }
 
     function revealSessionFrame(session, reason){
@@ -344,6 +355,7 @@
         session.viewReady = true;
         if(session.scope === state.activeScope && getOverlay().classList.contains('is-open')){
             session.frame.hidden = false;
+            fitRevealedWorkspace(session);
         }
         return true;
     }

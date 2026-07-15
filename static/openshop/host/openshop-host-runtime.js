@@ -434,6 +434,12 @@
       await requestSendToCanvas({requestId:envelope.requestId});
       return;
     }
+    if(envelope.type === types.FIT_WORKSPACE){
+      state.editor.resizeCanvas?.();
+      state.editor.zoomFit?.();
+      state.editor.canvas?.renderAll?.();
+      return;
+    }
     if(envelope.type === types.LOAD_PROJECT){
       const project = envelope.payload?.project;
       if(!project || String(project.projectId || '') !== state.activeSession.context.projectId){

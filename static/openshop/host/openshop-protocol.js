@@ -5,6 +5,7 @@
     READY: `${PREFIX}ready`,
     OPEN_SESSION: `${PREFIX}open-session`,
     LOAD_PROJECT: `${PREFIX}load-project`,
+    FIT_WORKSPACE: `${PREFIX}fit-workspace`,
     ADD_IMAGE_LAYER: `${PREFIX}add-image-layer`,
     SYNC_SOURCES: `${PREFIX}sync-sources`,
     RESOLVE_SOURCE_UPDATE: `${PREFIX}resolve-source-update`,

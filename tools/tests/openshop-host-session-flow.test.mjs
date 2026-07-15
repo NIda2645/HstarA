@@ -270,7 +270,7 @@ function readyFrame(frame, context, requestId) {
 host.openNodeSession(contextA, sourcesA);
 const frameA = frameFor(contextA);
 assert.ok(frameA, 'project A should create a dedicated iframe');
-assert.equal(frameA.hidden, false);
+assert.equal(frameA.hidden, true, 'sourced editor should stay hidden until source synchronization finishes');
 assert.equal(overlay.classList.contains('is-open'), true);
 frameA.dispatch('load');
 frameA.dispatch('load');
@@ -287,6 +287,16 @@ assert.deepEqual(editorMessages(frameA).map(message => message.type), [
   protocol.TYPES.LOAD_PROJECT,
   protocol.TYPES.SYNC_SOURCES,
 ]);
+dispatchEditorMessage(frameA, protocol.createEnvelope({
+  type:protocol.TYPES.PROJECT_CHANGED,
+  sessionId:sessionA,
+  requestId:'reveal-a',
+  context:contextA,
+  payload:{project:projectRecords.get('project-a'), reason:'sources-synchronized'},
+}));
+await flushAsync();
+assert.equal(frameA.hidden, false, 'sourced editor should reveal after source synchronization');
+assert.equal(editorMessages(frameA).at(-1).type, protocol.TYPES.FIT_WORKSPACE);
 
 host.close();
 assert.equal(overlay.classList.contains('is-open'), false, 'close should only hide the full-screen host');
@@ -300,10 +310,20 @@ const frameB = frameFor(contextB);
 assert.ok(frameB, 'project B should create a second iframe');
 assert.notEqual(frameA, frameB);
 assert.equal(frameA.hidden, true);
-assert.equal(frameB.hidden, false);
+assert.equal(frameB.hidden, true, 'empty editor should stay hidden until its project is restored');
 frameB.dispatch('load');
-readyFrame(frameB, contextB, 'ready-b');
+const sessionB = readyFrame(frameB, contextB, 'ready-b');
 await flushAsync();
+dispatchEditorMessage(frameB, protocol.createEnvelope({
+  type:protocol.TYPES.PROJECT_CHANGED,
+  sessionId:sessionB,
+  requestId:'reveal-b',
+  context:contextB,
+  payload:{project:projectRecords.get('project-b'), reason:'project-loaded'},
+}));
+await flushAsync();
+assert.equal(frameB.hidden, false, 'empty editor should reveal after project restoration');
+assert.equal(editorMessages(frameB).at(-1).type, protocol.TYPES.FIT_WORKSPACE);
 
 const changedA = {
   ...projectRecords.get('project-a'),
