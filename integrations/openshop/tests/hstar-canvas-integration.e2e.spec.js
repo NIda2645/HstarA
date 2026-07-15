@@ -170,10 +170,16 @@ test('keeps OpenShop node actions visible inside classic and smart canvas cards'
 
 test('opens empty OpenShop nodes on templates and sourced nodes directly in the workspace', async ({page, request}) => {
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const sourceImage = {
-    id:'entry-source-image', type:'image', x:60, y:120, w:260, h:240,
-    url:`${imageUrls[0]}?entry=${runId}`, name:'entry-source.png', mediaKind:'image', assetVersion:`entry-${runId}`,
-  };
+  const sourceImages = [
+    {
+      id:'entry-source-image-1', type:'image', x:60, y:120, w:260, h:240,
+      url:`${imageUrls[0]}?entry=${runId}-1`, name:'entry-source-1.png', mediaKind:'image', assetVersion:`entry-${runId}-1`,
+    },
+    {
+      id:'entry-source-image-2', type:'image', x:60, y:420, w:280, h:220,
+      url:`${imageUrls[1]}?entry=${runId}-2`, name:'entry-source-2.png', mediaKind:'image', assetVersion:`entry-${runId}-2`,
+    },
+  ];
   const emptyNode = {
     id:'entry-empty', type:'openshop-layered', projectId:`e2e_entry_empty_${runId}`,
     projectName:'Empty OpenShop entry', x:420, y:100, w:340, h:260,
@@ -184,8 +190,8 @@ test('opens empty OpenShop nodes on templates and sourced nodes directly in the 
     projectName:'Sourced OpenShop entry', x:420, y:440,
   };
   const canvas = await createCanvas(request, {
-    kind:'classic', title:'OpenShop entry modes', nodes:[sourceImage, emptyNode, sourcedNode],
-    connections:[{id:'entry-source-edge', from:sourceImage.id, to:sourcedNode.id}],
+    kind:'classic', title:'OpenShop entry modes', nodes:[...sourceImages, emptyNode, sourcedNode],
+    connections:sourceImages.map((source, index) => ({id:`entry-source-edge-${index + 1}`, from:source.id, to:sourcedNode.id})),
   });
   const frame = await mountCanvas(page, 'classic', canvas.id);
 
@@ -211,7 +217,20 @@ test('opens empty OpenShop nodes on templates and sourced nodes directly in the 
     requestAnimationFrame(sample);
   }, sourcedNode.projectId);
 
-  await openNode(page, frame, 'classic', sourcedNode.id, 1, {welcome:'hidden'});
+  const sourcedEditor = await openNode(page, frame, 'classic', sourcedNode.id, 2, {welcome:'hidden'});
+  const placement = await sourcedEditor.evaluate(() => {
+    const sourceLayers = OS.layers.filter(layer => layer.sourceBinding);
+    return {
+      layers:sourceLayers.map(layer => {
+        const center = layer.objects?.[0]?.getCenterPoint?.();
+        return {
+          sequence:Number(layer.sourceBinding.sequence),
+          center:{x:Number(center?.x), y:Number(center?.y)},
+        };
+      }),
+      document:{width:OS.canvasW, height:OS.canvasH},
+    };
+  });
   const samples = await page.evaluate(() => {
     window.__openshopEntrySampling = false;
     return window.__openshopEntrySamples || [];
@@ -219,6 +238,11 @@ test('opens empty OpenShop nodes on templates and sourced nodes directly in the 
 
   expect(samples.length).toBeGreaterThan(0);
   expect(samples.some(sample => !sample.frameHidden && sample.welcomeVisible)).toBe(false);
+  expect(placement.layers.map(layer => layer.sequence)).toEqual([0, 1]);
+  placement.layers.forEach(layer => {
+    expect(layer.center.x).toBeCloseTo(placement.document.width / 2, 3);
+    expect(layer.center.y).toBeCloseTo(placement.document.height / 2, 3);
+  });
 });
 
 test('classic canvas preserves isolated projects, ordered sources, updates, clones, and deletion', async ({page, request}) => {

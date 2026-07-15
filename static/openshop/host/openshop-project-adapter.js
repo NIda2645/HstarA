@@ -182,6 +182,40 @@
     [...unmanaged, ...layerObjects].forEach((object, index) => editor.canvas.moveTo(object, index));
   }
 
+  function centeredCoordinate(documentSize, objectSize, origin){
+    if(origin === 'center') return documentSize / 2;
+    if(origin === 'right' || origin === 'bottom') return (documentSize + objectSize) / 2;
+    return (documentSize - objectSize) / 2;
+  }
+
+  function centerSourceImage(editor, image){
+    const scaleX = Number.isFinite(Number(image.scaleX)) ? Number(image.scaleX) : 1;
+    const scaleY = Number.isFinite(Number(image.scaleY)) ? Number(image.scaleY) : 1;
+    const scaledWidth = typeof image.getScaledWidth === 'function'
+      ? Number(image.getScaledWidth())
+      : Number(image.width) * Math.abs(scaleX);
+    const scaledHeight = typeof image.getScaledHeight === 'function'
+      ? Number(image.getScaledHeight())
+      : Number(image.height) * Math.abs(scaleY);
+    const documentWidth = Number(editor.canvasW);
+    const documentHeight = Number(editor.canvasH);
+    if(
+      !Number.isFinite(scaledWidth) || scaledWidth <= 0
+      || !Number.isFinite(scaledHeight) || scaledHeight <= 0
+      || !Number.isFinite(documentWidth) || documentWidth <= 0
+      || !Number.isFinite(documentHeight) || documentHeight <= 0
+    ) return false;
+
+    const placement = {
+      left:centeredCoordinate(documentWidth, scaledWidth, clean(image.originX) || 'left'),
+      top:centeredCoordinate(documentHeight, scaledHeight, clean(image.originY) || 'top'),
+    };
+    if(typeof image.set === 'function') image.set(placement);
+    else Object.assign(image, placement);
+    image.setCoords?.();
+    return true;
+  }
+
   async function queueSourceImageLayer({editor, source:sourceValue, imageLoader = defaultImageLoader}){
     if(!editor?.canvas || !Array.isArray(editor.layers)){
       throw new Error('OpenShop editor is unavailable');
@@ -200,6 +234,7 @@
     };
     if(typeof image.set === 'function') image.set(values);
     else Object.assign(image, values);
+    centerSourceImage(editor, image);
     if(!image.src) image.src = source.url;
 
     const layer = createLayer(editor, source);

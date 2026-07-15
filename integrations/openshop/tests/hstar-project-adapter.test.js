@@ -117,6 +117,31 @@ describe('Hstar OpenShop project adapter', () => {
     expect(project.updatedAt).toBe(1000);
   });
 
+  it('centers a newly connected source image in the OpenShop document', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const image = createImage({url:'/api/openshop/assets/asset-centered'});
+    Object.assign(image, {
+      width:640,
+      height:360,
+      scaleX:1,
+      scaleY:1,
+      setCoords:vi.fn(),
+    });
+
+    await adapter.queueSourceImageLayer({
+      editor,
+      imageLoader:async () => image,
+      source:{
+        assetId:'asset-centered', edgeId:'edge-centered', sourceNodeId:'image-centered',
+        name:'居中来源.png', url:'/api/openshop/assets/asset-centered', sequence:0,
+      },
+    });
+
+    expect(image).toMatchObject({left:640, top:360, scaleX:1, scaleY:1});
+    expect(image.setCoords).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps source layer order when images resolve out of order', async () => {
     const adapter = window.HstarOpenShopProjectAdapter;
     const editor = createEditor();
