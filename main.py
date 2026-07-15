@@ -2806,6 +2806,12 @@ class OpenShopAiTaskRequest(BaseModel):
 class OpenShopAiRetryRequest(BaseModel):
     owner: Dict[str, Any]
 
+class OpenShopAssetImportRequest(BaseModel):
+    owner: Dict[str, Any]
+    library_id: str
+    category_id: str = ""
+    item_id: str
+
 class CanvasAssetCheckRequest(BaseModel):
     urls: List[str] = []
 
@@ -16953,6 +16959,93 @@ async def upload_openshop_asset(
         return {"asset": asset}
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
+
+def find_openshop_asset_library_item(
+    library: Dict[str, Any],
+    library_id: str,
+    category_id: str,
+    item_id: str,
+) -> Dict[str, Any]:
+    selected_library = next(
+        (
+            item
+            for item in library.get("libraries", [])
+            if str(item.get("id") or "") == str(library_id or "")
+        ),
+        None,
+    )
+    if not selected_library:
+        raise HTTPException(status_code=404, detail="素材库不存在")
+    selected_category = next(
+        (
+            item
+            for item in selected_library.get("categories", [])
+            if str(item.get("id") or "") == str(category_id or "")
+        ),
+        None,
+    )
+    if not selected_category:
+        raise HTTPException(status_code=404, detail="素材库分组不存在")
+    result = next(
+        (
+            item
+            for item in selected_category.get("items", [])
+            if str(item.get("id") or "") == str(item_id or "")
+        ),
+        None,
+    )
+    item_type = str((result or {}).get("type") or "image").strip().lower()
+    if not result or item_type not in {"image", "photo"}:
+        raise HTTPException(status_code=404, detail="素材库图片不存在")
+    return result
+
+def openshop_library_asset_path(item: Dict[str, Any]) -> str:
+    item_url = str(item.get("url") or "").strip()
+    if not item_url.startswith(("/assets/", "/output/")):
+        raise HTTPException(status_code=400, detail="素材库条目不是本地图片")
+    path = output_file_from_url(item_url)
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="素材库图片文件不存在")
+    resolved = os.path.realpath(path)
+    allowed_roots = [os.path.realpath(ASSETS_DIR), os.path.realpath(OUTPUT_DIR)]
+    if not any(
+        os.path.commonpath([resolved, root]) == root
+        for root in allowed_roots
+    ):
+        raise HTTPException(status_code=403, detail="素材库图片路径不安全")
+    return resolved
+
+@app.post("/api/openshop/projects/{project_id}/asset-imports")
+async def import_openshop_library_asset(
+    project_id: str,
+    payload: OpenShopAssetImportRequest,
+):
+    await ensure_openshop_project_owner(project_id, payload.owner)
+    item = find_openshop_asset_library_item(
+        load_asset_library(),
+        payload.library_id,
+        payload.category_id,
+        payload.item_id,
+    )
+    path = openshop_library_asset_path(item)
+    with open(path, "rb") as handle:
+        content = handle.read(OPENSHOP_STORE.MAX_IMAGE_BYTES + 1)
+    if len(content) > OPENSHOP_STORE.MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="素材库图片超过 OpenShop 限制")
+    try:
+        asset = await asyncio.to_thread(
+            OPENSHOP_STORE.store_image,
+            project_id,
+            payload.owner,
+            content,
+            content_type_for_path(path),
+            str(item.get("name") or os.path.basename(path)),
+            "ai-reference",
+        )
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+    asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
+    return {"asset": asset}
 
 @app.get("/api/openshop/assets/{asset_id}")
 async def get_openshop_asset(asset_id: str):

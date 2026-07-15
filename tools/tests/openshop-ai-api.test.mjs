@@ -353,7 +353,11 @@ async def run():
         successful_children = [
             child for child in parent["children"] if child["status"] == "succeeded"
         ]
+        failed_indexes = [
+            child["index"] for child in parent["children"] if child["status"] == "failed"
+        ]
         assert len(successful_children) == 2
+        assert len(failed_indexes) == 1
         for child in successful_children:
             assert child["outputAssetId"]
             result_response = await client.get(child["result"]["url"])
@@ -385,7 +389,7 @@ async def run():
         assert retry_parent["status"] == "succeeded", retry_parent
         assert retry_parent["targetCount"] == 1
         assert retry_parent["retryOfTaskId"] == parent["taskId"]
-        assert retry_parent["children"][0]["index"] == 2
+        assert retry_parent["children"][0]["index"] == failed_indexes[0]
 
         too_many = await client.post(
             "/api/openshop/projects/project-ai/ai-tasks",
@@ -393,6 +397,69 @@ async def run():
         )
         assert too_many.status_code == 400
         assert "最多" in too_many.text or "maxOutputs" in too_many.text
+
+        library_path = Path(main.ASSET_LIBRARY_DIR) / "openshop-library-reference.png"
+        library_path.parent.mkdir(parents=True, exist_ok=True)
+        library_bytes = png_bytes((90, 40, 210, 255))
+        library_path.write_bytes(library_bytes)
+        library_url = "/assets/" + library_path.relative_to(Path(main.ASSETS_DIR)).as_posix()
+        main.save_asset_library({
+            "active_library_id":"openshop-test-library",
+            "libraries":[{
+                "id":"openshop-test-library",
+                "name":"OpenShop 测试素材库",
+                "type":"asset",
+                "categories":[{
+                    "id":"reference-images",
+                    "name":"参考图",
+                    "type":"image",
+                    "items":[{
+                        "id":"reference-item-1",
+                        "name":"紫色参考图.png",
+                        "type":"image",
+                        "url":library_url,
+                    }],
+                }],
+            }],
+        })
+        imported_reference = await client.post(
+            "/api/openshop/projects/project-ai/asset-imports",
+            json={
+                "owner":owner,
+                "library_id":"openshop-test-library",
+                "category_id":"reference-images",
+                "item_id":"reference-item-1",
+            },
+        )
+        assert imported_reference.status_code == 200, imported_reference.text
+        imported_asset = imported_reference.json()["asset"]
+        assert len(imported_asset["assetId"]) == 64
+        assert imported_asset["role"] == "ai-reference"
+        imported_content = await client.get(imported_asset["url"])
+        assert imported_content.status_code == 200
+        assert imported_content.content == library_bytes
+
+        wrong_import_owner = await client.post(
+            "/api/openshop/projects/project-ai/asset-imports",
+            json={
+                "owner":{**owner, "nodeId":"other-node"},
+                "library_id":"openshop-test-library",
+                "category_id":"reference-images",
+                "item_id":"reference-item-1",
+            },
+        )
+        assert wrong_import_owner.status_code == 403
+
+        missing_library_item = await client.post(
+            "/api/openshop/projects/project-ai/asset-imports",
+            json={
+                "owner":owner,
+                "library_id":"openshop-test-library",
+                "category_id":"reference-images",
+                "item_id":"missing-item",
+            },
+        )
+        assert missing_library_item.status_code == 404
 
         release = asyncio.Event()
 
