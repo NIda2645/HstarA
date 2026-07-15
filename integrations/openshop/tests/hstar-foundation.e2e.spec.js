@@ -130,6 +130,35 @@ test('uses the same-origin iframe bridge with stable source layer order', async 
   expect(pageErrors).toEqual([]);
 });
 
+test('keeps a top menu open while the pointer crosses into its dropdown', async ({ page }) => {
+  await page.goto(openshopUrl, {waitUntil:'domcontentloaded'});
+  await page.waitForFunction(() => Boolean(typeof OS !== 'undefined' && OS.canvas));
+  await page.evaluate(() => {
+    OS.dismissWelcome();
+    OS.createNewDocument(800, 600);
+  });
+  await expect(page.locator('#welcome-overlay')).toBeHidden();
+
+  const layerMenu = page.locator('.menu-item[data-i18n="Layer"]');
+  const dropdown = layerMenu.locator(':scope > .menu-dropdown');
+  const newLayer = dropdown.locator(':scope > .dd-item[data-i18n="New Layer"]');
+  const initialLayerCount = await page.evaluate(() => OS.layers.length);
+
+  await layerMenu.hover();
+  await expect(dropdown).toBeVisible();
+
+  const menuBox = await layerMenu.boundingBox();
+  expect(menuBox).not.toBeNull();
+  await page.mouse.move(
+    menuBox.x + menuBox.width / 2,
+    menuBox.y + menuBox.height + 1
+  );
+
+  await expect(dropdown).toBeVisible();
+  await newLayer.click();
+  await expect.poll(() => page.evaluate(() => OS.layers.length)).toBe(initialLayerCount + 1);
+});
+
 test('4K ten-layer foundation baseline', async ({ page }) => {
   test.setTimeout(120000);
   const pageErrors = [];
