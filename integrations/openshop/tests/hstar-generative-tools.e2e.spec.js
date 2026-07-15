@@ -208,6 +208,49 @@ test('runs selection, references, multi-output layers and retry in the inline ed
   await page.getByRole('button', {name:/补生成剩余 1 张/}).click();
   await expect.poll(() => page.evaluate(() => OS.layers.filter(layer => layer.hstarAiGeneration).length)).toBe(5);
 
+  const snapResult = await page.evaluate(() => {
+    const layer = OS.layers.find(item => item.hstarAiGeneration?.toolId === 'local-redraw');
+    const object = layer.objects[0];
+    const original = {
+      left:object.left,
+      top:object.top,
+      scaleX:object.scaleX,
+      scaleY:object.scaleY,
+    };
+    object.set({
+      left:3,
+      top:2,
+      scaleX:OS.canvasW / object.width,
+      scaleY:OS.canvasH / object.height,
+    });
+    object.setCoords();
+    OS.canvas.fire('object:moving', {target:object});
+    const snapped = {left:object.left, top:object.top};
+    object.set({left:80, top:0});
+    object.setCoords();
+    OS.canvas.fire('object:moving', {target:object});
+    const released = {left:object.left, top:object.top};
+    const anchor = structuredClone(object.hstarSnapAnchor || null);
+    const selection = structuredClone(layer.hstarAiGeneration.selection);
+    object.set(original);
+    object.setCoords();
+    return {snapped, released, anchor, selection};
+  });
+
+  expect(snapResult.snapped).toEqual({left:0, top:0});
+  expect(snapResult.released.left).toBe(80);
+  expect(snapResult.anchor).toMatchObject({
+    type:'selection',
+    documentWidth:800,
+    documentHeight:600,
+  });
+  expect(snapResult.anchor).toMatchObject({
+    x:snapResult.selection.x,
+    y:snapResult.selection.y,
+    width:snapResult.selection.width,
+    height:snapResult.selection.height,
+  });
+
   const result = await page.evaluate(() => ({
     layers:OS.layers.filter(layer => layer.hstarAiGeneration).map(layer => ({
       name:layer.name,
