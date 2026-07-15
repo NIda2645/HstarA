@@ -22,10 +22,10 @@
 
 .hstar-generative-bar {
   position: fixed;
-  left: 50%;
-  bottom: 56px;
+  left: calc(50% + (var(--toolbar-w, 46px) - var(--panel-width, 260px)) / 2);
+  bottom: calc(var(--statusbar-h, 28px) + 28px);
   z-index: 70;
-  width: min(920px, calc(100vw - 96px));
+  width: min(920px, calc(100vw - var(--toolbar-w, 46px) - var(--panel-width, 260px) - 32px));
   max-height: min(54vh, 520px);
   overflow: auto;
   transform: translateX(-50%);
@@ -115,6 +115,7 @@
 }
 
 .hstar-generative-reference-block {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(148px, 190px) auto;
   gap: 8px 12px;
@@ -229,17 +230,15 @@
 }
 
 .hstar-reference-menu {
-  position: absolute;
-  bottom: 50px;
-  left: 6px;
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 4px;
   z-index: 8;
-  display: grid;
-  min-width: 132px;
   padding: 4px;
   border: 1px solid #464f59;
   border-radius: 5px;
   background: #242a31;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, .42);
 }
 
 .hstar-reference-menu button,
@@ -251,6 +250,12 @@
   background: transparent;
   text-align: left;
   cursor: pointer;
+}
+
+.hstar-reference-menu button {
+  flex: 1 1 112px;
+  padding: 0 9px;
+  text-align: center;
 }
 
 .hstar-reference-menu button:hover,
@@ -510,10 +515,22 @@
   }
 
   .hstar-generative-controls {
-    min-width: 480px;
+    min-width: 0;
   }
 
   .hstar-generative-body {
-    overflow-x: auto;
+    overflow-x: hidden;
+  }
+
+  .hstar-generative-foot {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+  }
+
+  .hstar-reference-mode button {
+    padding: 0 7px;
+    font-size: 11px;
+    white-space: nowrap;
   }
 }

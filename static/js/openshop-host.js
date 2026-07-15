@@ -325,6 +325,7 @@
         };
         frame.addEventListener?.('load', () => {
             session.frameLoaded = true;
+            session.openSent = false;
             sendOpenSession(session);
         });
         state.sessions.set(scope, session);

@@ -273,9 +273,16 @@ assert.ok(frameA, 'project A should create a dedicated iframe');
 assert.equal(frameA.hidden, false);
 assert.equal(overlay.classList.contains('is-open'), true);
 frameA.dispatch('load');
+frameA.dispatch('load');
+assert.equal(
+  editorMessages(frameA).filter(message => message.type === protocol.TYPES.OPEN_SESSION).length,
+  2,
+  'the real editor load should resend OPEN_SESSION after an initial about:blank load',
+);
 const sessionA = readyFrame(frameA, contextA, 'ready-a');
 await flushAsync();
 assert.deepEqual(editorMessages(frameA).map(message => message.type), [
+  protocol.TYPES.OPEN_SESSION,
   protocol.TYPES.OPEN_SESSION,
   protocol.TYPES.LOAD_PROJECT,
   protocol.TYPES.SYNC_SOURCES,
@@ -340,7 +347,7 @@ host.openNodeSession(contextA, sourcesA);
 assert.equal(frameFor(contextA), frameA, 'reopening a project should reuse its iframe');
 assert.equal(frameA.hidden, false);
 assert.equal(frameB.hidden, true);
-assert.equal(editorMessages(frameA).filter(message => message.type === protocol.TYPES.OPEN_SESSION).length, 1);
+assert.equal(editorMessages(frameA).filter(message => message.type === protocol.TYPES.OPEN_SESSION).length, 2);
 
 dispatchEditorMessage(frameA, protocol.createEnvelope({
   type:protocol.TYPES.SEND_TO_CANVAS,

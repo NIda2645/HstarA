@@ -46,6 +46,10 @@
             autosaveVersion:0,
             saveState:'new',
             saveError:'',
+            aiStatus:'',
+            aiTargetCount:0,
+            aiCompletedCount:0,
+            aiFailedCount:0,
             cloneSourceProjectId:'',
             inputNodeIds:[],
             created_at:Date.now(),
@@ -119,18 +123,29 @@
         return translate('smart.openshopUnsaved', '未保存');
     }
 
+    function aiProgressLabel(node){
+        const target = Math.max(0, Number(node.aiTargetCount || 0));
+        const completed = Math.max(0, Number(node.aiCompletedCount || 0));
+        if(!target) return '';
+        if(['queued', 'running'].includes(clean(node.aiStatus))) return `生成中 ${completed}/${target}`;
+        if(['partial', 'failed'].includes(clean(node.aiStatus)) && completed > 0) return `已完成 ${completed}/${target}`;
+        return '';
+    }
+
     function renderNode(node){
         const preview = clean(node.previewUrl);
         const previewMarkup = preview
             ? `<img loading="lazy" decoding="async" src="${safeHtml(preview)}" alt="${safeHtml(node.projectName)}">`
             : '<div class="openshop-layered-placeholder"><i data-lucide="layers-3"></i></div>';
         const updates = Math.max(0, Number(node.sourceUpdateCount || 0));
+        const aiProgress = aiProgressLabel(node);
         return `<div class="openshop-layered-card">
             <div class="openshop-layered-preview">${previewMarkup}</div>
             <div class="openshop-layered-meta">
                 <span>${Math.max(1, Number(node.documentWidth || 1920))} x ${Math.max(1, Number(node.documentHeight || 1080))}</span>
                 <span>${Math.max(0, Number(node.layerCount || 0))} ${safeHtml(translate('smart.openshopLayers', '图层'))}</span>
                 <span class="openshop-layered-save" data-state="${safeHtml(node.saveState || 'new')}">${safeHtml(saveStateLabel(node))}</span>
+                ${aiProgress ? `<span class="openshop-layered-ai" data-state="${safeHtml(node.aiStatus)}">${safeHtml(aiProgress)}</span>` : ''}
                 <span class="openshop-layered-updates ${updates ? 'has-updates' : ''}">${safeHtml(translate('smart.openshopSourceUpdates', '来源更新'))} ${updates}</span>
             </div>
             <button class="openshop-layered-open" type="button" data-openshop-open="${safeHtml(node.id)}">
@@ -170,8 +185,25 @@
         copy.saveState = 'new';
         copy.saveError = '';
         copy.sourceUpdateCount = 0;
+        copy.aiStatus = '';
+        copy.aiTargetCount = 0;
+        copy.aiCompletedCount = 0;
+        copy.aiFailedCount = 0;
         copy.created_at = Date.now();
         return copy;
+    }
+
+    function disposeNode(node){
+        if(!node || node.type !== 'openshop-layered' || !clean(node.projectId)) return false;
+        const host = root.parent?.HstarOpenShopHost || root.HstarOpenShopHost;
+        if(!host?.disposeProject) return false;
+        void host.disposeProject(node.projectId, {
+            canvasType:'smart',
+            canvasId:currentCanvasId(),
+            nodeId:node.id,
+            projectId:node.projectId,
+        });
+        return true;
     }
 
     function matchingContext(context, node){
@@ -195,6 +227,10 @@
         node.autosaveVersion = Math.max(0, Number(meta.autosaveVersion || 0));
         node.saveState = clean(meta.saveState) || 'saved';
         node.saveError = clean(meta.error);
+        node.aiStatus = clean(meta.aiStatus);
+        node.aiTargetCount = Math.max(0, Number(meta.aiTargetCount || 0));
+        node.aiCompletedCount = Math.max(0, Number(meta.aiCompletedCount || 0));
+        node.aiFailedCount = Math.max(0, Number(meta.aiFailedCount || 0));
         node.cloneSourceProjectId = '';
         hooks().render?.();
         hooks().scheduleSave?.();
@@ -241,6 +277,7 @@
         sourcesForNode,
         openNode,
         prepareClone,
+        disposeNode,
         applyNodeMeta,
         importOutput,
     });

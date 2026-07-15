@@ -13,6 +13,7 @@ const i18nSource = fs.readFileSync('static/js/i18n/smart-canvas.js', 'utf8');
 
 const listeners = new Map();
 const openedSessions = [];
+const disposedProjects = [];
 const createdOutputs = [];
 let renderCount = 0;
 let saveCount = 0;
@@ -39,6 +40,10 @@ const connections = [];
 const host = {
   openNodeSession(context, sources) {
     openedSessions.push({context, sources});
+  },
+  disposeProject(projectId, context) {
+    disposedProjects.push({projectId, context});
+    return Promise.resolve(true);
   },
 };
 
@@ -117,6 +122,8 @@ nodes.push(projectNode);
 assert.equal(projectNode.type, 'openshop-layered');
 assert.match(projectNode.projectId, /^osp_/);
 assert.equal(projectNode.saveState, 'new');
+assert.equal(projectNode.aiStatus, '');
+assert.equal(projectNode.aiTargetCount, 0);
 assert.equal(projectNode.x, 210);
 assert.equal(projectNode.y, 260);
 
@@ -158,19 +165,35 @@ dispatchMessage({
   type:'hstar-openshop-node-meta',
   requestId:'smart-meta-1',
   context:{canvasType:'smart', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId},
-  meta:{previewUrl:'/api/openshop/assets/smart-preview', layerCount:4, sourceUpdateCount:2, autosaveVersion:5, saveState:'saved'},
+  meta:{
+    previewUrl:'/api/openshop/assets/smart-preview', layerCount:7, sourceUpdateCount:2,
+    autosaveVersion:5, saveState:'saving', aiStatus:'running',
+    aiTargetCount:5, aiCompletedCount:2, aiFailedCount:0,
+  },
 });
 assert.equal(projectNode.previewUrl, '/api/openshop/assets/smart-preview');
-assert.equal(projectNode.layerCount, 4);
+assert.equal(projectNode.layerCount, 7);
 assert.equal(projectNode.sourceUpdateCount, 2);
 assert.equal(projectNode.autosaveVersion, 5);
+assert.equal(projectNode.aiStatus, 'running');
+assert.equal(projectNode.aiTargetCount, 5);
+assert.equal(projectNode.aiCompletedCount, 2);
+assert.equal(projectNode.aiFailedCount, 0);
+assert.match(adapter.renderNode(projectNode), /生成中\s*2\s*\/\s*5/);
+
+dispatchMessage({
+  type:'hstar-openshop-node-meta',
+  context:{canvasType:'smart', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId},
+  meta:{layerCount:7, saveState:'saved', aiStatus:'partial', aiTargetCount:5, aiCompletedCount:3, aiFailedCount:2},
+});
+assert.match(adapter.renderNode(projectNode), /已完成\s*3\s*\/\s*5/);
 
 dispatchMessage({
   type:'hstar-openshop-node-meta',
   context:{canvasType:'classic', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId},
   meta:{layerCount:99},
 });
-assert.equal(projectNode.layerCount, 4, 'classic canvas messages must not update smart nodes');
+assert.equal(projectNode.layerCount, 7, 'classic canvas messages must not update smart nodes');
 
 const outputMessage = {
   type:'hstar-openshop-output',
@@ -199,6 +222,16 @@ assert.notEqual(clone.projectId, projectNode.projectId);
 assert.equal(clone.cloneSourceProjectId, projectNode.projectId);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
+assert.equal(clone.aiStatus, '');
+assert.equal(clone.aiTargetCount, 0);
+
+assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
+assert.equal(adapter.disposeNode(projectNode), true);
+assert.equal(disposedProjects.length, 1);
+assert.equal(disposedProjects[0].projectId, projectNode.projectId);
+assert.deepEqual({...disposedProjects[0].context}, {
+  canvasType:'smart', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId,
+});
 
 assert.match(htmlSource, /src=["']\/static\/js\/smart-canvas-openshop\.js(?:\?[^"']*)?["']/);
 assert.match(htmlSource, /data-create-type=["']openshop-layered["']/);
@@ -207,6 +240,7 @@ assert.match(canvasSource, /HstarSmartOpenShopAdapter\??\.renderNode/);
 assert.match(canvasSource, /HstarSmartOpenShopAdapter\??\.canConnect/);
 assert.ok((canvasSource.match(/HstarSmartOpenShopAdapter\??\.prepareClone/g) || []).length >= 2, 'both cloneSmartNode definitions should isolate OpenShop projects');
 assert.match(canvasSource, /type\s*===\s*['"]openshop-layered['"]/);
+assert.match(canvasSource, /HstarSmartOpenShopAdapter\??\.disposeNode\??\.\(node\)/);
 assert.match(cssSource, /\.openshop-layered-node/);
 assert.match(cssSource, /aspect-ratio:\s*16\s*\/\s*9/);
 assert.match(i18nSource, /smart\.openshopLayered/);

@@ -17047,7 +17047,7 @@ async def import_openshop_library_asset(
     asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
     return {"asset": asset}
 
-@app.get("/api/openshop/assets/{asset_id}")
+@app.api_route("/api/openshop/assets/{asset_id}", methods=["GET", "HEAD"])
 async def get_openshop_asset(asset_id: str):
     try:
         path, metadata = await asyncio.to_thread(OPENSHOP_STORE.asset_path, asset_id)

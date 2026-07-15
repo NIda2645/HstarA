@@ -375,14 +375,14 @@
         <div class="hstar-reference-strip" data-reference-strip>
           <button type="button" class="hstar-reference-add" data-generative-action="toggle-reference-menu" aria-label="添加参考图" title="添加参考图">+</button>
           ${thumbnails}
-          <div class="hstar-reference-menu" data-reference-menu ${state.referenceMenuOpen ? '' : 'hidden'}>
-            <button type="button" data-reference-add="selection">当前选区</button>
-            <button type="button" data-reference-add="layer">当前图层</button>
-            <button type="button" data-reference-add="library">素材库</button>
-            <button type="button" data-reference-add="local">本地图片</button>
-          </div>
-          <input type="file" accept="image/*" data-reference-local-input hidden>
         </div>
+        <div class="hstar-reference-menu" data-reference-menu ${state.referenceMenuOpen ? '' : 'hidden'}>
+          <button type="button" data-reference-add="selection">当前选区</button>
+          <button type="button" data-reference-add="layer">当前图层</button>
+          <button type="button" data-reference-add="library">素材库</button>
+          <button type="button" data-reference-add="local">本地图片</button>
+        </div>
+        <input type="file" accept="image/*" data-reference-local-input hidden>
       </div>`;
     }
 
@@ -647,14 +647,24 @@
     }
 
     function handleBarChange(event){
-      if(event.target.matches?.('[data-generative-count]')) state.count = Math.max(1, Number(event.target.value || 1));
-      if(event.target.matches?.('[data-generative-size]')) state.size = clean(event.target.value) || 'auto';
-      if(event.target.matches?.('[data-generative-quality]')) state.quality = clean(event.target.value) || 'auto';
+      let shouldRender = false;
+      if(event.target.matches?.('[data-generative-count]')){
+        state.count = Math.max(1, Number(event.target.value || 1));
+        shouldRender = true;
+      }
+      if(event.target.matches?.('[data-generative-size]')){
+        state.size = clean(event.target.value) || 'auto';
+        shouldRender = true;
+      }
+      if(event.target.matches?.('[data-generative-quality]')){
+        state.quality = clean(event.target.value) || 'auto';
+        shouldRender = true;
+      }
       if(event.target.matches?.('[data-reference-local-input]')){
         const file = event.target.files?.[0];
         if(file) void referenceManager.addLocalFile?.(file).then(() => render()).catch(showError);
       }
-      render();
+      if(shouldRender) render();
     }
 
     function showError(error){

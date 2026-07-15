@@ -12463,6 +12463,8 @@ function setDropHighlight(targetId){
 }
 function deleteNode(id){
     pushUndo();
+    const node = nodes.find(candidate => candidate.id === id);
+    window.HstarSmartOpenShopAdapter?.disposeNode?.(node);
     const deleteIds = new Set([id]);
     nodes.forEach(node => {
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);

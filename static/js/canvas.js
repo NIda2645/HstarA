@@ -15186,6 +15186,7 @@ function deleteNode(id, event){
     event?.stopPropagation();
     pushUndo();
     const node = nodes.find(n => n.id === id);
+    window.HstarClassicOpenShopAdapter?.disposeNode?.(node);
     removeDirectorSceneStorageForNode(node);
     destroyLTXEditor(node);
     nodes = nodes.filter(n => n.id !== id);

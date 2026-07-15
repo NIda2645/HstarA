@@ -133,6 +133,9 @@ async def run():
         )
         assert upload.status_code == 200, upload.text
         source_asset_id = upload.json()["asset"]["assetId"]
+        asset_head = await client.head(f"/api/openshop/assets/{source_asset_id}")
+        assert asset_head.status_code == 200, asset_head.text
+        assert asset_head.content == b""
 
         catalog_response = await client.get("/api/openshop/ai/catalog")
         assert catalog_response.status_code == 200, catalog_response.text

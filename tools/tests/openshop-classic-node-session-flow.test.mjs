@@ -13,6 +13,7 @@ const i18nSource = fs.readFileSync('static/js/i18n/canvas.js', 'utf8');
 
 const listeners = new Map();
 const openedSessions = [];
+const disposedProjects = [];
 let renderCount = 0;
 let saveCount = 0;
 let undoCount = 0;
@@ -24,6 +25,10 @@ const selected = new Set();
 const host = {
   openNodeSession(context, sources) {
     openedSessions.push({context, sources});
+  },
+  disposeProject(projectId, context) {
+    disposedProjects.push({projectId, context});
+    return Promise.resolve(true);
   },
 };
 
@@ -82,6 +87,8 @@ const node = adapter.createNode({x:100, y:120});
 assert.equal(node.type, 'openshop-layered');
 assert.match(node.projectId, /^osp_/);
 assert.equal(node.saveState, 'new');
+assert.equal(node.aiStatus, '');
+assert.equal(node.aiTargetCount, 0);
 assert.equal(node.x, 100);
 assert.equal(node.y, 120);
 
@@ -127,13 +134,30 @@ dispatchMessage({
   type:'hstar-openshop-node-meta',
   requestId:'meta-1',
   context:{canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId},
-  meta:{previewUrl:'/api/openshop/assets/preview', layerCount:3, sourceUpdateCount:1, autosaveVersion:4, saveState:'saved'},
+  meta:{
+    previewUrl:'/api/openshop/assets/preview', layerCount:7, sourceUpdateCount:1,
+    autosaveVersion:4, saveState:'saving', aiStatus:'running',
+    aiTargetCount:5, aiCompletedCount:2, aiFailedCount:0,
+  },
 });
 assert.equal(node.previewUrl, '/api/openshop/assets/preview');
-assert.equal(node.layerCount, 3);
+assert.equal(node.layerCount, 7);
 assert.equal(node.sourceUpdateCount, 1);
 assert.equal(node.autosaveVersion, 4);
-assert.equal(node.saveState, 'saved');
+assert.equal(node.saveState, 'saving');
+assert.equal(node.aiStatus, 'running');
+assert.equal(node.aiTargetCount, 5);
+assert.equal(node.aiCompletedCount, 2);
+assert.equal(node.aiFailedCount, 0);
+assert.match(adapter.renderNode(node).innerHTML, /生成中\s*2\s*\/\s*5/);
+
+dispatchMessage({
+  type:'hstar-openshop-node-meta',
+  requestId:'meta-partial',
+  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId},
+  meta:{layerCount:7, saveState:'saved', aiStatus:'partial', aiTargetCount:5, aiCompletedCount:3, aiFailedCount:2},
+});
+assert.match(adapter.renderNode(node).innerHTML, /已完成\s*3\s*\/\s*5/);
 
 dispatchMessage({
   type:'hstar-openshop-output',
@@ -158,6 +182,16 @@ assert.notEqual(clone.projectId, node.projectId);
 assert.equal(clone.cloneSourceProjectId, node.projectId);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
+assert.equal(clone.aiStatus, '');
+assert.equal(clone.aiTargetCount, 0);
+
+assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
+assert.equal(adapter.disposeNode(node), true);
+assert.equal(disposedProjects.length, 1);
+assert.equal(disposedProjects[0].projectId, node.projectId);
+assert.deepEqual({...disposedProjects[0].context}, {
+  canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId,
+});
 
 assert.match(htmlSource, /src=["']\/static\/js\/canvas-openshop\.js(?:\?[^"']*)?["']/);
 assert.match(htmlSource, /addOpenShopLayeredNode\(\)/);
@@ -167,6 +201,7 @@ assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.renderNode/);
 assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.canConnect/);
 assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.prepareClone/);
 assert.match(canvasSource, /type\s*===\s*['"]openshop-layered['"]/);
+assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.disposeNode\??\.\(node\)/);
 assert.match(cssSource, /\.openshop-layered-node/);
 assert.match(cssSource, /aspect-ratio:\s*16\s*\/\s*9/);
 assert.match(i18nSource, /canvas\.openshopLayered/);
