@@ -126,6 +126,47 @@ async function editorSnapshot(editor){
   }));
 }
 
+test('keeps OpenShop node actions visible inside classic and smart canvas cards', async ({page, request}) => {
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  for(const kind of ['classic', 'smart']){
+    const nodeId = `openshop-layout-${kind}`;
+    const node = {
+      id:nodeId, type:'openshop-layered', projectId:`e2e_layout_${kind}_${runId}`,
+      projectName:`OpenShop layout ${kind}`, x:220, y:180, w:340, h:260,
+      documentWidth:1920, documentHeight:1080, layerCount:0, sourceUpdateCount:0,
+      autosaveVersion:0, saveState:'new', created_at:Date.now(),
+    };
+    const canvas = await createCanvas(request, {
+      kind, title:`OpenShop layout ${kind}`, nodes:[node], connections:[],
+    });
+    const frame = await mountCanvas(page, kind, canvas.id);
+    const card = frame.locator(`.openshop-layered-node[data-id="${nodeId}"]`);
+    await expect(card).toBeVisible();
+
+    const geometry = await card.evaluate(element => {
+      const rect = target => {
+        const value = target.getBoundingClientRect();
+        return {top:value.top, right:value.right, bottom:value.bottom, left:value.left, width:value.width, height:value.height};
+      };
+      return {
+        node:rect(element),
+        body:rect(element.querySelector('.node-body')),
+        preview:rect(element.querySelector('.openshop-layered-preview')),
+        meta:rect(element.querySelector('.openshop-layered-meta')),
+        button:rect(element.querySelector('.openshop-layered-open')),
+      };
+    });
+
+    expect(geometry.button.width).toBeGreaterThan(0);
+    expect(geometry.button.height).toBeGreaterThan(0);
+    expect(geometry.preview.bottom).toBeLessThanOrEqual(geometry.meta.top + 0.5);
+    expect(geometry.meta.bottom).toBeLessThanOrEqual(geometry.button.top + 0.5);
+    expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.body.bottom + 0.5);
+    expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.node.bottom + 0.5);
+  }
+});
+
 test('classic canvas preserves isolated projects, ordered sources, updates, clones, and deletion', async ({page, request}) => {
   test.setTimeout(180000);
   const pageErrors = [];

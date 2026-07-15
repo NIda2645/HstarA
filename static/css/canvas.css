@@ -267,7 +267,7 @@ body.theme-dark .node-retry-msg { color:#fca5a5; }
 .openshop-layered-node { width:340px; height:260px; }
 .openshop-layered-node .node-body { overflow:hidden; padding:10px; }
 .openshop-layered-card { height:100%; min-height:0; display:grid; grid-template-rows:minmax(0, 1fr) 22px 34px; gap:7px; }
-.openshop-layered-preview { position:relative; width:100%; min-height:0; aspect-ratio:16 / 9; overflow:hidden; border:1px solid var(--line-2); border-radius:8px; background:#111827; }
+.openshop-layered-preview { position:relative; width:auto; max-width:100%; height:100%; min-height:0; justify-self:center; aspect-ratio:16 / 9; overflow:hidden; border:1px solid var(--line-2); border-radius:8px; background:#111827; }
 .openshop-layered-preview img { width:100%; height:100%; display:block; object-fit:cover; }
 .openshop-layered-placeholder { width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#94a3b8; background:repeating-linear-gradient(135deg, #111827, #111827 10px, #172033 10px, #172033 20px); }
 .openshop-layered-placeholder i,
