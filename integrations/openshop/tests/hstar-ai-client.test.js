@@ -171,6 +171,27 @@ describe('Hstar OpenShop global API client', () => {
     client.destroy();
   });
 
+  it('treats a partially successful parent task as terminal', async () => {
+    const statuses = ['partial', 'failed'];
+    const fetchImpl = vi.fn((url) => {
+      if(url.startsWith('/api/openshop/projects/project-1/ai-tasks/task-partial?')) {
+        const status = statuses.shift() || 'failed';
+        return jsonResponse({task:{taskId:'task-partial', status, completedCount:2, failedCount:1}});
+      }
+      return jsonResponse({detail:'unexpected'}, 404);
+    });
+    const client = window.HstarOpenShopAiClient.createClient({
+      fetchImpl, BroadcastChannelImpl:FakeBroadcastChannel, pollIntervalMs:1,
+    });
+    client.startSession(context);
+
+    const completed = await client.pollTask(context, 'task-partial');
+
+    expect(completed.status).toBe('partial');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    client.destroy();
+  });
+
   it('rejects a late poll response after the node session changes', async () => {
     let resolveResponse;
     const delayed = new Promise(resolve => { resolveResponse = resolve; });

@@ -228,7 +228,7 @@
         const value = await responseJson(response, '查询 OpenShop AI 任务失败');
         assertSession(normalized, generation);
         const task = value.task || value;
-        if(['succeeded', 'failed', 'cancelled'].includes(task?.status)) return task;
+        if(['succeeded', 'partial', 'failed', 'cancelled'].includes(task?.status)) return task;
         await wait(Number(pollOptions.intervalMs || pollIntervalMs), state.sessionController.signal);
       }
     }
