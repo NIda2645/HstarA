@@ -44,6 +44,10 @@ const expectedFiles = [
   'host/openshop-project-adapter.js',
   'host/openshop-protocol.js',
   'host/openshop-text-tools.js',
+  'host/openshop-reference-manager.js',
+  'host/openshop-generative-client.js',
+  'host/openshop-generative-tools.js',
+  'host/openshop-generative-tools.css',
   'locales/zh-CN.js',
   'vendor/runtime-manifest.json',
   ...sourceManifest.files.map((file) => file.path),
@@ -82,6 +86,20 @@ const dictionary = registrations.get('zh-CN');
 assert.ok(dictionary, 'static runtime should register the zh-CN dictionary');
 for (const [key, value] of Object.entries(glossary)) {
   assert.equal(dictionary[key], value, `${key} should match the Photoshop glossary`);
+}
+for (const [key, value] of Object.entries({
+  'Generative Fill':'生成式填充',
+  'Local Redraw':'局部重绘',
+  'Reference Selection':'参考选择区域',
+  'Reference Full Image':'参考全图',
+  'Add Reference Image':'添加参考图',
+  'Select an area to modify first':'请先选择要修改的区域',
+  'Generate Missing Results':'补生成剩余数量',
+  'Configuration unavailable':'配置不可用',
+  'Reference unavailable':'参考资源不可用',
+  'Completed {completed}/{target}':'已完成 {completed}/{target}',
+})) {
+  assert.equal(dictionary[key], value, `${key} should use the approved Simplified Chinese term`);
 }
 
 function runBuild(){

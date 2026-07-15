@@ -15,6 +15,7 @@
     "test:hstar:localization": "playwright test tests/hstar-localization.e2e.spec.js",
     "test:hstar:canvas-integration": "playwright test tests/hstar-canvas-integration.e2e.spec.js",
     "test:hstar:text-tools": "playwright test tests/hstar-text-tools.e2e.spec.js",
+    "test:hstar:generative": "playwright test tests/hstar-generative-tools.e2e.spec.js",
     "test:hstar:4k": "playwright test tests/hstar-foundation.e2e.spec.js --grep 4K"
   },
   "devDependencies": {

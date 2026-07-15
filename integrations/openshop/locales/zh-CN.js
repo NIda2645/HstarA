@@ -855,6 +855,16 @@
     "Export PDF": "导出 PDF",
     "Export PSD": "导出 PSD",
     "Save Project": "保存项目",
+    "Generative Fill": "生成式填充",
+    "Local Redraw": "局部重绘",
+    "Reference Selection": "参考选择区域",
+    "Reference Full Image": "参考全图",
+    "Add Reference Image": "添加参考图",
+    "Select an area to modify first": "请先选择要修改的区域",
+    "Generate Missing Results": "补生成剩余数量",
+    "Configuration unavailable": "配置不可用",
+    "Reference unavailable": "参考资源不可用",
+    "Completed {completed}/{target}": "已完成 {completed}/{target}",
   });
 
   i18n.register('zh-CN', messages);

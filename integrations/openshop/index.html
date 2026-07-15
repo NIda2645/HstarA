@@ -595,6 +595,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
   :root{--panel-width:200px}
 }
 </style>
+<link rel="stylesheet" href="./host/openshop-generative-tools.css">
 </head>
 <body>
 
@@ -8906,6 +8907,9 @@ window.addEventListener('DOMContentLoaded', () => OS.init());
 <script src="./host/openshop-ai-client.js"></script>
 <script src="./host/openshop-font-catalog.js"></script>
 <script src="./host/openshop-text-tools.js"></script>
+<script src="./host/openshop-reference-manager.js"></script>
+<script src="./host/openshop-generative-client.js"></script>
+<script src="./host/openshop-generative-tools.js"></script>
 <script>
 function hstarOpenShopDataUrlToBlob(dataUrl) {
     const match = String(dataUrl || '').match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/i);
@@ -8975,6 +8979,9 @@ window.addEventListener('DOMContentLoaded', () => {
         outputWriter: payload => window.HstarOpenShopAssetApi.upload({...payload, role:'output'}),
     });
     window.HstarOpenShopTextToolsController?.destroy?.();
+    window.HstarOpenShopGenerativeToolsController?.destroy?.();
+    window.HstarOpenShopReferenceManagerController?.destroy?.();
+    window.HstarOpenShopGenerativeClientInstance?.destroy?.();
     const aiClient = window.HstarOpenShopAiClient.createClient();
     const fontManager = window.HstarOpenShopFontCatalog.createManager();
     window.HstarOpenShopTextToolsController = window.HstarOpenShopTextTools.createController({
@@ -8985,7 +8992,25 @@ window.addEventListener('DOMContentLoaded', () => {
         fontManager,
         fabricRef: window.fabric,
     });
+    const referenceManager = window.HstarOpenShopReferenceManager.createManager({
+        editor: OS,
+        runtime: window.HstarOpenShopRuntime,
+        assetApi: window.HstarOpenShopAssetApi,
+    });
+    const generativeClient = window.HstarOpenShopGenerativeClient.createClient();
+    window.HstarOpenShopReferenceManagerController = referenceManager;
+    window.HstarOpenShopGenerativeClientInstance = generativeClient;
+    window.HstarOpenShopGenerativeToolsController = window.HstarOpenShopGenerativeTools.createController({
+        editor: OS,
+        runtime: window.HstarOpenShopRuntime,
+        aiClient,
+        generativeClient,
+        referenceManager,
+        assetApi: window.HstarOpenShopAssetApi,
+        fabricRef: window.fabric,
+    });
     void window.HstarOpenShopTextToolsController.start();
+    void window.HstarOpenShopGenerativeToolsController.start();
 });
 </script>
 </body>

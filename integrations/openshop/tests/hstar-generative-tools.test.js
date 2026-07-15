@@ -47,7 +47,7 @@ function catalog({available=true, maxOutputs=6}={}) {
   };
 }
 
-function createHarness({modelAvailable=true, maxOutputs=6, terminalTasks=[], retryTask=null}={}) {
+function createHarness({modelAvailable=true, maxOutputs=6, terminalTasks=[], retryTask=null, restoredTasks=[]}={}) {
   const canvasObjects = [];
   const sourceLayer = {layerId:'source-layer', name:'来源图层', visible:true, objects:[]};
   const editor = {
@@ -115,7 +115,10 @@ function createHarness({modelAvailable=true, maxOutputs=6, terminalTasks=[], ret
       task_id:'parent-retry', status:'queued',
       task:{taskId:'parent-retry', kind:'parent', status:'queued', targetCount:1, retryOfTaskId:'parent-1'},
     })),
-    restoreTasks:vi.fn(async () => []),
+    restoreTasks:vi.fn(async (_records, options={}) => {
+      restoredTasks.forEach(task => options.onUpdate?.(task));
+      return restoredTasks;
+    }),
   };
   const assetApi = {
     upload:vi.fn(async payload => ({
@@ -392,6 +395,33 @@ describe('Hstar OpenShop inline generative tools', () => {
     expect(completed.taskId).toBe('parent-retry');
     expect(editor.layers.find(layer => layer.hstarAiGeneration?.childTaskId === 'child-retry-1')?.name)
       .toBe('局部重绘 2/4');
+    controller.destroy();
+  });
+
+  it('resumes persisted background tasks and pending children when a project loads', async () => {
+    const restored = generationTask({
+      taskId:'parent-restored', status:'succeeded', targetCount:1, completedCount:1, failedCount:0,
+      children:[{childTaskId:'child-restored', index:0, status:'succeeded', outputAssetId:'7'.repeat(64)}],
+    });
+    const {controller, editor, generativeClient} = createHarness({restoredTasks:[restored]});
+    editor.__hstarAiTaskRecords = [{...restored, status:'running', children:[]}];
+    editor.__hstarAiPendingResults = [{
+      task:generationTask({taskId:'parent-pending', status:'succeeded'}),
+      child:{childTaskId:'child-pending', index:1, status:'succeeded', outputAssetId:'8'.repeat(64)},
+    }];
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded'));
+    await vi.waitFor(() => {
+      expect(editor.layers.some(layer => layer.hstarAiGeneration?.childTaskId === 'child-restored')).toBe(true);
+      expect(editor.layers.some(layer => layer.hstarAiGeneration?.childTaskId === 'child-pending')).toBe(true);
+    });
+
+    expect(generativeClient.restoreTasks).toHaveBeenCalledWith(
+      [expect.objectContaining({taskId:'parent-restored', status:'running'})],
+      expect.objectContaining({onUpdate:expect.any(Function)}),
+    );
+    expect(editor.__hstarAiPendingResults).toEqual([]);
     controller.destroy();
   });
 });

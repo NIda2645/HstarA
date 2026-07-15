@@ -595,6 +595,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
   :root{--panel-width:200px}
 }
 </style>
+<link rel="stylesheet" href="./host/openshop-generative-tools.css">
 </head>
 <body>
 
@@ -2673,7 +2674,8 @@ self.onmessage = function(e) {
                 this._selectionMask=null;
                 this.toast(this._t("Selection: {width} x {height} px", { width: Math.round(sw/vpt[0]), height: Math.round(sh/vpt[3]) }),'info');
             } else { el.style.display='none'; this._selectionBounds=null; }
-            this._marqueeStart=null;this.state.isDrawing=false; return;
+            this._marqueeStart=null;this.state.isDrawing=false;
+            this._emitSelectionChanged('marquee'); return;
         }
         if(this.state.isDrawing&&this.state.tool==='gradient'&&this._shapeStart) {
             const ptr=this.canvas.getPointer(opt.e); this.drawGradient(this._shapeStart,ptr); this._shapeStart=null; this.state.isDrawing=false; return;
@@ -2841,6 +2843,16 @@ self.onmessage = function(e) {
     },
 
     // ====================== MAGIC WAND ======================
+    _emitSelectionChanged(reason='updated') {
+        window.dispatchEvent(new CustomEvent('openshop:selection-changed', {
+            detail: {
+                reason,
+                tool: this.state.tool,
+                hasSelection: Boolean(this._selectionMask || this._selectionBounds),
+                bounds: this._selectionBounds ? { ...this._selectionBounds } : null,
+            },
+        }));
+    },
     _selectionMask: null, _selectionBounds: null,
     _doMagicWand(ptr) {
         const vpt=this.canvas.viewportTransform, ctx=this.canvas.getContext('2d');
@@ -2891,6 +2903,7 @@ self.onmessage = function(e) {
             el.style.width=(maxX-minX+1)+'px';el.style.height=(maxY-minY+1)+'px';el.style.borderRadius='0';}
         else el.style.display='none';
         this.toast(this._t("Selected {count} px", { count: count.toLocaleString() }),'info');
+        this._emitSelectionChanged('magic-wand');
     },
     clearSelection(){
         this._storeLastSelection();
@@ -2905,6 +2918,7 @@ self.onmessage = function(e) {
         this.canvas.getObjects().filter(o=>o._wandOverlay).forEach(o=>this.canvas.remove(o));
         this.canvas.renderAll();
         this._renderAccessibilityTree();
+        this._emitSelectionChanged('cleared');
     },
 
     // ====================== SELECTION OPERATIONS ======================
@@ -3177,6 +3191,7 @@ self.onmessage = function(e) {
             el.style.borderRadius = '0';
         } else { el.style.display = 'none'; }
         this._renderAccessibilityTree();
+        this._emitSelectionChanged('recalculated');
     },
 
     // Show blue tint overlay for pixel mask
@@ -4625,6 +4640,7 @@ self.onmessage = async function(e) {
         el.style.width = (maxX - minX) + 'px'; el.style.height = (maxY - minY) + 'px';
         el.style.borderRadius = '0';
         this.toast(this._t("Lasso selection: {count} points", { count: this._lassoPoints.length }), 'info');
+        this._emitSelectionChanged('lasso');
     },
 
     // ====================== HEALING BRUSH ======================
@@ -8891,6 +8907,9 @@ window.addEventListener('DOMContentLoaded', () => OS.init());
 <script src="./host/openshop-ai-client.js"></script>
 <script src="./host/openshop-font-catalog.js"></script>
 <script src="./host/openshop-text-tools.js"></script>
+<script src="./host/openshop-reference-manager.js"></script>
+<script src="./host/openshop-generative-client.js"></script>
+<script src="./host/openshop-generative-tools.js"></script>
 <script>
 function hstarOpenShopDataUrlToBlob(dataUrl) {
     const match = String(dataUrl || '').match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/i);
@@ -8960,6 +8979,9 @@ window.addEventListener('DOMContentLoaded', () => {
         outputWriter: payload => window.HstarOpenShopAssetApi.upload({...payload, role:'output'}),
     });
     window.HstarOpenShopTextToolsController?.destroy?.();
+    window.HstarOpenShopGenerativeToolsController?.destroy?.();
+    window.HstarOpenShopReferenceManagerController?.destroy?.();
+    window.HstarOpenShopGenerativeClientInstance?.destroy?.();
     const aiClient = window.HstarOpenShopAiClient.createClient();
     const fontManager = window.HstarOpenShopFontCatalog.createManager();
     window.HstarOpenShopTextToolsController = window.HstarOpenShopTextTools.createController({
@@ -8970,7 +8992,25 @@ window.addEventListener('DOMContentLoaded', () => {
         fontManager,
         fabricRef: window.fabric,
     });
+    const referenceManager = window.HstarOpenShopReferenceManager.createManager({
+        editor: OS,
+        runtime: window.HstarOpenShopRuntime,
+        assetApi: window.HstarOpenShopAssetApi,
+    });
+    const generativeClient = window.HstarOpenShopGenerativeClient.createClient();
+    window.HstarOpenShopReferenceManagerController = referenceManager;
+    window.HstarOpenShopGenerativeClientInstance = generativeClient;
+    window.HstarOpenShopGenerativeToolsController = window.HstarOpenShopGenerativeTools.createController({
+        editor: OS,
+        runtime: window.HstarOpenShopRuntime,
+        aiClient,
+        generativeClient,
+        referenceManager,
+        assetApi: window.HstarOpenShopAssetApi,
+        fabricRef: window.fabric,
+    });
     void window.HstarOpenShopTextToolsController.start();
+    void window.HstarOpenShopGenerativeToolsController.start();
 });
 </script>
 </body>

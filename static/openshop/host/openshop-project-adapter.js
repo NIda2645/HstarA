@@ -83,7 +83,9 @@
       sourceBindings: [],
       fontRefs: [],
       aiToolPreferences: {},
+      aiReferenceRecords: [],
       aiTaskRecords: [],
+      aiPendingResults: [],
       assetRefs: [],
       previewAssetId: '',
       autosaveVersion: 0,
@@ -537,6 +539,25 @@
     };
   }
 
+  function collectAssetRefs(value, assetRefs){
+    if(Array.isArray(value)){
+      value.forEach(item => collectAssetRefs(item, assetRefs));
+      return;
+    }
+    if(!value || typeof value !== 'object') return;
+    const assetKeys = new Set([
+      'assetId', 'assetRef', 'hstarAssetId', 'sourceAssetId', 'maskAssetId',
+      'outputAssetId', 'primaryReferenceAssetId', 'pendingAssetId',
+    ]);
+    Object.entries(value).forEach(([key, child]) => {
+      if(assetKeys.has(key)){
+        const assetId = clean(child);
+        if(assetId) assetRefs.add(assetId);
+      }
+      collectAssetRefs(child, assetRefs);
+    });
+  }
+
   function serializeProject({editor, context, now = Date.now}){
     if(!editor?.canvas?.toJSON || !Array.isArray(editor.layers)){
       throw new Error('OpenShop editor is unavailable');
@@ -555,6 +576,7 @@
       'hstarEdgeId',
       'hstarSourceNodeId',
       'hstarLayerId',
+      'assetRef',
     ]));
     const assetRefs = new Set();
     externalizeAssets(editorJson, assetRefs);
@@ -566,6 +588,7 @@
       opacity: Number.isFinite(Number(layer.opacity)) ? Number(layer.opacity) : 100,
       blend: clean(layer.blend) || 'source-over',
       sourceBinding: serializeSourceBinding(layer.sourceBinding, layer.layerId),
+      hstarAiGeneration: layer.hstarAiGeneration ? clone(layer.hstarAiGeneration) : null,
     }));
     const sourceBindings = layers
       .map((layer, layerIndex) => layer.sourceBinding ? {...layer.sourceBinding, layerIndex} : null)
@@ -583,15 +606,19 @@
         ? editor.__hstarAiToolPreferences
         : {}
     );
+    const aiReferenceRecords = clone(
+      Array.isArray(editor.__hstarAiReferenceRecords) ? editor.__hstarAiReferenceRecords : []
+    );
     const aiTaskRecords = clone(
       Array.isArray(editor.__hstarAiTaskRecords) ? editor.__hstarAiTaskRecords.slice(-100) : []
     );
-    aiTaskRecords.forEach(record => {
-      ['sourceAssetId', 'maskAssetId', 'outputAssetId'].forEach(key => {
-        const assetId = clean(record?.[key]);
-        if(assetId) assetRefs.add(assetId);
-      });
-    });
+    const aiPendingResults = clone(
+      Array.isArray(editor.__hstarAiPendingResults) ? editor.__hstarAiPendingResults.slice(-64) : []
+    );
+    collectAssetRefs(aiReferenceRecords, assetRefs);
+    collectAssetRefs(aiTaskRecords, assetRefs);
+    collectAssetRefs(aiPendingResults, assetRefs);
+    collectAssetRefs(layers, assetRefs);
 
     return {
       schemaVersion: SCHEMA_VERSION,
@@ -612,7 +639,9 @@
       sourceBindings,
       fontRefs,
       aiToolPreferences,
+      aiReferenceRecords,
       aiTaskRecords,
+      aiPendingResults,
       assetRefs: [...assetRefs].sort(),
       previewAssetId,
       autosaveVersion: Number(editor.__hstarAutosaveVersion || 0),
@@ -635,7 +664,13 @@
     await Promise.all(Object.values(value).map(child => hydrateAssets(child, assetResolver)));
   }
 
-  async function restoreProject({editor, project:projectValue, assetResolver}){
+  async function restoreProject({
+    editor,
+    project:projectValue,
+    assetResolver,
+    generativeClient=null,
+    applyTaskResults=null,
+  }){
     const project = clone(projectValue);
     if(project?.schemaVersion !== SCHEMA_VERSION) throw new Error('OpenShop project version is unsupported');
     if(!editor?.canvas?.loadFromJSON) throw new Error('OpenShop editor is unavailable');
@@ -653,8 +688,14 @@
         ? project.aiToolPreferences
         : {}
     );
+    editor.__hstarAiReferenceRecords = clone(
+      Array.isArray(project.aiReferenceRecords) ? project.aiReferenceRecords : []
+    );
     editor.__hstarAiTaskRecords = clone(
       Array.isArray(project.aiTaskRecords) ? project.aiTaskRecords.slice(-100) : []
+    );
+    editor.__hstarAiPendingResults = clone(
+      Array.isArray(project.aiPendingResults) ? project.aiPendingResults.slice(-64) : []
     );
     await new Promise((resolve, reject) => {
       try {
@@ -679,10 +720,33 @@
         layer.opacity = Number(metadata.opacity ?? 100);
         layer.blend = clean(metadata.blend) || 'source-over';
         layer.sourceBinding = metadata.sourceBinding ? clone(metadata.sourceBinding) : null;
+        layer.hstarAiGeneration = metadata.hstarAiGeneration ? clone(metadata.hstarAiGeneration) : null;
       });
     }
     editor.canvas.renderAll?.();
     editor.updateLayersPanel?.();
+    if(generativeClient?.restoreTasks){
+      const unfinished = editor.__hstarAiTaskRecords
+        .filter(record => ['queued', 'running'].includes(clean(record?.status)));
+      const restoredTasks = await generativeClient.restoreTasks(unfinished, {
+        onUpdate:update => {
+          const index = editor.__hstarAiTaskRecords.findIndex(record => record.taskId === update.taskId);
+          if(index >= 0) editor.__hstarAiTaskRecords[index] = clone(update);
+          else editor.__hstarAiTaskRecords.push(clone(update));
+          editor.__hstarAiTaskRecords = editor.__hstarAiTaskRecords.slice(-100);
+        },
+      });
+      if(typeof applyTaskResults === 'function'){
+        for(const task of restoredTasks) await applyTaskResults(task);
+      }
+    }
+    if(typeof applyTaskResults === 'function'){
+      const queued = clone(editor.__hstarAiPendingResults);
+      for(const item of queued){
+        if(!item?.task || !item?.child) continue;
+        await applyTaskResults({...item.task, children:[item.child]});
+      }
+    }
     return {context, project};
   }
 
