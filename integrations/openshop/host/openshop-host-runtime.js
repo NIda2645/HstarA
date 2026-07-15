@@ -396,6 +396,13 @@
     if(!output?.assetId || !output?.url){
       throw new Error('OpenShop output writer returned incomplete metadata');
     }
+    if(typeof state.projectAdapter.recordExport !== 'function'){
+      throw new Error('OpenShop export recorder is unavailable');
+    }
+    state.projectAdapter.recordExport({editor:state.editor, output});
+    const exportSave = await requestSave({reason:'send-to-canvas-output'});
+    if(exportSave?.cancelled) throw new Error('OpenShop send was cancelled before the output was saved');
+    assertActiveSession(session);
     const payload = {
       assetId: String(output.assetId),
       url: String(output.url),

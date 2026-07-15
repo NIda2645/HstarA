@@ -2498,6 +2498,14 @@ self.onmessage = function(e) {
             case 'note': c.defaultCursor='crosshair'; c.hoverCursor='crosshair'; break;
             case 'crop': document.getElementById('opt-crop').style.display='flex'; this._initCrop(); break;
         }
+        const lockedObjects = new Set(
+            this.layers.filter(layer => layer.locked).flatMap(layer => layer.objects || [])
+        );
+        c.forEachObject(object => {
+            if(!lockedObjects.has(object)) return;
+            object.selectable = false;
+            object.evented = false;
+        });
         const toolNames = {'marquee-rect':'Rect Marquee','marquee-ellipse':'Ellipse Marquee','magic-wand':'Magic Wand','ai-segment':'AI Segment'};
         document.getElementById('tool-display').textContent = toolNames[tool] || tool.charAt(0).toUpperCase()+tool.replace(/-/g,' ').slice(1);
         this._renderAccessibilityTree();

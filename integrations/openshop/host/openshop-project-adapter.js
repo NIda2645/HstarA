@@ -86,6 +86,7 @@
       aiReferenceRecords: [],
       aiTaskRecords: [],
       aiPendingResults: [],
+      exportRecords: [],
       assetRefs: [],
       previewAssetId: '',
       autosaveVersion: 0,
@@ -148,6 +149,7 @@
     if(!reusable) editor.layers.push(layer);
     layer.name = source.name;
     layer.visible = true;
+    layer.locked = false;
     layer.opacity = 100;
     layer.blend = 'source-over';
     layer.objects = Array.isArray(layer.objects) ? layer.objects : [];
@@ -171,7 +173,9 @@
         return sequence || clean(left.sourceBinding.edgeId).localeCompare(clean(right.sourceBinding.edgeId));
       });
     const local = editor.layers.filter(layer => !layer?.sourceBinding);
-    editor.layers.splice(0, editor.layers.length, ...sources, ...local);
+    const base = local.filter(layer => layer.objects?.some(object => object?.name === '__boundary__'));
+    const editableLocal = local.filter(layer => !base.includes(layer));
+    editor.layers.splice(0, editor.layers.length, ...base, ...sources, ...editableLocal);
   }
 
   function syncCanvasObjectOrder(editor){
@@ -245,6 +249,54 @@
     return {width, height};
   }
 
+  function ensureDocumentBaseLayer(editor){
+    const width = positiveDimension(editor.canvasW, 'width');
+    const height = positiveDimension(editor.canvasH, 'height');
+    let boundary = editor.canvas?.getObjects?.().find(object => object?.name === '__boundary__');
+    if(!boundary && typeof editor._createCheckerBoundary === 'function'){
+      boundary = editor._createCheckerBoundary(width, height);
+      if(boundary) editor.canvas.add?.(boundary);
+    }
+    if(!boundary) throw new Error('OpenShop document artboard is unavailable');
+
+    const boundaryValues = {
+      width,
+      height,
+      left:0,
+      top:0,
+      selectable:false,
+      evented:false,
+    };
+    if(typeof boundary.set === 'function') boundary.set(boundaryValues);
+    else Object.assign(boundary, boundaryValues);
+    boundary.setCoords?.();
+
+    let layer = editor.layers.find(item => item?.objects?.includes(boundary));
+    if(!layer){
+      layer = blankDefaultLayer(editor) || {
+        name:'Background', visible:true, locked:true, opacity:100,
+        blend:'source-over', objects:[],
+      };
+      if(!editor.layers.includes(layer)) editor.layers.unshift(layer);
+      layer.objects = [boundary];
+    }
+    layer.name = 'Background';
+    layer.visible = true;
+    layer.locked = true;
+    layer.opacity = 100;
+    layer.blend = 'source-over';
+    ensureLayerId(layer);
+    boundary.hstarLayerId = layer.layerId;
+
+    const index = editor.layers.indexOf(layer);
+    if(index > 0){
+      editor.layers.splice(index, 1);
+      editor.layers.unshift(layer);
+    }
+    editor.canvas.moveTo?.(boundary, 0);
+    return layer;
+  }
+
   function activeSourceLayers(editor){
     return editor.layers.filter(layer => (
       layer?.sourceBinding && layer.sourceBinding.state !== 'detached'
@@ -269,9 +321,17 @@
     const firstImage = sourceLayers[0]?.objects?.[0];
     const size = intrinsicImageSize(firstImage);
     if(!size) return false;
-    if(Number(editor.canvasW) === size.width && Number(editor.canvasH) === size.height) return false;
-    resizeEditorDocument(editor, size);
-    sourceLayers.forEach(layer => layer.objects.forEach(image => centerSourceImage(editor, image)));
+    if(Number(editor.canvasW) !== size.width || Number(editor.canvasH) !== size.height){
+      resizeEditorDocument(editor, size);
+    }
+    sourceLayers.forEach(layer => {
+      const sourceImage = layer.objects.find(object => object?.hstarAssetRole === 'source')
+        || layer.objects[0];
+      if(sourceImage) centerSourceImage(editor, sourceImage);
+    });
+    ensureDocumentBaseLayer(editor);
+    sortInitialSourceLayers(editor);
+    syncCanvasObjectOrder(editor);
     return true;
   }
 
@@ -290,11 +350,13 @@
     if(adoptDocumentSize){
       const size = intrinsicImageSize(image);
       if(size) resizeEditorDocument(editor, size);
+      ensureDocumentBaseLayer(editor);
     }
 
     const values = {
       name: source.name,
       selectable: true,
+      evented: true,
       hstarAssetId: source.assetId,
       hstarAssetRole: 'source',
       hstarEdgeId: source.edgeId,
@@ -717,6 +779,7 @@
       layerId: ensureLayerId(layer),
       name: safeName(layer.name, '图层'),
       visible: layer.visible !== false,
+      locked: Boolean(layer.locked),
       opacity: Number.isFinite(Number(layer.opacity)) ? Number(layer.opacity) : 100,
       blend: clean(layer.blend) || 'source-over',
       sourceBinding: serializeSourceBinding(layer.sourceBinding, layer.layerId),
@@ -747,9 +810,13 @@
     const aiPendingResults = clone(
       Array.isArray(editor.__hstarAiPendingResults) ? editor.__hstarAiPendingResults.slice(-64) : []
     );
+    const exportRecords = clone(
+      Array.isArray(editor.__hstarExportRecords) ? editor.__hstarExportRecords.slice(-256) : []
+    );
     collectAssetRefs(aiReferenceRecords, assetRefs);
     collectAssetRefs(aiTaskRecords, assetRefs);
     collectAssetRefs(aiPendingResults, assetRefs);
+    collectAssetRefs(exportRecords, assetRefs);
     collectAssetRefs(layers, assetRefs);
 
     return {
@@ -774,12 +841,31 @@
       aiReferenceRecords,
       aiTaskRecords,
       aiPendingResults,
+      exportRecords,
       assetRefs: [...assetRefs].sort(),
       previewAssetId,
       autosaveVersion: Number(editor.__hstarAutosaveVersion || 0),
       createdAt,
       updatedAt: timestamp,
     };
+  }
+
+  function recordExport({editor, output, now = Date.now}){
+    if(!editor || !output?.assetId) throw new Error('OpenShop export metadata is incomplete');
+    const assetId = clean(output.assetId);
+    const record = {
+      assetId,
+      name:safeName(output.name, 'OpenShop output.png'),
+      width:positiveDimension(editor.canvasW, 'width'),
+      height:positiveDimension(editor.canvasH, 'height'),
+      createdAt:Number(now()),
+    };
+    const records = Array.isArray(editor.__hstarExportRecords) ? editor.__hstarExportRecords : [];
+    editor.__hstarExportRecords = [
+      ...records.filter(item => clean(item?.assetId) !== assetId),
+      record,
+    ].slice(-256);
+    return clone(record);
   }
 
   async function hydrateAssets(value, assetResolver){
@@ -829,6 +915,9 @@
     editor.__hstarAiPendingResults = clone(
       Array.isArray(project.aiPendingResults) ? project.aiPendingResults.slice(-64) : []
     );
+    editor.__hstarExportRecords = clone(
+      Array.isArray(project.exportRecords) ? project.exportRecords.slice(-256) : []
+    );
     await new Promise((resolve, reject) => {
       try {
         const result = editor.canvas.loadFromJSON(project.editor, () => resolve());
@@ -850,6 +939,14 @@
         ensureLayerId(layer);
         layer.name = safeName(metadata.name, `Layer ${index}`);
         layer.visible = metadata.visible !== false;
+        layer.locked = Boolean(metadata.locked);
+        if(layer.locked){
+          layer.objects.forEach(object => {
+            if(!object || object.name === '__boundary__') return;
+            object.selectable = false;
+            object.evented = false;
+          });
+        }
         layer.opacity = Number(metadata.opacity ?? 100);
         layer.blend = clean(metadata.blend) || 'source-over';
         layer.sourceBinding = metadata.sourceBinding ? clone(metadata.sourceBinding) : null;
@@ -888,6 +985,7 @@
     SCHEMA_VERSION,
     createEmptyProject,
     serializeProject,
+    recordExport,
     restoreProject,
     queueSourceImageLayer,
     persistEditorAssets,

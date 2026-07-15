@@ -259,9 +259,39 @@ class OpenShopProjectStore:
                 }
                 self._atomic_write_json(metadata_path, metadata)
 
+            result_name = self._safe_label(name, "OpenShop image")
+            result_role = self._safe_label(role, "asset")
+            if result_role == "output":
+                asset_refs = project.get("assetRefs", [])
+                if not isinstance(asset_refs, list):
+                    raise OpenShopValidationError("assetRefs must be an array")
+                project["assetRefs"] = sorted({
+                    *(self._validate_asset_id(value) for value in asset_refs),
+                    asset_id,
+                })
+                export_records = project.get("exportRecords", [])
+                if not isinstance(export_records, list):
+                    raise OpenShopValidationError("exportRecords must be an array")
+                export_record = {
+                    "assetId": asset_id,
+                    "name": result_name,
+                    "width": width,
+                    "height": height,
+                    "createdAt": self._now(),
+                }
+                project["exportRecords"] = [
+                    *(
+                        item for item in export_records
+                        if isinstance(item, dict) and item.get("assetId") != asset_id
+                    ),
+                    export_record,
+                ][-256:]
+                project["updatedAt"] = export_record["createdAt"]
+                self._atomic_write_json(self._project_path(project_id), project)
+
             result = copy.deepcopy(metadata)
-            result["name"] = self._safe_label(name, "OpenShop image")
-            result["role"] = self._safe_label(role, "asset")
+            result["name"] = result_name
+            result["role"] = result_role
             return result
 
     def asset_path(self, asset_id: str) -> tuple[str, dict]:
@@ -285,7 +315,7 @@ class OpenShopProjectStore:
                 raise OpenShopNotFound(f"OpenShop asset file not found: {normalized_asset_id}")
             return str(path), copy.deepcopy(metadata)
 
-    def collect_garbage(self) -> list[str]:
+    def collect_garbage(self, additional_asset_refs=None) -> list[str]:
         with self._lock:
             referenced = set()
             for path in sorted(self.projects_dir.glob("*.json")):
@@ -298,6 +328,8 @@ class OpenShopProjectStore:
                 preview_asset_id = project.get("previewAssetId")
                 if preview_asset_id:
                     referenced.add(self._validate_asset_id(preview_asset_id))
+            for asset_id in additional_asset_refs or []:
+                referenced.add(self._validate_asset_id(asset_id))
 
             stored = set()
             for path in self.assets_dir.iterdir():
@@ -347,6 +379,17 @@ class OpenShopProjectStore:
         ai_pending_results = self._normalize_ai_pending_results(
             candidate.get("aiPendingResults", [])
         )
+        current_export_records = self._normalize_export_records(
+            current.get("exportRecords", [])
+        )
+        supplied_export_records = self._normalize_export_records(
+            candidate.get("exportRecords", [])
+        )
+        merged_export_records = {}
+        for item in [*current_export_records, *supplied_export_records]:
+            merged_export_records.pop(item["assetId"], None)
+            merged_export_records[item["assetId"]] = item
+        export_records = list(merged_export_records.values())[-256:]
         asset_refs = candidate.get("assetRefs", [])
         if not isinstance(asset_refs, list):
             raise OpenShopValidationError("assetRefs must be an array")
@@ -358,6 +401,7 @@ class OpenShopProjectStore:
             ai_reference_records,
             ai_task_records,
             ai_pending_results,
+            export_records,
         ):
             self._collect_asset_refs(value, discovered_asset_refs)
         normalized_asset_refs = sorted(
@@ -386,6 +430,7 @@ class OpenShopProjectStore:
         candidate["aiReferenceRecords"] = ai_reference_records
         candidate["aiTaskRecords"] = ai_task_records
         candidate["aiPendingResults"] = ai_pending_results
+        candidate["exportRecords"] = export_records
         candidate["createdAt"] = current.get("createdAt")
         candidate.setdefault("editor", {"objects": []})
         candidate.setdefault("layers", [])
@@ -395,8 +440,40 @@ class OpenShopProjectStore:
         candidate.setdefault("aiReferenceRecords", [])
         candidate.setdefault("aiTaskRecords", [])
         candidate.setdefault("aiPendingResults", [])
-        candidate.setdefault("exportRecords", [])
         return candidate
+
+    def _normalize_export_records(self, value: Any) -> list[dict]:
+        if not isinstance(value, list):
+            raise OpenShopValidationError("exportRecords must be an array")
+        if len(value) > 256:
+            raise OpenShopValidationError("exportRecords exceeds the 256 item limit")
+        normalized = []
+        seen = set()
+        for item in reversed(value):
+            if not isinstance(item, dict):
+                raise OpenShopValidationError("exportRecords entries must be objects")
+            asset_id = self._validate_asset_id(item.get("assetId"))
+            if asset_id in seen:
+                continue
+            seen.add(asset_id)
+            name = self._safe_label(item.get("name"), "OpenShop output.png")
+            width = self._positive_dimension(item.get("width"), "export width")
+            height = self._positive_dimension(item.get("height"), "export height")
+            try:
+                created_at = int(item.get("createdAt") or 0)
+            except (TypeError, ValueError) as exc:
+                raise OpenShopValidationError("OpenShop export createdAt is invalid") from exc
+            if created_at < 0:
+                raise OpenShopValidationError("OpenShop export createdAt is invalid")
+            normalized.append({
+                "assetId": asset_id,
+                "name": name,
+                "width": width,
+                "height": height,
+                "createdAt": created_at,
+            })
+        normalized.reverse()
+        return normalized
 
     def _normalize_font_refs(self, value: Any) -> list[dict]:
         if not isinstance(value, list):

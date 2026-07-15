@@ -3349,6 +3349,41 @@ def save_canvas(canvas):
         with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
             json.dump(canvas, f, ensure_ascii=False, indent=2)
 
+OPENSHOP_ASSET_URL_PREFIX = "/api/openshop/assets/"
+OPENSHOP_ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+
+def openshop_asset_refs_from_value(value):
+    refs = set()
+    if isinstance(value, dict):
+        for child in value.values():
+            refs.update(openshop_asset_refs_from_value(child))
+    elif isinstance(value, list):
+        for child in value:
+            refs.update(openshop_asset_refs_from_value(child))
+    elif isinstance(value, str):
+        path = urllib.parse.urlsplit(value.strip()).path
+        if path.startswith(OPENSHOP_ASSET_URL_PREFIX):
+            asset_id = path[len(OPENSHOP_ASSET_URL_PREFIX):].strip().lower()
+            if OPENSHOP_ASSET_ID_PATTERN.fullmatch(asset_id):
+                refs.add(asset_id)
+    return refs
+
+def openshop_canvas_asset_refs():
+    refs = set()
+    with CANVAS_LOCK:
+        for filename in os.listdir(CANVAS_DIR):
+            if not filename.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(CANVAS_DIR, filename), "r", encoding="utf-8") as f:
+                    refs.update(openshop_asset_refs_from_value(json.load(f)))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+    return refs
+
+def collect_openshop_garbage():
+    return OPENSHOP_STORE.collect_garbage(openshop_canvas_asset_refs())
+
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
 
@@ -3377,7 +3412,7 @@ def remove_openshop_projects(project_owners, canvas_type, canvas_id):
         except OpenShopNotFound:
             continue
     if removed:
-        OPENSHOP_STORE.collect_garbage()
+        collect_openshop_garbage()
     return removed
 
 # ===== 项目（按项目分类管理画布）=====
@@ -3534,7 +3569,7 @@ def cleanup_expired_canvas_trash():
             except Exception:
                 continue
     if removed_projects:
-        OPENSHOP_STORE.collect_garbage()
+        collect_openshop_garbage()
 
 def iter_canvas_records(include_deleted=False):
     cleanup_expired_canvas_trash()
@@ -16721,7 +16756,7 @@ async def run_openshop_generation_child(
         if not OPENSHOP_AI_TASKS.succeed_child(
             parent_id, child_id, public_openshop_asset(asset)
         ):
-            await asyncio.to_thread(OPENSHOP_STORE.collect_garbage)
+            await asyncio.to_thread(collect_openshop_garbage)
     except asyncio.CancelledError:
         return
     except Exception as exc:
@@ -16831,7 +16866,7 @@ async def run_openshop_ai_task(
             "height": asset["height"],
             "mime": asset["mime"],
         }):
-            await asyncio.to_thread(OPENSHOP_STORE.collect_garbage)
+            await asyncio.to_thread(collect_openshop_garbage)
     except asyncio.CancelledError:
         return
     except Exception as exc:
@@ -16927,7 +16962,7 @@ async def delete_openshop_project(
         )
         if deleted:
             OPENSHOP_AI_TASKS.cancel_project(project_id)
-            OPENSHOP_STORE.collect_garbage()
+            collect_openshop_garbage()
         return deleted
 
     try:
@@ -18404,6 +18439,7 @@ async def batch_crop_asset_library_items(payload: AssetLibraryBatchCropRequest):
 @app.put("/api/canvases/{canvas_id}")
 async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
     canvas = load_canvas(canvas_id)
+    previous_openshop_asset_refs = openshop_asset_refs_from_value(canvas)
     current_updated_at = int(canvas.get("updated_at") or 0)
     if payload.base_updated_at and current_updated_at and int(payload.base_updated_at) < current_updated_at:
         raise HTTPException(status_code=409, detail={
@@ -18437,6 +18473,8 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
             canvas["kind"],
             canvas_id,
         )
+    if previous_openshop_asset_refs - openshop_asset_refs_from_value(canvas):
+        await asyncio.to_thread(collect_openshop_garbage)
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get("updated_at") or now_ms()), payload.client_id)
     return {"canvas": canvas}
 
@@ -18469,10 +18507,13 @@ async def purge_canvas(canvas_id: str):
             if removed:
                 for project_id in removed:
                     OPENSHOP_AI_TASKS.cancel_project(project_id)
-                OPENSHOP_STORE.collect_garbage()
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            collect_openshop_garbage()
             return removed
         await asyncio.to_thread(delete_projects_and_collect)
-        os.remove(path)
     return {"ok": True}
 
 # --- GPT 对话 ---

@@ -73,7 +73,11 @@ function createEditor() {
     }),
     updateLayersPanel: vi.fn(),
     saveHistory: vi.fn(),
-    zoomFit: vi.fn()
+    zoomFit: vi.fn(),
+    _createCheckerBoundary: vi.fn((width, height) => ({
+      type:'rect', name:'__boundary__', width, height, left:0, top:0,
+      selectable:false, evented:false, set(values) { Object.assign(this, values); },
+    }))
   };
   return editor;
 }
@@ -160,8 +164,19 @@ describe('Hstar OpenShop project adapter', () => {
 
     expect({width:editor.canvasW, height:editor.canvasH}).toEqual({width:3840, height:2160});
     expect(image).toMatchObject({left:0, top:0, scaleX:1, scaleY:1});
+    expect(image).toMatchObject({selectable:true, evented:true});
+    expect(editor.layers).toHaveLength(2);
+    expect(editor.layers[0]).toMatchObject({name:'Background', locked:true});
+    expect(editor.layers[0].objects[0]).toMatchObject({
+      name:'__boundary__', width:3840, height:2160, selectable:false, evented:false,
+    });
+    expect(editor.layers[1]).toMatchObject({locked:false});
+    expect(editor.layers[1].sourceBinding).toMatchObject({assetId:'source-4k'});
     expect(editor.zoomFit).toHaveBeenCalled();
-    expect(adapter.serializeProject({editor, context}).document).toMatchObject({width:3840, height:2160});
+    const project = adapter.serializeProject({editor, context});
+    expect(project.document).toMatchObject({width:3840, height:2160});
+    expect(project.layers[0]).toMatchObject({locked:true});
+    expect(project.layers[1]).toMatchObject({locked:false});
   });
 
   it('keeps a user-created template size when the first source is connected', async () => {
@@ -201,7 +216,7 @@ describe('Hstar OpenShop project adapter', () => {
     editor.rebuildLayersFromCanvas = vi.fn(() => {
       editor.layers = [{
         layerId:'source-layer', name:'source-4k.png', visible:true, opacity:100, blend:'source-over',
-        objects:editor.canvas.getObjects(),
+        objects:[...editor.canvas.getObjects()],
       }];
     });
     const project = {
@@ -231,7 +246,9 @@ describe('Hstar OpenShop project adapter', () => {
     });
 
     expect({width:editor.canvasW, height:editor.canvasH}).toEqual({width:3840, height:2160});
-    expect(editor.layers[0].objects[0]).toMatchObject({left:0, top:0});
+    expect(editor.layers[0]).toMatchObject({name:'Background', locked:true});
+    expect(editor.layers[0].objects[0]).toMatchObject({name:'__boundary__', width:3840, height:2160});
+    expect(editor.layers[1].objects[0]).toMatchObject({left:0, top:0});
   });
 
   it('keeps source layer order when images resolve out of order', async () => {
@@ -422,6 +439,38 @@ describe('Hstar OpenShop project adapter', () => {
     expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
     restored.__hstarAiTaskRecords[0].status = 'failed';
     expect(project.aiTaskRecords[0].status).toBe('succeeded');
+  });
+
+  it('round-trips exported canvas assets and keeps them referenced', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const outputAssetId = 'd'.repeat(64);
+
+    const record = adapter.recordExport({
+      editor,
+      output:{assetId:outputAssetId, name:'图文分层输出.png'},
+      now:() => 4000,
+    });
+    const project = adapter.serializeProject({editor, context, now:() => 5000});
+
+    expect(record).toEqual({
+      assetId:outputAssetId,
+      name:'图文分层输出.png',
+      width:1920,
+      height:1080,
+      createdAt:4000,
+    });
+    expect(project.exportRecords).toEqual([record]);
+    expect(project.assetRefs).toContain(outputAssetId);
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((_json, callback) => callback());
+    await adapter.restoreProject({
+      editor:restored,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+    expect(restored.__hstarExportRecords).toEqual([record]);
   });
 
   it('round-trips generative references, pending results and layer provenance', async () => {
@@ -847,7 +896,7 @@ describe('Hstar OpenShop project adapter', () => {
         {type: 'image', assetRef: 'asset-a', hstarLayerId: 'layer-a'},
       ]},
       layers: [
-        {layerId: 'layer-a', name: '图层 A', visible: true, opacity: 90, blend: 'source-over'},
+        {layerId: 'layer-a', name: '图层 A', visible: true, locked: true, opacity: 90, blend: 'source-over'},
         {layerId: 'layer-b', name: '图层 B', visible: false, opacity: 70, blend: 'multiply'},
       ],
       previewAssetId: 'asset-a',
@@ -862,7 +911,8 @@ describe('Hstar OpenShop project adapter', () => {
     });
 
     const byId = Object.fromEntries(editor.layers.map(layer => [layer.layerId, layer]));
-    expect(byId['layer-a']).toMatchObject({name: '图层 A', opacity: 90, visible: true});
+    expect(byId['layer-a']).toMatchObject({name: '图层 A', opacity: 90, visible: true, locked: true});
+    expect(byId['layer-a'].objects[0]).toMatchObject({selectable:false, evented:false});
     expect(byId['layer-b']).toMatchObject({name: '图层 B', opacity: 70, visible: false, blend: 'multiply'});
     expect(editor.__hstarPreviewAssetId).toBe('asset-a');
     expect(editor.__hstarAutosaveVersion).toBe(9);

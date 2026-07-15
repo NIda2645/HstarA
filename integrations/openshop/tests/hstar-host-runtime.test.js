@@ -73,6 +73,16 @@ describe('Hstar OpenShop editor host runtime', () => {
       reconcileSources: vi.fn(async () => ({added: [], pendingUpdates: [], detached: []})),
       resolveSourceUpdate: vi.fn(async () => ({layerId: 'layer-1'})),
       persistEditorAssets: vi.fn(async () => []),
+      recordExport: vi.fn(({editor:targetEditor, output}) => {
+        targetEditor.__hstarExportRecords = [{
+          assetId: output.assetId,
+          name: output.name,
+          width: targetEditor.canvasW,
+          height: targetEditor.canvasH,
+          createdAt: 2000,
+        }];
+        return targetEditor.__hstarExportRecords[0];
+      }),
       serializeProject: vi.fn(() => ({
         schemaVersion: 1,
         projectId: context.projectId,
@@ -458,6 +468,19 @@ describe('Hstar OpenShop editor host runtime', () => {
       dataUrl: 'data:image/png;base64,COMPOSITE_BYTES',
       role: 'output',
     }));
+    expect(projectAdapter.recordExport).toHaveBeenCalledWith(expect.objectContaining({
+      editor,
+      output: expect.objectContaining({assetId: 'asset-output'}),
+    }));
+    const exportSave = posted(protocol.TYPES.SAVE_PROJECT)[1];
+    expect(exportSave).toBeTruthy();
+    expect(posted(protocol.TYPES.SEND_TO_CANVAS)).toHaveLength(0);
+
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, exportSave.requestId, {
+      project: {...exportSave.payload.project, autosaveVersion: 3},
+    }));
+    await flushMessages();
+
     const sent = posted(protocol.TYPES.SEND_TO_CANVAS);
     expect(sent).toHaveLength(1);
     expect(sent[0].payload).toEqual({
@@ -491,6 +514,12 @@ describe('Hstar OpenShop editor host runtime', () => {
       project: {...save.payload.project, autosaveVersion: 2},
     }));
     await activeSave;
+    await flushAsync();
+    const exportSave = posted(protocol.TYPES.SAVE_PROJECT)[1];
+    expect(exportSave).toBeTruthy();
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, exportSave.requestId, {
+      project: {...exportSave.payload.project, autosaveVersion: 3},
+    }));
     await send;
 
     expect(outputWriter).toHaveBeenCalledTimes(1);

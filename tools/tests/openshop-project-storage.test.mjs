@@ -161,6 +161,9 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     assert store.collect_garbage() == []
 
     assert store.delete("project-b", owner_b) is True
+    assert store.collect_garbage([first_asset["assetId"]]) == []
+    asset_path, _ = store.asset_path(first_asset["assetId"])
+    assert Path(asset_path).is_file()
     removed = store.collect_garbage()
     assert removed == [first_asset["assetId"]]
     try:
@@ -417,6 +420,7 @@ async def api_lifecycle():
         import main
 
         image_data = png_bytes((75, 161, 88, 255))
+        output_data = png_bytes((190, 72, 44, 255))
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             canvas_response = await client.post(
@@ -456,6 +460,27 @@ async def api_lifecycle():
             asset = upload.json()["asset"]
             assert asset["url"] == f"/api/openshop/assets/{asset['assetId']}"
 
+            output_upload = await client.post(
+                "/api/openshop/projects/project-api/assets",
+                data={
+                    "canvas_type": "classic",
+                    "canvas_id": canvas["id"],
+                    "node_id": "node-api",
+                    "role": "output",
+                },
+                files={"file": ("output.png", output_data, "image/png")},
+            )
+            assert output_upload.status_code == 200, output_upload.text
+            output_asset = output_upload.json()["asset"]
+            registered_output = await client.get(
+                "/api/openshop/projects/project-api",
+                params={"canvas_type": "classic", "canvas_id": canvas["id"], "node_id": "node-api"},
+            )
+            assert registered_output.status_code == 200
+            registered_project = registered_output.json()["project"]
+            assert output_asset["assetId"] in registered_project["assetRefs"]
+            assert registered_project["exportRecords"][-1]["assetId"] == output_asset["assetId"]
+
             content = await client.get(asset["url"])
             assert content.status_code == 200
             assert content.content == image_data
@@ -483,7 +508,9 @@ async def api_lifecycle():
             )
             assert cloned.status_code == 200, cloned.text
             assert cloned.json()["project"]["owner"] == clone_owner
-            assert cloned.json()["project"]["assetRefs"] == [asset["assetId"]]
+            assert set(cloned.json()["project"]["assetRefs"]) == {
+                asset["assetId"], output_asset["assetId"],
+            }
 
             deleted_clone = await client.delete(
                 "/api/openshop/projects/project-clone",
@@ -499,6 +526,12 @@ async def api_lifecycle():
                     "id": "node-api",
                     "type": "openshop-layered",
                     "projectId": "project-api",
+                }, {
+                    "id": "output-api",
+                    "type": "image",
+                    "url": output_asset["url"],
+                    "openshopAssetId": output_asset["assetId"],
+                    "openshopSourceNodeId": "node-api",
                 }],
                 "connections": [],
                 "viewport": {},
@@ -508,7 +541,7 @@ async def api_lifecycle():
             }
             attached = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
             assert attached.status_code == 200, attached.text
-            canvas_payload["nodes"] = []
+            canvas_payload["nodes"] = [canvas_payload["nodes"][1]]
             canvas_payload["base_updated_at"] = attached.json()["canvas"]["updated_at"]
             detached = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
             assert detached.status_code == 200, detached.text
@@ -519,6 +552,13 @@ async def api_lifecycle():
             )
             assert missing_project.status_code == 404
             assert (await client.get(asset["url"])).status_code == 404
+            assert (await client.get(output_asset["url"])).status_code == 200
+
+            canvas_payload["nodes"] = []
+            canvas_payload["base_updated_at"] = detached.json()["canvas"]["updated_at"]
+            removed_output = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
+            assert removed_output.status_code == 200, removed_output.text
+            assert (await client.get(output_asset["url"])).status_code == 404
 
             smart_response = await client.post(
                 "/api/canvases",

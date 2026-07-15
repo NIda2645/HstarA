@@ -20,7 +20,12 @@ describe('OpenShop core object', () => {
   it('switches tools and updates canvas interaction state', () => {
     const OS = loadOpenShop();
     const object = { name: 'Layer Object', selectable: false, evented: false };
-    OS.canvas = createCanvasMock([object]);
+    const lockedObject = { name: 'Locked Base', selectable: false, evented: false };
+    OS.canvas = createCanvasMock([object, lockedObject]);
+    OS.layers = [
+      {name:'Layer 0', locked:false, objects:[object]},
+      {name:'Locked source', locked:true, objects:[lockedObject]},
+    ];
     quietUiMethods(OS);
 
     OS.setTool('brush');
@@ -36,6 +41,8 @@ describe('OpenShop core object', () => {
     expect(OS.canvas.defaultCursor).toBe('default');
     expect(object.selectable).toBe(true);
     expect(object.evented).toBe(true);
+    expect(lockedObject.selectable).toBe(false);
+    expect(lockedObject.evented).toBe(false);
 
     OS.setTool('ai-segment');
 

@@ -77,6 +77,28 @@ async function decodedImageSize(frame, url){
   }), url);
 }
 
+async function decodedImageEdgeAlpha(frame, url){
+  return frame.evaluate(source => new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext('2d');
+      context.drawImage(image, 0, 0);
+      const points = [
+        [0, 0], [canvas.width - 1, 0],
+        [0, canvas.height - 1], [canvas.width - 1, canvas.height - 1],
+        [Math.floor(canvas.width / 2), 0], [Math.floor(canvas.width / 2), canvas.height - 1],
+        [0, Math.floor(canvas.height / 2)], [canvas.width - 1, Math.floor(canvas.height / 2)],
+      ];
+      resolve(points.map(([x, y]) => context.getImageData(x, y, 1, 1).data[3]));
+    };
+    image.onerror = () => reject(new Error(`Unable to decode ${source}`));
+    image.src = source;
+  }), url);
+}
+
 async function canvasRecord(request, canvasId){
   return (await apiJson(await request.get(`${baseUrl}/api/canvases/${canvasId}`))).canvas;
 }
@@ -350,6 +372,40 @@ test('uses the first source dimensions and exports the full 4K document without 
   const frame = await mountCanvas(page, 'classic', canvas.id);
   const editor = await openNode(page, frame, 'classic', layeredNode.id, 1, {welcome:'hidden'});
   await expect.poll(() => editor.evaluate(() => ({width:OS.canvasW, height:OS.canvasH}))).toEqual({width:3840, height:2160});
+  const initialLayers = await editor.evaluate(() => {
+    OS.setTool('select');
+    return OS.layers.map(layer => ({
+      name:layer.name,
+      locked:Boolean(layer.locked),
+      sourceAssetId:layer.sourceBinding?.assetId || '',
+      objects:layer.objects.map(object => ({
+        name:object.name,
+        width:object.width,
+        height:object.height,
+        selectable:Boolean(object.selectable),
+        evented:Boolean(object.evented),
+      })),
+    }));
+  });
+  expect(initialLayers).toHaveLength(2);
+  expect(initialLayers[0]).toMatchObject({name:'Background', locked:true, sourceAssetId:''});
+  expect(initialLayers[0].objects[0]).toMatchObject({
+    name:'__boundary__', width:3840, height:2160, selectable:false, evented:false,
+  });
+  expect(initialLayers[1]).toMatchObject({locked:false, sourceAssetId:uploaded.asset.assetId});
+  expect(initialLayers[1].objects[0]).toMatchObject({width:3840, height:2160, selectable:true, evented:true});
+
+  await editor.evaluate(() => {
+    OS.addLayer();
+    const overlay = new fabric.Rect({
+      left:960, top:540, width:640, height:360, fill:'#ef4444',
+      name:'4K overlay', selectable:true, evented:true,
+    });
+    OS.canvas.add(overlay);
+    OS.layers[OS.activeLayerIdx].objects.push(overlay);
+    OS.saveHistory('4K overlay');
+    OS.updateLayersPanel();
+  });
   await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
   await expect.poll(() => frame.evaluate(id => {
     return window.HstarClassicOpenShopHooks.getNodes().filter(node => node.openshopSourceNodeId === id).length;
@@ -362,10 +418,20 @@ test('uses the first source dimensions and exports the full 4K document without 
   expect(output).toMatchObject({natural_w:3840, natural_h:2160});
   expect(syncedLayeredNode).toMatchObject({documentWidth:3840, documentHeight:2160});
   expect(await decodedImageSize(frame, output.url)).toEqual({width:3840, height:2160});
+  expect(await decodedImageEdgeAlpha(frame, output.url)).toEqual([255, 255, 255, 255, 255, 255, 255, 255]);
+  expect((await request.get(`${baseUrl}${output.url}`)).status()).toBe(200);
   const storedProject = await projectRecord(request, {
     canvasType:'classic', canvasId:canvas.id, nodeId:layeredNode.id, projectId:layeredNode.projectId,
   });
   expect(storedProject.body.project.document).toMatchObject({width:3840, height:2160});
+  expect(storedProject.body.project.layers).toHaveLength(3);
+  expect(storedProject.body.project.layers[0]).toMatchObject({name:'Background', locked:true});
+  expect(storedProject.body.project.exportRecords.at(-1)).toMatchObject({
+    assetId:output.openshopAssetId,
+    width:3840,
+    height:2160,
+  });
+  expect(storedProject.body.project.assetRefs).toContain(output.openshopAssetId);
 });
 
 test('classic canvas preserves isolated projects, ordered sources, updates, clones, and deletion', async ({page, request}) => {
