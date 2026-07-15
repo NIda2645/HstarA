@@ -3,18 +3,14 @@
     const Protocol = window.HstarOpenShopProtocol;
     if(!Protocol) throw new Error('OpenShop protocol must load before the host');
 
+    const HIDDEN_SESSION_IDLE_MS = 15 * 60 * 1000;
+    const MAX_IDLE_SESSIONS = 3;
     const state = {
-        activeSession: null,
-        frame: null,
-        overlay: null,
-        frameLoaded: false,
-        editorReady: false,
-        project: null,
-        sources: [],
-        appliedRequests: new Set(),
-        bootstrapping: false,
-        status: 'idle',
-        error: '',
+        sessions:new Map(),
+        activeScope:'',
+        overlay:null,
+        status:'idle',
+        error:'',
     };
 
     function uuid(prefix){
@@ -56,7 +52,6 @@
                     <i data-lucide="send"></i><span>发送到画布</span>
                 </button>
             </header>
-            <iframe id="frame-openshop" title="图文分层编辑器" data-src="/static/openshop/index.html"></iframe>
             <aside class="openshop-source-panel" data-openshop-source-panel aria-hidden="true"></aside>`;
         const stage = document.querySelector?.('.stage');
         (stage || document.body).appendChild(section);
@@ -69,19 +64,48 @@
         return state.overlay;
     }
 
-    function getFrame(){
-        if(state.frame && document.contains?.(state.frame)) return state.frame;
-        state.frame = document.getElementById('frame-openshop') || getOverlay().querySelector?.('#frame-openshop');
-        return state.frame;
-    }
-
     function ui(selector){
         return getOverlay().querySelector?.(selector) || document.querySelector?.(selector) || null;
     }
 
-    function setStatus(status, message = ''){
+    function activeSession(){
+        return state.sessions.get(state.activeScope) || null;
+    }
+
+    function ownerFor(context){
+        return {
+            canvasType:clean(context?.canvasType),
+            canvasId:clean(context?.canvasId),
+            nodeId:clean(context?.nodeId),
+        };
+    }
+
+    function sameContext(left, right){
+        try { return Protocol.createProjectScope(left) === Protocol.createProjectScope(right); }
+        catch(error) { return false; }
+    }
+
+    function normalizedContext(value){
+        const context = Protocol.normalizeContext(value);
+        if(!Object.values(context).every(Boolean)) throw new Error('OpenShop 节点上下文不完整');
+        return {
+            ...context,
+            frameId:clean(value.frameId) || 'frame-canvas',
+            cloneSourceProjectId:clean(value.cloneSourceProjectId),
+            projectName:clean(value.projectName) || '图文分层',
+            documentWidth:Math.max(1, Number(value.documentWidth || value.width || 1920)),
+            documentHeight:Math.max(1, Number(value.documentHeight || value.height || 1080)),
+        };
+    }
+
+    function setStatus(session, status, message=''){
+        if(!session) return;
+        session.status = status;
+        session.error = status === 'error' ? clean(message) : '';
+        session.savePending = status === 'saving';
+        if(session.scope !== state.activeScope) return;
         state.status = status;
-        state.error = status === 'error' ? clean(message) : '';
+        state.error = session.error;
         const label = ui('[data-openshop-state]');
         if(!label) return;
         const labels = {
@@ -93,50 +117,28 @@
         label.title = status === 'error' ? clean(message) : '';
     }
 
-    function ownerFor(context = state.activeSession?.context){
-        return {
-            canvasType:clean(context?.canvasType),
-            canvasId:clean(context?.canvasId),
-            nodeId:clean(context?.nodeId),
-        };
+    function sessionSnapshot(session){
+        return {scope:session.scope, sessionId:session.sessionId, context:{...session.context}};
     }
 
-    function sameContext(left, right){
-        try {
-            return Protocol.createProjectScope(left) === Protocol.createProjectScope(right);
-        } catch(error) {
-            return false;
-        }
-    }
-
-    function activeSnapshot(){
-        if(!state.activeSession) throw new Error('OpenShop 会话尚未打开');
-        return {
-            sessionId:state.activeSession.sessionId,
-            context:{...state.activeSession.context},
-        };
-    }
-
-    function stillActive(snapshot){
+    function stillSession(session, snapshot){
         return Boolean(
-            state.activeSession
-            && state.activeSession.sessionId === snapshot.sessionId
-            && sameContext(state.activeSession.context, snapshot.context)
+            state.sessions.get(snapshot.scope) === session
+            && session.sessionId === snapshot.sessionId
+            && sameContext(session.context, snapshot.context)
         );
     }
 
-    function postToEditor(type, payload = {}, requestId = uuid('openshop-host')){
-        if(!state.activeSession) return null;
-        const frameWindow = getFrame()?.contentWindow;
-        if(!frameWindow) return null;
+    function postToEditor(session, type, payload={}, requestId=uuid('openshop-host')){
+        if(!session?.frame?.contentWindow) return null;
         const envelope = Protocol.createEnvelope({
             type,
-            sessionId:state.activeSession.sessionId,
+            sessionId:session.sessionId,
             requestId,
-            context:state.activeSession.context,
+            context:session.context,
             payload,
         });
-        frameWindow.postMessage(envelope, window.location.origin);
+        session.frame.contentWindow.postMessage(envelope, window.location.origin);
         return envelope;
     }
 
@@ -145,7 +147,10 @@
         try { value = await response.json(); } catch(error) {}
         if(!response.ok){
             const detail = typeof value?.detail === 'string' ? value.detail : value?.detail?.message;
-            throw Object.assign(new Error(detail || `OpenShop 请求失败 (${response.status})`), {status:response.status, response:value});
+            throw Object.assign(new Error(detail || `OpenShop 请求失败 (${response.status})`), {
+                status:response.status,
+                response:value,
+            });
         }
         return value;
     }
@@ -159,7 +164,7 @@
         return `/api/openshop/projects/${encodeURIComponent(projectId)}?${params}`;
     }
 
-    async function loadOrCreateProject(snapshot){
+    async function loadOrCreateProject(session, snapshot){
         const context = snapshot.context;
         const owner = ownerFor(context);
         const projectId = context.projectId;
@@ -173,18 +178,32 @@
         }
         const loaded = await fetch(projectUrl(projectId, context));
         if(loaded.status !== 404) return (await responseJson(loaded)).project;
-        const width = Math.max(1, Math.round(Number(context.documentWidth || context.width || 1920)));
-        const height = Math.max(1, Math.round(Number(context.documentHeight || context.height || 1080)));
         const initialized = await fetch(`/api/openshop/projects/${encodeURIComponent(projectId)}/initialize`, {
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({owner, document:{width, height}}),
+            body:JSON.stringify({
+                owner,
+                document:{width:context.documentWidth, height:context.documentHeight},
+            }),
         });
         return (await responseJson(initialized)).project;
     }
 
     function sourceVersion(source){
         return clean(source?.assetVersion) || clean(source?.assetId) || clean(source?.url);
+    }
+
+    function normalizeSources(sources){
+        return (Array.isArray(sources) ? sources : []).map((source, index) => ({
+            edgeId:clean(source?.edgeId),
+            sourceNodeId:clean(source?.sourceNodeId),
+            assetId:clean(source?.assetId),
+            assetVersion:sourceVersion(source),
+            name:clean(source?.name) || `来源图片 ${index + 1}`,
+            url:clean(source?.url),
+            sequence:Number.isInteger(Number(source?.sequence)) ? Number(source.sequence) : index,
+        })).filter(source => source.edgeId && source.sourceNodeId && source.url)
+            .sort((left, right) => left.sequence - right.sequence || left.edgeId.localeCompare(right.edgeId));
     }
 
     function projectBindingForSource(project, source){
@@ -201,7 +220,7 @@
         return null;
     }
 
-    async function uploadSource(source, snapshot){
+    async function uploadSource(session, source, snapshot){
         if(source.assetId && /^\/api\/openshop\/assets\//.test(source.url)){
             return {...source, assetId:clean(source.assetId)};
         }
@@ -216,77 +235,102 @@
         form.append('node_id', owner.nodeId);
         form.append('role', 'source');
         form.append('file', blob, source.name || `source-${source.sequence + 1}.png`);
-        const response = await fetch(`/api/openshop/projects/${encodeURIComponent(snapshot.context.projectId)}/assets`, {
+        const response = await fetch(`/api/openshop/projects/${encodeURIComponent(session.context.projectId)}/assets`, {
             method:'POST', body:form,
         });
         const asset = (await responseJson(response)).asset;
         return {...source, assetId:asset.assetId, url:asset.url, name:source.name || asset.name};
     }
 
-    function normalizeSources(sources){
-        return (Array.isArray(sources) ? sources : []).map((source, index) => ({
-            edgeId:clean(source?.edgeId),
-            sourceNodeId:clean(source?.sourceNodeId),
-            assetId:clean(source?.assetId),
-            assetVersion:sourceVersion(source),
-            name:clean(source?.name) || `来源图片 ${index + 1}`,
-            url:clean(source?.url),
-            sequence:Number.isInteger(Number(source?.sequence)) ? Number(source.sequence) : index,
-        })).filter(source => source.edgeId && source.sourceNodeId && source.url)
-            .sort((left, right) => left.sequence - right.sequence || left.edgeId.localeCompare(right.edgeId));
-    }
-
-    async function refreshSources(sources = state.sources){
-        if(Array.isArray(sources)) state.sources = normalizeSources(sources);
-        if(!state.activeSession || !state.editorReady || !state.project) return [];
-        const snapshot = activeSnapshot();
-        setStatus('syncing');
+    async function refreshSessionSources(session, sources=session.sources){
+        if(Array.isArray(sources)) session.sources = normalizeSources(sources);
+        if(!session.editorReady || !session.project) return [];
+        const snapshot = sessionSnapshot(session);
+        setStatus(session, 'syncing');
         const synchronized = [];
-        for(const source of state.sources){
-            const existing = projectBindingForSource(state.project, source);
+        for(const source of session.sources){
+            const existing = projectBindingForSource(session.project, source);
             synchronized.push(existing
                 ? {...source, assetId:existing.assetId, assetVersion:existing.assetVersion, url:`/api/openshop/assets/${encodeURIComponent(existing.assetId)}`}
-                : await uploadSource(source, snapshot));
-            if(!stillActive(snapshot)) return [];
+                : await uploadSource(session, source, snapshot));
+            if(!stillSession(session, snapshot)) return [];
         }
-        postToEditor(Protocol.TYPES.SYNC_SOURCES, {sources:synchronized});
-        setStatus('saved');
+        postToEditor(session, Protocol.TYPES.SYNC_SOURCES, {sources:synchronized});
+        setStatus(session, 'saved');
         return synchronized;
     }
 
-    async function bootstrapEditorSession(){
-        if(state.bootstrapping || !state.activeSession || !state.editorReady) return;
-        state.bootstrapping = true;
-        const snapshot = activeSnapshot();
-        setStatus('loading');
+    async function refreshSources(sources, context=null){
+        const session = context
+            ? state.sessions.get(Protocol.createProjectScope(context))
+            : activeSession();
+        if(!session) return [];
+        return refreshSessionSources(session, Array.isArray(sources) ? sources : session.sources);
+    }
+
+    async function bootstrapEditorSession(session){
+        if(session.bootstrapping || !session.editorReady) return;
+        session.bootstrapping = true;
+        const snapshot = sessionSnapshot(session);
+        setStatus(session, 'loading');
         try {
-            const project = await loadOrCreateProject(snapshot);
-            if(!stillActive(snapshot)) return;
-            state.project = project;
-            postToEditor(Protocol.TYPES.LOAD_PROJECT, {project});
-            renderSourcePanel(project);
-            await refreshSources();
+            const project = await loadOrCreateProject(session, snapshot);
+            if(!stillSession(session, snapshot)) return;
+            session.project = project;
+            updateTaskSummary(session, project);
+            postToEditor(session, Protocol.TYPES.LOAD_PROJECT, {project});
+            if(session.scope === state.activeScope) renderSourcePanel(session, project);
+            await refreshSessionSources(session);
         } catch(error){
-            if(stillActive(snapshot)) setStatus('error', safeError(error));
+            if(stillSession(session, snapshot)) setStatus(session, 'error', safeError(error));
         } finally {
-            if(stillActive(snapshot)) state.bootstrapping = false;
+            if(stillSession(session, snapshot)) session.bootstrapping = false;
         }
     }
 
-    function sendOpenSession(){
-        if(!state.activeSession || !state.frameLoaded) return;
-        state.editorReady = false;
-        postToEditor(Protocol.TYPES.OPEN_SESSION, {
-            document:{
-                width:Number(state.activeSession.context.documentWidth || 1920),
-                height:Number(state.activeSession.context.documentHeight || 1080),
-            },
+    function sendOpenSession(session){
+        if(!session.frameLoaded || session.openSent) return;
+        session.editorReady = false;
+        session.openSent = true;
+        postToEditor(session, Protocol.TYPES.OPEN_SESSION, {
+            document:{width:session.context.documentWidth, height:session.context.documentHeight},
         }, uuid('openshop-open'));
     }
 
-    function onFrameLoad(){
-        state.frameLoaded = true;
-        sendOpenSession();
+    function createSession(context, sources){
+        const scope = Protocol.createProjectScope(context);
+        const frame = document.createElement('iframe');
+        frame.className = 'openshop-session-frame';
+        frame.dataset.projectScope = scope;
+        frame.dataset.projectId = context.projectId;
+        frame.title = `图文分层：${clean(context.projectName) || context.projectId}`;
+        frame.hidden = true;
+        const session = {
+            scope,
+            frame,
+            sessionId:uuid('openshop-session'),
+            context:{...context},
+            project:null,
+            sources:normalizeSources(sources),
+            frameLoaded:false,
+            editorReady:false,
+            openSent:false,
+            appliedRequests:new Set(),
+            bootstrapping:false,
+            status:'loading',
+            error:'',
+            activeTaskCount:0,
+            savePending:false,
+            idleSince:0,
+        };
+        frame.addEventListener?.('load', () => {
+            session.frameLoaded = true;
+            sendOpenSession(session);
+        });
+        state.sessions.set(scope, session);
+        getOverlay().appendChild(frame);
+        frame.src = '/static/openshop/index.html';
+        return session;
     }
 
     function showOverlay(){
@@ -300,53 +344,52 @@
         overlay.classList.remove('is-open');
         overlay.setAttribute('aria-hidden', 'true');
         ui('[data-openshop-source-panel]')?.classList?.remove('is-open');
+        const session = activeSession();
+        if(session) session.idleSince = Date.now();
     }
 
-    function openNodeSession(context, sources = []){
-        const normalized = Protocol.normalizeContext(context);
-        if(!Object.values(normalized).every(Boolean)) throw new Error('OpenShop 节点上下文不完整');
-        normalized.frameId = clean(context.frameId) || 'frame-canvas';
-        normalized.cloneSourceProjectId = clean(context.cloneSourceProjectId);
-        normalized.projectName = clean(context.projectName) || '图文分层';
-        normalized.documentWidth = Number(context.documentWidth || context.width || 1920);
-        normalized.documentHeight = Number(context.documentHeight || context.height || 1080);
-        state.activeSession = {sessionId:uuid('openshop-session'), context:normalized};
-        state.sources = normalizeSources(sources);
-        state.project = null;
-        state.editorReady = false;
-        state.appliedRequests.clear();
-        state.bootstrapping = false;
-        ui('[data-openshop-title]').textContent = normalized.projectName;
-        renderSourcePanel(null);
-        showOverlay();
-        setStatus('loading');
-        const frame = getFrame();
-        const source = frame?.dataset?.src || '/static/openshop/index.html';
-        if(frame && !frame.src){
-            state.frameLoaded = false;
-            frame.src = source;
-        } else if(state.frameLoaded){
-            sendOpenSession();
+    function openNodeSession(contextValue, sources=[]){
+        const context = normalizedContext(contextValue);
+        const scope = Protocol.createProjectScope(context);
+        const previous = activeSession();
+        const normalized = normalizeSources(sources);
+        let session = state.sessions.get(scope);
+        const sourcesChanged = session && JSON.stringify(session.sources) !== JSON.stringify(normalized);
+        if(!session) session = createSession(context, normalized);
+        else {
+            session.context = {...session.context, ...context};
+            session.sources = normalized;
+            session.frame.title = `图文分层：${context.projectName}`;
         }
+        if(previous && previous !== session) previous.idleSince = Date.now();
+        state.activeScope = scope;
+        state.sessions.forEach(item => { item.frame.hidden = item !== session; });
+        session.idleSince = 0;
+        ui('[data-openshop-title]').textContent = context.projectName;
+        renderSourcePanel(session, session.project);
+        showOverlay();
+        setStatus(session, session.status || 'loading', session.error);
+        if(sourcesChanged && session.editorReady && session.project) void refreshSessionSources(session);
+        collectIdleSessions();
         window.lucide?.createIcons?.();
         return getState();
     }
 
-    function pendingSourceUpdates(project = state.project){
+    function pendingSourceUpdates(project){
         return (project?.sourceBindings || []).filter(binding => (
             binding?.state === 'update-available' && clean(binding.pendingAssetId)
         ));
     }
 
-    function sendSourceResolution(edgeId, mode, button){
-        if(!['replace', 'add', 'ignore'].includes(mode)) return;
+    function sendSourceResolution(session, edgeId, mode, button){
+        if(!session || !['replace', 'add', 'ignore'].includes(mode)) return;
         button.disabled = true;
         button.closest?.('.openshop-source-item')?.classList?.add('is-processing');
-        postToEditor(Protocol.TYPES.RESOLVE_SOURCE_UPDATE, {edgeId, mode});
-        setStatus('dirty');
+        postToEditor(session, Protocol.TYPES.RESOLVE_SOURCE_UPDATE, {edgeId, mode});
+        setStatus(session, 'dirty');
     }
 
-    function renderSourcePanel(project = state.project){
+    function renderSourcePanel(session=activeSession(), project=session?.project){
         const panel = ui('[data-openshop-source-panel]');
         const trigger = ui('[data-openshop-sources]');
         if(!panel || !trigger) return;
@@ -374,44 +417,78 @@
             meta.textContent = `${clean(binding.assetVersion) || '旧版本'} → ${clean(binding.pendingAssetVersion) || '新版本'}`;
             const actions = document.createElement('div');
             actions.className = 'openshop-source-actions';
-            const commands = [
+            [
                 {label:'替换图层', mode:'replace'},
                 {label:'作为新图层加入', mode:'add'},
                 {label:'忽略', mode:'ignore'},
-            ];
-            commands.forEach(command => {
+            ].forEach(command => {
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.textContent = command.label;
-                button.addEventListener('click', () => sendSourceResolution(binding.edgeId, command.mode, button));
+                button.addEventListener('click', () => sendSourceResolution(session, binding.edgeId, command.mode, button));
                 actions.appendChild(button);
             });
-            item.appendChild(name); item.appendChild(meta); item.appendChild(actions);
+            item.appendChild(name);
+            item.appendChild(meta);
+            item.appendChild(actions);
             panel.appendChild(item);
         });
     }
 
-    function nodeMeta(project, saveState = 'saved'){
+    function generationSummary(project){
+        const tasks = Array.isArray(project?.aiTaskRecords) ? project.aiTaskRecords : [];
+        const task = [...tasks].reverse().find(item => item?.kind === 'parent');
+        return task ? {
+            aiStatus:clean(task.status),
+            aiTargetCount:Math.max(0, Number(task.targetCount || 0)),
+            aiCompletedCount:Math.max(0, Number(task.completedCount || 0)),
+            aiFailedCount:Math.max(0, Number(task.failedCount || 0)),
+        } : {aiStatus:'', aiTargetCount:0, aiCompletedCount:0, aiFailedCount:0};
+    }
+
+    function updateTaskSummary(session, project){
+        const tasks = Array.isArray(project?.aiTaskRecords) ? project.aiTaskRecords : [];
+        session.activeTaskCount = tasks.filter(task => (
+            task?.kind === 'parent' && ['queued', 'running'].includes(clean(task.status))
+        )).length;
+    }
+
+    function nodeMeta(session, project, saveState=session.status || 'saved'){
         const pending = pendingSourceUpdates(project);
         return {
-            projectId:clean(project?.projectId),
-            projectName:clean(state.activeSession?.context?.projectName) || '图文分层',
+            projectId:clean(project?.projectId || session.context.projectId),
+            projectName:clean(session.context.projectName) || '图文分层',
             previewAssetId:clean(project?.previewAssetId),
             previewUrl:project?.previewAssetId ? `/api/openshop/assets/${encodeURIComponent(project.previewAssetId)}` : '',
             layerCount:Array.isArray(project?.layers) ? project.layers.length : 0,
             sourceUpdateCount:pending.length,
             autosaveVersion:Number(project?.autosaveVersion || 0),
             saveState,
+            ...generationSummary(project),
         };
     }
 
-    function originFrame(){
-        const frameId = clean(state.activeSession?.context?.frameId) || 'frame-canvas';
-        return document.getElementById(frameId);
+    function originFrame(session){
+        return document.getElementById(clean(session?.context?.frameId) || 'frame-canvas');
     }
 
-    function postToOrigin(message){
-        originFrame()?.contentWindow?.postMessage(message, window.location.origin);
+    function postToOrigin(session, message){
+        originFrame(session)?.contentWindow?.postMessage(message, window.location.origin);
+    }
+
+    function publishNodeMeta(session, requestId, saveState=session.status){
+        if(!session?.project) return;
+        postToOrigin(session, {
+            type:'hstar-openshop-node-meta',
+            requestId,
+            context:{
+                canvasType:session.context.canvasType,
+                canvasId:session.context.canvasId,
+                nodeId:session.context.nodeId,
+                projectId:session.context.projectId,
+            },
+            meta:nodeMeta(session, session.project, saveState),
+        });
     }
 
     function openApiSettings(){
@@ -424,91 +501,94 @@
         window.location.href = '/static/api-settings.html';
     }
 
-    async function persistProject(envelope){
-        const snapshot = activeSnapshot();
+    async function persistProject(session, envelope){
+        const snapshot = sessionSnapshot(session);
         const project = envelope.payload?.project;
-        if(!project || clean(project.projectId) !== snapshot.context.projectId) throw new Error('保存项目与当前节点不匹配');
-        setStatus('saving');
-        const baseVersion = Number(project.autosaveVersion ?? state.project?.autosaveVersion ?? 0);
+        if(!project || clean(project.projectId) !== snapshot.context.projectId){
+            throw new Error('保存项目与当前节点不匹配');
+        }
+        setStatus(session, 'saving');
+        const baseVersion = Number(project.autosaveVersion ?? session.project?.autosaveVersion ?? 0);
         const response = await fetch(`/api/openshop/projects/${encodeURIComponent(snapshot.context.projectId)}`, {
             method:'PUT',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({owner:ownerFor(snapshot.context), project, base_version:baseVersion}),
         });
-        if(response.status === 409){
-            const conflict = await responseJson(response).catch(error => { throw error; });
-            return conflict;
-        }
         const saved = (await responseJson(response)).project;
-        if(!stillActive(snapshot)) return null;
-        state.project = saved;
-        renderSourcePanel(saved);
-        setStatus('saved');
-        postToEditor(Protocol.TYPES.SAVE_CONFIRMED, {project:saved}, envelope.requestId);
-        postToOrigin({
-            type:'hstar-openshop-node-meta',
-            requestId:envelope.requestId,
-            context:{...snapshot.context},
-            meta:nodeMeta(saved),
-        });
-        if(envelope.payload?.closeAfter) hideOverlay();
+        if(!stillSession(session, snapshot)) return null;
+        session.project = saved;
+        updateTaskSummary(session, saved);
+        if(session.scope === state.activeScope) renderSourcePanel(session, saved);
+        setStatus(session, 'saved');
+        postToEditor(session, Protocol.TYPES.SAVE_CONFIRMED, {project:saved}, envelope.requestId);
+        publishNodeMeta(session, envelope.requestId, 'saved');
+        if(envelope.payload?.closeAfter && session.scope === state.activeScope) hideOverlay();
+        collectIdleSessions();
         return saved;
     }
 
     function validEditorEvent(event){
         if(event.origin !== window.location.origin) return null;
-        if(event.source !== getFrame()?.contentWindow) return null;
+        const session = [...state.sessions.values()].find(item => event.source === item.frame.contentWindow);
+        if(!session) return null;
         const envelope = event.data;
         if(!Protocol.validateEnvelope(envelope).ok) return null;
-        if(!state.activeSession) return null;
-        if(envelope.sessionId !== state.activeSession.sessionId) return null;
-        if(!sameContext(envelope.context, state.activeSession.context)) return null;
-        return envelope;
+        if(envelope.sessionId !== session.sessionId) return null;
+        if(!sameContext(envelope.context, session.context)) return null;
+        return {session, envelope};
     }
 
     function validOutput(payload){
         const output = {
-            assetId:clean(payload?.assetId), url:clean(payload?.url), name:clean(payload?.name),
-            width:Number(payload?.width || 0), height:Number(payload?.height || 0),
+            assetId:clean(payload?.assetId),
+            url:clean(payload?.url),
+            name:clean(payload?.name),
+            width:Number(payload?.width || 0),
+            height:Number(payload?.height || 0),
         };
         if(!output.assetId || !output.url || /^(?:data:image\/|blob:)/i.test(output.url)) return null;
         return output;
     }
 
     async function onMessage(event){
-        const envelope = validEditorEvent(event);
-        if(!envelope) return;
+        const valid = validEditorEvent(event);
+        if(!valid) return;
+        const {session, envelope} = valid;
         if(envelope.type === Protocol.TYPES.READY){
-            state.editorReady = true;
-            await bootstrapEditorSession();
+            session.editorReady = true;
+            await bootstrapEditorSession(session);
             return;
         }
-        if(state.appliedRequests.has(envelope.requestId)) return;
-        state.appliedRequests.add(envelope.requestId);
+        if(session.appliedRequests.has(envelope.requestId)) return;
+        session.appliedRequests.add(envelope.requestId);
         try {
             if(envelope.type === Protocol.TYPES.SAVE_PROJECT){
-                await persistProject(envelope);
+                await persistProject(session, envelope);
             } else if(envelope.type === Protocol.TYPES.PROJECT_CHANGED){
-                state.project = envelope.payload?.project || state.project;
-                renderSourcePanel(state.project);
-                setStatus('dirty');
+                session.project = envelope.payload?.project || session.project;
+                updateTaskSummary(session, session.project);
+                if(session.scope === state.activeScope) renderSourcePanel(session, session.project);
+                setStatus(session, 'dirty');
+                publishNodeMeta(session, envelope.requestId, 'dirty');
             } else if(envelope.type === Protocol.TYPES.SEND_TO_CANVAS){
                 const output = validOutput(envelope.payload);
                 if(!output) throw new Error('OpenShop 输出资源无效');
-                postToOrigin({
-                    type:'hstar-openshop-output', requestId:envelope.requestId,
-                    context:{...state.activeSession.context}, output,
+                postToOrigin(session, {
+                    type:'hstar-openshop-output',
+                    requestId:envelope.requestId,
+                    context:{...session.context},
+                    output,
                 });
             } else if(envelope.type === Protocol.TYPES.OPEN_API_SETTINGS){
-                openApiSettings();
+                if(session.scope === state.activeScope) openApiSettings();
             } else if(envelope.type === Protocol.TYPES.ERROR){
-                setStatus('error', envelope.payload?.message || 'OpenShop 编辑器发生错误');
+                setStatus(session, 'error', envelope.payload?.message || 'OpenShop 编辑器发生错误');
             }
         } catch(error){
             const message = safeError(error);
-            setStatus('error', message);
+            setStatus(session, 'error', message);
             if(envelope.type === Protocol.TYPES.SAVE_PROJECT){
-                postToEditor(Protocol.TYPES.ERROR, {
+                postToEditor(session, Protocol.TYPES.ERROR, {
                     code:error?.status === 409 ? 'SAVE_CONFLICT' : 'SAVE_FAILED',
                     requestId:envelope.requestId,
                     message,
@@ -517,44 +597,91 @@
         }
     }
 
-    function requestSave(options = {}){
-        if(!state.activeSession || !state.editorReady) return null;
-        setStatus('saving');
-        return postToEditor(Protocol.TYPES.REQUEST_SAVE, {
+    function requestSave(options={}){
+        const session = activeSession();
+        if(!session?.editorReady) return null;
+        setStatus(session, 'saving');
+        return postToEditor(session, Protocol.TYPES.REQUEST_SAVE, {
             reason:clean(options.reason) || 'manual',
             closeAfter:Boolean(options.closeAfter),
         });
     }
 
     function requestSendToCanvas(){
-        if(!state.activeSession || !state.editorReady) return null;
-        return postToEditor(Protocol.TYPES.REQUEST_SEND_TO_CANVAS, {});
+        const session = activeSession();
+        if(!session?.editorReady) return null;
+        return postToEditor(session, Protocol.TYPES.REQUEST_SEND_TO_CANVAS, {});
     }
 
-    function close(options = {}){
-        if(options.force){ hideOverlay(); return null; }
-        return requestSave({reason:'close', closeAfter:true});
+    function close(){
+        hideOverlay();
+        collectIdleSessions();
+        return null;
+    }
+
+    function releaseSession(session, reason='idle-reclaimed'){
+        if(!session || !state.sessions.has(session.scope)) return false;
+        postToEditor(session, Protocol.TYPES.CLOSE, {reason});
+        session.frame.remove?.();
+        state.sessions.delete(session.scope);
+        if(state.activeScope === session.scope) state.activeScope = '';
+        return true;
+    }
+
+    function collectIdleSessions(now=Date.now()){
+        const overlayOpen = getOverlay().classList.contains('is-open');
+        const candidates = [...state.sessions.values()]
+            .filter(session => {
+                const hidden = session.scope !== state.activeScope || session.frame.hidden || !overlayOpen;
+                return hidden
+                    && session.activeTaskCount === 0
+                    && session.savePending === false
+                    && session.status === 'saved'
+                    && session.idleSince > 0
+                    && now - session.idleSince >= HIDDEN_SESSION_IDLE_MS;
+            })
+            .sort((left, right) => left.idleSince - right.idleSince);
+        const hiddenCount = [...state.sessions.values()].filter(session => session.scope !== state.activeScope || !overlayOpen).length;
+        const releaseCount = Math.max(candidates.length, hiddenCount - MAX_IDLE_SESSIONS);
+        candidates.slice(0, releaseCount).forEach(session => releaseSession(session));
+    }
+
+    async function disposeProject(projectId, contextValue){
+        const context = normalizedContext({...contextValue, projectId:clean(projectId) || contextValue?.projectId});
+        const scope = Protocol.createProjectScope(context);
+        const session = state.sessions.get(scope);
+        if(!session) return false;
+        await fetch(projectUrl(context.projectId, context), {method:'DELETE'}).catch(() => null);
+        const wasActive = state.activeScope === scope;
+        releaseSession(session, 'project-deleted');
+        if(wasActive) hideOverlay();
+        return true;
     }
 
     function getState(){
+        const session = activeSession();
         return {
-            activeSession:state.activeSession ? {
-                sessionId:state.activeSession.sessionId,
-                context:{...state.activeSession.context},
-            } : null,
-            editorReady:state.editorReady,
-            frameLoaded:state.frameLoaded,
-            status:state.status,
-            error:state.error,
-            autosaveVersion:Number(state.project?.autosaveVersion || 0),
-            sourceUpdateCount:pendingSourceUpdates().length,
+            activeSession:session ? {sessionId:session.sessionId, context:{...session.context}} : null,
+            editorReady:Boolean(session?.editorReady),
+            frameLoaded:Boolean(session?.frameLoaded),
+            status:session?.status || state.status,
+            error:session?.error || state.error,
+            autosaveVersion:Number(session?.project?.autosaveVersion || 0),
+            sourceUpdateCount:pendingSourceUpdates(session?.project).length,
+            sessionCount:state.sessions.size,
+            sessions:[...state.sessions.values()].map(item => ({
+                scope:item.scope,
+                projectId:item.context.projectId,
+                status:item.status,
+                hidden:Boolean(item.frame.hidden || !getOverlay().classList.contains('is-open')),
+                activeTaskCount:item.activeTaskCount,
+                savePending:item.savePending,
+            })),
         };
     }
 
     function bindUi(){
         getOverlay();
-        const frame = getFrame();
-        frame?.addEventListener?.('load', onFrameLoad);
         ui('[data-openshop-back]')?.addEventListener?.('click', () => close());
         ui('[data-openshop-save]')?.addEventListener?.('click', () => requestSave());
         ui('[data-openshop-send]')?.addEventListener?.('click', requestSendToCanvas);
@@ -573,6 +700,7 @@
 
     window.HstarOpenShopHost = Object.freeze({
         openNodeSession,
+        disposeProject,
         requestSave,
         requestSendToCanvas,
         refreshSources,

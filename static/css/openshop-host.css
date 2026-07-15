@@ -87,7 +87,7 @@
 .openshop-host-primary { border-color: #6d9fff; background: var(--openshop-accent); color: #fff; }
 .openshop-host-primary:hover:not(:disabled) { background: #3e7fe8; }
 
-.openshop-host > iframe {
+.openshop-session-frame {
     position: relative;
     inset: auto;
     grid-row: 2;
@@ -100,6 +100,8 @@
     pointer-events: auto;
     background: #0d1014;
 }
+
+.openshop-session-frame[hidden] { display: none; }
 
 .openshop-source-panel {
     position: absolute;

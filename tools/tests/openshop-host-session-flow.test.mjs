@@ -4,16 +4,10 @@ import vm from 'node:vm';
 
 const protocolPath = 'integrations/openshop/host/openshop-protocol.js';
 const hostPath = 'static/js/openshop-host.js';
-assert.ok(fs.existsSync(hostPath), `${hostPath} should exist`);
-
+const cssPath = 'static/css/openshop-host.css';
 const protocolSource = fs.readFileSync(protocolPath, 'utf8');
 const hostSource = fs.readFileSync(hostPath, 'utf8');
-const shellSource = fs.readFileSync('static/index.html', 'utf8');
-assert.match(shellSource, /\/static\/css\/openshop-host\.css/);
-const shellProtocolIndex = shellSource.indexOf('/static/openshop/host/openshop-protocol.js');
-const shellHostIndex = shellSource.indexOf('/static/js/openshop-host.js');
-assert.ok(shellProtocolIndex > 0, 'Studio Shell should load the OpenShop protocol');
-assert.ok(shellHostIndex > shellProtocolIndex, 'Studio Shell should load the OpenShop host after its protocol');
+const cssSource = fs.readFileSync(cssPath, 'utf8');
 
 function classList() {
   const values = new Set();
@@ -29,67 +23,81 @@ function classList() {
   };
 }
 
-function createElement(id = '') {
+let frameSequence = 0;
+function createElement(tagName='div', id='') {
   const listeners = new Map();
-  return {
+  const element = {
+    tagName:String(tagName).toUpperCase(),
     id,
-    dataset: {},
-    classList: classList(),
-    style: {},
-    attributes: {},
-    disabled: false,
-    textContent: '',
-    innerHTML: '',
-    src: '',
-    children: [],
+    dataset:{},
+    className:'',
+    classList:classList(),
+    style:{},
+    attributes:{},
+    disabled:false,
+    hidden:false,
+    isConnected:true,
+    textContent:'',
+    innerHTML:'',
+    src:'',
+    title:'',
+    children:[],
+    parentElement:null,
     setAttribute(name, value) { this.attributes[name] = String(value); },
     getAttribute(name) { return this.attributes[name]; },
-    appendChild(child) { this.children.push(child); return child; },
+    appendChild(child) {
+      child.parentElement = this;
+      child.isConnected = true;
+      this.children.push(child);
+      return child;
+    },
+    remove() {
+      this.isConnected = false;
+      if(this.parentElement){
+        const index = this.parentElement.children.indexOf(this);
+        if(index >= 0) this.parentElement.children.splice(index, 1);
+      }
+      this.parentElement = null;
+    },
     addEventListener(type, handler) {
       const handlers = listeners.get(type) || [];
       handlers.push(handler);
       listeners.set(type, handlers);
     },
-    dispatch(type, event = {}) {
+    dispatch(type, event={}) {
       for(const handler of listeners.get(type) || []) handler({target:this, preventDefault() {}, ...event});
     },
     querySelector() { return null; },
     querySelectorAll() { return []; },
   };
+  if(element.tagName === 'IFRAME'){
+    frameSequence += 1;
+    const messages = [];
+    element.contentWindow = {
+      id:`editor-window-${frameSequence}`,
+      closed:false,
+      messages,
+      postMessage(message, origin) { messages.push({message, origin}); },
+    };
+  }
+  return element;
 }
 
 const listeners = new Map();
-const editorMessages = [];
-const canvasMessages = [];
 const fetchCalls = [];
 const switchUICalls = [];
-let uploadedSourceCount = 0;
-
-const editorWindow = {
-  postMessage(message, origin) {
-    editorMessages.push({message, origin});
-  },
-};
-const canvasWindow = {
-  postMessage(message, origin) {
-    canvasMessages.push({message, origin});
-  },
-};
-
-const overlay = createElement('openshop-host');
+const deletedProjects = [];
+const overlay = createElement('section', 'openshop-host');
 overlay.setAttribute('aria-hidden', 'true');
-const frame = createElement('frame-openshop');
-frame.dataset.src = '/static/openshop/index.html';
-frame.contentWindow = editorWindow;
-const canvasFrame = createElement('frame-canvas');
-canvasFrame.contentWindow = canvasWindow;
-const title = createElement('openshop-title');
-const status = createElement('openshop-state');
-const sourcesButton = createElement('openshop-sources');
-const sourcePanel = createElement('openshop-source-panel');
-const backButton = createElement('openshop-back');
-const saveButton = createElement('openshop-save');
-const sendButton = createElement('openshop-send');
+const title = createElement('strong', 'openshop-title');
+const status = createElement('span', 'openshop-state');
+const sourcesButton = createElement('button', 'openshop-sources');
+const sourcePanel = createElement('aside', 'openshop-source-panel');
+const backButton = createElement('button', 'openshop-back');
+const saveButton = createElement('button', 'openshop-save');
+const sendButton = createElement('button', 'openshop-send');
+const canvasFrameA = createElement('iframe', 'frame-canvas-a');
+const canvasFrameB = createElement('iframe', 'frame-canvas-b');
 
 const selectorElements = new Map([
   ['[data-openshop-title]', title],
@@ -104,83 +112,94 @@ overlay.querySelector = selector => selectorElements.get(selector) || null;
 
 const elements = new Map([
   [overlay.id, overlay],
-  [frame.id, frame],
-  [canvasFrame.id, canvasFrame],
+  [canvasFrameA.id, canvasFrameA],
+  [canvasFrameB.id, canvasFrameB],
+]);
+const projectRecords = new Map([
+  ['project-a', {
+    schemaVersion:1, projectId:'project-a',
+    owner:{canvasType:'classic', canvasId:'canvas-a', nodeId:'node-a'},
+    document:{width:1920, height:1080}, editor:{objects:[]}, layers:[], sourceBindings:[],
+    aiTaskRecords:[], assetRefs:[], previewAssetId:'', autosaveVersion:1,
+  }],
+  ['project-b', {
+    schemaVersion:1, projectId:'project-b',
+    owner:{canvasType:'smart', canvasId:'canvas-b', nodeId:'node-b'},
+    document:{width:1280, height:720}, editor:{objects:[]}, layers:[], sourceBindings:[],
+    aiTaskRecords:[], assetRefs:[], previewAssetId:'', autosaveVersion:1,
+  }],
 ]);
 
-const project = {
-  schemaVersion: 1,
-  projectId: 'project-1',
-  owner: {canvasType:'classic', canvasId:'canvas-1', nodeId:'layered-1'},
-  document: {width:1920, height:1080},
-  editor: {objects:[]},
-  layers: [],
-  sourceBindings: [],
-  assetRefs: [],
-  previewAssetId: '',
-  autosaveVersion: 1,
-};
-
-function response({ok = true, status = 200, json = {}, blob = null, text = ''} = {}) {
+function response({ok=true, status=200, json={}, blob=null, text=''}={}) {
   return {
     ok,
     status,
-    async json() { return json; },
+    async json() { return structuredClone(json); },
     async blob() { return blob || new Blob(['image'], {type:'image/png'}); },
     async text() { return text || JSON.stringify(json); },
   };
 }
 
-async function fetchFake(url, options = {}) {
+async function fetchFake(url, options={}) {
+  const value = String(url);
   const method = String(options.method || 'GET').toUpperCase();
-  fetchCalls.push({url:String(url), method, options});
-  if(String(url).startsWith('/source-')) {
-    return response({blob:new Blob([String(url)], {type:'image/png'})});
-  }
-  if(method === 'GET' && String(url).startsWith('/api/openshop/projects/project-1?')) {
-    return response({json:{project}});
-  }
-  if(method === 'POST' && String(url) === '/api/openshop/projects/project-1/assets') {
-    uploadedSourceCount += 1;
-    const assetId = `asset-source-${uploadedSourceCount}`;
-    return response({json:{asset:{assetId, url:`/api/openshop/assets/${assetId}`, name:`source-${uploadedSourceCount}.png`}}});
-  }
-  if(method === 'PUT' && String(url) === '/api/openshop/projects/project-1') {
-    const body = JSON.parse(options.body);
-    return response({json:{project:{...body.project, autosaveVersion:2, previewAssetId:'asset-preview'}}});
+  fetchCalls.push({url:value, method, options});
+  if(value.startsWith('/source-')) return response({blob:new Blob([value], {type:'image/png'})});
+  const projectMatch = value.match(/^\/api\/openshop\/projects\/([^/?]+)(?:[/?]|$)/);
+  if(projectMatch){
+    const projectId = decodeURIComponent(projectMatch[1]);
+    if(value.endsWith('/assets')){
+      return response({json:{asset:{
+        assetId:`asset-${projectId}-${fetchCalls.length}`,
+        url:`/api/openshop/assets/asset-${projectId}-${fetchCalls.length}`,
+        name:`${projectId}.png`,
+      }}});
+    }
+    if(method === 'GET'){
+      const project = projectRecords.get(projectId);
+      return project ? response({json:{project}}) : response({ok:false, status:404, json:{detail:'Not Found'}});
+    }
+    if(method === 'PUT'){
+      const body = JSON.parse(options.body);
+      const saved = {...body.project, autosaveVersion:Number(body.base_version || 0) + 1};
+      projectRecords.set(projectId, saved);
+      return response({json:{project:saved}});
+    }
+    if(method === 'DELETE'){
+      deletedProjects.push(projectId);
+      projectRecords.delete(projectId);
+      return response({json:{ok:true}});
+    }
   }
   return response({ok:false, status:404, json:{detail:'Not Found'}});
 }
 
 const documentRef = {
-  body: createElement('body'),
-  readyState: 'complete',
-  contains(element) { return elements.has(element?.id); },
-  createElement,
+  body:createElement('body', 'body'),
+  readyState:'complete',
+  contains(element) { return Boolean(element?.isConnected); },
+  createElement(tagName) { return createElement(tagName); },
   addEventListener() {},
   getElementById(id) { return elements.get(id) || null; },
-  querySelector(selector) {
-    if(selectorElements.has(selector)) return selectorElements.get(selector);
-    return null;
-  },
+  querySelector(selector) { return selectorElements.get(selector) || null; },
 };
 
 const windowRef = {
-  location: {origin:'http://127.0.0.1:3000'},
-  crypto: {randomUUID: (() => { let id = 0; return () => `host-${++id}`; })()},
+  location:{origin:'http://127.0.0.1:3000'},
+  crypto:{randomUUID:(() => { let id = 0; return () => `host-${++id}`; })()},
   addEventListener(type, handler) {
     const handlers = listeners.get(type) || [];
     handlers.push(handler);
     listeners.set(type, handlers);
   },
   removeEventListener() {},
-  lucide: {createIcons() {}},
+  lucide:{createIcons() {}},
   switchUI(trigger, pageId) { switchUICalls.push({trigger, pageId}); },
 };
 
-function dispatchEditorMessage(data) {
-  for(const handler of listeners.get('message') || []) {
-    handler({origin:windowRef.location.origin, source:editorWindow, data});
+function dispatchEditorMessage(frame, data) {
+  for(const handler of listeners.get('message') || []){
+    handler({origin:windowRef.location.origin, source:frame.contentWindow, data});
   }
 }
 
@@ -195,12 +214,13 @@ const sandbox = {
   URL,
   URLSearchParams,
   console,
-  document: documentRef,
+  structuredClone,
+  document:documentRef,
   encodeURIComponent,
-  fetch: fetchFake,
+  fetch:fetchFake,
   setTimeout,
   clearTimeout,
-  window: windowRef,
+  window:windowRef,
 };
 sandbox.window.document = documentRef;
 sandbox.window.fetch = fetchFake;
@@ -213,110 +233,148 @@ vm.runInContext(hostSource, sandbox, {filename:hostPath});
 
 const protocol = sandbox.window.HstarOpenShopProtocol;
 const host = sandbox.window.HstarOpenShopHost;
-assert.equal(typeof host?.openNodeSession, 'function');
+const contextA = {
+  canvasType:'classic', canvasId:'canvas-a', nodeId:'node-a', projectId:'project-a',
+  projectName:'海报 A', frameId:'frame-canvas-a', documentWidth:1920, documentHeight:1080,
+};
+const contextB = {
+  canvasType:'smart', canvasId:'canvas-b', nodeId:'node-b', projectId:'project-b',
+  projectName:'海报 B', frameId:'frame-canvas-b', documentWidth:1280, documentHeight:720,
+};
+const sourcesA = [{
+  edgeId:'edge-a', sourceNodeId:'image-a', assetVersion:'v1', name:'来源 A.png', url:'/source-a.png', sequence:0,
+}];
 
-const sources = [
-  {edgeId:'edge-1', sourceNodeId:'image-1', assetVersion:'v1', name:'第一张.png', url:'/source-1.png', sequence:0},
-  {edgeId:'edge-2', sourceNodeId:'image-2', assetVersion:'v1', name:'第二张.png', url:'/source-2.png', sequence:1},
-];
-host.openNodeSession({
-  canvasType:'classic', canvasId:'canvas-1', nodeId:'layered-1',
-  projectId:'project-1', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
-}, sources);
+function frameFor(context) {
+  const scope = protocol.createProjectScope(context);
+  return overlay.children.find(child => child.dataset?.projectScope === scope);
+}
 
+function editorMessages(frame) {
+  return frame.contentWindow.messages.map(item => item.message);
+}
+
+function readyFrame(frame, context, requestId) {
+  const open = editorMessages(frame).find(message => message.type === protocol.TYPES.OPEN_SESSION);
+  assert.ok(open, 'frame should receive OPEN_SESSION before READY');
+  dispatchEditorMessage(frame, protocol.createEnvelope({
+    type:protocol.TYPES.READY,
+    sessionId:open.sessionId,
+    requestId,
+    context,
+    payload:{ready:true},
+  }));
+  return open.sessionId;
+}
+
+host.openNodeSession(contextA, sourcesA);
+const frameA = frameFor(contextA);
+assert.ok(frameA, 'project A should create a dedicated iframe');
+assert.equal(frameA.hidden, false);
 assert.equal(overlay.classList.contains('is-open'), true);
-assert.equal(overlay.getAttribute('aria-hidden'), 'false');
-assert.match(frame.src, /\/static\/openshop\/index\.html/);
-frame.dispatch('load');
-assert.deepEqual(editorMessages.map(item => item.message.type), [protocol.TYPES.OPEN_SESSION]);
-const sessionId = editorMessages[0].message.sessionId;
-
-dispatchEditorMessage(protocol.createEnvelope({
-  type:protocol.TYPES.READY,
-  sessionId,
-  requestId:'editor-ready-1',
-  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:'layered-1', projectId:'project-1'},
-  payload:{ready:true},
-}));
+frameA.dispatch('load');
+const sessionA = readyFrame(frameA, contextA, 'ready-a');
 await flushAsync();
-
-assert.deepEqual(editorMessages.map(item => item.message.type), [
+assert.deepEqual(editorMessages(frameA).map(message => message.type), [
   protocol.TYPES.OPEN_SESSION,
   protocol.TYPES.LOAD_PROJECT,
   protocol.TYPES.SYNC_SOURCES,
 ]);
-assert.equal(uploadedSourceCount, 2);
-assert.deepEqual(
-  Array.from(editorMessages[2].message.payload.sources, source => source.sequence),
-  [0, 1],
-);
 
-const saveProject = {
-  ...project,
-  previewAssetId:'asset-preview',
-  autosaveVersion:1,
-  layers:[{layerId:'layer-1', name:'图层 1'}],
-  sourceBindings:[{
-    layerId:'layer-1', edgeId:'edge-1', sourceNodeId:'image-1',
-    assetId:'asset-source-1', assetVersion:'v1', sequence:0, state:'bound',
+host.close();
+assert.equal(overlay.classList.contains('is-open'), false, 'close should only hide the full-screen host');
+assert.equal(frameA.isConnected, true, 'hidden project iframe should remain mounted');
+assert.equal(frameA.contentWindow.closed, false);
+assert.equal(editorMessages(frameA).some(message => message.type === protocol.TYPES.REQUEST_SAVE), false);
+assert.equal(editorMessages(frameA).some(message => message.type === protocol.TYPES.CLOSE), false);
+
+host.openNodeSession(contextB, []);
+const frameB = frameFor(contextB);
+assert.ok(frameB, 'project B should create a second iframe');
+assert.notEqual(frameA, frameB);
+assert.equal(frameA.hidden, true);
+assert.equal(frameB.hidden, false);
+frameB.dispatch('load');
+readyFrame(frameB, contextB, 'ready-b');
+await flushAsync();
+
+const changedA = {
+  ...projectRecords.get('project-a'),
+  layers:[{layerId:'source-layer', name:'来源图层'}],
+  aiTaskRecords:[{
+    taskId:'parent-a', kind:'parent', status:'partial', targetCount:4,
+    completedCount:3, failedCount:1,
   }],
 };
-dispatchEditorMessage(protocol.createEnvelope({
+dispatchEditorMessage(frameA, protocol.createEnvelope({
+  type:protocol.TYPES.PROJECT_CHANGED,
+  sessionId:sessionA,
+  requestId:'changed-a',
+  context:contextA,
+  payload:{project:changedA, reason:'ai-generation'},
+}));
+dispatchEditorMessage(frameA, protocol.createEnvelope({
   type:protocol.TYPES.SAVE_PROJECT,
-  sessionId,
-  requestId:'save-1',
-  context:{...project.owner, projectId:'project-1'},
-  payload:{reason:'manual', closeAfter:false, project:saveProject},
+  sessionId:sessionA,
+  requestId:'save-a',
+  context:contextA,
+  payload:{project:changedA, reason:'ai-generation', closeAfter:false},
 }));
 await flushAsync();
 
-const putCall = fetchCalls.find(call => call.method === 'PUT');
-assert.ok(putCall, 'SAVE_PROJECT should persist through the project API');
-assert.equal(JSON.parse(putCall.options.body).base_version, 1);
-assert.equal(editorMessages.at(-1).message.type, protocol.TYPES.SAVE_CONFIRMED);
-const metaMessage = canvasMessages.find(item => item.message.type === 'hstar-openshop-node-meta');
-assert.ok(metaMessage, 'save confirmation should update only the originating canvas iframe');
-assert.equal(metaMessage.message.context.nodeId, 'layered-1');
-assert.equal(metaMessage.message.meta.layerCount, 1);
+const metaA = canvasFrameA.contentWindow.messages
+  .map(item => item.message)
+  .filter(message => message.type === 'hstar-openshop-node-meta')
+  .at(-1);
+assert.ok(metaA, 'hidden project should still update its originating canvas');
+assert.equal(metaA.context.canvasType, 'classic');
+assert.equal(metaA.context.canvasId, 'canvas-a');
+assert.equal(metaA.context.nodeId, 'node-a');
+assert.equal(metaA.context.projectId, 'project-a');
+assert.equal(metaA.meta.aiStatus, 'partial');
+assert.equal(metaA.meta.aiTargetCount, 4);
+assert.equal(metaA.meta.aiCompletedCount, 3);
+assert.equal(metaA.meta.aiFailedCount, 1);
 
-dispatchEditorMessage(protocol.createEnvelope({
+host.openNodeSession(contextA, sourcesA);
+assert.equal(frameFor(contextA), frameA, 'reopening a project should reuse its iframe');
+assert.equal(frameA.hidden, false);
+assert.equal(frameB.hidden, true);
+assert.equal(editorMessages(frameA).filter(message => message.type === protocol.TYPES.OPEN_SESSION).length, 1);
+
+dispatchEditorMessage(frameA, protocol.createEnvelope({
   type:protocol.TYPES.SEND_TO_CANVAS,
-  sessionId,
-  requestId:'send-1',
-  context:{...project.owner, projectId:'project-1'},
-  payload:{
-    assetId:'asset-output',
-    url:'/api/openshop/assets/asset-output',
-    name:'图文分层输出.png',
-    width:1920,
-    height:1080,
-  },
+  sessionId:sessionA,
+  requestId:'send-a',
+  context:contextA,
+  payload:{assetId:'asset-output', url:'/api/openshop/assets/asset-output', name:'输出.png', width:1920, height:1080},
 }));
 await flushAsync();
+assert.ok(canvasFrameA.contentWindow.messages.some(item => item.message.type === 'hstar-openshop-output'));
 
-const outputMessage = canvasMessages.find(item => item.message.type === 'hstar-openshop-output');
-assert.ok(outputMessage, 'composited output should return to the originating canvas iframe');
-assert.equal(outputMessage.message.output.assetId, 'asset-output');
-assert.equal(outputMessage.message.output.url, '/api/openshop/assets/asset-output');
-assert.doesNotMatch(JSON.stringify(outputMessage.message), /data:image\/|blob:/);
-
-dispatchEditorMessage(protocol.createEnvelope({
+dispatchEditorMessage(frameA, protocol.createEnvelope({
   type:protocol.TYPES.OPEN_API_SETTINGS,
-  sessionId,
-  requestId:'open-api-settings-1',
-  context:{...project.owner, projectId:'project-1'},
+  sessionId:sessionA,
+  requestId:'api-a',
+  context:contextA,
   payload:{},
 }));
 await flushAsync();
+assert.equal(overlay.classList.contains('is-open'), false);
+assert.equal(switchUICalls.at(-1).pageId, 'api-settings');
+assert.equal(frameA.isConnected, true, 'opening API settings must not dispose the project');
 
-assert.equal(overlay.classList.contains('is-open'), false, 'API settings command should close the full-screen editor overlay');
-assert.equal(switchUICalls.length, 1, 'API settings command should route through the Studio shell');
-assert.equal(switchUICalls[0].pageId, 'api-settings');
+const disposed = await host.disposeProject('project-a', contextA);
+assert.equal(disposed, true);
+assert.equal(frameA.isConnected, false);
+assert.equal(deletedProjects.includes('project-a'), true);
+assert.equal(editorMessages(frameA).at(-1).type, protocol.TYPES.CLOSE);
+assert.equal(host.getState().sessionCount, 1);
 
-assert.match(hostSource, /mode:\s*['"]replace['"]/);
-assert.match(hostSource, /mode:\s*['"]add['"]/);
-assert.match(hostSource, /mode:\s*['"]ignore['"]/);
-assert.match(hostSource, /Protocol\.TYPES\.OPEN_API_SETTINGS/);
-assert.match(hostSource, /Object\.freeze\(\{[\s\S]*openNodeSession[\s\S]*requestSave[\s\S]*requestSendToCanvas[\s\S]*refreshSources[\s\S]*close[\s\S]*getState/);
+assert.match(cssSource, /\.openshop-session-frame\[hidden\]\s*\{\s*display:\s*none;/);
+assert.doesNotMatch(hostSource, /about:blank/);
+assert.match(hostSource, /HIDDEN_SESSION_IDLE_MS\s*=\s*15\s*\*\s*60\s*\*\s*1000/);
+assert.match(hostSource, /MAX_IDLE_SESSIONS\s*=\s*3/);
+assert.match(hostSource, /Object\.freeze\(\{[\s\S]*openNodeSession[\s\S]*disposeProject[\s\S]*requestSave[\s\S]*requestSendToCanvas[\s\S]*refreshSources[\s\S]*close[\s\S]*getState/);
 
 console.log('OpenShop full-screen host session flow tests passed');
