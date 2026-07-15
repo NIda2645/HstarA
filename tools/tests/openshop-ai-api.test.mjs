@@ -48,6 +48,17 @@ def png_bytes(color=(60, 100, 180, 255), size=(96, 64)):
     return output.getvalue()
 
 
+def mask_bytes(size=(96, 64), bounds=(10, 8, 40, 24)):
+    image = Image.new("L", size, 0)
+    x, y, width, height = bounds
+    for py in range(y, y + height):
+        for px in range(x, x + width):
+            image.putpixel((px, py), 255)
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 async def wait_for_terminal(client, project_id, task_id, owner, timeout=3.0):
     deadline = asyncio.get_running_loop().time() + timeout
     params = {
@@ -62,7 +73,7 @@ async def wait_for_terminal(client, project_id, task_id, owner, timeout=3.0):
         )
         assert response.status_code == 200, response.text
         task = response.json()["task"]
-        if task["status"] in {"succeeded", "failed", "cancelled"}:
+        if task["status"] in {"succeeded", "partial", "failed", "cancelled"}:
             return task
         await asyncio.sleep(0.01)
     raise AssertionError(f"OpenShop AI task did not finish: {task_id}")
@@ -80,6 +91,16 @@ async def run():
         "protocol": "openai",
         "chat_models": ["gemini-3.1-pro-high"],
         "image_models": ["gemini-3-pro-image"],
+        "image_model_capabilities": {
+            "gemini-3-pro-image": {
+                "supportsMask": True,
+                "supportsMultiReference": True,
+                "maxReferenceImages": 12,
+                "maxOutputs": 6,
+                "sizes": ["auto", "96x64"],
+                "qualities": ["auto", "high"],
+            }
+        },
     }
     main.public_api_providers = lambda: [dict(provider)]
     main.get_primary_provider_id = lambda providers=None: "vision"
@@ -233,6 +254,145 @@ async def run():
         assert remove_task["result"]["assetId"]
         output = await client.get(remove_task["result"]["url"])
         assert output.status_code == 200 and output.content == generated_bytes
+
+        mask_upload = await client.post(
+            "/api/openshop/projects/project-ai/assets",
+            data={
+                "canvas_type":owner["canvasType"],
+                "canvas_id":owner["canvasId"],
+                "node_id":owner["nodeId"],
+                "role":"ai-mask",
+            },
+            files={"file":("mask.png", mask_bytes(), "image/png")},
+        )
+        assert mask_upload.status_code == 200, mask_upload.text
+        mask_asset_id = mask_upload.json()["asset"]["assetId"]
+        reference_upload = await client.post(
+            "/api/openshop/projects/project-ai/assets",
+            data={
+                "canvas_type":owner["canvasType"],
+                "canvas_id":owner["canvasId"],
+                "node_id":owner["nodeId"],
+                "role":"ai-reference",
+            },
+            files={"file":("reference.png", png_bytes((180, 80, 30, 255)), "image/png")},
+        )
+        assert reference_upload.status_code == 200, reference_upload.text
+        reference_asset_id = reference_upload.json()["asset"]["assetId"]
+
+        generation_calls = 0
+
+        async def partial_generate(prompt, size, quality, model, reference_images=None, provider_id=""):
+            nonlocal generation_calls
+            generation_calls += 1
+            assert provider_id == "vision" and model == "gemini-3-pro-image"
+            assert size == "96x64" and quality == "high"
+            assert "@参考图2" in prompt
+            roles = [item["role"] for item in reference_images]
+            assert roles[:2] == ["visible-composite", "mask"]
+            assert "library" in roles
+            if generation_calls == 3:
+                raise HTTPException(status_code=502, detail="third child failed")
+            color = (210, 40 + generation_calls, 80, 255)
+            return {
+                "type":"b64",
+                "value":base64.b64encode(png_bytes(color)).decode("ascii"),
+                "mime_type":"image/png",
+            }, {"id":f"generation-{generation_calls}"}
+
+        main.generate_ai_image = partial_generate
+        generation_request = {
+            "owner":owner,
+            "tool_id":"local-redraw",
+            "source_asset_id":source_asset_id,
+            "mask_asset_id":mask_asset_id,
+            "primary_reference_asset_id":source_asset_id,
+            "reference_assets":[{
+                "assetId":source_asset_id,
+                "alias":"参考图1",
+                "sourceType":"primary",
+                "order":0,
+                "width":96,
+                "height":64,
+            }, {
+                "assetId":reference_asset_id,
+                "alias":"参考图2",
+                "sourceType":"library",
+                "order":1,
+                "width":96,
+                "height":64,
+            }],
+            "provider_id":"vision",
+            "model_id":"gemini-3-pro-image",
+            "prompt":"将 @参考图2 的颜色用于选区",
+            "size":"96x64",
+            "quality":"high",
+            "target_count":3,
+            "reference_mode":"full",
+            "source_layer_id":"source-layer",
+            "source_layer_index":1,
+            "document":{
+                "width":96,
+                "height":64,
+                "layerVersion":4,
+                "visibleCompositeVersion":9,
+            },
+            "selection":{"x":10,"y":8,"width":40,"height":24,"feather":0},
+        }
+        generated = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks",
+            json=generation_request,
+        )
+        assert generated.status_code == 200, generated.text
+        parent = await wait_for_terminal(
+            client, "project-ai", generated.json()["task_id"], owner
+        )
+        assert parent["kind"] == "parent"
+        assert parent["status"] == "partial", parent
+        assert (parent["targetCount"], parent["completedCount"], parent["failedCount"]) == (3, 2, 1)
+        successful_children = [
+            child for child in parent["children"] if child["status"] == "succeeded"
+        ]
+        assert len(successful_children) == 2
+        for child in successful_children:
+            assert child["outputAssetId"]
+            result_response = await client.get(child["result"]["url"])
+            assert result_response.status_code == 200
+            result_image = Image.open(io.BytesIO(result_response.content)).convert("RGBA")
+            assert result_image.size == (96, 64)
+            assert result_image.getpixel((0, 0))[3] == 0
+            assert result_image.getpixel((12, 10))[3] == 255
+        assert "seed" not in json.dumps(parent).lower()
+
+        generation_calls = 10
+
+        async def retry_generate(*args, **kwargs):
+            return {
+                "type":"b64",
+                "value":base64.b64encode(png_bytes((30, 90, 230, 255))).decode("ascii"),
+                "mime_type":"image/png",
+            }, {"id":"retry-generation"}
+
+        main.generate_ai_image = retry_generate
+        retry = await client.post(
+            f"/api/openshop/projects/project-ai/ai-tasks/{parent['taskId']}/retry-missing",
+            json={"owner":owner},
+        )
+        assert retry.status_code == 200, retry.text
+        retry_parent = await wait_for_terminal(
+            client, "project-ai", retry.json()["task_id"], owner
+        )
+        assert retry_parent["status"] == "succeeded", retry_parent
+        assert retry_parent["targetCount"] == 1
+        assert retry_parent["retryOfTaskId"] == parent["taskId"]
+        assert retry_parent["children"][0]["index"] == 2
+
+        too_many = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks",
+            json={**generation_request, "target_count":7},
+        )
+        assert too_many.status_code == 400
+        assert "最多" in too_many.text or "maxOutputs" in too_many.text
 
         release = asyncio.Event()
 

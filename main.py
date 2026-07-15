@@ -28,6 +28,7 @@ import math
 import shlex
 import functools
 import html
+from copy import deepcopy
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional, Tuple
 from threading import Lock, Thread
@@ -49,14 +50,17 @@ from openshop_projects import (
     OpenShopVersionConflict,
 )
 from openshop_ai import (
+    OPENSHOP_GENERATIVE_TOOL_IDS,
     OpenShopAiTaskNotFound,
     OpenShopAiTaskOwnershipError,
     OpenShopAiTaskRegistry,
     OpenShopAiValidationError,
     build_capability_catalog,
     build_ocr_prompt,
+    normalize_generation_snapshot,
     normalize_ocr_layout,
 )
+from openshop_image_ops import normalize_local_generation
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -2783,10 +2787,24 @@ class OpenShopAiTaskRequest(BaseModel):
     tool_id: str
     source_asset_id: str
     mask_asset_id: str = ""
+    primary_reference_asset_id: str = ""
+    reference_assets: List[Dict[str, Any]] = Field(default_factory=list)
     provider_id: str
     model_id: str
     mode: str = "layer"
+    prompt: str = ""
+    size: str = "auto"
+    quality: str = "auto"
+    target_count: int = 1
+    reference_mode: str = "full"
+    source_layer_id: str = ""
+    source_layer_index: int = 0
+    document: Dict[str, Any] = Field(default_factory=dict)
+    selection: Dict[str, Any] = Field(default_factory=dict)
     options: Dict[str, Any] = Field(default_factory=dict)
+
+class OpenShopAiRetryRequest(BaseModel):
+    owner: Dict[str, Any]
 
 class CanvasAssetCheckRequest(BaseModel):
     urls: List[str] = []
@@ -16422,6 +16440,80 @@ def openshop_ai_provider(payload: OpenShopAiTaskRequest) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail=f"配置不可用：模型「{model}」未声明视觉布局识别能力。")
     return provider
 
+def openshop_generation_snapshot(payload: OpenShopAiTaskRequest) -> Dict[str, Any]:
+    try:
+        return normalize_generation_snapshot({
+            "toolId": payload.tool_id,
+            "sourceAssetId": payload.source_asset_id,
+            "maskAssetId": payload.mask_asset_id,
+            "primaryReferenceAssetId": payload.primary_reference_asset_id,
+            "references": payload.reference_assets,
+            "prompt": payload.prompt,
+            "size": payload.size,
+            "quality": payload.quality,
+            "targetCount": payload.target_count,
+            "referenceMode": payload.reference_mode,
+            "sourceLayerId": payload.source_layer_id,
+            "sourceLayerIndex": payload.source_layer_index,
+            "document": payload.document,
+            "selection": payload.selection,
+            "options": payload.options,
+        })
+    except OpenShopAiValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+def openshop_generation_model(
+    provider: Dict[str, Any],
+    tool_id: str,
+    model_id: str,
+) -> Dict[str, Any]:
+    probe_provider = {**provider, "has_key": True, "enabled": True}
+    catalog = build_capability_catalog([probe_provider], primary_provider_id=provider["id"])
+    tool = catalog["tools"].get(tool_id) or {}
+    for catalog_provider in tool.get("providers", []):
+        if catalog_provider.get("id") != provider.get("id"):
+            continue
+        for model in catalog_provider.get("models", []):
+            if model.get("id") == model_id:
+                return model
+    raise HTTPException(
+        status_code=400,
+        detail=f"配置不可用：模型「{model_id}」不支持 OpenShop {tool_id}。",
+    )
+
+def validate_openshop_generation_capabilities(
+    provider: Dict[str, Any],
+    model_id: str,
+    snapshot: Dict[str, Any],
+) -> None:
+    model = openshop_generation_model(provider, snapshot["toolId"], model_id)
+    capabilities = model.get("capabilities") or {}
+    if not capabilities.get("supportsImageInput"):
+        raise HTTPException(status_code=400, detail="当前模型不支持图生图")
+    if not capabilities.get("supportsMask"):
+        raise HTTPException(status_code=400, detail="当前模型不支持选区蒙版")
+    reference_count = len(snapshot["references"])
+    max_references = max(1, int(capabilities.get("maxReferenceImages") or 8))
+    if reference_count > max_references:
+        raise HTTPException(
+            status_code=400,
+            detail=f"当前模型最多支持 {max_references} 张参考图",
+        )
+    if reference_count > 1 and not capabilities.get("supportsMultiReference"):
+        raise HTTPException(status_code=400, detail="当前模型不支持多参考图")
+    max_outputs = max(1, int(capabilities.get("maxOutputs") or 8))
+    if snapshot["targetCount"] > max_outputs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"当前模型最多生成 {max_outputs} 张图片",
+        )
+    sizes = [str(item) for item in capabilities.get("sizes") or ["auto"]]
+    qualities = [str(item) for item in capabilities.get("qualities") or ["auto"]]
+    if snapshot["size"] not in sizes:
+        raise HTTPException(status_code=400, detail=f"当前模型不支持尺寸 {snapshot['size']}")
+    if snapshot["quality"] not in qualities:
+        raise HTTPException(status_code=400, detail=f"当前模型不支持质量 {snapshot['quality']}")
+
 def openshop_ai_asset(asset_id: str, max_size: int = 0) -> Tuple[str, Dict[str, Any], str]:
     try:
         path, metadata = OPENSHOP_STORE.asset_path(asset_id)
@@ -16475,6 +16567,190 @@ async def store_openshop_ai_output(
                 os.remove(output_path)
             except OSError:
                 pass
+
+OPENSHOP_GENERATION_SEMAPHORE = asyncio.Semaphore(3)
+
+async def openshop_generation_references(
+    snapshot: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    source_aliases = [
+        f"@{item['alias']}"
+        for item in snapshot["references"]
+        if item["assetId"] == snapshot["sourceAssetId"]
+    ]
+    source_name = "全图上下文"
+    if source_aliases:
+        source_name += f"（{'、'.join(source_aliases)}）"
+    ordered = [
+        (snapshot["sourceAssetId"], "visible-composite", source_name),
+        (snapshot["maskAssetId"], "mask", "选区蒙版"),
+    ]
+    ordered.extend(
+        (item["assetId"], item["sourceType"], item["alias"])
+        for item in snapshot["references"]
+        if item["assetId"] != snapshot["sourceAssetId"]
+    )
+    references = []
+    for asset_id, role, name in ordered:
+        path, metadata, url = await asyncio.to_thread(openshop_ai_asset, asset_id, 0)
+        references.append({
+            "url": url,
+            "name": name or os.path.basename(path),
+            "role": role,
+            "kind": "image",
+            "mime": metadata["mime"],
+        })
+    return references
+
+def openshop_generation_prompt(snapshot: Dict[str, Any]) -> str:
+    scope = (
+        "Fill only the selected region using the full visible image as context. "
+        "Preserve every pixel outside the supplied mask exactly."
+        if snapshot["toolId"] == "generative-fill"
+        else "Redraw only the selected region. Preserve every pixel outside the supplied mask exactly."
+    )
+    mappings = ", ".join(
+        f"@{item['alias']} is reference image {index + 1}"
+        for index, item in enumerate(snapshot["references"])
+    )
+    prompt = snapshot["prompt"] or "Complete the selected region naturally."
+    parts = [scope, f"User request: {prompt}"]
+    if mappings:
+        parts.append(f"Reference mapping: {mappings}")
+    return "\n".join(parts)
+
+async def generated_openshop_image_bytes(image_data: Dict[str, Any]) -> bytes:
+    output_url = await save_ai_image_to_output(image_data, prefix="openshop_generation_")
+    output_path = output_file_from_url(output_url)
+    if not output_path or not os.path.isfile(output_path):
+        raise HTTPException(status_code=502, detail="OpenShop 生图模型没有返回可读取的图片")
+    temporary = os.path.basename(output_path).startswith("openshop_generation_")
+    try:
+        with open(output_path, "rb") as handle:
+            content = handle.read(OPENSHOP_STORE.MAX_IMAGE_BYTES + 1)
+        if len(content) > OPENSHOP_STORE.MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="OpenShop 生图结果超过 64 MiB 限制")
+        return content
+    finally:
+        if temporary:
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+
+async def normalize_openshop_generation_result(
+    snapshot: Dict[str, Any],
+    image_data: Dict[str, Any],
+) -> bytes:
+    source_path, _source_metadata = await asyncio.to_thread(
+        OPENSHOP_STORE.asset_path, snapshot["sourceAssetId"]
+    )
+    mask_path, _mask_metadata = await asyncio.to_thread(
+        OPENSHOP_STORE.asset_path, snapshot["maskAssetId"]
+    )
+    with open(source_path, "rb") as source_handle, open(mask_path, "rb") as mask_handle:
+        source_bytes = source_handle.read()
+        mask_bytes_value = mask_handle.read()
+    generated_bytes = await generated_openshop_image_bytes(image_data)
+    return await asyncio.to_thread(
+        normalize_local_generation,
+        source_bytes,
+        mask_bytes_value,
+        generated_bytes,
+        snapshot["selection"],
+    )
+
+async def store_openshop_generation_output(
+    project_id: str,
+    owner: Dict[str, Any],
+    content: bytes,
+    child_id: str,
+) -> Dict[str, Any]:
+    asset = await asyncio.to_thread(
+        OPENSHOP_STORE.store_image,
+        project_id,
+        owner,
+        content,
+        "image/png",
+        f"{child_id}.png",
+        "ai-output",
+    )
+    asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
+    return asset
+
+def public_openshop_asset(asset: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: asset[key]
+        for key in ("assetId", "url", "name", "width", "height", "mime")
+    }
+
+async def run_openshop_generation_child(
+    parent_id: str,
+    child_id: str,
+    project_id: str,
+    owner: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    provider_id: str,
+    model_id: str,
+):
+    if not OPENSHOP_AI_TASKS.mark_child_running(parent_id, child_id):
+        return
+    try:
+        async with OPENSHOP_GENERATION_SEMAPHORE:
+            references = await openshop_generation_references(snapshot)
+            image_data, _raw = await generate_ai_image(
+                openshop_generation_prompt(snapshot),
+                snapshot["size"],
+                snapshot["quality"],
+                model_id,
+                references,
+                provider_id,
+            )
+        if not OPENSHOP_AI_TASKS.can_complete_child(parent_id, child_id):
+            return
+        normalized_png = await normalize_openshop_generation_result(snapshot, image_data)
+        asset = await store_openshop_generation_output(
+            project_id, owner, normalized_png, child_id
+        )
+        if not OPENSHOP_AI_TASKS.succeed_child(
+            parent_id, child_id, public_openshop_asset(asset)
+        ):
+            await asyncio.to_thread(OPENSHOP_STORE.collect_garbage)
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        OPENSHOP_AI_TASKS.fail_child(parent_id, child_id, detail)
+
+def create_and_schedule_openshop_generation(
+    project_id: str,
+    owner: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    provider_id: str,
+    model_id: str,
+    retry_of_task_id: str = "",
+) -> Dict[str, Any]:
+    parent = OPENSHOP_AI_TASKS.create_parent(
+        project_id,
+        owner,
+        snapshot,
+        provider_id,
+        model_id,
+        retry_of_task_id=retry_of_task_id,
+    )
+    for index in snapshot["requestedIndexes"]:
+        child = OPENSHOP_AI_TASKS.create_child(parent["taskId"], index)
+        future = asyncio.create_task(run_openshop_generation_child(
+            parent["taskId"],
+            child["childTaskId"],
+            project_id,
+            owner,
+            deepcopy(snapshot),
+            provider_id,
+            model_id,
+        ))
+        OPENSHOP_AI_TASKS.bind_child(parent["taskId"], child["childTaskId"], future)
+    return OPENSHOP_AI_TASKS.get(parent["taskId"], project_id, owner)
 
 async def run_openshop_ai_task(
     task_id: str,
@@ -16692,9 +16968,33 @@ async def create_openshop_ai_task(
     payload: OpenShopAiTaskRequest,
 ):
     await ensure_openshop_project_owner(project_id, payload.owner)
-    if payload.tool_id not in {"text-extract", "text-remove"}:
+    if payload.tool_id not in {"text-extract", "text-remove", *OPENSHOP_GENERATIVE_TOOL_IDS}:
         raise HTTPException(status_code=400, detail="OpenShop AI 功能不存在")
-    openshop_ai_provider(payload)
+    provider = openshop_ai_provider(payload)
+    if payload.tool_id in OPENSHOP_GENERATIVE_TOOL_IDS:
+        snapshot = openshop_generation_snapshot(payload)
+        validate_openshop_generation_capabilities(provider, payload.model_id, snapshot)
+        try:
+            asset_ids = {
+                snapshot["sourceAssetId"],
+                snapshot["maskAssetId"],
+                snapshot["primaryReferenceAssetId"],
+                *(item["assetId"] for item in snapshot["references"]),
+            }
+            for asset_id in asset_ids:
+                await asyncio.to_thread(OPENSHOP_STORE.asset_path, asset_id)
+            record = create_and_schedule_openshop_generation(
+                project_id,
+                payload.owner,
+                snapshot,
+                payload.provider_id,
+                payload.model_id,
+            )
+        except OpenShopStoreError as exc:
+            raise_openshop_http_error(exc)
+        except OpenShopAiValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"task_id": record["taskId"], "status": record["status"], "task": record}
     try:
         await asyncio.to_thread(OPENSHOP_STORE.asset_path, payload.source_asset_id)
         if payload.mode == "selection":
@@ -16717,6 +17017,56 @@ async def create_openshop_ai_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     future = asyncio.create_task(run_openshop_ai_task(record["taskId"], project_id, payload))
     OPENSHOP_AI_TASKS.bind(record["taskId"], future)
+    return {"task_id": record["taskId"], "status": record["status"], "task": record}
+
+@app.post("/api/openshop/projects/{project_id}/ai-tasks/{task_id}/retry-missing")
+async def retry_openshop_ai_task(
+    project_id: str,
+    task_id: str,
+    payload: OpenShopAiRetryRequest,
+):
+    await ensure_openshop_project_owner(project_id, payload.owner)
+    try:
+        previous = OPENSHOP_AI_TASKS.get(task_id, project_id, payload.owner)
+    except (OpenShopAiTaskNotFound, OpenShopAiTaskOwnershipError, OpenShopAiValidationError) as exc:
+        raise_openshop_ai_task_error(exc)
+    if previous.get("kind") != "parent" or previous["status"] not in {"partial", "failed"}:
+        raise HTTPException(status_code=409, detail="OpenShop 任务没有可补生成的结果")
+    missing_indexes = [
+        int(child["index"])
+        for child in previous["children"]
+        if child["status"] in {"failed", "cancelled"}
+    ]
+    if not missing_indexes:
+        raise HTTPException(status_code=409, detail="OpenShop 任务没有可补生成的结果")
+    snapshot = {
+        **deepcopy(previous["snapshot"]),
+        "targetCount": len(missing_indexes),
+        "originalTargetCount": int(
+            previous["snapshot"].get("originalTargetCount") or previous["targetCount"]
+        ),
+        "requestedIndexes": missing_indexes,
+    }
+    provider = get_api_provider_exact(previous["apiConfigId"])
+    configured_models = [
+        str(item or "").strip()
+        for item in provider.get("image_models", [])
+        if str(item or "").strip()
+    ]
+    if previous["modelId"] not in configured_models:
+        raise HTTPException(status_code=400, detail="配置不可用：原模型已被删除")
+    validate_openshop_generation_capabilities(provider, previous["modelId"], snapshot)
+    try:
+        record = create_and_schedule_openshop_generation(
+            project_id,
+            payload.owner,
+            snapshot,
+            previous["apiConfigId"],
+            previous["modelId"],
+            retry_of_task_id=task_id,
+        )
+    except OpenShopAiValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"task_id": record["taskId"], "status": record["status"], "task": record}
 
 @app.get("/api/openshop/projects/{project_id}/ai-tasks/{task_id}")
