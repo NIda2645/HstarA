@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   createCanvasMock,
   installFabricMock,
@@ -8,6 +10,9 @@ import {
   mountEditorDom,
   quietUiMethods
 } from './os-harness.js';
+
+const testDir = dirname(fileURLToPath(import.meta.url));
+const snapEnginePath = resolve(testDir, '..', 'host', 'openshop-snap-engine.js');
 
 describe('OpenShop core object', () => {
   beforeEach(() => {
@@ -50,6 +55,88 @@ describe('OpenShop core object', () => {
     expect(OS.canvas.defaultCursor).toBe('crosshair');
     expect(document.querySelector('[data-tool="ai-segment"]').classList.contains('active')).toBe(true);
     expect(document.getElementById('opt-ai-segment').style.display).toBe('flex');
+  });
+
+  it('applies always-on document snapping with screen-space tolerance', async () => {
+    delete window.HstarOpenShopSnapEngine;
+    await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
+    const OS = loadOpenShop();
+    const object = {
+      left:24,
+      top:-14,
+      width:3840,
+      height:2160,
+      scaleX:1,
+      scaleY:1,
+      selectable:true,
+      set(values) { Object.assign(this, values); },
+      setCoords:vi.fn(),
+      getBoundingRect() {
+        return {left:this.left, top:this.top, width:3840, height:2160};
+      },
+    };
+    OS.canvas = createCanvasMock([object]);
+    OS.canvas.viewportTransform = [0.21, 0, 0, 0.21, 0, 0];
+    OS.canvasW = 3840;
+    OS.canvasH = 2160;
+    OS.layers = [{name:'整图', locked:false, objects:[object]}];
+    OS._prefs.snapTolerance = 6;
+
+    OS._applyObjectSnapping(object);
+
+    expect(object.left).toBe(0);
+    expect(object.top).toBe(0);
+    expect(object.setCoords).toHaveBeenCalledOnce();
+
+    object.left = 22;
+    object.top = 0;
+    OS.canvas.viewportTransform = [0.5, 0, 0, 0.5, 0, 0];
+    OS._prefs.snapTolerance = 10;
+    OS._applyObjectSnapping(object);
+
+    expect(object.left).toBe(22);
+    expect(object.top).toBe(0);
+  });
+
+  it('derives local selection snapping from legacy generation layer metadata', async () => {
+    delete window.HstarOpenShopSnapEngine;
+    await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
+    const OS = loadOpenShop();
+    const object = {
+      left:55,
+      top:44,
+      width:800,
+      height:600,
+      scaleX:0.5,
+      scaleY:0.5,
+      angle:0,
+      skewX:0,
+      skewY:0,
+      selectable:true,
+      set(values) { Object.assign(this, values); },
+      setCoords:vi.fn(),
+      getBoundingRect() {
+        return {left:this.left, top:this.top, width:400, height:300};
+      },
+    };
+    OS.canvas = createCanvasMock([object]);
+    OS.canvasW = 800;
+    OS.canvasH = 600;
+    OS.layers = [{
+      name:'旧局部重绘',
+      locked:false,
+      objects:[object],
+      hstarAiGeneration:{
+        toolId:'local-redraw',
+        selection:{x:100, y:80, width:240, height:160},
+      },
+    }];
+    OS._prefs.snapTolerance = 6;
+
+    OS._applyObjectSnapping(object);
+
+    expect(object.left).toBe(50);
+    expect(object.top).toBe(40);
   });
 
   it('adds and deletes layers while keeping canvas objects in sync', () => {

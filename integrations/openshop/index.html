@@ -1593,12 +1593,7 @@ const OS = {
         ca.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); });
         ca.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); this.handleDrop(e); });
         this._initTouchGestures(ca);
-        // Snap to grid
-        this.canvas.on('object:moving', opt => {
-            if (!this.snapEnabled) return;
-            const g = this.gridSize, obj = opt.target;
-            obj.set({ left: Math.round(obj.left / g) * g, top: Math.round(obj.top / g) * g });
-        });
+        this.canvas.on('object:moving', opt => this._applyObjectSnapping(opt.target));
         // Welcome screen
         this.populateTemplates();
         this.populateRecentFiles();
@@ -4354,6 +4349,94 @@ self.onmessage = function(e) {
     },
 
     // ====================== SNAP ======================
+    _objectSnapRect(object) {
+        if (!object) return null;
+        let value = null;
+        if (typeof object.getBoundingRect === 'function') {
+            try { value = object.getBoundingRect(true, true); } catch (error) { value = null; }
+        }
+        const scaleX = Math.abs(Number(object.scaleX) || 1);
+        const scaleY = Math.abs(Number(object.scaleY) || 1);
+        const rect = {
+            left: Number(value?.left ?? object.left),
+            top: Number(value?.top ?? object.top),
+            width: Number(value?.width ?? (Number(object.width) * scaleX)),
+            height: Number(value?.height ?? (Number(object.height) * scaleY)),
+        };
+        return Object.values(rect).every(Number.isFinite) && rect.width > 0 && rect.height > 0
+            ? rect
+            : null;
+    },
+    _localSelectionSnapGeometry(object, layer, objectRect) {
+        if (!objectRect) return null;
+        const angle = Math.abs(Number(object.angle) || 0) % 360;
+        if ((angle > 0.0001 && Math.abs(angle - 360) > 0.0001)
+            || Math.abs(Number(object.skewX) || 0) > 0.0001
+            || Math.abs(Number(object.skewY) || 0) > 0.0001) return null;
+        const stored = object.hstarSnapAnchor?.type === 'selection'
+            ? object.hstarSnapAnchor
+            : layer?.hstarAiGeneration?.toolId === 'local-redraw'
+                ? layer.hstarAiGeneration.selection
+                : null;
+        if (!stored) return null;
+        const anchor = {
+            x: Number(stored.x),
+            y: Number(stored.y),
+            width: Number(stored.width),
+            height: Number(stored.height),
+            documentWidth: Number(stored.documentWidth || this.canvasW),
+            documentHeight: Number(stored.documentHeight || this.canvasH),
+        };
+        if (!Object.values(anchor).every(Number.isFinite)
+            || anchor.x < 0 || anchor.y < 0 || anchor.width <= 0 || anchor.height <= 0
+            || anchor.documentWidth <= 0 || anchor.documentHeight <= 0
+            || anchor.x + anchor.width > anchor.documentWidth
+            || anchor.y + anchor.height > anchor.documentHeight
+            || anchor.x + anchor.width > this.canvasW
+            || anchor.y + anchor.height > this.canvasH) return null;
+        const scaleX = objectRect.width / anchor.documentWidth;
+        const scaleY = objectRect.height / anchor.documentHeight;
+        return {
+            anchorRect: {
+                left: objectRect.left + anchor.x * scaleX,
+                top: objectRect.top + anchor.y * scaleY,
+                width: anchor.width * scaleX,
+                height: anchor.height * scaleY,
+            },
+            targetRect: {
+                left: anchor.x,
+                top: anchor.y,
+                width: anchor.width,
+                height: anchor.height,
+            },
+        };
+    },
+    _applyObjectSnapping(object) {
+        const engine = window.HstarOpenShopSnapEngine;
+        if (!engine?.resolveMovement || !object || object.name === '__boundary__'
+            || object.selectable === false) return;
+        const layer = this.layers.find(item => item.objects?.includes(object));
+        if (layer?.locked) return;
+        const objectRect = this._objectSnapRect(object);
+        if (!objectRect) return;
+        const zoom = Math.max(
+            0.0001,
+            Math.abs(Number(this.canvas?.viewportTransform?.[0] || this.zoom || 1))
+        );
+        const local = this._localSelectionSnapGeometry(object, layer, objectRect);
+        const result = engine.resolveMovement({
+            position: { left: Number(object.left) || 0, top: Number(object.top) || 0 },
+            objectRect,
+            documentRect: { left: 0, top: 0, width: this.canvasW, height: this.canvasH },
+            localAnchorRect: local?.anchorRect,
+            localTargetRect: local?.targetRect,
+            tolerance: Math.max(1, Number(this._prefs.snapTolerance) || 5) / zoom,
+            grid: { enabled: this.snapEnabled, size: this.gridSize },
+        });
+        if (!result || !Number.isFinite(result.left) || !Number.isFinite(result.top)) return;
+        object.set({ left: result.left, top: result.top });
+        object.setCoords?.();
+    },
     toggleSnap() {
         this.snapEnabled = !this.snapEnabled;
         this.toast(this.snapEnabled
@@ -8909,6 +8992,7 @@ window.addEventListener('error', e => { console.error('Unhandled error:', e.erro
 window.addEventListener('unhandledrejection', e => { console.error('Unhandled promise rejection:', e.reason); if (typeof OS !== 'undefined' && OS.toast) OS.toast(OS._t('Something went wrong — see console'), 'error'); });
 window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
+<script src="./host/openshop-snap-engine.js"></script>
 <script src="./host/openshop-protocol.js?v=2026.07.15.1784120375"></script>
 <script src="./host/openshop-project-adapter.js?v=2026.07.15.1784123441"></script>
 <script src="./host/openshop-host-runtime.js?v=2026.07.15.1784120375"></script>
