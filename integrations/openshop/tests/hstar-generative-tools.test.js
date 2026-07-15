@@ -47,7 +47,8 @@ function catalog({available=true, maxOutputs=6}={}) {
   };
 }
 
-function createHarness({modelAvailable=true, maxOutputs=6}={}) {
+function createHarness({modelAvailable=true, maxOutputs=6, terminalTasks=[], retryTask=null}={}) {
+  const canvasObjects = [];
   const sourceLayer = {layerId:'source-layer', name:'来源图层', visible:true, objects:[]};
   const editor = {
     canvasW:1920,
@@ -60,7 +61,20 @@ function createHarness({modelAvailable=true, maxOutputs=6}={}) {
     _selectionMask:null,
     __hstarAiToolPreferences:{},
     __hstarAiTaskRecords:[],
+    __hstarAiPendingResults:[],
     setTool:vi.fn(tool => { editor.state.tool = tool; }),
+    updateLayersPanel:vi.fn(),
+    saveHistory:vi.fn(),
+    canvas:{
+      add:vi.fn(object => canvasObjects.push(object)),
+      moveTo:vi.fn((object, index) => {
+        const current = canvasObjects.indexOf(object);
+        if(current >= 0) canvasObjects.splice(current, 1);
+        canvasObjects.splice(index, 0, object);
+      }),
+      getObjects:vi.fn(() => canvasObjects),
+      renderAll:vi.fn(),
+    },
   };
   const runtime = {
     getState:vi.fn(() => ({activeSession:{context}})),
@@ -94,10 +108,13 @@ function createHarness({modelAvailable=true, maxOutputs=6}={}) {
     })),
     pollTask:vi.fn(async (_context, taskId, options={}) => {
       options.onUpdate?.({taskId, kind:'parent', status:'running', targetCount:3, completedCount:1, failedCount:0});
-      return {taskId, kind:'parent', status:'succeeded', targetCount:3, completedCount:3, failedCount:0, children:[]};
+      return terminalTasks.shift() || {taskId, kind:'parent', status:'succeeded', targetCount:3, completedCount:3, failedCount:0, children:[]};
     }),
     cancelTask:vi.fn(async (_context, taskId) => ({taskId, status:'cancelled'})),
-    retryMissing:vi.fn(),
+    retryMissing:vi.fn(async () => retryTask || ({
+      task_id:'parent-retry', status:'queued',
+      task:{taskId:'parent-retry', kind:'parent', status:'queued', targetCount:1, retryOfTaskId:'parent-1'},
+    })),
     restoreTasks:vi.fn(async () => []),
   };
   const assetApi = {
@@ -127,11 +144,38 @@ function createHarness({modelAvailable=true, maxOutputs=6}={}) {
     })),
     destroy:vi.fn(),
   };
+  const imageLoader = vi.fn(async result => ({
+    type:'image', src:result.url, width:1920, height:1080,
+    set(values){ Object.assign(this, values); },
+  }));
   const controller = window.HstarOpenShopGenerativeTools.createController({
-    editor, runtime, aiClient, generativeClient, assetApi, referenceManager,
+    editor, runtime, aiClient, generativeClient, assetApi, referenceManager, imageLoader,
   });
   return {
     controller, editor, runtime, aiClient, generativeClient, assetApi, referenceManager,
+    imageLoader, sourceLayer, canvasObjects,
+  };
+}
+
+function generationTask(overrides={}) {
+  return {
+    taskId:'parent-1', kind:'parent', toolId:'local-redraw', status:'partial',
+    targetCount:4, completedCount:3, failedCount:1,
+    apiConfigId:'image-api', modelId:'image-model', retryOfTaskId:'',
+    snapshot:{
+      originalTargetCount:4,
+      sourceLayerId:'source-layer', sourceLayerIndex:0, prompt:'修改天空',
+      size:'2048x2048', quality:'high', referenceMode:'full',
+      references:[{assetId:PRIMARY_ASSET_ID, alias:'参考图1', sourceType:'primary', order:0}],
+      selection:{x:10, y:20, width:300, height:200, feather:0},
+    },
+    children:[
+      {childTaskId:'child-0', index:0, status:'succeeded', outputAssetId:'d'.repeat(64), result:{url:'/api/openshop/assets/d'}},
+      {childTaskId:'child-1', index:1, status:'failed', outputAssetId:'', error:'timeout'},
+      {childTaskId:'child-2', index:2, status:'succeeded', outputAssetId:'e'.repeat(64), result:{url:'/api/openshop/assets/e'}},
+      {childTaskId:'child-3', index:3, status:'succeeded', outputAssetId:'f'.repeat(64), result:{url:'/api/openshop/assets/f'}},
+    ],
+    ...overrides,
   };
 }
 
@@ -272,5 +316,82 @@ describe('Hstar OpenShop inline generative tools', () => {
   it('uses the planned compact mobile drawer breakpoint', () => {
     const source = readFileSync(stylesPath, 'utf8');
     expect(source).toContain('@media (max-width: 640px)');
+  });
+
+  it('creates one visible transparent layer per successful child and stays idempotent', async () => {
+    const {controller, editor, runtime, imageLoader} = createHarness();
+    await controller.start();
+    const task = generationTask();
+
+    const inserted = await controller.applyTaskResults(task);
+    const repeated = await controller.applyTaskResults(task);
+    const generated = editor.layers.filter(layer => layer.hstarAiGeneration?.taskId === 'parent-1');
+
+    expect(inserted).toHaveLength(3);
+    expect(repeated).toHaveLength(0);
+    expect(generated.map(layer => layer.name)).toEqual([
+      '局部重绘 1/4', '局部重绘 3/4', '局部重绘 4/4',
+    ]);
+    expect(generated.every(layer => layer.visible)).toBe(true);
+    expect(generated.every(layer => layer.objects[0].left === 0 && layer.objects[0].top === 0)).toBe(true);
+    expect(generated.every(layer => !JSON.stringify(layer.hstarAiGeneration).match(/seed/i))).toBe(true);
+    expect(imageLoader).toHaveBeenCalledTimes(3);
+    expect(runtime.requestSave).toHaveBeenCalledWith({reason:'ai-generation'});
+    controller.destroy();
+  });
+
+  it('queues successful children when the frozen source layer no longer exists', async () => {
+    const {controller, editor, runtime} = createHarness();
+    await controller.start();
+    editor.layers = [{layerId:'unrelated', name:'其他图层', visible:true, objects:[]}];
+
+    const inserted = await controller.applyTaskResults(generationTask({taskId:'parent-missing-source'}));
+
+    expect(inserted).toEqual([]);
+    expect(editor.__hstarAiPendingResults).toHaveLength(3);
+    expect(editor.__hstarAiPendingResults.every(item => item.task.taskId === 'parent-missing-source')).toBe(true);
+    expect(runtime.requestSave).toHaveBeenCalledWith({reason:'ai-generation'});
+    controller.destroy();
+  });
+
+  it('never inserts results from a cancelled parent task', async () => {
+    const {controller, editor, imageLoader} = createHarness();
+    await controller.start();
+
+    const inserted = await controller.applyTaskResults(generationTask({status:'cancelled'}));
+
+    expect(inserted).toEqual([]);
+    expect(editor.layers).toHaveLength(1);
+    expect(imageLoader).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+
+  it('retries only the missing count and applies the retry parent results', async () => {
+    const retryTerminal = generationTask({
+      taskId:'parent-retry', status:'succeeded', targetCount:1, completedCount:1, failedCount:0,
+      retryOfTaskId:'parent-1',
+      snapshot:{...generationTask().snapshot, originalTargetCount:4},
+      children:[{childTaskId:'child-retry-1', index:1, status:'succeeded', outputAssetId:'9'.repeat(64), result:{url:'/api/openshop/assets/9'}}],
+    });
+    const originalPartial = generationTask();
+    const {controller, editor, generativeClient} = createHarness({terminalTasks:[originalPartial, retryTerminal]});
+    editor._selectionBounds = {x:10, y:20, w:300, h:200};
+    await controller.start();
+    controller.openTool('local-redraw');
+    const prompt = document.querySelector('[data-generative-prompt]');
+    prompt.value = '修改天空';
+    prompt.dispatchEvent(new Event('input', {bubbles:true}));
+    const count = document.querySelector('[data-generative-count]');
+    count.value = '4';
+    count.dispatchEvent(new Event('change', {bubbles:true}));
+    await controller.submit();
+
+    const completed = await controller.retryMissing();
+
+    expect(generativeClient.retryMissing).toHaveBeenCalledWith(context, 'parent-1');
+    expect(completed.taskId).toBe('parent-retry');
+    expect(editor.layers.find(layer => layer.hstarAiGeneration?.childTaskId === 'child-retry-1')?.name)
+      .toBe('局部重绘 2/4');
+    controller.destroy();
   });
 });

@@ -293,6 +293,130 @@ describe('Hstar OpenShop project adapter', () => {
     expect(project.aiTaskRecords[0].status).toBe('succeeded');
   });
 
+  it('round-trips generative references, pending results and layer provenance', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceAssetId = 'a'.repeat(64);
+    const maskAssetId = 'b'.repeat(64);
+    const referenceAssetId = 'c'.repeat(64);
+    const outputAssetId = 'd'.repeat(64);
+    const pendingAssetId = 'e'.repeat(64);
+    editor.layers[0].layerId = 'generated-layer';
+    editor.layers[0].hstarAiGeneration = {
+      taskId:'parent-1', childTaskId:'child-1', retryOfTaskId:'', toolId:'local-redraw',
+      prompt:'修改天空', apiConfigId:'image-api', modelId:'image-model',
+      size:'2048x2048', quality:'high', referenceMode:'full',
+      references:[{assetId:referenceAssetId, alias:'参考图1', sourceType:'primary', order:0}],
+      sourceLayerId:'source-layer', selection:{x:10, y:20, width:300, height:200, feather:0},
+    };
+    const image = createImage({url:`/api/openshop/assets/${outputAssetId}`});
+    image.hstarAssetId = outputAssetId;
+    image.hstarLayerId = 'generated-layer';
+    editor.layers[0].objects.push(image);
+    editor.canvas.add(image);
+    editor.__hstarAiReferenceRecords = [{
+      assetId:referenceAssetId, alias:'参考图1', mention:'@参考图1', sourceType:'primary', order:0,
+    }];
+    editor.__hstarAiTaskRecords = [{
+      taskId:'parent-1', kind:'parent', status:'partial', toolId:'local-redraw',
+      sourceAssetId, maskAssetId,
+      snapshot:{
+        sourceAssetId, maskAssetId, primaryReferenceAssetId:referenceAssetId,
+        references:[{assetId:referenceAssetId, alias:'参考图1', sourceType:'primary', order:0}],
+      },
+      children:[{childTaskId:'child-1', status:'succeeded', outputAssetId}],
+    }];
+    editor.__hstarAiPendingResults = [{
+      task:{taskId:'parent-2', snapshot:{sourceLayerId:'source-layer'}},
+      child:{childTaskId:'child-pending', status:'succeeded', outputAssetId:pendingAssetId},
+    }];
+
+    const project = adapter.serializeProject({editor, context, now:() => 4000});
+
+    expect(project.aiReferenceRecords).toEqual(editor.__hstarAiReferenceRecords);
+    expect(project.aiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(project.aiPendingResults).toEqual(editor.__hstarAiPendingResults);
+    expect(project.layers[0].hstarAiGeneration).toEqual(editor.layers[0].hstarAiGeneration);
+    expect(project.assetRefs).toEqual([
+      maskAssetId, outputAssetId, pendingAssetId, referenceAssetId, sourceAssetId,
+    ].sort());
+    expect(JSON.stringify(project)).not.toMatch(/data:image\/|blob:|seed/i);
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => restored.canvas.add({...object}));
+      callback();
+    });
+    restored.rebuildLayersFromCanvas = vi.fn(() => {
+      restored.layers = [{
+        layerId:'generated-layer', name:'临时图层', visible:true, opacity:100,
+        blend:'source-over', objects:restored.canvas.getObjects(),
+      }];
+    });
+    await adapter.restoreProject({
+      editor:restored,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+
+    expect(restored.__hstarAiReferenceRecords).toEqual(editor.__hstarAiReferenceRecords);
+    expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(restored.__hstarAiPendingResults).toEqual(editor.__hstarAiPendingResults);
+    expect(restored.layers[0].hstarAiGeneration).toEqual(editor.layers[0].hstarAiGeneration);
+    restored.__hstarAiPendingResults[0].child.status = 'failed';
+    expect(project.aiPendingResults[0].child.status).toBe('succeeded');
+  });
+
+  it('resumes unfinished generation records and reapplies pending children after restore', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvas.loadFromJSON = vi.fn((_json, callback) => callback());
+    const running = {
+      taskId:'parent-running', kind:'parent', toolId:'local-redraw', status:'running',
+      snapshot:{sourceLayerId:'source-layer'}, children:[],
+    };
+    const completed = {...running, status:'succeeded', completedCount:1, failedCount:0, children:[{
+      childTaskId:'child-completed', index:0, status:'succeeded', outputAssetId:'f'.repeat(64),
+    }]};
+    const pending = {
+      task:{taskId:'parent-pending', kind:'parent', toolId:'local-redraw', status:'succeeded', snapshot:{sourceLayerId:'source-layer'}},
+      child:{childTaskId:'child-pending', index:0, status:'succeeded', outputAssetId:'e'.repeat(64)},
+    };
+    const project = {
+      schemaVersion:1,
+      projectId:'project-1',
+      owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
+      document:{width:1920, height:1080},
+      editor:{objects:[]},
+      layers:[],
+      aiTaskRecords:[running],
+      aiPendingResults:[pending],
+      createdAt:1000,
+    };
+    const generativeClient = {
+      restoreTasks:vi.fn(async (_records, options) => {
+        options.onUpdate(completed);
+        return [completed];
+      }),
+    };
+    const applyTaskResults = vi.fn(async () => []);
+
+    await adapter.restoreProject({
+      editor,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+      generativeClient,
+      applyTaskResults,
+    });
+
+    expect(generativeClient.restoreTasks).toHaveBeenCalledWith([running], expect.objectContaining({onUpdate:expect.any(Function)}));
+    expect(editor.__hstarAiTaskRecords).toEqual([completed]);
+    expect(applyTaskResults).toHaveBeenCalledWith(completed);
+    expect(applyTaskResults).toHaveBeenCalledWith(expect.objectContaining({
+      taskId:'parent-pending', children:[pending.child],
+    }));
+  });
+
   it('persists image assets nested inside Fabric groups', async () => {
     const adapter = window.HstarOpenShopProjectAdapter;
     const editor = createEditor();

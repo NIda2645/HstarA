@@ -17,6 +17,26 @@
     })[character]);
   }
 
+  function createId(prefix){
+    const randomId = root.crypto?.randomUUID?.();
+    return randomId
+      ? `${prefix}-${randomId}`
+      : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function defaultImageLoader(result, fabricRef){
+    return new Promise((resolve, reject) => {
+      if(!fabricRef?.Image?.fromURL){
+        reject(new Error('OpenShop 生成图片解码器不可用'));
+        return;
+      }
+      fabricRef.Image.fromURL(result.url, image => {
+        if(image) resolve(image);
+        else reject(new Error('OpenShop 生成图片解码失败'));
+      }, {crossOrigin:'anonymous'});
+    });
+  }
+
   function createController(options={}){
     const editor = options.editor;
     const runtime = options.runtime;
@@ -26,6 +46,8 @@
     const referenceManager = options.referenceManager;
     const documentRef = options.documentRef || root.document;
     const fetchImpl = options.fetchImpl || root.fetch?.bind(root);
+    const fabricRef = options.fabricRef || root.fabric;
+    const imageLoader = options.imageLoader || defaultImageLoader;
     if(!editor || !runtime || !aiClient || !generativeClient || !assetApi || !referenceManager){
       throw new Error('OpenShop 生成式编辑依赖不完整');
     }
@@ -146,6 +168,123 @@
       editor.__hstarAiTaskRecords = records.slice(-100);
       markDirty('OpenShop generation task updated');
       return record;
+    }
+
+    function pendingResults(){
+      editor.__hstarAiPendingResults = Array.isArray(editor.__hstarAiPendingResults)
+        ? editor.__hstarAiPendingResults
+        : [];
+      return editor.__hstarAiPendingResults;
+    }
+
+    function queuePendingResults(task, children){
+      const records = pendingResults();
+      const queued = new Set(records.map(item => clean(item?.child?.childTaskId)).filter(Boolean));
+      children.forEach(child => {
+        if(queued.has(clean(child.childTaskId))) return;
+        records.push({task:clone(task), child:clone(child)});
+        queued.add(clean(child.childTaskId));
+      });
+      editor.__hstarAiPendingResults = records.slice(-64);
+    }
+
+    function removePendingResults(childIds){
+      const removed = new Set(childIds);
+      editor.__hstarAiPendingResults = pendingResults()
+        .filter(item => !removed.has(clean(item?.child?.childTaskId)));
+    }
+
+    async function createGenerationLayer(task, child){
+      const result = child.result && typeof child.result === 'object' ? child.result : {};
+      const outputAssetId = clean(child.outputAssetId || result.assetId);
+      const image = await imageLoader({
+        ...result,
+        assetId:outputAssetId,
+        url:clean(result.url) || `/api/openshop/assets/${encodeURIComponent(outputAssetId)}`,
+      }, fabricRef);
+      const title = task.toolId === 'generative-fill' ? '生成式填充' : '局部重绘';
+      const layerId = createId('hstar-generation-layer').replaceAll('-', '_');
+      const values = {left:0, top:0, selectable:true, visible:true, name:title};
+      if(typeof image.set === 'function') image.set(values);
+      else Object.assign(image, values);
+      image.assetRef = outputAssetId;
+      image.hstarAssetId = outputAssetId;
+      image.hstarAssetRole = 'ai-output';
+      image.hstarLayerId = layerId;
+      const snapshot = task.snapshot && typeof task.snapshot === 'object' ? task.snapshot : {};
+      const denominator = Math.max(1, Number(snapshot.originalTargetCount || task.targetCount || 1));
+      const numerator = Math.max(0, Number(child.index || 0)) + 1;
+      return {
+        layerId,
+        name:`${title} ${numerator}/${denominator}`,
+        visible:true,
+        opacity:100,
+        blend:'source-over',
+        objects:[image],
+        hstarAiGeneration:{
+          taskId:clean(task.taskId),
+          childTaskId:clean(child.childTaskId),
+          retryOfTaskId:clean(task.retryOfTaskId),
+          toolId:clean(task.toolId),
+          prompt:String(snapshot.prompt || ''),
+          apiConfigId:clean(task.apiConfigId),
+          modelId:clean(task.modelId),
+          size:clean(snapshot.size) || 'auto',
+          quality:clean(snapshot.quality) || 'auto',
+          referenceMode:snapshot.referenceMode === 'selection' ? 'selection' : 'full',
+          references:clone(Array.isArray(snapshot.references) ? snapshot.references : []),
+          sourceLayerId:clean(snapshot.sourceLayerId),
+          selection:clone(snapshot.selection && typeof snapshot.selection === 'object' ? snapshot.selection : {}),
+        },
+      };
+    }
+
+    function syncGenerationObjectOrder(){
+      if(typeof editor.canvas?.moveTo !== 'function') return;
+      editor.layers.flatMap(layer => Array.isArray(layer.objects) ? layer.objects : [])
+        .forEach((object, index) => editor.canvas.moveTo(object, index));
+    }
+
+    async function applyTaskResults(task){
+      if(!task || task.status === 'cancelled') return [];
+      const children = Array.isArray(task.children) ? task.children : [];
+      const successful = children
+        .filter(child => child?.status === 'succeeded' && clean(child.outputAssetId || child.result?.assetId))
+        .sort((left, right) => Number(left.index || 0) - Number(right.index || 0));
+      if(!successful.length) return [];
+      const applied = new Set(editor.layers.flatMap(layer => (
+        layer?.hstarAiGeneration?.childTaskId ? [clean(layer.hstarAiGeneration.childTaskId)] : []
+      )));
+      const unapplied = successful.filter(child => !applied.has(clean(child.childTaskId)));
+      if(!unapplied.length) return [];
+      const snapshot = task.snapshot && typeof task.snapshot === 'object' ? task.snapshot : {};
+      const sourceExists = editor.layers.some(layer => clean(layer?.layerId) === clean(snapshot.sourceLayerId));
+      if(!sourceExists){
+        queuePendingResults(task, unapplied);
+        markDirty('OpenShop AI results pending insertion');
+        await runtime.requestSave?.({reason:'ai-generation'});
+        return [];
+      }
+      const frozenSourceIndex = Math.max(
+        0,
+        Math.min(editor.layers.length - 1, Number(snapshot.sourceLayerIndex || 0)),
+      );
+      const inserted = [];
+      for(const child of unapplied){
+        const layer = await createGenerationLayer(task, child);
+        editor.layers.splice(frozenSourceIndex + 1 + inserted.length, 0, layer);
+        editor.canvas?.add?.(layer.objects[0]);
+        inserted.push(layer);
+      }
+      if(!inserted.length) return [];
+      removePendingResults(inserted.map(layer => layer.hstarAiGeneration.childTaskId));
+      editor.activeLayerIdx = frozenSourceIndex + inserted.length;
+      syncGenerationObjectOrder();
+      editor.updateLayersPanel?.();
+      editor.canvas?.renderAll?.();
+      markDirty('OpenShop AI layers inserted');
+      await runtime.requestSave?.({reason:'ai-generation'});
+      return inserted;
     }
 
     function injectStyles(){
@@ -288,6 +427,11 @@
       const selectedModelText = selected.available
         ? `${selected.providerName || selected.apiConfigId} · ${selected.modelName || selected.modelId}`
         : `${selected.apiConfigId || '未配置'} · ${selected.modelId || '未选择模型'}`;
+      const missingCount = Math.max(
+        0,
+        Number(state.lastTask?.targetCount || 0) - Number(state.lastTask?.completedCount || 0),
+      );
+      const canRetry = ['partial', 'failed'].includes(clean(state.lastTask?.status)) && missingCount > 0;
       bar.hidden = false;
       bar.innerHTML = `<div class="hstar-generative-head">
         <div><strong>${title}</strong><span>${bounds ? `${bounds.width} × ${bounds.height}px` : '等待选区'}</span></div>
@@ -310,6 +454,7 @@
           <div><span class="hstar-generative-status">${escapeHtml(statusText())}</span><small data-generative-disabled-reason>${escapeHtml(reason)}</small></div>
           <div class="hstar-generative-actions">
             <button type="button" class="btn" data-generative-action="cancel" ${['preparing', 'running'].includes(state.status) ? '' : 'disabled'}>取消</button>
+            ${canRetry ? `<button type="button" class="btn" data-generative-action="retry-missing">补生成剩余 ${missingCount} 张</button>` : ''}
             <button type="button" class="btn btn-primary" data-generative-submit data-generative-action="submit" ${reason ? 'disabled' : ''}>生成 ${state.count} 张</button>
           </div>
         </div>
@@ -367,8 +512,22 @@
       state.lastTask = clone(completed);
       state.status = clean(completed.status) || 'failed';
       state.error = clean(completed.error);
+      await applyTaskResults(completed);
       render();
       return completed;
+    }
+
+    async function retryMissing(){
+      const task = state.lastTask;
+      const missing = Number(task?.targetCount || 0) - Number(task?.completedCount || 0);
+      if(!['partial', 'failed'].includes(clean(task?.status)) || missing < 1) return null;
+      const created = await generativeClient.retryMissing(currentContext(), task.taskId);
+      const parent = created.task || created;
+      upsertTaskRecord(parent);
+      state.lastTask = clone(parent);
+      state.status = 'running';
+      render();
+      return monitorTask(parent);
     }
 
     async function submit(){
@@ -601,6 +760,7 @@
       if(action === 'close') close();
       else if(action === 'submit') await submit();
       else if(action === 'cancel') await cancelActiveTask();
+      else if(action === 'retry-missing') await retryMissing();
       else if(action === 'choose-api') openApiSelector(state.activeTool);
       else if(action === 'toggle-reference-menu'){
         state.referenceMenuOpen = !state.referenceMenuOpen;
@@ -692,6 +852,8 @@
       close,
       submit,
       cancelActiveTask,
+      retryMissing,
+      applyTaskResults,
       setPreference,
       getState,
       destroy,
