@@ -87,8 +87,15 @@ async function openNode(page, canvasFrame, kind, nodeId, expectedSources = null)
     const state = window.HstarOpenShopHost?.getState?.();
     return state?.activeSession?.context?.nodeId === id && state.editorReady;
   }, {id:nodeId});
-  const editor = page.frames().find(frame => frame.url().includes('/static/openshop/index.html'));
-  await editor.waitForFunction(() => Boolean(typeof OS !== 'undefined' && OS.canvas && window.HstarOpenShopRuntime?.getState?.().activeSession));
+  const activeSession = await page.evaluate(() => window.HstarOpenShopHost.getState().activeSession);
+  const frameElement = page.locator(`iframe.openshop-session-frame[data-project-id="${activeSession.context.projectId}"]`);
+  await frameElement.waitFor();
+  const editor = await (await frameElement.elementHandle()).contentFrame();
+  await editor.waitForFunction(id => Boolean(
+    typeof OS !== 'undefined'
+    && OS.canvas
+    && window.HstarOpenShopRuntime?.getState?.().activeSession?.context?.nodeId === id
+  ), nodeId);
   await expect(editor.locator('#welcome-overlay')).toBeHidden();
   if(expectedSources !== null){
     await editor.waitForFunction(count => OS.layers.filter(layer => layer.sourceBinding).length >= count, expectedSources);
@@ -123,13 +130,14 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   test.setTimeout(180000);
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.stack || error.message));
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const nodeA = {
-    id:'openshop-a', type:'openshop-layered', projectId:'e2e_project_a', projectName:'项目 A',
+    id:'openshop-a', type:'openshop-layered', projectId:`e2e_project_a_${runId}`, projectName:'项目 A',
     x:640, y:180, w:340, h:260, documentWidth:1920, documentHeight:1080,
     layerCount:0, sourceUpdateCount:0, autosaveVersion:0, saveState:'new', created_at:Date.now(),
   };
-  const nodeB = {...nodeA, id:'openshop-b', projectId:'e2e_project_b', projectName:'项目 B', x:640, y:520};
+  const nodeB = {...nodeA, id:'openshop-b', projectId:`e2e_project_b_${runId}`, projectName:'项目 B', x:640, y:520};
   const images = imageUrls.map((url, index) => ({
     id:`classic-image-${index + 1}`, type:'image', x:80, y:80 + index * 300, w:260, h:240,
     url, name:`来源 ${index + 1}.png`, mediaKind:'image', assetVersion:`classic-v1-${index + 1}`,
@@ -255,9 +263,10 @@ test('classic and smart canvases receive every OpenShop output as new image node
   test.setTimeout(180000);
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.stack || error.message));
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const classicNode = {
-    id:'classic-output-source', type:'openshop-layered', projectId:'e2e_output_classic', projectName:'普通输出',
+    id:'classic-output-source', type:'openshop-layered', projectId:`e2e_output_classic_${runId}`, projectName:'普通输出',
     x:200, y:180, w:340, h:260, documentWidth:640, documentHeight:480, saveState:'new', created_at:Date.now(),
   };
   const classic = await createCanvas(request, {kind:'classic', title:'Classic output', nodes:[classicNode], connections:[]});
@@ -277,7 +286,7 @@ test('classic and smart canvases receive every OpenShop output as new image node
     images:[{url:imageUrls[0], name:'智能来源.png', kind:'image', assetVersion:'smart-v1'}], created_at:Date.now(),
   };
   const smartNode = {
-    id:'smart-output-source', type:'openshop-layered', projectId:'e2e_output_smart', projectName:'智能输出',
+    id:'smart-output-source', type:'openshop-layered', projectId:`e2e_output_smart_${runId}`, projectName:'智能输出',
     x:500, y:180, w:340, h:260, documentWidth:640, documentHeight:480, saveState:'new', inputNodeIds:[smartImage.id], created_at:Date.now(),
   };
   const smart = await createCanvas(request, {

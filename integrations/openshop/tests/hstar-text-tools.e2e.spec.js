@@ -68,13 +68,16 @@ async function openNode(page, canvasFrame, kind, nodeId, expectedSources){
     const state = window.HstarOpenShopHost?.getState?.();
     return state?.activeSession?.context?.nodeId === id && state.editorReady;
   }, nodeId);
-  const editor = page.frames().find(frame => frame.url().includes('/static/openshop/index.html'));
-  await editor.waitForFunction(() => Boolean(
+  const activeSession = await page.evaluate(() => window.HstarOpenShopHost.getState().activeSession);
+  const frameElement = page.locator(`iframe.openshop-session-frame[data-project-id="${activeSession.context.projectId}"]`);
+  await frameElement.waitFor();
+  const editor = await (await frameElement.elementHandle()).contentFrame();
+  await editor.waitForFunction(id => Boolean(
     typeof OS !== 'undefined'
     && OS.canvas
     && window.HstarOpenShopTextToolsController
-    && window.HstarOpenShopRuntime?.getState?.().activeSession
-  ));
+    && window.HstarOpenShopRuntime?.getState?.().activeSession?.context?.nodeId === id
+  ), nodeId);
   await expect(editor.locator('#welcome-overlay')).toBeHidden();
   await editor.waitForFunction(count => OS.layers.filter(layer => layer.sourceBinding).length >= count, expectedSources);
   return editor;

@@ -165,4 +165,20 @@ describe('Hstar OpenShop generative task client', () => {
     expect(onUpdate).toHaveBeenCalledWith(restored[0]);
     client.destroy();
   });
+
+  it('ignores unfinished tasks owned by non-generative OpenShop tools', async () => {
+    const fetchImpl = vi.fn(() => jsonResponse({detail:'unexpected request'}, 500));
+    const onUpdate = vi.fn();
+    const client = window.HstarOpenShopGenerativeClient.createClient({fetchImpl, pollIntervalMs:1});
+    client.startSession(context);
+
+    const restored = await client.restoreTasks([{
+      taskId:'text-task', status:'running', toolId:'text-extract', sourceAssetId:'a'.repeat(64),
+    }], {onUpdate});
+
+    expect(restored).toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onUpdate).not.toHaveBeenCalled();
+    client.destroy();
+  });
 });

@@ -1,5 +1,6 @@
 (function bootstrapOpenShopGenerativeClient(root){
   const PARENT_TERMINAL = new Set(['succeeded', 'partial', 'failed', 'cancelled']);
+  const GENERATIVE_TOOLS = new Set(['generative-fill', 'local-redraw']);
 
   function clean(value){
     return String(value || '').trim();
@@ -241,7 +242,10 @@
     async function restoreTasks(records, restoreOptions={}){
       const context = safeContext(state.session);
       const unfinished = (Array.isArray(records) ? records : [])
-        .filter(record => ['queued', 'running'].includes(clean(record?.status)));
+        .filter(record => (
+          GENERATIVE_TOOLS.has(clean(record?.toolId))
+          && ['queued', 'running'].includes(clean(record?.status))
+        ));
       return Promise.all(unfinished.map(async record => {
         try {
           return await pollTask(context, record.taskId, restoreOptions);
