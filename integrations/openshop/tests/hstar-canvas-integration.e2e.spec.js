@@ -36,6 +36,47 @@ async function createCanvas(request, {kind, title, nodes, connections}){
   return saved.canvas;
 }
 
+async function saveCanvasGraph(request, canvas, {nodes, connections}){
+  return (await apiJson(await request.put(`${baseUrl}/api/canvases/${canvas.id}`, {
+    data:{
+      title:canvas.title,
+      icon:canvas.icon,
+      nodes,
+      connections,
+      viewport:canvas.viewport || {x:0, y:0, scale:1},
+      logs:canvas.logs || [],
+      settings:canvas.settings || {},
+      base_updated_at:canvas.updated_at,
+      client_id:'openshop-e2e-update',
+    },
+  }))).canvas;
+}
+
+async function solidPngBuffer(page, width, height){
+  const dataUrl = await page.evaluate(({w, h}) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#2c7be5';
+    context.fillRect(0, 0, w, h);
+    context.fillStyle = '#ffffff';
+    context.font = '96px sans-serif';
+    context.fillText(`${w} x ${h}`, 120, 180);
+    return canvas.toDataURL('image/png');
+  }, {w:width, h:height});
+  return Buffer.from(dataUrl.split(',')[1], 'base64');
+}
+
+async function decodedImageSize(frame, url){
+  return frame.evaluate(source => new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({width:image.naturalWidth, height:image.naturalHeight});
+    image.onerror = () => reject(new Error(`Unable to decode ${source}`));
+    image.src = source;
+  }), url);
+}
+
 async function canvasRecord(request, canvasId){
   return (await apiJson(await request.get(`${baseUrl}/api/canvases/${canvasId}`))).canvas;
 }
@@ -270,6 +311,63 @@ test('opens empty OpenShop nodes on templates and sourced nodes directly in the 
   });
 });
 
+test('uses the first source dimensions and exports the full 4K document without cropping', async ({page, request}) => {
+  test.setTimeout(180000);
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const sourceNode = {
+    id:'source-4k', type:'image', x:60, y:120, w:260, h:240,
+    url:imageUrls[0], name:'source-4k.png', mediaKind:'image', assetVersion:`4k-${runId}`,
+    natural_w:3840, natural_h:2160,
+  };
+  const layeredNode = {
+    id:'openshop-4k', type:'openshop-layered', projectId:`e2e_4k_${runId}`,
+    projectName:'OpenShop 4K source', x:420, y:160, w:340, h:260,
+    documentWidth:1920, documentHeight:1080, saveState:'new', created_at:Date.now(),
+  };
+  let canvas = await createCanvas(request, {
+    kind:'classic', title:'OpenShop 4K source', nodes:[sourceNode, layeredNode],
+    connections:[{id:'edge-4k', from:sourceNode.id, to:layeredNode.id}],
+  });
+  await apiJson(await request.post(`${baseUrl}/api/openshop/projects/${layeredNode.projectId}/initialize`, {
+    data:{
+      owner:{canvasType:'classic', canvasId:canvas.id, nodeId:layeredNode.id},
+      document:{width:1920, height:1080},
+    },
+  }));
+  const uploaded = await apiJson(await request.post(`${baseUrl}/api/openshop/projects/${layeredNode.projectId}/assets`, {
+    multipart:{
+      canvas_type:'classic', canvas_id:canvas.id, node_id:layeredNode.id, role:'source',
+      file:{name:'source-4k.png', mimeType:'image/png', buffer:await solidPngBuffer(page, 3840, 2160)},
+    },
+  }));
+  sourceNode.url = uploaded.asset.url;
+  sourceNode.assetVersion = uploaded.asset.assetId;
+  canvas = await saveCanvasGraph(request, canvas, {
+    nodes:[sourceNode, layeredNode],
+    connections:[{id:'edge-4k', from:sourceNode.id, to:layeredNode.id}],
+  });
+
+  const frame = await mountCanvas(page, 'classic', canvas.id);
+  const editor = await openNode(page, frame, 'classic', layeredNode.id, 1, {welcome:'hidden'});
+  await expect.poll(() => editor.evaluate(() => ({width:OS.canvasW, height:OS.canvasH}))).toEqual({width:3840, height:2160});
+  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
+  await expect.poll(() => frame.evaluate(id => {
+    return window.HstarClassicOpenShopHooks.getNodes().filter(node => node.openshopSourceNodeId === id).length;
+  }, layeredNode.id)).toBe(1);
+  const output = await frame.evaluate(id => {
+    return window.HstarClassicOpenShopHooks.getNodes().find(node => node.openshopSourceNodeId === id);
+  }, layeredNode.id);
+  const syncedLayeredNode = await frame.evaluate(id => window.HstarClassicOpenShopHooks.getNodes().find(node => node.id === id), layeredNode.id);
+
+  expect(output).toMatchObject({natural_w:3840, natural_h:2160});
+  expect(syncedLayeredNode).toMatchObject({documentWidth:3840, documentHeight:2160});
+  expect(await decodedImageSize(frame, output.url)).toEqual({width:3840, height:2160});
+  const storedProject = await projectRecord(request, {
+    canvasType:'classic', canvasId:canvas.id, nodeId:layeredNode.id, projectId:layeredNode.projectId,
+  });
+  expect(storedProject.body.project.document).toMatchObject({width:3840, height:2160});
+});
+
 test('classic canvas preserves isolated projects, ordered sources, updates, clones, and deletion', async ({page, request}) => {
   test.setTimeout(180000);
   const pageErrors = [];
@@ -416,13 +514,18 @@ test('classic and smart canvases receive every OpenShop output as new image node
   const classic = await createCanvas(request, {kind:'classic', title:'Classic output', nodes:[classicNode], connections:[]});
   let frame = await mountCanvas(page, 'classic', classic.id);
   let editor = await openNode(page, frame, 'classic', classicNode.id, 0);
+  await editor.evaluate(() => OS.createNewDocument(1600, 900));
   await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
   await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
   await expect.poll(() => frame.evaluate(() => window.HstarClassicOpenShopHooks.getNodes().filter(node => node.sourceType === 'openshop-layered').length)).toBe(2);
   const classicRecord = await canvasRecord(request, classic.id);
   const classicOutputs = classicRecord.nodes.filter(node => node.sourceType === 'openshop-layered');
+  const savedClassicNode = classicRecord.nodes.find(node => node.id === classicNode.id);
   expect(classicOutputs).toHaveLength(2);
   expect(classicOutputs.every(node => /^\/api\/openshop\/assets\//.test(node.url))).toBe(true);
+  expect(classicOutputs.every(node => node.natural_w === 1600 && node.natural_h === 900)).toBe(true);
+  expect(await decodedImageSize(frame, classicOutputs[0].url)).toEqual({width:1600, height:900});
+  expect(savedClassicNode).toMatchObject({documentWidth:1600, documentHeight:900});
   expect(new Set(classicOutputs.map(node => node.id)).size).toBe(2);
 
   const smartImage = {
@@ -452,6 +555,8 @@ test('classic and smart canvases receive every OpenShop output as new image node
   const smartOutputs = smartRecord.nodes.filter(node => node.sourceType === 'openshop-layered');
   expect(smartOutputs).toHaveLength(2);
   expect(smartOutputs.every(node => /^\/api\/openshop\/assets\//.test(node.images?.[0]?.url))).toBe(true);
+  const decodedSmartOutput = await decodedImageSize(frame, smartOutputs[0].images[0].url);
+  expect(smartOutputs[0].images[0]).toMatchObject({natural_w:decodedSmartOutput.width, natural_h:decodedSmartOutput.height});
   expect(new Set(smartOutputs.map(node => node.id)).size).toBe(2);
   expect(smartNode.projectId).not.toBe(classicNode.projectId);
   expect(JSON.stringify(smartRecord)).not.toMatch(/data:image\//);

@@ -72,7 +72,8 @@ function createEditor() {
       editor.activeLayerIdx = index;
     }),
     updateLayersPanel: vi.fn(),
-    saveHistory: vi.fn()
+    saveHistory: vi.fn(),
+    zoomFit: vi.fn()
   };
   return editor;
 }
@@ -140,6 +141,97 @@ describe('Hstar OpenShop project adapter', () => {
 
     expect(image).toMatchObject({left:640, top:360, scaleX:1, scaleY:1});
     expect(image.setCoords).toHaveBeenCalledTimes(1);
+  });
+
+  it('adopts the first connected source image dimensions for a blank project', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const image = createImage({url:'/api/openshop/assets/source-4k'});
+    Object.assign(image, {width:3840, height:2160, scaleX:1, scaleY:1, setCoords:vi.fn()});
+
+    await adapter.reconcileSources({
+      editor,
+      imageLoader:async () => image,
+      sources:[{
+        assetId:'source-4k', edgeId:'edge-4k', sourceNodeId:'image-4k',
+        name:'source-4k.png', url:'/api/openshop/assets/source-4k', sequence:0,
+      }],
+    });
+
+    expect({width:editor.canvasW, height:editor.canvasH}).toEqual({width:3840, height:2160});
+    expect(image).toMatchObject({left:0, top:0, scaleX:1, scaleY:1});
+    expect(editor.zoomFit).toHaveBeenCalled();
+    expect(adapter.serializeProject({editor, context}).document).toMatchObject({width:3840, height:2160});
+  });
+
+  it('keeps a user-created template size when the first source is connected', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvasW = 2048;
+    editor.canvasH = 2048;
+    const boundary = {name:'__boundary__', width:2048, height:2048, set:vi.fn()};
+    editor.canvas.add(boundary);
+    editor.layers = [
+      {name:'Background', visible:true, locked:true, opacity:100, blend:'source-over', objects:[boundary]},
+      {name:'Layer 1', visible:true, opacity:100, blend:'source-over', objects:[]},
+    ];
+    const image = createImage({url:'/api/openshop/assets/source-4k'});
+    Object.assign(image, {width:3840, height:2160, scaleX:1, scaleY:1});
+
+    await adapter.reconcileSources({
+      editor,
+      imageLoader:async () => image,
+      sources:[{
+        assetId:'source-4k', edgeId:'edge-template', sourceNodeId:'image-template',
+        name:'source-4k.png', url:'/api/openshop/assets/source-4k', sequence:0,
+      }],
+    });
+
+    expect({width:editor.canvasW, height:editor.canvasH}).toEqual({width:2048, height:2048});
+    expect(boundary.set).not.toHaveBeenCalled();
+  });
+
+  it('repairs a legacy source-only project that was saved at the default size', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => editor.canvas.add({...object}));
+      callback();
+    });
+    editor.rebuildLayersFromCanvas = vi.fn(() => {
+      editor.layers = [{
+        layerId:'source-layer', name:'source-4k.png', visible:true, opacity:100, blend:'source-over',
+        objects:editor.canvas.getObjects(),
+      }];
+    });
+    const project = {
+      schemaVersion:1,
+      projectId:'project-1',
+      owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
+      document:{width:1920, height:1080},
+      editor:{objects:[{
+        type:'image', assetRef:'source-4k', width:3840, height:2160,
+        scaleX:1, scaleY:1, left:-960, top:-540, hstarAssetRole:'source',
+        hstarAssetId:'source-4k', hstarEdgeId:'edge-legacy', hstarLayerId:'source-layer',
+      }]},
+      layers:[{
+        layerId:'source-layer', name:'source-4k.png', visible:true, opacity:100, blend:'source-over',
+        sourceBinding:{
+          assetId:'source-4k', edgeId:'edge-legacy', sourceNodeId:'image-legacy',
+          assetVersion:'v1', sequence:0, state:'bound',
+        },
+      }],
+      sourceBindings:[], previewAssetId:'', autosaveVersion:2, createdAt:1000,
+    };
+
+    await adapter.restoreProject({
+      editor,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+
+    expect({width:editor.canvasW, height:editor.canvasH}).toEqual({width:3840, height:2160});
+    expect(editor.layers[0].objects[0]).toMatchObject({left:0, top:0});
   });
 
   it('keeps source layer order when images resolve out of order', async () => {
@@ -237,6 +329,20 @@ describe('Hstar OpenShop project adapter', () => {
       context,
       now: () => 2000
     })).toThrow('inline image data without an asset id');
+  });
+
+  it('removes inline checker pattern bytes from the stored project', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvas.toJSON.mockReturnValue({objects:[{
+      type:'rect', name:'__boundary__', width:1600, height:900,
+      fill:{type:'pattern', repeat:'repeat', source:'data:image/png;base64,CHECKER_BYTES'},
+    }]});
+
+    const project = adapter.serializeProject({editor, context});
+
+    expect(project.editor.objects[0]).toMatchObject({name:'__boundary__', fill:null});
+    expect(JSON.stringify(project)).not.toContain('data:image/');
   });
 
   it('persists local image objects before serializing the project', async () => {

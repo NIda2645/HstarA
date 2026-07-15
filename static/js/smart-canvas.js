@@ -17974,10 +17974,13 @@ window.HstarSmartCanvasOpenShopHooks = {
     displayMediaUrl,
     createImageOutput({sourceNode, output, requestId}){
         const existingCount = nodes.filter(node => node.openshopSourceNodeId === sourceNode.id).length;
+        const naturalWidth = Math.max(0, Number(output.width || 0));
+        const naturalHeight = Math.max(0, Number(output.height || 0));
         const image = {
             url:output.url,
             name:output.name || '图文分层输出.png',
             kind:'image',
+            ...(naturalWidth && naturalHeight ? {natural_w:naturalWidth, natural_h:naturalHeight} : {}),
             openshopAssetId:output.assetId,
         };
         const node = createNode(

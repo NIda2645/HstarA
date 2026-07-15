@@ -216,13 +216,81 @@
     return true;
   }
 
-  async function queueSourceImageLayer({editor, source:sourceValue, imageLoader = defaultImageLoader}){
+  function intrinsicImageSize(image){
+    const elements = [image?._originalElement, image?._element].filter(Boolean);
+    const width = elements.map(element => Number(element.naturalWidth || element.videoWidth || element.width || 0))
+      .find(value => Number.isFinite(value) && value > 0) || Number(image?.width || 0);
+    const height = elements.map(element => Number(element.naturalHeight || element.videoHeight || element.height || 0))
+      .find(value => Number.isFinite(value) && value > 0) || Number(image?.height || 0);
+    if(!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return null;
+    return {width:Math.round(width), height:Math.round(height)};
+  }
+
+  function resizeEditorDocument(editor, size){
+    const width = positiveDimension(size?.width, 'width');
+    const height = positiveDimension(size?.height, 'height');
+    editor.canvasW = width;
+    editor.canvasH = height;
+    const boundary = editor.canvas?.getObjects?.().find(object => object?.name === '__boundary__');
+    if(boundary){
+      const values = {width, height};
+      if(typeof boundary.set === 'function') boundary.set(values);
+      else Object.assign(boundary, values);
+      boundary.setCoords?.();
+    }
+    const dimensions = root.document?.getElementById?.('canvas-dims');
+    if(dimensions) dimensions.textContent = `${width} x ${height}`;
+    editor.zoomFit?.();
+    editor.canvas?.renderAll?.();
+    return {width, height};
+  }
+
+  function activeSourceLayers(editor){
+    return editor.layers.filter(layer => (
+      layer?.sourceBinding && layer.sourceBinding.state !== 'detached'
+    )).sort((left, right) => (
+      Number(left.sourceBinding.sequence || 0) - Number(right.sourceBinding.sequence || 0)
+      || clean(left.sourceBinding.edgeId).localeCompare(clean(right.sourceBinding.edgeId))
+    ));
+  }
+
+  function sourceOnlyDocument(editor){
+    const sourceLayers = activeSourceLayers(editor);
+    if(!sourceLayers.length) return false;
+    const sourceObjects = new Set(sourceLayers.flatMap(layer => Array.isArray(layer.objects) ? layer.objects : []));
+    const canvasObjects = editor.canvas?.getObjects?.() || [];
+    if(canvasObjects.some(object => object?.name === '__boundary__')) return false;
+    return canvasObjects.length > 0 && canvasObjects.every(object => sourceObjects.has(object));
+  }
+
+  function repairSourceOnlyDocumentSize(editor){
+    if(!sourceOnlyDocument(editor)) return false;
+    const sourceLayers = activeSourceLayers(editor);
+    const firstImage = sourceLayers[0]?.objects?.[0];
+    const size = intrinsicImageSize(firstImage);
+    if(!size) return false;
+    if(Number(editor.canvasW) === size.width && Number(editor.canvasH) === size.height) return false;
+    resizeEditorDocument(editor, size);
+    sourceLayers.forEach(layer => layer.objects.forEach(image => centerSourceImage(editor, image)));
+    return true;
+  }
+
+  async function queueSourceImageLayer({
+    editor,
+    source:sourceValue,
+    imageLoader = defaultImageLoader,
+    adoptDocumentSize = false,
+  }){
     if(!editor?.canvas || !Array.isArray(editor.layers)){
       throw new Error('OpenShop editor is unavailable');
     }
     const source = normalizeSource(sourceValue);
     const image = await imageLoader(source);
     if(!image) throw new Error('OpenShop source image could not be decoded');
+    if(adoptDocumentSize){
+      const size = intrinsicImageSize(image);
+      if(size) resizeEditorDocument(editor, size);
+    }
 
     const values = {
       name: source.name,
@@ -346,6 +414,7 @@
           editor,
           source: {...source, placement:initiallyBlank ? 'initial-source-order' : 'top'},
           imageLoader,
+          adoptDocumentSize:initiallyBlank && result.added.length === 0,
         });
         layersByEdge.set(source.edgeId, addedLayer);
         result.added.push(addedLayer);
@@ -555,6 +624,33 @@
     Object.values(value).forEach(child => externalizeAssets(child, assetRefs));
   }
 
+  function removeBoundaryPatternBytes(value){
+    if(Array.isArray(value)){
+      value.forEach(removeBoundaryPatternBytes);
+      return;
+    }
+    if(!value || typeof value !== 'object') return;
+    if(clean(value.name) === '__boundary__') value.fill = null;
+    Object.values(value).forEach(removeBoundaryPatternBytes);
+  }
+
+  function restoreBoundaryPattern(editor){
+    const boundary = editor.canvas?.getObjects?.().find(object => object?.name === '__boundary__');
+    if(!boundary || typeof editor._createCheckerBoundary !== 'function') return false;
+    const restored = editor._createCheckerBoundary(editor.canvasW, editor.canvasH);
+    const values = {
+      width:editor.canvasW,
+      height:editor.canvasH,
+      fill:restored?.fill || null,
+      selectable:false,
+      evented:false,
+    };
+    if(typeof boundary.set === 'function') boundary.set(values);
+    else Object.assign(boundary, values);
+    boundary.setCoords?.();
+    return true;
+  }
+
   function serializeSourceBinding(binding, layerId){
     if(!binding) return null;
     const sequence = Number(binding.sequence);
@@ -613,6 +709,7 @@
       'hstarLayerId',
       'assetRef',
     ]));
+    removeBoundaryPatternBytes(editorJson);
     const assetRefs = new Set();
     externalizeAssets(editorJson, assetRefs);
 
@@ -740,6 +837,7 @@
         reject(error);
       }
     });
+    restoreBoundaryPattern(editor);
     editor.rebuildLayersFromCanvas?.();
     ensureEditorLayerIds(editor);
     if(Array.isArray(project.layers)){
@@ -758,6 +856,7 @@
         layer.hstarAiGeneration = metadata.hstarAiGeneration ? clone(metadata.hstarAiGeneration) : null;
       });
     }
+    repairSourceOnlyDocumentSize(editor);
     editor.canvas.renderAll?.();
     editor.updateLayersPanel?.();
     if(generativeClient?.restoreTasks){

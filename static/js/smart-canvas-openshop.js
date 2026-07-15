@@ -222,6 +222,8 @@
         const meta = data.meta || {};
         node.projectName = clean(meta.projectName) || node.projectName;
         node.previewUrl = clean(meta.previewUrl);
+        node.documentWidth = Math.max(1, Number(meta.documentWidth || node.documentWidth || 1920));
+        node.documentHeight = Math.max(1, Number(meta.documentHeight || node.documentHeight || 1080));
         node.layerCount = Math.max(0, Number(meta.layerCount || 0));
         node.sourceUpdateCount = Math.max(0, Number(meta.sourceUpdateCount || 0));
         node.autosaveVersion = Math.max(0, Number(meta.autosaveVersion || 0));

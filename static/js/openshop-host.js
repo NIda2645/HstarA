@@ -334,7 +334,7 @@
         });
         state.sessions.set(scope, session);
         getOverlay().appendChild(frame);
-        frame.src = '/static/openshop/index.html?v=2026.07.15.1784120375';
+        frame.src = '/static/openshop/index.html?v=2026.07.15.1784123441';
         return session;
     }
 
@@ -492,6 +492,8 @@
             projectName:clean(session.context.projectName) || '图文分层',
             previewAssetId:clean(project?.previewAssetId),
             previewUrl:project?.previewAssetId ? `/api/openshop/assets/${encodeURIComponent(project.previewAssetId)}` : '',
+            documentWidth:Math.max(1, Number(project?.document?.width || session.context.documentWidth || 1920)),
+            documentHeight:Math.max(1, Number(project?.document?.height || session.context.documentHeight || 1080)),
             layerCount:Array.isArray(project?.layers) ? project.layers.length : 0,
             sourceUpdateCount:pending.length,
             autosaveVersion:Number(project?.autosaveVersion || 0),
