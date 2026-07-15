@@ -36,11 +36,14 @@ import sys
 sys.path.insert(0, os.getcwd())
 
 from openshop_ai import (
+    OpenShopAiTaskRegistry,
     OpenShopAiValidationError,
     build_capability_catalog,
     build_ocr_prompt,
     normalize_ai_task_record,
+    normalize_generation_snapshot,
     normalize_ocr_layout,
+    normalize_reference_record,
 )
 
 providers = [
@@ -54,6 +57,17 @@ providers = [
         "api_key": "must-not-leak",
         "chat_models": ["gemini-3.1-pro-high", "text-embedding-3-large"],
         "image_models": ["gemini-3-pro-image"],
+        "image_model_capabilities": {
+            "gemini-3-pro-image": {
+                "supportsMask": True,
+                "supportsMultiReference": True,
+                "maxReferenceImages": 12,
+                "maxOutputs": 6,
+                "supportsBatchOutput": False,
+                "sizes": ["auto", "1024x1024"],
+                "qualities": ["auto", "high"],
+            }
+        },
     },
     {
         "id": "antigravity",
@@ -86,6 +100,16 @@ assert [item["id"] for item in extract_providers] == ["vision", "antigravity"]
 assert [item["id"] for item in remove_providers] == ["vision", "antigravity"]
 assert [item["id"] for item in extract_providers[0]["models"]] == ["gemini-3.1-pro-high"]
 assert [item["id"] for item in remove_providers[0]["models"]] == ["gemini-3-pro-image"]
+for tool_id in ("generative-fill", "local-redraw"):
+    model = catalog["tools"][tool_id]["providers"][0]["models"][0]
+    capabilities = model["capabilities"]
+    assert capabilities["supportsImageInput"] is True
+    assert capabilities["supportsMask"] is True
+    assert capabilities["supportsMultiReference"] is True
+    assert capabilities["maxReferenceImages"] == 12
+    assert capabilities["maxOutputs"] == 6
+    assert capabilities["sizes"] == ["auto", "1024x1024"]
+    assert capabilities["qualities"] == ["auto", "high"]
 
 prompt = build_ocr_prompt(1920, 1080)
 assert "1920" in prompt and "1080" in prompt
@@ -161,6 +185,114 @@ try:
     raise AssertionError("unknown tool should fail")
 except OpenShopAiValidationError:
     pass
+
+primary = normalize_reference_record({
+    "assetId": "c" * 64,
+    "alias": "参考图1",
+    "sourceType": "primary",
+    "order": 0,
+    "width": 1920,
+    "height": 1080,
+})
+selection_reference = normalize_reference_record({
+    "assetId": "d" * 64,
+    "alias": "选区1",
+    "sourceType": "selection",
+    "order": 1,
+})
+image_reference = normalize_reference_record({
+    "assetId": "e" * 64,
+    "alias": "参考图2",
+    "sourceType": "library",
+    "order": 2,
+})
+assert primary["mention"] == "@参考图1"
+assert selection_reference["mention"] == "@选区1"
+assert image_reference["mention"] == "@参考图2"
+
+snapshot = normalize_generation_snapshot({
+    "toolId": "local-redraw",
+    "sourceAssetId": "c" * 64,
+    "maskAssetId": "f" * 64,
+    "primaryReferenceAssetId": "c" * 64,
+    "references": [primary, selection_reference, image_reference],
+    "prompt": "重绘 @选区1，并参考 @参考图2",
+    "size": "auto",
+    "quality": "high",
+    "targetCount": 3,
+    "referenceMode": "full",
+    "sourceLayerId": "layer-source",
+    "sourceLayerIndex": 2,
+    "document": {
+        "width": 1920,
+        "height": 1080,
+        "layerVersion": 17,
+        "visibleCompositeVersion": 23,
+    },
+    "selection": {"x": 10, "y": 20, "width": 30, "height": 40, "feather": 0},
+})
+assert snapshot["targetCount"] == 3
+assert snapshot["originalTargetCount"] == 3
+assert snapshot["requestedIndexes"] == [0, 1, 2]
+assert snapshot["references"][1]["mention"] == "@选区1"
+assert "seed" not in json.dumps(snapshot).lower()
+
+fill_snapshot = normalize_generation_snapshot({
+    **snapshot,
+    "toolId": "generative-fill",
+    "prompt": "",
+    "references": [primary],
+    "referenceMode": "selection",
+})
+assert fill_snapshot["referenceMode"] == "full"
+
+for invalid_snapshot in (
+    {**snapshot, "seed": 42},
+    {**snapshot, "prompt": ""},
+    {**snapshot, "references": [image_reference, primary]},
+    {**snapshot, "requestedIndexes": [0, 0, 2]},
+):
+    try:
+        normalize_generation_snapshot(invalid_snapshot)
+        raise AssertionError("invalid generation snapshot should fail")
+    except OpenShopAiValidationError:
+        pass
+
+owner_a = {"canvasType": "classic", "canvasId": "canvas-a", "nodeId": "node-a"}
+registry = OpenShopAiTaskRegistry()
+parent = registry.create_parent("project-a", owner_a, snapshot, "vision", "gemini-3-pro-image")
+children = [registry.create_child(parent["taskId"], index) for index in snapshot["requestedIndexes"]]
+assert registry.mark_child_running(parent["taskId"], children[0]["childTaskId"]) is True
+assert registry.succeed_child(
+    parent["taskId"], children[0]["childTaskId"], {"assetId": "1" * 64}
+) is True
+assert registry.succeed_child(
+    parent["taskId"], children[1]["childTaskId"], {"assetId": "2" * 64}
+) is True
+assert registry.fail_child(parent["taskId"], children[2]["childTaskId"], "upstream failed") is True
+partial = registry.get(parent["taskId"], "project-a", owner_a)
+assert partial["status"] == "partial"
+assert (partial["targetCount"], partial["completedCount"], partial["failedCount"]) == (3, 2, 1)
+assert registry.succeed_child(
+    parent["taskId"], children[2]["childTaskId"], {"assetId": "3" * 64}
+) is False
+
+normalized_parent = normalize_ai_task_record(partial)
+assert normalized_parent["kind"] == "parent"
+assert normalized_parent["children"][0]["outputAssetId"] == "1" * 64
+assert normalized_parent["snapshot"]["sourceLayerId"] == "layer-source"
+assert "owner" not in normalized_parent
+
+cancel_parent = registry.create_parent(
+    "project-a", owner_a, {**snapshot, "targetCount": 1, "requestedIndexes": [0]},
+    "vision", "gemini-3-pro-image",
+)
+cancel_child = registry.create_child(cancel_parent["taskId"], 0)
+registry.cancel(cancel_parent["taskId"], "project-a", owner_a)
+assert registry.succeed_child(
+    cancel_parent["taskId"], cancel_child["childTaskId"], {"assetId": "4" * 64}
+) is False
+assert registry.get(cancel_parent["taskId"], "project-a", owner_a)["status"] == "cancelled"
 
 print("OpenShop AI contract tests passed")
 `;

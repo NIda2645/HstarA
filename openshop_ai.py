@@ -14,15 +14,22 @@ class OpenShopAiValidationError(ValueError):
     pass
 
 
-OPENSHOP_AI_TOOL_IDS = ("text-extract", "text-remove")
+OPENSHOP_GENERATIVE_TOOL_IDS = ("generative-fill", "local-redraw")
+OPENSHOP_AI_TOOL_IDS = ("text-extract", "text-remove", *OPENSHOP_GENERATIVE_TOOL_IDS)
 OPENSHOP_AI_TASK_STATES = (
     "queued",
     "running",
+    "partial",
     "succeeded",
     "failed",
     "cancelled",
 )
-OPENSHOP_AI_TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
+OPENSHOP_AI_TERMINAL_STATES = {"partial", "succeeded", "failed", "cancelled"}
+OPENSHOP_AI_CHILD_STATES = {"queued", "running", "succeeded", "failed", "cancelled"}
+OPENSHOP_REFERENCE_SOURCE_TYPES = {"primary", "selection", "layer", "library", "local"}
+OPENSHOP_DEFAULT_MAX_REFERENCES = 8
+OPENSHOP_DEFAULT_MAX_OUTPUTS = 8
+OPENSHOP_HARD_MAX_OUTPUTS = 64
 
 _CLI_PROTOCOLS = {"codex", "gemini-cli"}
 _ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -97,14 +104,54 @@ def _looks_like_visual_chat_model(model: str) -> bool:
     return any(marker in value for marker in _VISUAL_MODEL_MARKERS)
 
 
-def _catalog_provider(provider: dict[str, Any], models: list[str]) -> dict[str, Any]:
+def _bounded_integer(value: Any, fallback: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return max(minimum, min(maximum, number))
+
+
+def _image_model_capabilities(provider: dict[str, Any], model: str) -> dict[str, Any]:
+    configured = provider.get("image_model_capabilities")
+    raw = configured.get(model, {}) if isinstance(configured, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "supportsImageInput": raw.get("supportsImageInput", True) is not False,
+        "supportsMask": raw.get("supportsMask", True) is not False,
+        "supportsMultiReference": raw.get("supportsMultiReference", True) is not False,
+        "maxReferenceImages": _bounded_integer(
+            raw.get("maxReferenceImages"), OPENSHOP_DEFAULT_MAX_REFERENCES, 1, 64
+        ),
+        "maxOutputs": _bounded_integer(
+            raw.get("maxOutputs"), OPENSHOP_DEFAULT_MAX_OUTPUTS, 1, OPENSHOP_HARD_MAX_OUTPUTS
+        ),
+        "supportsBatchOutput": bool(raw.get("supportsBatchOutput", False)),
+        "sizes": _unique_texts(raw.get("sizes"), limit=40, max_items=32) or ["auto"],
+        "qualities": _unique_texts(raw.get("qualities"), limit=40, max_items=16)
+        or ["auto", "low", "medium", "high"],
+    }
+
+
+def _catalog_provider(
+    provider: dict[str, Any],
+    models: list[str],
+    include_image_capabilities: bool = False,
+) -> dict[str, Any]:
+    catalog_models = []
+    for value in models:
+        model = {"id": value, "name": value, "available": True}
+        if include_image_capabilities:
+            model["capabilities"] = _image_model_capabilities(provider, value)
+        catalog_models.append(model)
     return {
         "id": _clean_text(provider.get("id"), 96),
         "name": _clean_text(provider.get("name"), 120, _clean_text(provider.get("id"), 96)),
         "protocol": _clean_text(provider.get("protocol"), 40, "openai").lower(),
         "primary": bool(provider.get("primary")),
         "available": True,
-        "models": [{"id": value, "name": value, "available": True} for value in models],
+        "models": catalog_models,
     }
 
 
@@ -129,7 +176,9 @@ def build_capability_catalog(
         if chat_models:
             extract_providers.append(_catalog_provider(raw, chat_models))
         if image_models:
-            remove_providers.append(_catalog_provider(raw, image_models))
+            remove_providers.append(
+                _catalog_provider(raw, image_models, include_image_capabilities=True)
+            )
 
     requested_primary = _clean_text(primary_provider_id, 96)
     all_provider_ids = {
@@ -163,6 +212,18 @@ def build_capability_catalog(
                 "label": "去除文字",
                 "capability": "image-edit",
                 "providers": remove_providers,
+            },
+            "generative-fill": {
+                "id": "generative-fill",
+                "label": "生成式填充",
+                "capability": "masked-image-generation",
+                "providers": deepcopy(remove_providers),
+            },
+            "local-redraw": {
+                "id": "local-redraw",
+                "label": "局部重绘",
+                "capability": "multi-reference-masked-image-generation",
+                "providers": deepcopy(remove_providers),
             },
         },
     }
@@ -354,6 +415,194 @@ def _task_asset_id(value: Any, label: str) -> str:
     return normalized
 
 
+def _task_safe_id(value: Any, label: str, required: bool = True) -> str:
+    normalized = _clean_text(value, 160)
+    if (required and not normalized) or (normalized and not _SAFE_ID_PATTERN.fullmatch(normalized)):
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    return normalized
+
+
+def _positive_int(value: Any, label: str, maximum: int = 16384) -> int:
+    if isinstance(value, bool):
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}") from exc
+    if number < 1 or number > maximum:
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    return number
+
+
+def _reject_seed_keys(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).strip().lower() == "seed":
+                raise OpenShopAiValidationError("OpenShop generation does not support seed")
+            _reject_seed_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_seed_keys(child)
+
+
+def normalize_reference_record(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("OpenShop reference must be an object")
+    source_type = _clean_text(value.get("sourceType"), 32).lower()
+    if source_type not in OPENSHOP_REFERENCE_SOURCE_TYPES:
+        raise OpenShopAiValidationError("Invalid OpenShop reference sourceType")
+    alias = _clean_text(value.get("alias"), 40)
+    prefix = "选区" if source_type == "selection" else "参考图"
+    if not re.fullmatch(rf"{prefix}[1-9][0-9]*", alias):
+        raise OpenShopAiValidationError("Invalid OpenShop reference alias")
+    return {
+        "assetId": _task_asset_id(value.get("assetId"), "reference assetId"),
+        "alias": alias,
+        "mention": f"@{alias}",
+        "sourceType": source_type,
+        "order": max(0, int(value.get("order") or 0)),
+        "width": max(0, int(value.get("width") or 0)),
+        "height": max(0, int(value.get("height") or 0)),
+    }
+
+
+def normalize_generation_snapshot(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("OpenShop generation snapshot must be an object")
+    _reject_seed_keys(value)
+    tool_id = _clean_text(value.get("toolId"), 40)
+    if tool_id not in OPENSHOP_GENERATIVE_TOOL_IDS:
+        raise OpenShopAiValidationError("Invalid OpenShop generative toolId")
+    prompt = _clean_text(value.get("prompt"), 8000)
+    if tool_id == "local-redraw" and not prompt:
+        raise OpenShopAiValidationError("局部重绘需要填写修改要求")
+
+    source_asset_id = _task_asset_id(value.get("sourceAssetId"), "sourceAssetId")
+    mask_asset_id = _task_asset_id(value.get("maskAssetId"), "maskAssetId")
+    primary_asset_id = _task_asset_id(
+        value.get("primaryReferenceAssetId"), "primaryReferenceAssetId"
+    )
+    if not source_asset_id or not mask_asset_id or not primary_asset_id:
+        raise OpenShopAiValidationError("OpenShop generation assets are incomplete")
+
+    references_value = value.get("references")
+    if not isinstance(references_value, list):
+        raise OpenShopAiValidationError("OpenShop generation references must be an array")
+    references = sorted(
+        (normalize_reference_record(item) for item in references_value),
+        key=lambda item: item["order"],
+    )
+    if len(references) > 64:
+        raise OpenShopAiValidationError("OpenShop generation references exceed the 64 item limit")
+    if len({item["alias"] for item in references}) != len(references):
+        raise OpenShopAiValidationError("OpenShop reference aliases must be unique")
+    if [item["order"] for item in references] != list(range(len(references))):
+        raise OpenShopAiValidationError("OpenShop reference order must be contiguous")
+
+    target_count = _bounded_integer(
+        value.get("targetCount"), 1, 1, OPENSHOP_HARD_MAX_OUTPUTS
+    )
+    original_target_count = _bounded_integer(
+        value.get("originalTargetCount"), target_count, target_count, OPENSHOP_HARD_MAX_OUTPUTS
+    )
+    requested_indexes = value.get("requestedIndexes")
+    if not isinstance(requested_indexes, list):
+        requested_indexes = list(range(target_count))
+    try:
+        requested_indexes = [int(index) for index in requested_indexes]
+    except (TypeError, ValueError) as exc:
+        raise OpenShopAiValidationError("Invalid OpenShop requested output indexes") from exc
+    if (
+        len(requested_indexes) != target_count
+        or len(set(requested_indexes)) != target_count
+        or any(index < 0 or index >= original_target_count for index in requested_indexes)
+    ):
+        raise OpenShopAiValidationError("Invalid OpenShop requested output indexes")
+
+    document_value = value.get("document")
+    selection_value = value.get("selection")
+    if not isinstance(document_value, dict) or not isinstance(selection_value, dict):
+        raise OpenShopAiValidationError("OpenShop generation geometry is incomplete")
+    document = {
+        "width": _positive_int(document_value.get("width"), "document width"),
+        "height": _positive_int(document_value.get("height"), "document height"),
+        "layerVersion": max(0, int(document_value.get("layerVersion") or 0)),
+        "visibleCompositeVersion": max(
+            0, int(document_value.get("visibleCompositeVersion") or 0)
+        ),
+    }
+    selection = {
+        "x": max(0, int(selection_value.get("x") or 0)),
+        "y": max(0, int(selection_value.get("y") or 0)),
+        "width": _positive_int(selection_value.get("width"), "selection width"),
+        "height": _positive_int(selection_value.get("height"), "selection height"),
+        "feather": max(0, int(selection_value.get("feather") or 0)),
+    }
+    if (
+        selection["x"] + selection["width"] > document["width"]
+        or selection["y"] + selection["height"] > document["height"]
+    ):
+        raise OpenShopAiValidationError("OpenShop selection is outside the document")
+
+    reference_mode = (
+        "full"
+        if tool_id == "generative-fill"
+        else "selection" if value.get("referenceMode") == "selection" else "full"
+    )
+    if tool_id == "generative-fill" and len(references) > 1:
+        raise OpenShopAiValidationError("生成式填充不接受额外参考图")
+    if tool_id == "local-redraw":
+        if not references:
+            raise OpenShopAiValidationError("局部重绘需要主参考图")
+        if references[0]["assetId"] != primary_asset_id:
+            raise OpenShopAiValidationError("局部重绘主参考图与引用顺序不一致")
+
+    return {
+        "toolId": tool_id,
+        "sourceAssetId": source_asset_id,
+        "maskAssetId": mask_asset_id,
+        "primaryReferenceAssetId": primary_asset_id,
+        "references": references,
+        "prompt": prompt,
+        "size": _clean_text(value.get("size"), 40, "auto"),
+        "quality": _clean_text(value.get("quality"), 40, "auto"),
+        "targetCount": target_count,
+        "originalTargetCount": original_target_count,
+        "requestedIndexes": requested_indexes,
+        "referenceMode": reference_mode,
+        "sourceLayerId": _task_safe_id(value.get("sourceLayerId"), "sourceLayerId"),
+        "sourceLayerIndex": max(0, int(value.get("sourceLayerIndex") or 0)),
+        "document": document,
+        "selection": selection,
+    }
+
+
+def _normalize_child_record(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("OpenShop AI child task must be an object")
+    status = _clean_text(value.get("status"), 20).lower()
+    if status not in OPENSHOP_AI_CHILD_STATES:
+        raise OpenShopAiValidationError("Invalid OpenShop AI child task status")
+    result = value.get("result") if isinstance(value.get("result"), dict) else None
+    output_asset_id = _task_asset_id(
+        value.get("outputAssetId") or (result or {}).get("assetId"),
+        "child outputAssetId",
+    )
+    child = {
+        "childTaskId": _task_safe_id(value.get("childTaskId"), "childTaskId"),
+        "index": max(0, int(value.get("index") or 0)),
+        "status": status,
+        "outputAssetId": output_asset_id,
+        "error": _clean_text(value.get("error"), 500),
+        "createdAt": max(0, int(value.get("createdAt") or 0)),
+        "updatedAt": max(0, int(value.get("updatedAt") or 0)),
+        "completedAt": max(0, int(value.get("completedAt") or 0)),
+    }
+    if result:
+        child["result"] = deepcopy(result)
+    return child
+
+
 def normalize_ai_task_record(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OpenShopAiValidationError("OpenShop AI task record must be an object")
@@ -366,8 +615,45 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
     status = str(value.get("status") or "").strip().lower()
     if status not in OPENSHOP_AI_TASK_STATES:
         raise OpenShopAiValidationError("Invalid OpenShop AI task status")
+    kind = "parent" if value.get("kind") == "parent" else "single"
+    if kind == "parent":
+        if tool_id not in OPENSHOP_GENERATIVE_TOOL_IDS:
+            raise OpenShopAiValidationError("OpenShop parent task must use a generative tool")
+        snapshot = normalize_generation_snapshot(value.get("snapshot"))
+        children_value = value.get("children")
+        if not isinstance(children_value, list) or len(children_value) > OPENSHOP_HARD_MAX_OUTPUTS:
+            raise OpenShopAiValidationError("OpenShop parent task children are invalid")
+        children = [_normalize_child_record(item) for item in children_value]
+        if len({item["childTaskId"] for item in children}) != len(children):
+            raise OpenShopAiValidationError("OpenShop child task IDs must be unique")
+        completed_count = sum(item["status"] == "succeeded" for item in children)
+        failed_count = sum(item["status"] == "failed" for item in children)
+        return {
+            "taskId": task_id,
+            "kind": "parent",
+            "toolId": tool_id,
+            "apiConfigId": _clean_text(value.get("apiConfigId"), 96),
+            "modelId": _clean_text(value.get("modelId"), 240),
+            "status": status,
+            "targetCount": snapshot["targetCount"],
+            "originalTargetCount": snapshot["originalTargetCount"],
+            "completedCount": completed_count,
+            "failedCount": failed_count,
+            "retryOfTaskId": _task_safe_id(
+                value.get("retryOfTaskId"), "retryOfTaskId", required=False
+            ),
+            "snapshot": snapshot,
+            "children": children,
+            "createdAt": max(0, int(value.get("createdAt") or 0)),
+            "updatedAt": max(0, int(value.get("updatedAt") or 0)),
+            "completedAt": max(0, int(value.get("completedAt") or 0)),
+            "error": _clean_text(value.get("error"), 500),
+        }
+    if status == "partial":
+        raise OpenShopAiValidationError("OpenShop single task cannot be partial")
     record: dict[str, Any] = {
         "taskId": task_id,
+        "kind": "single",
         "toolId": tool_id,
         "apiConfigId": _clean_text(value.get("apiConfigId"), 96),
         "modelId": _clean_text(value.get("modelId"), 240),
@@ -422,6 +708,41 @@ class OpenShopAiTaskRegistry:
     def _public(record: dict[str, Any]) -> dict[str, Any]:
         return deepcopy(record)
 
+    @staticmethod
+    def _summarize_parent(record: dict[str, Any]) -> None:
+        children = record.get("children", [])
+        completed = sum(child["status"] == "succeeded" for child in children)
+        failed = sum(child["status"] == "failed" for child in children)
+        cancelled = sum(child["status"] == "cancelled" for child in children)
+        record["completedCount"] = completed
+        record["failedCount"] = failed
+        if record.get("status") == "cancelled":
+            return
+        terminal_count = completed + failed + cancelled
+        if len(children) < record["targetCount"] or terminal_count < record["targetCount"]:
+            record["status"] = (
+                "running"
+                if terminal_count or any(child["status"] == "running" for child in children)
+                else "queued"
+            )
+            record["completedAt"] = 0
+        elif completed == record["targetCount"]:
+            record["status"] = "succeeded"
+        elif completed:
+            record["status"] = "partial"
+        else:
+            record["status"] = "failed"
+        if record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+            record["completedAt"] = int(time.time() * 1000)
+
+    @staticmethod
+    def _child(record: dict[str, Any], child_task_id: str) -> dict[str, Any] | None:
+        normalized = str(child_task_id or "").strip()
+        return next(
+            (child for child in record.get("children", []) if child["childTaskId"] == normalized),
+            None,
+        )
+
     def create(
         self,
         project_id: str,
@@ -463,6 +784,165 @@ class OpenShopAiTaskRegistry:
         with self._lock:
             self._records[task_id] = record
         return self._public(record)
+
+    def create_parent(
+        self,
+        project_id: str,
+        owner: dict[str, Any],
+        snapshot: dict[str, Any],
+        provider_id: str,
+        model_id: str,
+        retry_of_task_id: str = "",
+    ) -> dict[str, Any]:
+        self.cleanup()
+        normalized_project_id = _clean_text(project_id, 96)
+        if not normalized_project_id:
+            raise OpenShopAiValidationError("OpenShop AI projectId is invalid")
+        normalized_snapshot = normalize_generation_snapshot(snapshot)
+        timestamp = int(time.time() * 1000)
+        task_id = f"openshop_ai_{uuid.uuid4().hex}"
+        record = {
+            "taskId": task_id,
+            "kind": "parent",
+            "projectId": normalized_project_id,
+            "owner": self._owner(owner),
+            "toolId": normalized_snapshot["toolId"],
+            "apiConfigId": _clean_text(provider_id, 96),
+            "modelId": _clean_text(model_id, 240),
+            "status": "queued",
+            "targetCount": normalized_snapshot["targetCount"],
+            "originalTargetCount": normalized_snapshot["originalTargetCount"],
+            "completedCount": 0,
+            "failedCount": 0,
+            "retryOfTaskId": _task_safe_id(
+                retry_of_task_id, "retryOfTaskId", required=False
+            ),
+            "snapshot": normalized_snapshot,
+            "children": [],
+            "error": "",
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "completedAt": 0,
+        }
+        with self._lock:
+            self._records[task_id] = record
+        return self._public(record)
+
+    def create_child(self, task_id: str, index: int) -> dict[str, Any]:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record:
+                raise OpenShopAiTaskNotFound(task_id)
+            if record.get("kind") != "parent" or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                raise OpenShopAiValidationError("OpenShop parent task cannot accept children")
+            normalized_index = int(index)
+            if normalized_index not in record["snapshot"]["requestedIndexes"]:
+                raise OpenShopAiValidationError("OpenShop child output index was not requested")
+            if any(child["index"] == normalized_index for child in record["children"]):
+                raise OpenShopAiValidationError("OpenShop child output index already exists")
+            timestamp = int(time.time() * 1000)
+            child = {
+                "childTaskId": f"openshop_ai_child_{uuid.uuid4().hex}",
+                "index": normalized_index,
+                "status": "queued",
+                "outputAssetId": "",
+                "result": None,
+                "error": "",
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+                "completedAt": 0,
+            }
+            record["children"].append(child)
+            record["children"].sort(key=lambda item: item["index"])
+            record["updatedAt"] = timestamp
+            self._summarize_parent(record)
+            return self._public(child)
+
+    def bind_child(self, task_id: str, child_task_id: str, future: Any) -> None:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record:
+                raise OpenShopAiTaskNotFound(task_id)
+            child = self._child(record, child_task_id)
+            if not child:
+                raise OpenShopAiTaskNotFound(child_task_id)
+            if record["status"] == "cancelled" or child["status"] == "cancelled":
+                future.cancel()
+                return
+            if child["status"] in {"succeeded", "failed"}:
+                return
+            self._futures[child_task_id] = future
+
+    def mark_child_running(self, task_id: str, child_task_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            child = self._child(record, child_task_id)
+            if not child or child["status"] != "queued":
+                return False
+            timestamp = int(time.time() * 1000)
+            child["status"] = "running"
+            child["updatedAt"] = timestamp
+            record["updatedAt"] = timestamp
+            self._summarize_parent(record)
+            return True
+
+    def can_complete_child(self, task_id: str, child_task_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            child = self._child(record, child_task_id)
+            return bool(child and child["status"] in {"queued", "running"})
+
+    def succeed_child(
+        self,
+        task_id: str,
+        child_task_id: str,
+        result: dict[str, Any],
+    ) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            child = self._child(record, child_task_id)
+            if not child or child["status"] in {"succeeded", "failed", "cancelled"}:
+                return False
+            timestamp = int(time.time() * 1000)
+            child["status"] = "succeeded"
+            child["result"] = deepcopy(result)
+            child["outputAssetId"] = _task_asset_id(
+                result.get("assetId") if isinstance(result, dict) else "",
+                "child outputAssetId",
+            )
+            child["error"] = ""
+            child["updatedAt"] = timestamp
+            child["completedAt"] = timestamp
+            record["updatedAt"] = timestamp
+            self._futures.pop(child_task_id, None)
+            self._summarize_parent(record)
+            return True
+
+    def fail_child(self, task_id: str, child_task_id: str, error: Any) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            child = self._child(record, child_task_id)
+            if not child or child["status"] in {"succeeded", "failed", "cancelled"}:
+                return False
+            timestamp = int(time.time() * 1000)
+            child["status"] = "failed"
+            child["result"] = None
+            child["outputAssetId"] = ""
+            child["error"] = _clean_text(error, 500, "OpenShop AI child task failed")
+            child["updatedAt"] = timestamp
+            child["completedAt"] = timestamp
+            record["updatedAt"] = timestamp
+            self._futures.pop(child_task_id, None)
+            self._summarize_parent(record)
+            return True
 
     def bind(self, task_id: str, future: Any) -> None:
         with self._lock:
@@ -552,7 +1032,7 @@ class OpenShopAiTaskRegistry:
         project_id: str | None = None,
         owner: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        future = None
+        futures: list[Any] = []
         with self._lock:
             record = self._records.get(task_id)
             if not record:
@@ -566,10 +1046,25 @@ class OpenShopAiTaskRegistry:
                 record["error"] = ""
                 record["updatedAt"] = timestamp
                 record["completedAt"] = timestamp
+                for child in record.get("children", []):
+                    if child["status"] not in {"succeeded", "failed", "cancelled"}:
+                        child["status"] = "cancelled"
+                        child["result"] = None
+                        child["outputAssetId"] = ""
+                        child["error"] = ""
+                        child["updatedAt"] = timestamp
+                        child["completedAt"] = timestamp
             future = self._futures.pop(task_id, None)
+            if future:
+                futures.append(future)
+            for child in record.get("children", []):
+                future = self._futures.pop(child["childTaskId"], None)
+                if future:
+                    futures.append(future)
             public = self._public(record)
-        if future and not future.done():
-            future.cancel()
+        for future in futures:
+            if not future.done():
+                future.cancel()
         return public
 
     def cancel_project(self, project_id: str) -> list[str]:
@@ -605,6 +1100,8 @@ class OpenShopAiTaskRegistry:
                 and int(record.get("updatedAt") or 0) < cutoff
             ]
             for task_id in expired:
-                self._records.pop(task_id, None)
+                record = self._records.pop(task_id, None)
                 self._futures.pop(task_id, None)
+                for child in (record or {}).get("children", []):
+                    self._futures.pop(child["childTaskId"], None)
         return expired
