@@ -192,17 +192,18 @@ describe('Hstar OpenShop editor host runtime', () => {
     expect(parentWindow.postMessage.mock.calls[0][0].type).toBe(protocol.TYPES.PROJECT_CHANGED);
   });
 
-  it('loads only the active project and resets request ids for a new session', async () => {
-    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+  it('keeps the welcome page for empty sessions and reveals sourced sessions after synchronization', async () => {
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1', {entryMode:'welcome'}));
     dispatch(envelope(protocol.TYPES.LOAD_PROJECT, 'load-1', {
       project: { schemaVersion: 1, projectId: 'project-1' }
     }));
+    dispatch(envelope(protocol.TYPES.SYNC_SOURCES, 'sync-empty', {sources:[]}));
     await flushMessages();
 
     expect(projectAdapter.restoreProject).toHaveBeenCalledTimes(1);
-    expect(editor.dismissWelcome).toHaveBeenCalledTimes(1);
+    expect(editor.dismissWelcome).not.toHaveBeenCalled();
 
-    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-2', {}, {
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-2', {entryMode:'workspace'}, {
       sessionId: 'session-2'
     }));
     dispatch(envelope(protocol.TYPES.LOAD_PROJECT, 'load-1', {
@@ -213,6 +214,16 @@ describe('Hstar OpenShop editor host runtime', () => {
     await flushMessages();
 
     expect(projectAdapter.restoreProject).toHaveBeenCalledTimes(2);
+    expect(editor.dismissWelcome).not.toHaveBeenCalled();
+
+    dispatch(envelope(protocol.TYPES.SYNC_SOURCES, 'sync-sourced', {sources:[{
+      assetId:'asset-1', edgeId:'edge-1', sourceNodeId:'image-node-1',
+      name:'source.png', url:'/static/assets/source.png', sequence:0,
+    }]}, {
+      sessionId:'session-2',
+    }));
+    await flushMessages();
+
     expect(editor.dismissWelcome).toHaveBeenCalledTimes(1);
     expect(runtime.getState().activeSession.sessionId).toBe('session-2');
   });

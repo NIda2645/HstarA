@@ -294,11 +294,13 @@
         session.openSent = true;
         postToEditor(session, Protocol.TYPES.OPEN_SESSION, {
             document:{width:session.context.documentWidth, height:session.context.documentHeight},
+            entryMode:session.entryMode,
         }, uuid('openshop-open'));
     }
 
     function createSession(context, sources){
         const scope = Protocol.createProjectScope(context);
+        const sessionSources = normalizeSources(sources);
         const frame = document.createElement('iframe');
         frame.className = 'openshop-session-frame';
         frame.dataset.projectScope = scope;
@@ -311,7 +313,9 @@
             sessionId:uuid('openshop-session'),
             context:{...context},
             project:null,
-            sources:normalizeSources(sources),
+            sources:sessionSources,
+            entryMode:sessionSources.length ? 'workspace' : 'welcome',
+            viewReady:false,
             frameLoaded:false,
             editorReady:false,
             openSent:false,
@@ -330,8 +334,18 @@
         });
         state.sessions.set(scope, session);
         getOverlay().appendChild(frame);
-        frame.src = '/static/openshop/index.html';
+        frame.src = '/static/openshop/index.html?v=2026.07.15.1784117082';
         return session;
+    }
+
+    function revealSessionFrame(session, reason){
+        const readyReason = session.entryMode === 'workspace' ? 'sources-synchronized' : 'project-loaded';
+        if(reason !== readyReason) return false;
+        session.viewReady = true;
+        if(session.scope === state.activeScope && getOverlay().classList.contains('is-open')){
+            session.frame.hidden = false;
+        }
+        return true;
     }
 
     function showOverlay(){
@@ -354,17 +368,22 @@
         const scope = Protocol.createProjectScope(context);
         const previous = activeSession();
         const normalized = normalizeSources(sources);
+        const entryMode = normalized.length ? 'workspace' : 'welcome';
         let session = state.sessions.get(scope);
         const sourcesChanged = session && JSON.stringify(session.sources) !== JSON.stringify(normalized);
         if(!session) session = createSession(context, normalized);
         else {
+            if(sourcesChanged && session.entryMode !== 'workspace' && entryMode === 'workspace'){
+                session.viewReady = false;
+            }
             session.context = {...session.context, ...context};
             session.sources = normalized;
+            session.entryMode = entryMode;
             session.frame.title = `图文分层：${context.projectName}`;
         }
         if(previous && previous !== session) previous.idleSince = Date.now();
         state.activeScope = scope;
-        state.sessions.forEach(item => { item.frame.hidden = item !== session; });
+        state.sessions.forEach(item => { item.frame.hidden = item !== session || !item.viewReady; });
         session.idleSince = 0;
         ui('[data-openshop-title]').textContent = context.projectName;
         renderSourcePanel(session, session.project);
@@ -569,6 +588,7 @@
                 session.project = envelope.payload?.project || session.project;
                 updateTaskSummary(session, session.project);
                 if(session.scope === state.activeScope) renderSourcePanel(session, session.project);
+                revealSessionFrame(session, clean(envelope.payload?.reason));
                 setStatus(session, 'dirty');
                 publishNodeMeta(session, envelope.requestId, 'dirty');
             } else if(envelope.type === Protocol.TYPES.SEND_TO_CANVAS){

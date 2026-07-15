@@ -75,7 +75,7 @@ async function mountCanvas(page, kind, canvasId){
   return frame;
 }
 
-async function openNode(page, canvasFrame, kind, nodeId, expectedSources = null){
+async function openNode(page, canvasFrame, kind, nodeId, expectedSources = null, {welcome = null} = {}){
   await canvasFrame.waitForFunction(({canvasKind, id}) => canvasKind === 'smart'
     ? Boolean(window.HstarSmartCanvasOpenShopHooks?.getNode?.(id))
     : Boolean(window.HstarClassicOpenShopHooks?.getNodes?.().some(node => node.id === id)), {canvasKind:kind, id:nodeId});
@@ -96,7 +96,8 @@ async function openNode(page, canvasFrame, kind, nodeId, expectedSources = null)
     && OS.canvas
     && window.HstarOpenShopRuntime?.getState?.().activeSession?.context?.nodeId === id
   ), nodeId);
-  await expect(editor.locator('#welcome-overlay')).toBeHidden();
+  if(welcome === 'visible') await expect(editor.locator('#welcome-overlay')).toBeVisible();
+  if(welcome === 'hidden') await expect(editor.locator('#welcome-overlay')).toBeHidden();
   if(expectedSources !== null){
     await editor.waitForFunction(count => OS.layers.filter(layer => layer.sourceBinding).length >= count, expectedSources);
   }
@@ -165,6 +166,59 @@ test('keeps OpenShop node actions visible inside classic and smart canvas cards'
     expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.body.bottom + 0.5);
     expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.node.bottom + 0.5);
   }
+});
+
+test('opens empty OpenShop nodes on templates and sourced nodes directly in the workspace', async ({page, request}) => {
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const sourceImage = {
+    id:'entry-source-image', type:'image', x:60, y:120, w:260, h:240,
+    url:`${imageUrls[0]}?entry=${runId}`, name:'entry-source.png', mediaKind:'image', assetVersion:`entry-${runId}`,
+  };
+  const emptyNode = {
+    id:'entry-empty', type:'openshop-layered', projectId:`e2e_entry_empty_${runId}`,
+    projectName:'Empty OpenShop entry', x:420, y:100, w:340, h:260,
+    documentWidth:1920, documentHeight:1080, saveState:'new', created_at:Date.now(),
+  };
+  const sourcedNode = {
+    ...emptyNode, id:'entry-sourced', projectId:`e2e_entry_sourced_${runId}`,
+    projectName:'Sourced OpenShop entry', x:420, y:440,
+  };
+  const canvas = await createCanvas(request, {
+    kind:'classic', title:'OpenShop entry modes', nodes:[sourceImage, emptyNode, sourcedNode],
+    connections:[{id:'entry-source-edge', from:sourceImage.id, to:sourcedNode.id}],
+  });
+  const frame = await mountCanvas(page, 'classic', canvas.id);
+
+  await openNode(page, frame, 'classic', emptyNode.id, 0, {welcome:'visible'});
+  await page.evaluate(() => window.HstarOpenShopHost.close());
+
+  await page.evaluate(projectId => {
+    window.__openshopEntrySamples = [];
+    window.__openshopEntrySampling = true;
+    const sample = () => {
+      if(!window.__openshopEntrySampling) return;
+      const frameElement = document.querySelector(`iframe.openshop-session-frame[data-project-id="${projectId}"]`);
+      const welcome = frameElement?.contentDocument?.getElementById('welcome-overlay');
+      if(frameElement && welcome){
+        const style = frameElement.contentWindow.getComputedStyle(welcome);
+        window.__openshopEntrySamples.push({
+          frameHidden:Boolean(frameElement.hidden),
+          welcomeVisible:style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0',
+        });
+      }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }, sourcedNode.projectId);
+
+  await openNode(page, frame, 'classic', sourcedNode.id, 1, {welcome:'hidden'});
+  const samples = await page.evaluate(() => {
+    window.__openshopEntrySampling = false;
+    return window.__openshopEntrySamples || [];
+  });
+
+  expect(samples.length).toBeGreaterThan(0);
+  expect(samples.some(sample => !sample.frameHidden && sample.welcomeVisible)).toBe(false);
 });
 
 test('classic canvas preserves isolated projects, ordered sources, updates, clones, and deletion', async ({page, request}) => {

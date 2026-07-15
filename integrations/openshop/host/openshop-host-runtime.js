@@ -31,6 +31,7 @@
     queuedMutationCount: 0,
     runtimeGeneration: 0,
     workspaceInitialized: false,
+    entryMode: 'welcome',
   };
 
   function uuid(prefix){
@@ -133,6 +134,8 @@
   function openSession(envelope){
     resetSaveState();
     const context = state.protocol.normalizeContext(envelope.context);
+    state.entryMode = envelope.payload?.entryMode === 'workspace' ? 'workspace' : 'welcome';
+    state.workspaceInitialized = false;
     state.activeSession = {
       sessionId: envelope.sessionId,
       context,
@@ -442,14 +445,15 @@
         assetResolver: state.assetResolver,
       }));
       root.dispatchEvent?.(new CustomEvent('openshop:project-loaded', {detail:{project}}));
-      revealEditorWorkspace();
       reason = 'project-loaded';
     } else if(envelope.type === types.SYNC_SOURCES){
+      const sources = envelope.payload?.sources || [];
       await whileApplying(() => state.projectAdapter.reconcileSources({
         editor: state.editor,
-        sources: envelope.payload?.sources || [],
+        sources,
         imageLoader: state.imageLoader || undefined,
       }));
+      if(state.entryMode === 'workspace' || sources.length > 0) revealEditorWorkspace();
       reason = 'sources-synchronized';
       markDirty(reason);
     } else if(envelope.type === types.RESOLVE_SOURCE_UPDATE){
@@ -467,6 +471,7 @@
         source: envelope.payload?.source,
         imageLoader: state.imageLoader || undefined,
       }));
+      revealEditorWorkspace();
       reason = 'source-image-added';
       markDirty(reason);
     } else {
@@ -559,6 +564,7 @@
     state.messageQueue = Promise.resolve();
     state.queuedMutationCount = 0;
     state.workspaceInitialized = false;
+    state.entryMode = 'welcome';
     if(shouldNotify) root.dispatchEvent?.(new CustomEvent('openshop:session-stopped'));
   }
 
