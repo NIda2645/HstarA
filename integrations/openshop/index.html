@@ -65,8 +65,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 .tool-btn:active{transform:scale(.92);transition-duration:.05s}
 .tool-btn.active{background:var(--accent-dim);color:var(--accent);box-shadow:inset 0 0 0 1px var(--glass-border)}
 .tool-btn svg{width:18px;height:18px}.tool-sep{width:28px;height:1px;background:var(--border);margin:5px 0}
-.tool-btn[data-tip]::after{content:attr(data-tip);position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%) translateX(-4px);background:var(--bg-depth-3);color:var(--text-primary);padding:5px 10px;border-radius:6px;font-size:11px;white-space:nowrap;pointer-events:none;opacity:0;transition:all .15s var(--ease-out);border:1px solid var(--border);z-index:200;box-shadow:0 4px 12px rgba(0,0,0,.3)}
-.tool-btn:hover[data-tip]::after{opacity:1;transform:translateY(-50%) translateX(0)}
+#tool-tooltip{position:fixed;z-index:22000;pointer-events:none;opacity:0;transform:translateY(-50%) translateX(-4px);padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-depth-3);color:var(--text-primary);box-shadow:0 6px 18px rgba(0,0,0,.38);font-size:11px;line-height:1.2;white-space:nowrap;transition:opacity .12s var(--ease-out),transform .12s var(--ease-out)}
+#tool-tooltip.visible{opacity:1;transform:translateY(-50%) translateX(0)}
 /* Tool Groups */
 .tool-group{position:relative}
 .tool-group>.tool-btn::before{content:'';position:absolute;bottom:2px;right:2px;border:3px solid transparent;border-bottom-color:var(--text-muted);border-right-color:var(--text-muted);width:0;height:0;pointer-events:none}
@@ -572,7 +572,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
   #statusbar{display:none}
   #toolbar{position:fixed;bottom:0;left:0;right:0;top:auto;width:100%;height:48px;flex-direction:row;overflow-x:auto;overflow-y:hidden;padding:4px 6px;gap:4px;border-right:none;border-top:1px solid var(--border);z-index:100}
   .tool-sep{width:1px;height:20px;margin:0 2px}
-  .tool-btn[data-tip]::after{display:none}
+  #tool-tooltip{display:none}
   .tool-group .tool-flyout{bottom:calc(100% + 4px);left:50%;right:auto;top:auto;transform:translateX(-50%)}
   #tool-options{left:0;right:0;top:var(--topbar-h);height:32px;padding:0 8px;gap:8px;font-size:10px}
   #tool-options label{font-size:10px}
@@ -879,20 +879,20 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 
 <!-- ===== LEFT TOOLBAR ===== -->
 <div id="toolbar" role="toolbar" aria-label="Drawing tools" data-i18n-aria-label="Drawing tools">
-    <button class="tool-btn active" data-tool="select" data-tip="Move / Select (V)" onclick="OS.setTool('select')" data-i18n-tip="Move / Select (V)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></svg></button>
+    <button class="tool-btn active" data-tool="select" data-tip="Move / Select Tool" onclick="OS.setTool('select')" data-i18n-tip="Move / Select Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="selection">
-        <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee (M)" onclick="OS.setTool('marquee-rect')" data-i18n-tip="Rect Marquee (M)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
+        <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee" onclick="OS.setTool('marquee-rect')" data-i18n-tip="Rect Marquee"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Rect Marquee"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
             <button class="tool-btn" data-tool="marquee-ellipse" data-tip="Ellipse Marquee" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Ellipse Marquee"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><ellipse cx="12" cy="12" rx="10" ry="7"/></svg></button>
             <button class="tool-btn" data-tool="lasso" data-tip="Lasso" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Lasso"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12c0 4.97 4.03 9 9 9s9-4.03 9-9-4.03-9-9-9c-3.04 0-5.73 1.51-7.36 3.82"/><circle cx="7" cy="20" r="2" fill="currentColor"/></svg></button>
-            <button class="tool-btn" data-tool="magic-wand" data-tip="Magic Wand (W)" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Magic Wand (W)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 4V2m0 14v-2M8 9H6m14 0h-2m-2.8-3.8L14 4m-4.2 9.8L8.6 15m9.8-1.2L19.6 15M9.8 5.2L8.6 4"/><path d="M2 22l10-10"/><circle cx="15" cy="9" r="1" fill="currentColor"/></svg></button>
+            <button class="tool-btn" data-tool="magic-wand" data-tip="Magic Wand Tool" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Magic Wand Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 4V2m0 14v-2M8 9H6m14 0h-2m-2.8-3.8L14 4m-4.2 9.8L8.6 15m9.8-1.2L19.6 15M9.8 5.2L8.6 4"/><path d="M2 22l10-10"/><circle cx="15" cy="9" r="1" fill="currentColor"/></svg></button>
             <button class="tool-btn" data-tool="ai-segment" data-tip="AI Segment Select" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="AI Segment Select"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7" stroke-dasharray="3 2"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/><path d="M8.5 13.5c2.2 1.7 5.8 1.2 7-1.5" stroke-linecap="round"/></svg></button>
         </div>
     </div>
     <div class="tool-group" data-group="crop">
-        <button class="tool-btn" data-tool="crop" data-tip="Crop (C)" onclick="OS.setTool('crop')" data-i18n-tip="Crop (C)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
+        <button class="tool-btn" data-tool="crop" data-tip="Crop" onclick="OS.setTool('crop')" data-i18n-tip="Crop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="crop" data-tip="Crop" onclick="OS.flyoutSelect(this,'crop')" data-i18n-tip="Crop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
             <button class="tool-btn" data-tool="measure" data-tip="Measure" onclick="OS.flyoutSelect(this,'crop')" data-i18n-tip="Measure"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L20 2"/><path d="M6 16l2-2"/><path d="M10 12l2-2"/><path d="M14 8l2-2"/><circle cx="2" cy="20" r="1.5" fill="currentColor"/><circle cx="20" cy="2" r="1.5" fill="currentColor"/></svg></button>
@@ -900,16 +900,16 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     </div>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="brush">
-        <button class="tool-btn" data-tool="brush" data-tip="Brush (B)" onclick="OS.setTool('brush')" data-i18n-tip="Brush (B)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
+        <button class="tool-btn" data-tool="brush" data-tip="Brush" onclick="OS.setTool('brush')" data-i18n-tip="Brush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="brush" data-tip="Brush" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Brush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
             <button class="tool-btn" data-tool="pencil" data-tip="Pencil" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Pencil"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>
             <button class="tool-btn" data-tool="spray" data-tip="Spray / Airbrush" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Spray / Airbrush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="12" width="10" height="10" rx="2"/><path d="M11 12V8"/><circle cx="7" cy="4" r="1" fill="currentColor"/><circle cx="11" cy="3" r="1" fill="currentColor"/><circle cx="15" cy="4" r="1" fill="currentColor"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="eraser" data-tip="Eraser (E)" onclick="OS.setTool('eraser')" data-i18n-tip="Eraser (E)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7L3 16l9-9 8 8-4 4z"/><path d="M6 11l8 8"/></svg></button>
+    <button class="tool-btn" data-tool="eraser" data-tip="Eraser Tool" onclick="OS.setTool('eraser')" data-i18n-tip="Eraser Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7L3 16l9-9 8 8-4 4z"/><path d="M6 11l8 8"/></svg></button>
     <div class="tool-group" data-group="stamp">
-        <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp (S)" onclick="OS.setTool('clone')" data-i18n-tip="Clone Stamp (S)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
+        <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp" onclick="OS.setTool('clone')" data-i18n-tip="Clone Stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp" onclick="OS.flyoutSelect(this,'stamp')" data-i18n-tip="Clone Stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
             <button class="tool-btn" data-tool="healing" data-tip="Healing Brush" onclick="OS.flyoutSelect(this,'stamp')" data-i18n-tip="Healing Brush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 2l4 4-12 12H6v-4L18 2z"/><path d="M14 6l4 4"/><line x1="2" y1="22" x2="22" y2="22"/></svg></button>
@@ -926,36 +926,36 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     </div>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="shape">
-        <button class="tool-btn" data-tool="rect" data-tip="Rectangle (R)" onclick="OS.setTool('rect')" data-i18n-tip="Rectangle (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
+        <button class="tool-btn" data-tool="rect" data-tip="Rectangle" onclick="OS.setTool('rect')" data-i18n-tip="Rectangle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="rect" data-tip="Rectangle" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Rectangle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
             <button class="tool-btn" data-tool="circle" data-tip="Ellipse" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Ellipse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></button>
             <button class="tool-btn" data-tool="triangle" data-tip="Triangle" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Triangle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3L2 21h20L12 3z"/></svg></button>
-            <button class="tool-btn" data-tool="line" data-tip="Line (L)" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Line (L)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/></svg></button>
+            <button class="tool-btn" data-tool="line" data-tip="Line Tool" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Line Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/></svg></button>
             <button class="tool-btn" data-tool="arrow" data-tip="Arrow" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="10 5 19 5 19 14"/></svg></button>
             <button class="tool-btn" data-tool="polygon" data-tip="Polygon" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Polygon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8.5 6.2-3.2 10H6.7L3.5 8.2z"/></svg></button>
             <button class="tool-btn" data-tool="star" data-tip="Star" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Star"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="pen" data-tip="Pen (P)" onclick="OS.setTool('pen')" data-i18n-tip="Pen (P)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
-    <button class="tool-btn" data-tool="text" data-tip="Text (T)" onclick="OS.setTool('text')" data-i18n-tip="Text (T)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
+    <button class="tool-btn" data-tool="pen" data-tip="Pen Tool" onclick="OS.setTool('pen')" data-i18n-tip="Pen Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
+    <button class="tool-btn" data-tool="text" data-tip="Text Tool" onclick="OS.setTool('text')" data-i18n-tip="Text Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="fillgrp">
-        <button class="tool-btn" data-tool="gradient" data-tip="Gradient (G)" onclick="OS.setTool('gradient')" data-i18n-tip="Gradient (G)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
+        <button class="tool-btn" data-tool="gradient" data-tip="Gradient" onclick="OS.setTool('gradient')" data-i18n-tip="Gradient"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="gradient" data-tip="Gradient" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Gradient"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
             <button class="tool-btn" data-tool="fill" data-tip="Fill Bucket" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Fill Bucket"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14 6l3-3 3 3"/><path d="M20 12.5a1.5 1.5 0 0 0 3 0c0-1.5-3-4-3-4s-3 2.5-3 4a1.5 1.5 0 0 0 3 0z"/></svg></button>
             <button class="tool-btn" data-tool="pattern" data-tip="Pattern Fill" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Pattern Fill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="eyedropper" data-tip="Eyedropper (I)" onclick="OS.setTool('eyedropper')" data-i18n-tip="Eyedropper (I)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14.5 6.5l3-3a2.12 2.12 0 0 1 3 3l-3 3"/></svg></button>
+    <button class="tool-btn" data-tool="eyedropper" data-tip="Eyedropper Tool" onclick="OS.setTool('eyedropper')" data-i18n-tip="Eyedropper Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14.5 6.5l3-3a2.12 2.12 0 0 1 3 3l-3 3"/></svg></button>
     <button class="tool-btn" data-tool="note" data-tip="Sticky Note" onclick="OS.setTool('note')" data-i18n-tip="Sticky Note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3z"/><polyline points="14 3 14 8 21 8"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="nav">
-        <button class="tool-btn" data-tool="pan" data-tip="Pan (H)" onclick="OS.setTool('pan')" data-i18n-tip="Pan (H)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
+        <button class="tool-btn" data-tool="pan" data-tip="Hand Tool" onclick="OS.setTool('pan')" data-i18n-tip="Hand Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="pan" data-tip="Pan" onclick="OS.flyoutSelect(this,'nav')" data-i18n-tip="Pan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
-            <button class="tool-btn" data-tool="zoom" data-tip="Zoom (Z)" onclick="OS.flyoutSelect(this,'nav')" data-i18n-tip="Zoom (Z)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg></button>
+            <button class="tool-btn" data-tool="zoom" data-tip="Zoom Tool" onclick="OS.flyoutSelect(this,'nav')" data-i18n-tip="Zoom Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg></button>
         </div>
     </div>
 </div>
@@ -1451,6 +1451,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 
 <script src="./host/openshop-i18n.js"></script>
 <script src="./locales/zh-CN.js"></script>
+<script src="./host/openshop-desktop-input.js"></script>
 <script>
 // ================================================================
 //  OpenShop v0.19.1 — Core Engine (Phase 10: Pro Toolbar)
@@ -1469,13 +1470,27 @@ const OS = {
     },
     get _lang() { return window.HstarOpenShopI18n.getLocale(); },
     _t(key, params) { return window.HstarOpenShopI18n.t(key, params); },
+    _toolTooltipController: null,
+    _refreshToolAccessibility() {
+        const desktopInput = window.HstarOpenShopDesktopInput;
+        document.querySelectorAll('.tool-btn[data-tip]').forEach(btn => {
+            btn.setAttribute('aria-label', desktopInput.localizedToolTip(btn));
+        });
+    },
     _initI18n() {
         window.HstarOpenShopI18n.translateTree(document);
         window.HstarOpenShopI18n.startObserver(document.body);
+        this._toolTooltipController?.destroy();
+        this._toolTooltipController = window.HstarOpenShopDesktopInput.createToolTooltipController({root:document});
+        this._refreshToolAccessibility();
     },
     setLocale(lang) {
         const aliases = { en: 'en-US', zh: 'zh-CN' };
         const changed = window.HstarOpenShopI18n.setLocale(aliases[lang] || lang);
+        if (changed) {
+            this._refreshToolAccessibility();
+            this._toolTooltipController?.refresh();
+        }
         if (changed && this.canvas) {
             this.updateLayersPanel();
             this.updateHistoryPanel();
@@ -1582,7 +1597,10 @@ const OS = {
             if (this._symmetryMode !== 'off') this._mirrorPath(e.path);
             this.saveHistory('Draw'); this.updateLayersPanel();
         });
-        window.addEventListener('resize', () => { this.resizeCanvas(); this.drawGrid(); this.drawRulers(); });
+        window.addEventListener('resize', () => {
+            this._toolTooltipController?.hide();
+            this.resizeCanvas(); this.drawGrid(); this.drawRulers();
+        });
         window.addEventListener('beforeunload', e => {
             if (this.historyIdx > 0) { e.preventDefault(); e.returnValue = ''; }
         });
@@ -1590,6 +1608,7 @@ const OS = {
         this.setTool('select');
         this.updateLayersPanel(); this.updateStatus();
         const ca = document.getElementById('canvas-area');
+        document.getElementById('toolbar').addEventListener('scroll', () => this._toolTooltipController?.hide(), {passive:true});
         ca.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); });
         ca.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); this.handleDrop(e); });
         this._initTouchGestures(ca);
@@ -1599,7 +1618,7 @@ const OS = {
         this.populateRecentFiles();
         // Accessibility: add aria-labels to tool buttons from their tooltips
         document.querySelectorAll('.tool-btn[data-tip]').forEach(btn => {
-            btn.setAttribute('aria-label', btn.dataset.tip);
+            btn.setAttribute('aria-label', window.HstarOpenShopDesktopInput.localizedToolTip(btn));
             btn.setAttribute('role', 'button');
             btn.setAttribute('tabindex', '0');
             btn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); btn.click(); } });
@@ -2425,6 +2444,7 @@ self.onmessage = function(e) {
         document.getElementById(contentId).classList.add('active');
     },
     _closeAllFlyouts() {
+        this._toolTooltipController?.hide();
         document.querySelectorAll('.tool-flyout.show').forEach(f => f.classList.remove('show'));
     },
     flyoutSelect(btn, groupName) {
@@ -2436,6 +2456,8 @@ self.onmessage = function(e) {
         face.innerHTML = btn.innerHTML;
         face.dataset.tool = tool;
         face.dataset.tip = btn.dataset.tip;
+        face.dataset.i18nTip = btn.dataset.i18nTip || btn.dataset.tip;
+        face.setAttribute('aria-label', window.HstarOpenShopDesktopInput.localizedToolTip(face));
         // Close all flyouts and activate tool
         this._closeAllFlyouts();
         this.setTool(tool);
@@ -2443,6 +2465,7 @@ self.onmessage = function(e) {
 
 
     setTool(tool) {
+        this._toolTooltipController?.hide();
         const prevTool = this.state.tool;
         this.state.tool = tool;
         document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool===tool));

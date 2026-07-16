@@ -44,6 +44,7 @@ const runtimeFiles = [...new Set([
   'icon.png',
   'LICENSE',
   'host/openshop-protocol.js',
+  'host/openshop-desktop-input.js',
   'host/openshop-project-adapter.js',
   'host/openshop-snap-engine.js',
   'host/openshop-host-runtime.js',
