@@ -1756,14 +1756,56 @@ const OS = {
         const presets = Array.isArray(data) ? data : [data];
         return presets.map(p => this._safePreset(p)).filter(Boolean).slice(0, this._importLimits.maxPresets);
     },
+    _activateAnimationLayer(layer) {
+        if (!layer || !Array.isArray(layer.animationFrames) || !layer.animationFrames.length) return false;
+        this._activeAnimationLayer = layer;
+        this._animFrames = layer.animationFrames;
+        const requestedIndex = Number(layer.animationIndex || 0);
+        this._animIdx = Math.max(0, Math.min(this._animFrames.length - 1, requestedIndex));
+        layer.animationIndex = this._animIdx;
+        this._renderFrames();
+        document.getElementById('timeline-panel')?.classList.add('visible');
+        return true;
+    },
+    _createImportedImageLayer(img, { name, animationFrames = [] }) {
+        this._validateDecodedImage(img);
+        const safeName = this._safeText(name, 120);
+        img.set({
+            left:0,
+            top:0,
+            scaleX:1,
+            scaleY:1,
+            originX:'left',
+            originY:'top',
+            selectable:true,
+            name:safeName,
+        });
+        const layer = {
+            name:safeName,
+            visible:true,
+            locked:false,
+            opacity:100,
+            blend:'source-over',
+            objects:[img],
+            animationFrames:[...animationFrames],
+            animationIndex:0,
+        };
+        this.layers.push(layer);
+        this.canvas.add(img);
+        this.activeLayerIdx = this.layers.length - 1;
+        this._resetLayerSelection(layer);
+        this.canvas.setActiveObject(img);
+        if (layer.animationFrames.length) this._activateAnimationLayer(layer);
+        this.canvas.requestRenderAll();
+        this.updateLayersPanel();
+        this.saveHistory(layer.animationFrames.length ? 'Import GIF' : 'Import Image');
+        return layer;
+    },
     _addDecodedImageToCanvas(img, { name, mode }) {
         const { width } = this._validateDecodedImage(img);
         if (mode === 'open') {
-            this.createNewDocument(img.width, img.height);
-            img.set({ left:0, top:0, selectable:true, name:this._safeText(name, 120) });
-            this.canvas.add(img); this.layers[this.activeLayerIdx].objects.push(img);
-            this.zoomFit(); this.saveHistory('Open Image'); this.updateLayersPanel();
-            this.toast(this._t("Opened: {name}", { name: this._safeText(name, 80) }), 'success');
+            this._createImportedImageLayer(img, {name});
+            this.toast(this._t("Added: {name}", { name: this._safeText(name, 80) }), 'success');
             return;
         }
         if (width > this.canvasW) img.scaleToWidth(this.canvasW * 0.8);
@@ -1808,7 +1850,6 @@ const OS = {
     },
     _handleFileLoad(file) {
         try { this._validateImageFile(file); } catch(e) { this.toast(this._t(e.message), 'error'); return; }
-        this._docName = this._safeText(file.name.replace(/\.[^.]+$/, ''), 100);
         if (file.type === 'image/gif' && typeof ImageDecoder !== 'undefined') {
             this._importGifFrames(file);
             return;
@@ -1821,8 +1862,9 @@ const OS = {
         }; r.readAsDataURL(file);
     },
     async _importGifFrames(file) {
+        let decoder = null;
         try {
-            const decoder = new ImageDecoder({ data: file.stream(), type: 'image/gif' });
+            decoder = new ImageDecoder({ data: file.stream(), type: 'image/gif' });
             await decoder.completed;
             const count = decoder.tracks.selectedTrack.frameCount;
             if (count < 2) {
@@ -1835,31 +1877,31 @@ const OS = {
                 return;
             }
             this.toast(this._t("Importing {count} GIF frames...", { count: count }), 'info');
-            this._animFrames = [];
+            const frames = [];
             for (let i = 0; i < count; i++) {
                 const result = await decoder.decode({ frameIndex: i });
                 const frame = result.image;
-                const cv = document.createElement('canvas');
-                cv.width = frame.displayWidth;
-                cv.height = frame.displayHeight;
-                const ctx = cv.getContext('2d');
-                ctx.drawImage(frame, 0, 0);
-                frame.close();
-                this._animFrames.push(cv.toDataURL('image/png'));
+                try {
+                    this._validateDecodedImage({width:frame.displayWidth, height:frame.displayHeight});
+                    const cv = document.createElement('canvas');
+                    cv.width = frame.displayWidth;
+                    cv.height = frame.displayHeight;
+                    const ctx = cv.getContext('2d');
+                    ctx.drawImage(frame, 0, 0);
+                    frames.push(cv.toDataURL('image/png'));
+                } finally {
+                    frame.close();
+                }
             }
-            if (this._animFrames.length > 0) {
-                const first = this._animFrames[0];
-                this.createNewDocument(decoder.tracks.selectedTrack.frameWidth || this.canvasW, decoder.tracks.selectedTrack.frameHeight || this.canvasH);
-                fabric.Image.fromURL(first, img => {
-                    try { this._addDecodedImageToCanvas(img, { name: file.name, mode: 'open' }); }
-                    catch (err) { this.toast(this._t(err.message), 'error'); }
+            if (!frames.length) throw new Error('GIF contains no decodable frames');
+            const firstImage = await new Promise((resolve, reject) => {
+                fabric.Image.fromURL(frames[0], image => {
+                    if (image) resolve(image);
+                    else reject(new Error('GIF first frame could not be decoded'));
                 });
-            }
-            this._animIdx = 0;
-            this._renderFrames();
-            document.getElementById('timeline-panel')?.classList.add('visible');
-            this.toast(this._t("Imported {count} frames from GIF", { count: this._animFrames.length }), 'success');
-            decoder.close();
+            });
+            this._createImportedImageLayer(firstImage, {name:file.name, animationFrames:frames});
+            this.toast(this._t("Imported {count} frames from GIF", { count: frames.length }), 'success');
         } catch (e) {
             console.warn('GIF frame import failed, loading as static:', e.message);
             const r = new FileReader(); r.onload = ev => {
@@ -1868,6 +1910,8 @@ const OS = {
                     catch (err) { this.toast(this._t(err.message), 'error'); }
                 });
             }; r.readAsDataURL(file);
+        } finally {
+            decoder?.close?.();
         }
     },
     handleFileOpen(e) {
@@ -2390,6 +2434,9 @@ self.onmessage = function(e) {
             shift:Boolean(event.shiftKey),
         });
         this._applyLayerSelectionState(state);
+        if (Array.isArray(layer.animationFrames) && layer.animationFrames.length) {
+            this._activateAnimationLayer(layer);
+        }
         this._keyboardContext = 'layers';
         this.canvas.discardActiveObject(); this.canvas.renderAll(); this._refreshLayerSelectionPresentation();
     },
@@ -8237,20 +8284,19 @@ self.onmessage = async function(e) {
         this._renderFrames();
     },
     selectFrame(idx) {
-        this._animIdx = idx;
-        this._renderFrames();
-        const data = this._animFrames[idx];
-        fabric.Image.fromURL(data, img => {
-            this.canvas.clear();
-            const boundary = this._makeBoundary(this.canvasW, this.canvasH);
-            this.canvas.add(boundary);
-            img.set({ left: 0, top: 0, selectable: true, name: `Frame ${idx}` });
-            this.canvas.add(img);
-            this.layers = [{ name: `Frame ${idx}`, visible: true, opacity: 100, blend: 'source-over', objects: [boundary, img] }];
-            this.activeLayerIdx = 0;
-            this._resetLayerSelection(this.layers[0]);
-            this.canvas.renderAll();
-            this.updateLayersPanel();
+        const layer = this._activeAnimationLayer;
+        const target = layer?.objects?.find(object => object.type === 'image');
+        const data = layer?.animationFrames?.[idx];
+        if (!target || !data) return;
+        fabric.Image.fromURL(data, frameImage => {
+            if (!frameImage || layer !== this._activeAnimationLayer) return;
+            target.setElement(frameImage.getElement());
+            target.set({width:frameImage.width, height:frameImage.height});
+            target.setCoords();
+            this._animIdx = idx;
+            layer.animationIndex = idx;
+            this._renderFrames();
+            this.canvas.requestRenderAll();
         });
     },
     _renderFrames() {

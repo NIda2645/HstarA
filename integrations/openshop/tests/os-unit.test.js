@@ -243,6 +243,195 @@ describe('OpenShop core object', () => {
     expect(OS._loadPSDFile).not.toHaveBeenCalled();
   });
 
+  it('imports an opened image as an original-size layer in the current document', () => {
+    const OS = loadOpenShop();
+    const base = {name:'__boundary__', type:'rect'};
+    const existing = {name:'Existing content', type:'rect'};
+    const originalLayers = [
+      {name:'Background', visible:true, locked:true, opacity:100, blend:'source-over', objects:[base]},
+      {name:'Existing', visible:true, locked:false, opacity:100, blend:'source-over', objects:[existing]},
+    ];
+    OS.canvas = createCanvasMock([base, existing]);
+    OS.layers = [...originalLayers];
+    OS.activeLayerIdx = 1;
+    OS.canvasW = 3840;
+    OS.canvasH = 2160;
+    OS._docName = 'existing-project';
+    OS.history = [{action:'Before import'}];
+    OS.historyIdx = 0;
+    quietUiMethods(OS);
+    OS.saveHistory = vi.fn();
+    OS.createNewDocument = vi.fn();
+    const image = {
+      width:9000,
+      height:4000,
+      type:'image',
+      set:vi.fn(function set(values) { Object.assign(this, values); }),
+      scaleToWidth:vi.fn(),
+    };
+
+    OS._addDecodedImageToCanvas(image, {name:'reference-wide.png', mode:'open'});
+
+    expect(OS.createNewDocument).not.toHaveBeenCalled();
+    expect(OS.canvasW).toBe(3840);
+    expect(OS.canvasH).toBe(2160);
+    expect(OS._docName).toBe('existing-project');
+    expect(OS.layers.slice(0, 2)).toEqual(originalLayers);
+    expect(OS.layers.at(-1)).toMatchObject({
+      name:'reference-wide.png',
+      visible:true,
+      locked:false,
+      opacity:100,
+      blend:'source-over',
+      objects:[image],
+    });
+    expect(image.set).toHaveBeenCalledWith(expect.objectContaining({
+      left:0,
+      top:0,
+      scaleX:1,
+      scaleY:1,
+      name:'reference-wide.png',
+    }));
+    expect(image.scaleToWidth).not.toHaveBeenCalled();
+    expect(OS.canvas.setActiveObject).toHaveBeenCalledWith(image);
+    expect(OS.saveHistory).toHaveBeenCalledOnce();
+  });
+
+  it('does not rename the document before an opened image finishes decoding', () => {
+    const OS = loadOpenShop();
+    OS._docName = 'existing-project';
+    quietUiMethods(OS);
+    class DeferredFileReader {
+      readAsDataURL() {}
+    }
+    vi.stubGlobal('FileReader', DeferredFileReader);
+
+    OS._handleFileLoad(new File(['image'], 'replacement.png', {type:'image/png'}));
+
+    expect(OS._docName).toBe('existing-project');
+  });
+
+  it('imports GIF frames into one animation layer without rebuilding the document', async () => {
+    const OS = loadOpenShop();
+    const base = {name:'__boundary__', type:'rect'};
+    const existing = {name:'Existing content', type:'rect'};
+    const originalLayers = [
+      {name:'Background', visible:true, locked:true, opacity:100, blend:'source-over', objects:[base]},
+      {name:'Existing', visible:true, locked:false, opacity:100, blend:'source-over', objects:[existing]},
+    ];
+    OS.canvas = createCanvasMock([base, existing]);
+    OS.layers = [...originalLayers];
+    OS.activeLayerIdx = 1;
+    OS.canvasW = 1920;
+    OS.canvasH = 1080;
+    quietUiMethods(OS);
+    OS.saveHistory = vi.fn();
+    OS.createNewDocument = vi.fn();
+    OS._renderFrames = vi.fn();
+    document.body.insertAdjacentHTML('beforeend', '<div id="timeline-panel"></div>');
+    const decodedImage = {
+      width:320,
+      height:180,
+      type:'image',
+      set:vi.fn(function set(values) { Object.assign(this, values); }),
+    };
+    fabric.Image = {
+      fromURL:vi.fn((_source, callback) => callback(decodedImage)),
+    };
+    class FakeImageDecoder {
+      constructor() {
+        this.completed = Promise.resolve();
+        this.tracks = {selectedTrack:{frameCount:3, frameWidth:320, frameHeight:180}};
+      }
+      async decode() {
+        const frame = document.createElement('canvas');
+        frame.width = 320;
+        frame.height = 180;
+        Object.defineProperties(frame, {
+          displayWidth:{value:320},
+          displayHeight:{value:180},
+          close:{value:vi.fn()},
+        });
+        return {
+          image:frame,
+        };
+      }
+      close() {}
+    }
+    vi.stubGlobal('ImageDecoder', FakeImageDecoder);
+
+    const gifFile = new File(['gif'], 'motion.gif', {type:'image/gif'});
+    Object.defineProperty(gifFile, 'stream', {value:() => ({})});
+
+    await OS._importGifFrames(gifFile);
+
+    expect(OS.createNewDocument).not.toHaveBeenCalled();
+    expect(OS.canvasW).toBe(1920);
+    expect(OS.canvasH).toBe(1080);
+    expect(OS.layers.slice(0, 2)).toEqual(originalLayers);
+    expect(OS.layers.at(-1)).toMatchObject({
+      name:'motion.gif',
+      objects:[decodedImage],
+    });
+    expect(OS.layers.at(-1).animationFrames).toHaveLength(3);
+    expect(OS._animFrames).toBe(OS.layers.at(-1).animationFrames);
+    expect(OS.saveHistory).toHaveBeenCalledOnce();
+  });
+
+  it('switches an imported GIF frame without clearing unrelated layers', () => {
+    const OS = loadOpenShop();
+    const existing = {name:'Existing content', type:'rect'};
+    const target = {
+      name:'motion.gif',
+      type:'image',
+      setElement:vi.fn(),
+      set:vi.fn(function set(values) { Object.assign(this, values); }),
+      setCoords:vi.fn(),
+    };
+    const animationLayer = {
+      name:'motion.gif',
+      visible:true,
+      locked:false,
+      opacity:100,
+      blend:'source-over',
+      objects:[target],
+      animationFrames:['frame-1', 'frame-2'],
+    };
+    OS.canvas = createCanvasMock([existing, target]);
+    OS.canvas.clear = vi.fn();
+    OS.layers = [
+      {name:'Existing', visible:true, locked:false, opacity:100, blend:'source-over', objects:[existing]},
+      animationLayer,
+    ];
+    OS.activeLayerIdx = 1;
+    OS._activeAnimationLayer = animationLayer;
+    OS._animFrames = animationLayer.animationFrames;
+    OS._renderFrames = vi.fn();
+    OS._makeBoundary = vi.fn(() => ({name:'__boundary__'}));
+    quietUiMethods(OS);
+    const frameElement = {};
+    const frameImage = {
+      width:320,
+      height:180,
+      type:'image',
+      getElement:() => frameElement,
+      set:vi.fn(),
+    };
+    fabric.Image = {
+      fromURL:vi.fn((_source, callback) => callback(frameImage)),
+    };
+
+    OS.selectFrame(1);
+
+    expect(OS.canvas.clear).not.toHaveBeenCalled();
+    expect(OS.layers).toEqual([
+      expect.objectContaining({name:'Existing'}),
+      animationLayer,
+    ]);
+    expect(target.setElement).toHaveBeenCalledWith(frameElement);
+    expect(OS._animIdx).toBe(1);
+  });
+
   it('adds and deletes layers while keeping canvas objects in sync', () => {
     const OS = loadOpenShop();
     const canvasObject = { name: 'Pixel Layer', type: 'image' };
