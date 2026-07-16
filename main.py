@@ -61,6 +61,7 @@ from openshop_ai import (
     normalize_ocr_layout,
 )
 from openshop_image_ops import normalize_local_generation
+from openshop_fonts import OpenShopFontCatalog
 from native_file_picker import (
     NativeFilePickerError,
     choose_open_file_path,
@@ -335,6 +336,7 @@ SOFTWARE_SETTINGS_FILE = RUNTIME_PATHS["software_settings_file"]
 GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
 OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
+OPENSHOP_FONTS = OpenShopFontCatalog()
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 LOCAL_IMAGE_IMPORT_MAX_BYTES = int(os.getenv("LOCAL_IMAGE_IMPORT_MAX_BYTES", str(50 * 1024 * 1024)))
 LOCAL_IMAGE_IMPORT_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -16439,6 +16441,11 @@ async def delete_conversation(conversation_id: str, request: Request, x_user_id:
     return {"ok": True}
 
 # --- OpenShop node projects ---
+
+@app.get("/api/openshop/fonts")
+def get_openshop_fonts(refresh: bool = False):
+    return OPENSHOP_FONTS.get_catalog(refresh=refresh)
+
 
 def openshop_owner(canvas_type: str, canvas_id: str, node_id: str) -> Dict[str, str]:
     return {

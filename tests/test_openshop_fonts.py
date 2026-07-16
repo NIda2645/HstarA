@@ -1,0 +1,98 @@
+import unittest
+from unittest.mock import patch
+
+
+class OpenShopFontCatalogTests(unittest.TestCase):
+    def test_groups_styles_and_filters_vertical_aliases(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        calls = []
+
+        def enumerate_faces():
+            calls.append(True)
+            return [
+                {"family": "Arial", "weight": 400, "italic": False},
+                {"family": "Arial", "weight": 700, "italic": False},
+                {"family": "Arial", "weight": 700, "italic": True},
+                {"family": "Arial", "weight": 700, "italic": True},
+                {"family": "@SimSun", "weight": 400, "italic": False},
+            ]
+
+        catalog = OpenShopFontCatalog(enumerator=enumerate_faces, platform="win32")
+        result = catalog.get_catalog()
+
+        self.assertEqual(result["platform"], "windows")
+        self.assertFalse(result["cached"])
+        self.assertEqual([item["family"] for item in result["fonts"]], ["Arial"])
+        self.assertEqual(
+            [
+                (item["weight"], item["italic"], item["label"])
+                for item in result["fonts"][0]["styles"]
+            ],
+            [
+                (400, False, "Regular"),
+                (700, False, "Bold"),
+                (700, True, "Bold Italic"),
+            ],
+        )
+        self.assertEqual(len(calls), 1)
+
+        cached = catalog.get_catalog()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(len(calls), 1)
+
+        refreshed = catalog.get_catalog(refresh=True)
+        self.assertFalse(refreshed["cached"])
+        self.assertEqual(len(calls), 2)
+
+    def test_response_never_exposes_font_paths_or_binary_metadata(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {
+                    "family": "Test Font",
+                    "weight": 400,
+                    "italic": False,
+                    "path": r"C:\Windows\Fonts\test-font.ttf",
+                    "binary": b"not-font-data",
+                }
+            ],
+            platform="win32",
+        )
+
+        serialized = repr(catalog.get_catalog()).lower()
+
+        self.assertNotIn(".ttf", serialized)
+        self.assertNotIn("path", serialized)
+        self.assertNotIn("binary", serialized)
+
+    def test_uses_common_fallbacks_off_windows(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(enumerator=lambda: [], platform="linux")
+        result = catalog.get_catalog()
+        families = [item["family"] for item in result["fonts"]]
+
+        self.assertEqual(result["platform"], "linux")
+        self.assertIn("Microsoft YaHei UI", families)
+        self.assertIn("Arial", families)
+
+
+class OpenShopFontEndpointTests(unittest.TestCase):
+    def test_endpoint_forwards_refresh_to_the_process_catalog(self):
+        import main
+
+        payload = {"platform": "windows", "cached": False, "fonts": []}
+        with patch.object(
+            main.OPENSHOP_FONTS,
+            "get_catalog",
+            return_value=payload,
+        ) as getter:
+            self.assertEqual(main.get_openshop_fonts(refresh=True), payload)
+
+        getter.assert_called_once_with(refresh=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
