@@ -290,6 +290,26 @@ describe('OpenShop core object', () => {
     expect(OS._keyboardContext).toBe('layers');
   });
 
+  it('keeps a layer row mounted so double-click can start rename after selection', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS, {keepLayersPanel:true});
+    OS.layers = ['A', 'B'].map(name => ({
+      name, visible:true, locked:false, opacity:100, blend:'source-over', objects:[],
+    }));
+    OS.activeLayerIdx = 1;
+    OS._resetLayerSelection(OS.layers[1]);
+    OS.updateLayersPanel();
+    const name = [...document.querySelectorAll('.layer-name')]
+      .find(element => element.textContent === 'A');
+
+    name.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+    name.dispatchEvent(new MouseEvent('dblclick', {bubbles:true}));
+
+    expect(OS.activeLayerIdx).toBe(0);
+    expect(document.querySelector('.layer-name-input')).not.toBeNull();
+  });
+
   it('deletes selected unlocked layers in one history entry and keeps locked layers', () => {
     const OS = loadOpenShop();
     const objects = [{name:'A'}, {name:'B'}, {name:'Locked'}];

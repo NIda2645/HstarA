@@ -12,6 +12,7 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test tests/openshop.e2e.spec.js",
     "test:hstar:e2e": "playwright test tests/hstar-foundation.e2e.spec.js",
+    "test:hstar:desktop": "playwright test tests/hstar-desktop-interactions.e2e.spec.js",
     "test:hstar:localization": "playwright test tests/hstar-localization.e2e.spec.js",
     "test:hstar:canvas-integration": "playwright test tests/hstar-canvas-integration.e2e.spec.js",
     "test:hstar:text-tools": "playwright test tests/hstar-text-tools.e2e.spec.js",

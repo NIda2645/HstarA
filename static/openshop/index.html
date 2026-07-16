@@ -65,8 +65,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 .tool-btn:active{transform:scale(.92);transition-duration:.05s}
 .tool-btn.active{background:var(--accent-dim);color:var(--accent);box-shadow:inset 0 0 0 1px var(--glass-border)}
 .tool-btn svg{width:18px;height:18px}.tool-sep{width:28px;height:1px;background:var(--border);margin:5px 0}
-.tool-btn[data-tip]::after{content:attr(data-tip);position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%) translateX(-4px);background:var(--bg-depth-3);color:var(--text-primary);padding:5px 10px;border-radius:6px;font-size:11px;white-space:nowrap;pointer-events:none;opacity:0;transition:all .15s var(--ease-out);border:1px solid var(--border);z-index:200;box-shadow:0 4px 12px rgba(0,0,0,.3)}
-.tool-btn:hover[data-tip]::after{opacity:1;transform:translateY(-50%) translateX(0)}
+#tool-tooltip{position:fixed;z-index:22000;pointer-events:none;opacity:0;transform:translateY(-50%) translateX(-4px);padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-depth-3);color:var(--text-primary);box-shadow:0 6px 18px rgba(0,0,0,.38);font-size:11px;line-height:1.2;white-space:nowrap;transition:opacity .12s var(--ease-out),transform .12s var(--ease-out)}
+#tool-tooltip.visible{opacity:1;transform:translateY(-50%) translateX(0)}
 /* Tool Groups */
 .tool-group{position:relative}
 .tool-group>.tool-btn::before{content:'';position:absolute;bottom:2px;right:2px;border:3px solid transparent;border-bottom-color:var(--text-muted);border-right-color:var(--text-muted);width:0;height:0;pointer-events:none}
@@ -127,7 +127,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 /* Layers */
 #layers-list{max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
 .layer-item{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:6px;cursor:pointer;transition:all .15s var(--ease-out);border:1px solid transparent}
-.layer-item:hover{background:var(--bg-depth-3)}.layer-item.active{background:var(--accent-dim);border-color:var(--glass-border)}
+.layer-item:hover{background:var(--bg-depth-3)}.layer-item.selected{background:var(--accent-dim)}.layer-item.active,.layer-item.primary{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
 .layer-lock{background:none;border:none;padding:2px;cursor:pointer;color:var(--text-muted);opacity:.6;transition:all .15s;flex-shrink:0}
 .layer-lock:hover{opacity:1;color:var(--text-secondary)}
 .layer-lock.locked{opacity:1;color:var(--accent)}
@@ -572,7 +572,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
   #statusbar{display:none}
   #toolbar{position:fixed;bottom:0;left:0;right:0;top:auto;width:100%;height:48px;flex-direction:row;overflow-x:auto;overflow-y:hidden;padding:4px 6px;gap:4px;border-right:none;border-top:1px solid var(--border);z-index:100}
   .tool-sep{width:1px;height:20px;margin:0 2px}
-  .tool-btn[data-tip]::after{display:none}
+  #tool-tooltip{display:none}
   .tool-group .tool-flyout{bottom:calc(100% + 4px);left:50%;right:auto;top:auto;transform:translateX(-50%)}
   #tool-options{left:0;right:0;top:var(--topbar-h);height:32px;padding:0 8px;gap:8px;font-size:10px}
   #tool-options label{font-size:10px}
@@ -715,7 +715,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
             <div class="dd-item" onclick="OS.addLayerMask()" data-i18n="Add Layer Mask">Add Layer Mask</div>
             <div class="dd-item" onclick="OS.removeLayerMask()" data-i18n="Remove Layer Mask">Remove Layer Mask</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.mergeDown()" data-i18n="Merge Down">Merge Down</div>
+            <div class="dd-item" onclick="OS.mergeSelectedOrDown()" data-i18n="Merge Down">Merge Down</div>
             <div class="dd-item" onclick="OS.flattenImage()" data-i18n="Flatten Image">Flatten Image</div>
         </div>
     </div>
@@ -879,20 +879,20 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 
 <!-- ===== LEFT TOOLBAR ===== -->
 <div id="toolbar" role="toolbar" aria-label="Drawing tools" data-i18n-aria-label="Drawing tools">
-    <button class="tool-btn active" data-tool="select" data-tip="Move / Select (V)" onclick="OS.setTool('select')" data-i18n-tip="Move / Select (V)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></svg></button>
+    <button class="tool-btn active" data-tool="select" data-tip="Move / Select Tool" onclick="OS.setTool('select')" data-i18n-tip="Move / Select Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="selection">
-        <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee (M)" onclick="OS.setTool('marquee-rect')" data-i18n-tip="Rect Marquee (M)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
+        <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee" onclick="OS.setTool('marquee-rect')" data-i18n-tip="Rect Marquee"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="marquee-rect" data-tip="Rect Marquee" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Rect Marquee"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg></button>
             <button class="tool-btn" data-tool="marquee-ellipse" data-tip="Ellipse Marquee" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Ellipse Marquee"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2"><ellipse cx="12" cy="12" rx="10" ry="7"/></svg></button>
             <button class="tool-btn" data-tool="lasso" data-tip="Lasso" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Lasso"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12c0 4.97 4.03 9 9 9s9-4.03 9-9-4.03-9-9-9c-3.04 0-5.73 1.51-7.36 3.82"/><circle cx="7" cy="20" r="2" fill="currentColor"/></svg></button>
-            <button class="tool-btn" data-tool="magic-wand" data-tip="Magic Wand (W)" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Magic Wand (W)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 4V2m0 14v-2M8 9H6m14 0h-2m-2.8-3.8L14 4m-4.2 9.8L8.6 15m9.8-1.2L19.6 15M9.8 5.2L8.6 4"/><path d="M2 22l10-10"/><circle cx="15" cy="9" r="1" fill="currentColor"/></svg></button>
+            <button class="tool-btn" data-tool="magic-wand" data-tip="Magic Wand Tool" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="Magic Wand Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 4V2m0 14v-2M8 9H6m14 0h-2m-2.8-3.8L14 4m-4.2 9.8L8.6 15m9.8-1.2L19.6 15M9.8 5.2L8.6 4"/><path d="M2 22l10-10"/><circle cx="15" cy="9" r="1" fill="currentColor"/></svg></button>
             <button class="tool-btn" data-tool="ai-segment" data-tip="AI Segment Select" onclick="OS.flyoutSelect(this,'selection')" data-i18n-tip="AI Segment Select"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7" stroke-dasharray="3 2"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/><path d="M8.5 13.5c2.2 1.7 5.8 1.2 7-1.5" stroke-linecap="round"/></svg></button>
         </div>
     </div>
     <div class="tool-group" data-group="crop">
-        <button class="tool-btn" data-tool="crop" data-tip="Crop (C)" onclick="OS.setTool('crop')" data-i18n-tip="Crop (C)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
+        <button class="tool-btn" data-tool="crop" data-tip="Crop" onclick="OS.setTool('crop')" data-i18n-tip="Crop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="crop" data-tip="Crop" onclick="OS.flyoutSelect(this,'crop')" data-i18n-tip="Crop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg></button>
             <button class="tool-btn" data-tool="measure" data-tip="Measure" onclick="OS.flyoutSelect(this,'crop')" data-i18n-tip="Measure"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20L20 2"/><path d="M6 16l2-2"/><path d="M10 12l2-2"/><path d="M14 8l2-2"/><circle cx="2" cy="20" r="1.5" fill="currentColor"/><circle cx="20" cy="2" r="1.5" fill="currentColor"/></svg></button>
@@ -900,16 +900,16 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     </div>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="brush">
-        <button class="tool-btn" data-tool="brush" data-tip="Brush (B)" onclick="OS.setTool('brush')" data-i18n-tip="Brush (B)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
+        <button class="tool-btn" data-tool="brush" data-tip="Brush" onclick="OS.setTool('brush')" data-i18n-tip="Brush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="brush" data-tip="Brush" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Brush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
             <button class="tool-btn" data-tool="pencil" data-tip="Pencil" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Pencil"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>
             <button class="tool-btn" data-tool="spray" data-tip="Spray / Airbrush" onclick="OS.flyoutSelect(this,'brush')" data-i18n-tip="Spray / Airbrush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="12" width="10" height="10" rx="2"/><path d="M11 12V8"/><circle cx="7" cy="4" r="1" fill="currentColor"/><circle cx="11" cy="3" r="1" fill="currentColor"/><circle cx="15" cy="4" r="1" fill="currentColor"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="eraser" data-tip="Eraser (E)" onclick="OS.setTool('eraser')" data-i18n-tip="Eraser (E)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7L3 16l9-9 8 8-4 4z"/><path d="M6 11l8 8"/></svg></button>
+    <button class="tool-btn" data-tool="eraser" data-tip="Eraser Tool" onclick="OS.setTool('eraser')" data-i18n-tip="Eraser Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7L3 16l9-9 8 8-4 4z"/><path d="M6 11l8 8"/></svg></button>
     <div class="tool-group" data-group="stamp">
-        <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp (S)" onclick="OS.setTool('clone')" data-i18n-tip="Clone Stamp (S)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
+        <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp" onclick="OS.setTool('clone')" data-i18n-tip="Clone Stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="clone" data-tip="Clone Stamp" onclick="OS.flyoutSelect(this,'stamp')" data-i18n-tip="Clone Stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 3"/></svg></button>
             <button class="tool-btn" data-tool="healing" data-tip="Healing Brush" onclick="OS.flyoutSelect(this,'stamp')" data-i18n-tip="Healing Brush"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 2l4 4-12 12H6v-4L18 2z"/><path d="M14 6l4 4"/><line x1="2" y1="22" x2="22" y2="22"/></svg></button>
@@ -926,36 +926,36 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     </div>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="shape">
-        <button class="tool-btn" data-tool="rect" data-tip="Rectangle (R)" onclick="OS.setTool('rect')" data-i18n-tip="Rectangle (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
+        <button class="tool-btn" data-tool="rect" data-tip="Rectangle" onclick="OS.setTool('rect')" data-i18n-tip="Rectangle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="rect" data-tip="Rectangle" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Rectangle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
             <button class="tool-btn" data-tool="circle" data-tip="Ellipse" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Ellipse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></button>
             <button class="tool-btn" data-tool="triangle" data-tip="Triangle" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Triangle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3L2 21h20L12 3z"/></svg></button>
-            <button class="tool-btn" data-tool="line" data-tip="Line (L)" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Line (L)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/></svg></button>
+            <button class="tool-btn" data-tool="line" data-tip="Line Tool" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Line Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/></svg></button>
             <button class="tool-btn" data-tool="arrow" data-tip="Arrow" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="10 5 19 5 19 14"/></svg></button>
             <button class="tool-btn" data-tool="polygon" data-tip="Polygon" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Polygon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8.5 6.2-3.2 10H6.7L3.5 8.2z"/></svg></button>
             <button class="tool-btn" data-tool="star" data-tip="Star" onclick="OS.flyoutSelect(this,'shape')" data-i18n-tip="Star"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="pen" data-tip="Pen (P)" onclick="OS.setTool('pen')" data-i18n-tip="Pen (P)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
-    <button class="tool-btn" data-tool="text" data-tip="Text (T)" onclick="OS.setTool('text')" data-i18n-tip="Text (T)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
+    <button class="tool-btn" data-tool="pen" data-tip="Pen Tool" onclick="OS.setTool('pen')" data-i18n-tip="Pen Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
+    <button class="tool-btn" data-tool="text" data-tip="Text Tool" onclick="OS.setTool('text')" data-i18n-tip="Text Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="fillgrp">
-        <button class="tool-btn" data-tool="gradient" data-tip="Gradient (G)" onclick="OS.setTool('gradient')" data-i18n-tip="Gradient (G)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
+        <button class="tool-btn" data-tool="gradient" data-tip="Gradient" onclick="OS.setTool('gradient')" data-i18n-tip="Gradient"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="gradient" data-tip="Gradient" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Gradient"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
             <button class="tool-btn" data-tool="fill" data-tip="Fill Bucket" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Fill Bucket"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14 6l3-3 3 3"/><path d="M20 12.5a1.5 1.5 0 0 0 3 0c0-1.5-3-4-3-4s-3 2.5-3 4a1.5 1.5 0 0 0 3 0z"/></svg></button>
             <button class="tool-btn" data-tool="pattern" data-tip="Pattern Fill" onclick="OS.flyoutSelect(this,'fillgrp')" data-i18n-tip="Pattern Fill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></button>
         </div>
     </div>
-    <button class="tool-btn" data-tool="eyedropper" data-tip="Eyedropper (I)" onclick="OS.setTool('eyedropper')" data-i18n-tip="Eyedropper (I)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14.5 6.5l3-3a2.12 2.12 0 0 1 3 3l-3 3"/></svg></button>
+    <button class="tool-btn" data-tool="eyedropper" data-tip="Eyedropper Tool" onclick="OS.setTool('eyedropper')" data-i18n-tip="Eyedropper Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-3l9-9 3 3-9 9H3z"/><path d="M14.5 6.5l3-3a2.12 2.12 0 0 1 3 3l-3 3"/></svg></button>
     <button class="tool-btn" data-tool="note" data-tip="Sticky Note" onclick="OS.setTool('note')" data-i18n-tip="Sticky Note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3z"/><polyline points="14 3 14 8 21 8"/></svg></button>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="nav">
-        <button class="tool-btn" data-tool="pan" data-tip="Pan (H)" onclick="OS.setTool('pan')" data-i18n-tip="Pan (H)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
+        <button class="tool-btn" data-tool="pan" data-tip="Hand Tool" onclick="OS.setTool('pan')" data-i18n-tip="Hand Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
         <div class="tool-flyout">
             <button class="tool-btn" data-tool="pan" data-tip="Pan" onclick="OS.flyoutSelect(this,'nav')" data-i18n-tip="Pan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
-            <button class="tool-btn" data-tool="zoom" data-tip="Zoom (Z)" onclick="OS.flyoutSelect(this,'nav')" data-i18n-tip="Zoom (Z)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg></button>
+            <button class="tool-btn" data-tool="zoom" data-tip="Zoom Tool" onclick="OS.flyoutSelect(this,'nav')" data-i18n-tip="Zoom Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg></button>
         </div>
     </div>
 </div>
@@ -1160,7 +1160,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
                 <div class="panel-actions" style="display:flex;gap:2px;margin-bottom:6px;justify-content:flex-end">
                     <button class="panel-action" title="New Layer" onclick="OS.addLayer()" data-i18n-title="New Layer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
                     <button class="panel-action" title="Duplicate" onclick="OS.duplicateLayer()" data-i18n-title="Duplicate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-                    <button class="panel-action" title="Merge Down" onclick="OS.mergeDown()" data-i18n-title="Merge Down"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 18L12 22L16 18"/><path d="M12 2V22"/></svg></button>
+                    <button class="panel-action" title="Merge Down" onclick="OS.mergeSelectedOrDown()" data-i18n-title="Merge Down"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 18L12 22L16 18"/><path d="M12 2V22"/></svg></button>
                     <button class="panel-action" title="Delete" onclick="OS.deleteLayer()" data-i18n-title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
                     <button class="panel-action" title="Mask" onclick="OS.canvas.getActiveObject()&&OS.canvas.getActiveObject()._hasMask?OS.removeLayerMask():OS.addLayerMask()" data-i18n-title="Mask"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="5"/></svg></button>
                 </div>
@@ -1177,7 +1177,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
                 </div>
                 <div class="opt-group" style="margin-bottom:6px">
                     <label data-i18n="Opacity">Opacity</label>
-                    <input type="range" id="layer-opacity" min="0" max="100" value="100" oninput="OS.setLayerOpacity(this.value)">
+                    <input type="range" id="layer-opacity" min="0" max="100" value="100" oninput="OS.setLayerOpacity(this.value)" onchange="OS.commitLayerOpacity()">
                     <span class="opt-val" id="layer-opacity-val">100</span>
                 </div>
                 <div id="layers-list" role="listbox" aria-label="Layers" data-i18n-aria-label="Layers"></div>
@@ -1368,7 +1368,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <!-- ===== COMMAND PALETTE ===== -->
 <div id="cmd-palette" role="dialog" aria-label="Command palette" onclick="if(event.target===this)OS.closeCmdPalette()" data-i18n-aria-label="Command palette">
     <div id="cmd-box">
-        <input id="cmd-input" type="text" placeholder="Type a command... (Ctrl+K)" aria-label="Search commands" oninput="OS.filterCommands(this.value)" onkeydown="OS.cmdKeyDown(event)" data-i18n-aria-label="Search commands" data-i18n-placeholder="Type a command... (Ctrl+K)">
+        <input id="cmd-input" type="text" placeholder="Type a command... (Ctrl+Alt+K)" aria-label="Search commands" oninput="OS.filterCommands(this.value)" onkeydown="OS.cmdKeyDown(event)" data-i18n-aria-label="Search commands" data-i18n-placeholder="Type a command... (Ctrl+Alt+K)">
         <div id="cmd-results"></div>
     </div>
 </div>
@@ -1451,6 +1451,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 
 <script src="./host/openshop-i18n.js"></script>
 <script src="./locales/zh-CN.js"></script>
+<script src="./host/openshop-desktop-input.js"></script>
 <script>
 // ================================================================
 //  OpenShop v0.19.1 — Core Engine (Phase 10: Pro Toolbar)
@@ -1469,13 +1470,27 @@ const OS = {
     },
     get _lang() { return window.HstarOpenShopI18n.getLocale(); },
     _t(key, params) { return window.HstarOpenShopI18n.t(key, params); },
+    _toolTooltipController: null,
+    _refreshToolAccessibility() {
+        const desktopInput = window.HstarOpenShopDesktopInput;
+        document.querySelectorAll('.tool-btn[data-tip]').forEach(btn => {
+            btn.setAttribute('aria-label', desktopInput.localizedToolTip(btn));
+        });
+    },
     _initI18n() {
         window.HstarOpenShopI18n.translateTree(document);
         window.HstarOpenShopI18n.startObserver(document.body);
+        this._toolTooltipController?.destroy();
+        this._toolTooltipController = window.HstarOpenShopDesktopInput.createToolTooltipController({root:document});
+        this._refreshToolAccessibility();
     },
     setLocale(lang) {
         const aliases = { en: 'en-US', zh: 'zh-CN' };
         const changed = window.HstarOpenShopI18n.setLocale(aliases[lang] || lang);
+        if (changed) {
+            this._refreshToolAccessibility();
+            this._toolTooltipController?.refresh();
+        }
         if (changed && this.canvas) {
             this.updateLayersPanel();
             this.updateHistoryPanel();
@@ -1484,6 +1499,9 @@ const OS = {
         return changed;
     },
     canvas: null, layers: [], activeLayerIdx: 0,
+    _selectedLayers: new Set(),
+    _layerSelectionAnchor: null,
+    _keyboardContext: 'canvas',
     history: [], historyIdx: -1, maxHistory: 60,
     zoom: 1, canvasW: 1920, canvasH: 1080,
     _shapeStart: null, _tempShape: null,
@@ -1582,7 +1600,10 @@ const OS = {
             if (this._symmetryMode !== 'off') this._mirrorPath(e.path);
             this.saveHistory('Draw'); this.updateLayersPanel();
         });
-        window.addEventListener('resize', () => { this.resizeCanvas(); this.drawGrid(); this.drawRulers(); });
+        window.addEventListener('resize', () => {
+            this._toolTooltipController?.hide();
+            this.resizeCanvas(); this.drawGrid(); this.drawRulers();
+        });
         window.addEventListener('beforeunload', e => {
             if (this.historyIdx > 0) { e.preventDefault(); e.returnValue = ''; }
         });
@@ -1590,6 +1611,7 @@ const OS = {
         this.setTool('select');
         this.updateLayersPanel(); this.updateStatus();
         const ca = document.getElementById('canvas-area');
+        document.getElementById('toolbar').addEventListener('scroll', () => this._toolTooltipController?.hide(), {passive:true});
         ca.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); });
         ca.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); this.handleDrop(e); });
         this._initTouchGestures(ca);
@@ -1599,7 +1621,7 @@ const OS = {
         this.populateRecentFiles();
         // Accessibility: add aria-labels to tool buttons from their tooltips
         document.querySelectorAll('.tool-btn[data-tip]').forEach(btn => {
-            btn.setAttribute('aria-label', btn.dataset.tip);
+            btn.setAttribute('aria-label', window.HstarOpenShopDesktopInput.localizedToolTip(btn));
             btn.setAttribute('role', 'button');
             btn.setAttribute('tabindex', '0');
             btn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); btn.click(); } });
@@ -2189,67 +2211,212 @@ self.onmessage = function(e) {
     },
 
     // ====================== LAYERS ======================
+    _selectionState() {
+        return {
+            selected:this._selectedLayers,
+            primary:this.layers[this.activeLayerIdx] || null,
+            anchor:this._layerSelectionAnchor,
+        };
+    },
+    _applyLayerSelectionState(state) {
+        this._selectedLayers = state.selected;
+        this._layerSelectionAnchor = state.anchor;
+        this.activeLayerIdx = state.primary ? this.layers.indexOf(state.primary) : -1;
+        if (this.activeLayerIdx < 0 && this.layers.length) this.activeLayerIdx = 0;
+        return state;
+    },
+    _resetLayerSelection(layer = this.layers[this.activeLayerIdx]) {
+        return this._applyLayerSelectionState(
+            window.HstarOpenShopDesktopInput.resetLayerSelection(this.layers, layer)
+        );
+    },
+    _normalizeLayerSelection(preferred = this.layers[this.activeLayerIdx]) {
+        return this._applyLayerSelectionState(
+            window.HstarOpenShopDesktopInput.normalizeLayerSelection(
+                this.layers,
+                this._selectionState(),
+                preferred
+            )
+        );
+    },
+    _selectedLayerIndices() {
+        return this.layers
+            .map((layer, index) => this._selectedLayers.has(layer) ? index : -1)
+            .filter(index => index >= 0);
+    },
+    _selectedLayerList() {
+        this._normalizeLayerSelection();
+        return this.layers.filter(layer => this._selectedLayers.has(layer));
+    },
+    _refreshLayerSelectionPresentation() {
+        document.querySelectorAll('#layers-list .layer-item[data-layer-index]').forEach(row => {
+            const index = Number(row.dataset.layerIndex);
+            const layer = this.layers[index];
+            const selected = Boolean(layer && this._selectedLayers.has(layer));
+            const primary = index === this.activeLayerIdx;
+            row.classList.toggle('selected', selected);
+            row.classList.toggle('active', primary);
+            row.classList.toggle('primary', primary);
+            row.setAttribute('aria-selected', selected ? 'true' : 'false');
+        });
+        const active = this.layers[this.activeLayerIdx];
+        if (active) {
+            document.getElementById('layer-opacity').value = active.opacity;
+            document.getElementById('layer-opacity-val').textContent = active.opacity;
+            document.getElementById('layer-blend').value = active.blend;
+        }
+        this.updateInfoPanel();
+        this._renderAccessibilityTree();
+    },
+    _isProtectedLayer(layer) {
+        return Boolean(layer?.locked || layer?.objects?.some(object => object.name === '__boundary__'));
+    },
+    _layersForRowAction(idx) {
+        const layer = this.layers[idx];
+        if (!layer) return [];
+        return this._selectedLayers.has(layer) ? this._selectedLayerList() : [layer];
+    },
+    _syncCanvasLayerOrder() {
+        if (typeof this.canvas?.moveTo !== 'function') return;
+        let index = 0;
+        this.layers.forEach(layer => layer.objects.forEach(object => this.canvas.moveTo(object, index++)));
+    },
     addLayer() {
         const idx = this.layers.length;
-        this.layers.push({ name:`Layer ${idx}`, visible:true, opacity:100, blend:'source-over', objects:[] });
-        this.activeLayerIdx = idx; this.updateLayersPanel(); this.saveHistory('New Layer');
+        const layer = { name:`Layer ${idx}`, visible:true, opacity:100, blend:'source-over', objects:[] };
+        this.layers.push(layer);
+        this.activeLayerIdx = idx; this._resetLayerSelection(layer); this.updateLayersPanel(); this.saveHistory('New Layer');
     },
-    deleteLayer() {
+    deleteLayers() {
         if (this.layers.length === 0) return;
-        const layer = this.layers[this.activeLayerIdx];
-        if (layer.locked) { this.toast(this._t("Unlock layer first"), 'error'); return; }
-        layer.objects.forEach(o => this.canvas.remove(o));
-        this.layers.splice(this.activeLayerIdx, 1);
-        if (this.layers.length === 0) {
-            this.layers.push({ name:'Layer 0', visible:true, opacity:100, blend:'source-over', objects:[] });
-            this.activeLayerIdx = 0;
-        } else {
-            this.activeLayerIdx = Math.min(this.activeLayerIdx, this.layers.length-1);
-        }
-        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Delete Layer');
-    },
-    duplicateLayer() {
-        const src = this.layers[this.activeLayerIdx];
-        const nl = { name:src.name+' Copy', visible:true, opacity:src.opacity, blend:src.blend, objects:[] };
-        const toClone = src.objects.filter(o => o.name !== '__boundary__');
-        if (toClone.length === 0) {
-            this.layers.splice(this.activeLayerIdx+1, 0, nl); this.activeLayerIdx++;
-            this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Duplicate Layer');
+        const selected = this._selectedLayerList();
+        const deletable = selected.filter(layer => !this._isProtectedLayer(layer));
+        const skipped = selected.length - deletable.length;
+        if (!deletable.length) {
+            this.toast(this._t('No selected layers can be deleted'), 'info');
             return;
         }
-        let done = 0;
-        toClone.forEach(o => {
-            o.clone(c => {
-                c.set({left:o.left+10,top:o.top+10}); this.canvas.add(c); nl.objects.push(c);
-                done++;
-                if (done === toClone.length) {
-                    this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Duplicate Layer');
-                }
+        const nearestIndex = Math.min(...deletable.map(layer => this.layers.indexOf(layer)));
+        const deleting = new Set(deletable);
+        deletable.forEach(layer => layer.objects.forEach(object => this.canvas.remove(object)));
+        this.layers = this.layers.filter(layer => !deleting.has(layer));
+        if (!this.layers.length) {
+            this.layers.push({name:'Layer 0', visible:true, locked:false, opacity:100, blend:'source-over', objects:[]});
+        }
+        const next = this.layers[Math.min(nearestIndex, this.layers.length - 1)];
+        this._resetLayerSelection(next);
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Delete Layer');
+        if (skipped) this.toast(this._t('Skipped {count} locked layers', {count:skipped}), 'info');
+    },
+    deleteLayer() {
+        this.deleteLayers();
+    },
+    duplicateLayer() {
+        const sources = this._selectedLayerList();
+        if (!sources.length) return;
+        const primarySource = this.layers[this.activeLayerIdx];
+        const copies = sources.map(source => ({
+            name:`${source.name} Copy`,
+            visible:source.visible !== false,
+            locked:false,
+            opacity:source.opacity,
+            blend:source.blend,
+            objects:[],
+        }));
+        const insertionIndex = Math.max(...sources.map(layer => this.layers.indexOf(layer))) + 1;
+        this.layers.splice(insertionIndex, 0, ...copies);
+        const cloneEntries = sources.flatMap((source, sourceIndex) => (
+            source.objects
+                .filter(object => object.name !== '__boundary__')
+                .map(object => ({object, copy:copies[sourceIndex]}))
+        ));
+        let completed = 0;
+        let finalized = false;
+        const finalize = () => {
+            if (finalized || completed < cloneEntries.length) return;
+            finalized = true;
+            const primaryCopy = copies[Math.max(0, sources.indexOf(primarySource))] || copies.at(-1);
+            this._selectedLayers = new Set(copies);
+            this._layerSelectionAnchor = primaryCopy;
+            this.activeLayerIdx = this.layers.indexOf(primaryCopy);
+            this._syncCanvasLayerOrder();
+            this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Duplicate Layer');
+        };
+        cloneEntries.forEach(({object, copy}) => {
+            if (typeof object.clone !== 'function') { completed++; finalize(); return; }
+            object.clone(clone => {
+                clone.set({left:(object.left || 0) + 10, top:(object.top || 0) + 10});
+                this.canvas.add(clone); copy.objects.push(clone);
+                completed++; finalize();
             });
         });
-        this.layers.splice(this.activeLayerIdx+1, 0, nl); this.activeLayerIdx++;
+        finalize();
     },
     mergeDown() {
         if (this.activeLayerIdx === 0) { this.toast(this._t('Already at the bottom layer'),'info'); return; }
         const upper = this.layers[this.activeLayerIdx], lower = this.layers[this.activeLayerIdx-1];
         upper.objects.forEach(o => lower.objects.push(o));
-        this.layers.splice(this.activeLayerIdx, 1); this.activeLayerIdx--;
+        this.layers.splice(this.activeLayerIdx, 1); this.activeLayerIdx--; this._resetLayerSelection(lower);
         this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Merge Down');
     },
-    selectLayer(idx) { this.activeLayerIdx = idx; this.canvas.discardActiveObject(); this.canvas.renderAll(); this.updateLayersPanel(); },
+    mergeSelectedOrDown() {
+        const selected = this._selectedLayerList();
+        if (selected.length < 2) return this.mergeDown();
+        const mergeable = selected.filter(layer => !this._isProtectedLayer(layer));
+        const skipped = selected.length - mergeable.length;
+        if (mergeable.length < 2) {
+            this.toast(this._t('No selected layers can be merged'), 'info');
+            return;
+        }
+        const target = mergeable[0];
+        mergeable.slice(1).forEach(layer => layer.objects.forEach(object => target.objects.push(object)));
+        const removing = new Set(mergeable.slice(1));
+        this.layers = this.layers.filter(layer => !removing.has(layer));
+        this._resetLayerSelection(target);
+        this._syncCanvasLayerOrder();
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Merge Layers');
+        if (skipped) this.toast(this._t('Skipped {count} locked layers', {count:skipped}), 'info');
+    },
+    selectLayer(idx, event = {}) {
+        const layer = this.layers[idx];
+        if (!layer) return;
+        const state = window.HstarOpenShopDesktopInput.selectLayerRange({
+            layers:this.layers,
+            state:this._selectionState(),
+            layer,
+            ctrl:Boolean(event.ctrlKey || event.metaKey),
+            shift:Boolean(event.shiftKey),
+        });
+        this._applyLayerSelectionState(state);
+        this._keyboardContext = 'layers';
+        this.canvas.discardActiveObject(); this.canvas.renderAll(); this._refreshLayerSelectionPresentation();
+    },
     toggleLayerVisibility(idx) {
-        const l = this.layers[idx]; l.visible = !l.visible;
-        l.objects.forEach(o => o.visible = l.visible);
-        this.canvas.renderAll(); this.updateLayersPanel();
+        const clicked = this.layers[idx];
+        if (!clicked) return;
+        const visible = !clicked.visible;
+        this._layersForRowAction(idx).forEach(layer => {
+            layer.visible = visible;
+            layer.objects.forEach(object => { object.visible = visible; });
+        });
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Layer Visibility');
     },
     setLayerOpacity(val) {
-        const l = this.layers[this.activeLayerIdx]; l.opacity = +val;
-        l.objects.forEach(o => { if (o.name !== '__boundary__') o.opacity = val/100; });
+        const opacity = Math.max(0, Math.min(100, Number(val) || 0));
+        this._selectedLayerList().forEach(layer => {
+            layer.opacity = opacity;
+            layer.objects.forEach(object => { if (object.name !== '__boundary__') object.opacity = opacity / 100; });
+        });
         document.getElementById('layer-opacity-val').textContent = val; this.canvas.renderAll();
     },
+    commitLayerOpacity() {
+        if (this._selectedLayerList().length) this.saveHistory('Layer Opacity');
+    },
     setLayerBlend(mode) {
-        const l = this.layers[this.activeLayerIdx]; l.blend = mode;
-        l.objects.forEach(o => { if (o.name !== '__boundary__') o.globalCompositeOperation = mode; });
+        this._selectedLayerList().forEach(layer => {
+            layer.blend = mode;
+            layer.objects.forEach(object => { if (object.name !== '__boundary__') object.globalCompositeOperation = mode; });
+        });
         this.canvas.renderAll(); this.saveHistory('Blend: '+mode);
     },
     renameLayer(idx, newName) { this.layers[idx].name = newName; this.updateLayersPanel(); },
@@ -2271,10 +2438,16 @@ self.onmessage = function(e) {
         });
     },
     updateLayersPanel() {
+        this._normalizeLayerSelection();
         const list = document.getElementById('layers-list'); list.innerHTML = '';
         for (let i = this.layers.length-1; i >= 0; i--) {
             const l = this.layers[i], d = document.createElement('div');
-            d.className = 'layer-item'+(i===this.activeLayerIdx?' active':'');
+            const selected = this._selectedLayers.has(l);
+            const primary = i === this.activeLayerIdx;
+            d.className = `layer-item${selected?' selected':''}${primary?' active primary':''}`;
+            d.dataset.layerIndex = String(i);
+            d.setAttribute('role', 'option');
+            d.setAttribute('aria-selected', selected ? 'true' : 'false');
             const eyeSvg = l.visible
                 ? '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
                 : '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
@@ -2299,7 +2472,7 @@ self.onmessage = function(e) {
             d.querySelector('.layer-vis').addEventListener('click', e => { e.stopPropagation(); this.toggleLayerVisibility(i); });
             d.querySelector('.layer-lock').addEventListener('click', e => { e.stopPropagation(); this.toggleLayerLock(i); });
             d.querySelector('.layer-name').addEventListener('dblclick', function() { OS.startRenameLayer(this, i); });
-            d.addEventListener('click', () => this.selectLayer(i));
+            d.addEventListener('click', event => this.selectLayer(i, event));
             this.initLayerDrag(d, i);
             list.appendChild(d);
         }
@@ -2313,14 +2486,19 @@ self.onmessage = function(e) {
         this._renderAccessibilityTree();
     },
     toggleLayerLock(idx) {
-        this.layers[idx].locked = !this.layers[idx].locked;
-        const l = this.layers[idx];
-        l.objects.forEach(o => {
-            if (o.name === '__boundary__') return;
-            o.selectable = !l.locked; o.evented = !l.locked;
+        const clicked = this.layers[idx];
+        if (!clicked) return;
+        const locked = !clicked.locked;
+        const layers = this._layersForRowAction(idx);
+        layers.forEach(layer => {
+            layer.locked = locked;
+            layer.objects.forEach(object => {
+                if (object.name === '__boundary__') return;
+                object.selectable = !locked; object.evented = !locked;
+            });
         });
-        this.canvas.renderAll(); this.updateLayersPanel();
-        this.toast(l.locked ? this._t('Layer locked') : this._t('Layer unlocked'), 'info');
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Layer Lock');
+        this.toast(locked ? this._t('Layer locked') : this._t('Layer unlocked'), 'info');
     },
     startRenameLayer(el, idx) {
         const inp = document.createElement('input'); inp.className = 'layer-name-input';
@@ -2363,7 +2541,7 @@ self.onmessage = function(e) {
             if(!layersById.has(layerId)) createLayer(layerId, saved.name || `Layer ${layers.length}`);
         });
         this.layers = layers.length ? layers : [{ name:'Layer 0', visible:true, opacity:100, blend:'source-over', objects:[] }];
-        this.activeLayerIdx = 0; this.updateLayersPanel();
+        this.activeLayerIdx = 0; this._resetLayerSelection(this.layers[0]); this.updateLayersPanel();
     },
 
     // ====================== TOOLS ======================
@@ -2425,6 +2603,7 @@ self.onmessage = function(e) {
         document.getElementById(contentId).classList.add('active');
     },
     _closeAllFlyouts() {
+        this._toolTooltipController?.hide();
         document.querySelectorAll('.tool-flyout.show').forEach(f => f.classList.remove('show'));
     },
     flyoutSelect(btn, groupName) {
@@ -2436,6 +2615,8 @@ self.onmessage = function(e) {
         face.innerHTML = btn.innerHTML;
         face.dataset.tool = tool;
         face.dataset.tip = btn.dataset.tip;
+        face.dataset.i18nTip = btn.dataset.i18nTip || btn.dataset.tip;
+        face.setAttribute('aria-label', window.HstarOpenShopDesktopInput.localizedToolTip(face));
         // Close all flyouts and activate tool
         this._closeAllFlyouts();
         this.setTool(tool);
@@ -2443,6 +2624,7 @@ self.onmessage = function(e) {
 
 
     setTool(tool) {
+        this._toolTooltipController?.hide();
         const prevTool = this.state.tool;
         this.state.tool = tool;
         document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool===tool));
@@ -3979,6 +4161,7 @@ self.onmessage = function(e) {
             const idx = this.layers.length;
             this.layers.push({ name: 'Layer ' + idx + ' (copy)', visible: true, locked: false, opacity: 100, blend: 'source-over', objects: [c] });
             this.canvas.add(c); this.activeLayerIdx = idx;
+            this._resetLayerSelection(this.layers[idx]);
             this.canvas.setActiveObject(c); this.canvas.renderAll();
             this.saveHistory('Layer Via Copy'); this.updateLayersPanel();
             this.toast(this._t("Layer via copy"), 'success');
@@ -3997,6 +4180,7 @@ self.onmessage = function(e) {
             const idx = this.layers.length;
             this.layers.push({ name: 'Layer ' + idx + ' (cut)', visible: true, locked: false, opacity: 100, blend: 'source-over', objects: [c] });
             this.canvas.add(c); this.activeLayerIdx = idx;
+            this._resetLayerSelection(this.layers[idx]);
             this.canvas.setActiveObject(c); this.canvas.renderAll();
             this.saveHistory('Layer Via Cut'); this.updateLayersPanel();
             this.toast(this._t("Layer via cut"), 'success');
@@ -5731,13 +5915,56 @@ self.onmessage = async function(e) {
     },
 
     // ====================== LAYER DRAG REORDER ======================
+    _moveSelectedLayersToIndex(destinationIndex) {
+        const selected = this._selectedLayerList();
+        const movable = selected.filter(layer => !this._isProtectedLayer(layer));
+        const locked = selected.filter(layer => this._isProtectedLayer(layer));
+        if (locked.length) {
+            this.toast(this._t('Skipped {count} locked layers', {count:locked.length}), 'info');
+        }
+        if (!movable.length) return false;
+        const original = [...this.layers];
+        const primary = this.layers[this.activeLayerIdx];
+        const movableSet = new Set(movable);
+        const rawIndex = Math.max(0, Math.min(original.length, Math.trunc(Number(destinationIndex) || 0)));
+        const removedBefore = original.slice(0, rawIndex).filter(layer => movableSet.has(layer)).length;
+        const reduced = original.filter(layer => !movableSet.has(layer));
+        const insertionIndex = Math.max(0, Math.min(reduced.length, rawIndex - removedBefore));
+        reduced.splice(insertionIndex, 0, ...movable);
+        if (reduced.every((layer, index) => layer === original[index])) return false;
+        this.layers = reduced;
+        this._selectedLayers = new Set(selected.filter(layer => this.layers.includes(layer)));
+        this._layerSelectionAnchor = this.layers.includes(this._layerSelectionAnchor)
+            ? this._layerSelectionAnchor
+            : primary;
+        this.activeLayerIdx = this.layers.indexOf(primary);
+        if (this.activeLayerIdx < 0) this.activeLayerIdx = this.layers.indexOf(movable.at(-1));
+        this._syncCanvasLayerOrder();
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Reorder Layers');
+        this.toast(this._t('Layer moved'), 'info');
+        return true;
+    },
     initLayerDrag(layerEl, idx) {
         layerEl.setAttribute('draggable', 'true');
         layerEl.addEventListener('dragstart', e => {
+            const layer = this.layers[idx];
+            if (!this._selectedLayers.has(layer)) {
+                this._resetLayerSelection(layer);
+                document.querySelectorAll('.layer-item').forEach(row => {
+                    const rowLayer = this.layers[Number(row.dataset.layerIndex)];
+                    row.classList.toggle('selected', rowLayer === layer);
+                    row.classList.toggle('active', rowLayer === layer);
+                    row.classList.toggle('primary', rowLayer === layer);
+                    row.setAttribute('aria-selected', rowLayer === layer ? 'true' : 'false');
+                });
+            }
+            this._keyboardContext = 'layers';
             e.dataTransfer.setData('text/plain', idx);
             layerEl.classList.add('dragging');
         });
-        layerEl.addEventListener('dragend', () => layerEl.classList.remove('dragging'));
+        layerEl.addEventListener('dragend', () => {
+            document.querySelectorAll('.layer-item').forEach(row => row.classList.remove('dragging', 'drop-above', 'drop-below'));
+        });
         layerEl.addEventListener('dragover', e => {
             e.preventDefault();
             const rect = layerEl.getBoundingClientRect();
@@ -5748,17 +5975,9 @@ self.onmessage = async function(e) {
         layerEl.addEventListener('dragleave', () => layerEl.classList.remove('drop-above', 'drop-below'));
         layerEl.addEventListener('drop', e => {
             e.preventDefault();
+            const dropAbove = layerEl.classList.contains('drop-above');
             layerEl.classList.remove('drop-above', 'drop-below');
-            const fromIdx = +e.dataTransfer.getData('text/plain');
-            const toIdx = idx;
-            if (fromIdx === toIdx) return;
-            const [moved] = this.layers.splice(fromIdx, 1);
-            this.layers.splice(toIdx, 0, moved);
-            if (this.activeLayerIdx === fromIdx) this.activeLayerIdx = toIdx;
-            else if (fromIdx < this.activeLayerIdx && toIdx >= this.activeLayerIdx) this.activeLayerIdx--;
-            else if (fromIdx > this.activeLayerIdx && toIdx <= this.activeLayerIdx) this.activeLayerIdx++;
-            this.updateLayersPanel(); this.saveHistory('Reorder Layers');
-            this.toast(this._t("Layer moved"), 'info');
+            this._moveSelectedLayersToIndex(dropAbove ? idx + 1 : idx);
         });
     },
 
@@ -6483,11 +6702,14 @@ self.onmessage = async function(e) {
 
     // ====================== PHASE 8: COMMAND PALETTE ======================
     _commands: null,
+    _shortcut(commandId) {
+        return window.HstarOpenShopDesktopInput.commandShortcut(commandId);
+    },
     _getCommands() {
         if (this._commands) return this._commands;
         this._commands = [
-            {label:'New Document',cat:'File',fn:()=>this.newImage(),key:'Ctrl+N'},
-            {label:'Open Image',cat:'File',fn:()=>this.openFile()},
+            {label:'New Document',cat:'File',fn:()=>this.newImage(),key:this._shortcut('new-document')},
+            {label:'Open Image',cat:'File',fn:()=>this.openFile(),key:this._shortcut('open-image')},
             {label:'Open PSD',cat:'File',fn:()=>this.openPSD()},
             {label:'Export PNG',cat:'File',fn:()=>this.saveFile('png'),key:'Ctrl+Shift+P'},
             {label:'Export JPEG',cat:'File',fn:()=>this.saveFile('jpeg')},
@@ -6495,21 +6717,22 @@ self.onmessage = async function(e) {
             {label:'Export SVG',cat:'File',fn:()=>this.saveFile('svg')},
             {label:'Export PDF',cat:'File',fn:()=>this.exportPDF()},
             {label:'Export PSD',cat:'File',fn:()=>this.exportPSD()},
-            {label:'Export Settings',cat:'File',fn:()=>this.showExportSettings()},
-            {label:'Save Project',cat:'File',fn:()=>this.saveProject()},
+            {label:'Export Settings',cat:'File',fn:()=>this.showExportSettings(),key:this._shortcut('export-settings')},
+            {label:'Save Project',cat:'File',fn:()=>this.saveProject(),key:this._shortcut('save-project')},
             {label:'Open Project',cat:'File',fn:()=>this.openProject()},
             {label:'Recovery Storage',cat:'File',fn:()=>this.showRecoveryManager()},
             {label:'Templates',cat:'File',fn:()=>this.showTemplates()},
-            {label:'Undo',cat:'Edit',fn:()=>this.undo(),key:'Ctrl+Z'},
-            {label:'Redo',cat:'Edit',fn:()=>this.redo(),key:'Ctrl+Shift+Z'},
-            {label:'Copy',cat:'Edit',fn:()=>this.copyObj(),key:'Ctrl+C'},
-            {label:'Paste',cat:'Edit',fn:()=>this.pasteObj(),key:'Ctrl+V'},
-            {label:'Duplicate',cat:'Edit',fn:()=>this.duplicateSelected(),key:'Ctrl+J'},
-            {label:'Delete',cat:'Edit',fn:()=>this.deleteSelected(),key:'Del'},
-            {label:'Select All',cat:'Select',fn:()=>this.selectAll(),key:'Ctrl+A'},
-            {label:'Deselect',cat:'Select',fn:()=>this.deselectAll(),key:'Ctrl+D'},
-            {label:'Reselect',cat:'Select',fn:()=>this.reselectSelection(),key:'Ctrl+Shift+D'},
-            {label:'Inverse Selection',cat:'Select',fn:()=>this.invertSelection(),key:'Ctrl+Shift+I'},
+            {label:'Undo',cat:'Edit',fn:()=>this.undo(),key:this._shortcut('undo')},
+            {label:'Redo',cat:'Edit',fn:()=>this.redo(),key:this._shortcut('redo')},
+            {label:'Cut',cat:'Edit',fn:()=>this._cutSelection(),key:this._shortcut('cut')},
+            {label:'Copy',cat:'Edit',fn:()=>this.copyObj(),key:this._shortcut('copy')},
+            {label:'Paste',cat:'Edit',fn:()=>this.pasteObj(),key:this._shortcut('paste')},
+            {label:'Duplicate',cat:'Edit',fn:()=>this._shortcutCommands()['duplicate-context'](),key:this._shortcut('duplicate-context')},
+            {label:'Delete',cat:'Edit',fn:()=>this._deleteByContext(),key:this._shortcut('delete-context')},
+            {label:'Select All',cat:'Select',fn:()=>this.selectAll(),key:this._shortcut('select-all')},
+            {label:'Deselect',cat:'Select',fn:()=>this.deselectAll(),key:this._shortcut('deselect')},
+            {label:'Reselect',cat:'Select',fn:()=>this.reselectSelection(),key:this._shortcut('reselect')},
+            {label:'Inverse Selection',cat:'Select',fn:()=>this.invertSelection(),key:this._shortcut('invert-selection')},
             {label:'Color Range...',cat:'Select',fn:()=>this.showColorRange()},
             {label:'Grow Selection',cat:'Select',fn:()=>this.growSelection()},
             {label:'Similar',cat:'Select',fn:()=>this.similarSelection()},
@@ -6517,9 +6740,9 @@ self.onmessage = async function(e) {
             {label:'Contract Selection...',cat:'Select',fn:()=>this.modifySelection('contract')},
             {label:'Feather Selection...',cat:'Select',fn:()=>this.modifySelection('feather')},
             {label:'Smooth Selection',cat:'Select',fn:()=>this.modifySelection('smooth')},
-            {label:'Free Transform',cat:'Edit',fn:()=>this.showFreeTransform(),key:'Ctrl+T'},
-            {label:'Preferences',cat:'Edit',fn:()=>this.showPreferences()},
-            {label:'Resize Canvas',cat:'Image',fn:()=>this.showResize()},
+            {label:'Free Transform',cat:'Edit',fn:()=>this.showFreeTransform(),key:this._shortcut('free-transform')},
+            {label:'Preferences',cat:'Edit',fn:()=>this.showPreferences(),key:this._shortcut('preferences')},
+            {label:'Resize Canvas',cat:'Image',fn:()=>this.showResize(),key:this._shortcut('resize-canvas')},
             {label:'Flip Horizontal',cat:'Image',fn:()=>this.flipH()},
             {label:'Flip Vertical',cat:'Image',fn:()=>this.flipV()},
             {label:'Rotate 90 CW',cat:'Image',fn:()=>this.rotateObj(90)},
@@ -6532,7 +6755,7 @@ self.onmessage = async function(e) {
             {label:'Image Info',cat:'Image',fn:()=>this.showImageInfo()},
             {label:'Before / After',cat:'Image',fn:()=>this.showBeforeAfter()},
             {label:'Grayscale',cat:'Filter',fn:()=>this.applyFilterDirect('Grayscale')},
-            {label:'Invert',cat:'Filter',fn:()=>this.applyFilterDirect('Invert')},
+            {label:'Invert',cat:'Filter',fn:()=>this.applyFilterDirect('Invert'),key:this._shortcut('invert-image')},
             {label:'Sepia',cat:'Filter',fn:()=>this.applyFilterDirect('Sepia')},
             {label:'B&W',cat:'Filter',fn:()=>this.applyFilterDirect('BlackWhite')},
             {label:'Posterize',cat:'Filter',fn:()=>this.filterPosterize()},
@@ -6548,9 +6771,9 @@ self.onmessage = async function(e) {
             {label:'Chromatic Aberration',cat:'Filter',fn:()=>this.filterChromaticAberration()},
             {label:'Generate Noise',cat:'Filter',fn:()=>this.filterNoiseGen()},
             {label:'Gradient Map',cat:'Filter',fn:()=>this.showGradientMap()},
-            {label:'Curves',cat:'Filter',fn:()=>this.showCurvesDialog()},
-            {label:'Levels',cat:'Filter',fn:()=>this.showLevelsDialog()},
-            {label:'Color Balance',cat:'Filter',fn:()=>this.showColorBalanceDialog()},
+            {label:'Curves',cat:'Filter',fn:()=>this.showCurvesDialog(),key:this._shortcut('curves')},
+            {label:'Levels',cat:'Filter',fn:()=>this.showLevelsDialog(),key:this._shortcut('levels')},
+            {label:'Color Balance',cat:'Filter',fn:()=>this.showColorBalanceDialog(),key:this._shortcut('color-balance')},
             {label:'Channel Mixer',cat:'Filter',fn:()=>this.showChannelMixer()},
             {label:'Auto Levels',cat:'Filter',fn:()=>this.autoLevels()},
             {label:'Photo Presets',cat:'Filter',fn:()=>this.showPresets()},
@@ -6573,26 +6796,26 @@ self.onmessage = async function(e) {
             {label:'Animation Timeline',cat:'View',fn:()=>this.toggleTimeline()},
             {label:'Actions / Macros',cat:'View',fn:()=>this.toggleMacroPanel()},
             {label:'Pixel Grid',cat:'View',fn:()=>this.togglePixelGrid()},
-            {label:'Toggle Grid',cat:'View',fn:()=>this.toggleGrid(),key:'Ctrl+G'},
-            {label:'Toggle Rulers',cat:'View',fn:()=>this.toggleRulers()},
+            {label:'Toggle Grid',cat:'View',fn:()=>this.toggleGrid(),key:this._shortcut('toggle-grid')},
+            {label:'Toggle Rulers',cat:'View',fn:()=>this.toggleRulers(),key:this._shortcut('toggle-rulers')},
             {label:'Toggle Snap',cat:'View',fn:()=>this.toggleSnap()},
             {label:'Symmetry: Off',cat:'View',fn:()=>this.setSymmetryMode('off')},
             {label:'Symmetry: Horizontal',cat:'View',fn:()=>this.setSymmetryMode('horizontal')},
             {label:'Symmetry: Vertical',cat:'View',fn:()=>this.setSymmetryMode('vertical')},
             {label:'Symmetry: Both Axes',cat:'View',fn:()=>this.setSymmetryMode('both')},
             {label:'Symmetry: Radial',cat:'View',fn:()=>this.setSymmetryMode('radial')},
-            {label:'Fullscreen',cat:'View',fn:()=>this.toggleFullscreen(),key:'F11'},
-            {label:'Zoom In',cat:'View',fn:()=>this.zoomIn(),key:'Ctrl++'},
-            {label:'Zoom Out',cat:'View',fn:()=>this.zoomOut(),key:'Ctrl+-'},
-            {label:'Zoom Fit',cat:'View',fn:()=>this.zoomFit(),key:'Ctrl+0'},
+            {label:'Fullscreen',cat:'View',fn:()=>this.toggleFullscreen(),key:this._shortcut('cycle-screen-mode')},
+            {label:'Zoom In',cat:'View',fn:()=>this.zoomIn(),key:this._shortcut('zoom-in')},
+            {label:'Zoom Out',cat:'View',fn:()=>this.zoomOut(),key:this._shortcut('zoom-out')},
+            {label:'Zoom Fit',cat:'View',fn:()=>this.zoomFit(),key:this._shortcut('zoom-fit')},
             {label:'Keyboard Shortcuts',cat:'View',fn:()=>this.showShortcuts()},
             {label:'Theme: Dark',cat:'View',fn:()=>this.setTheme('default')},
             {label:'Theme: Midnight',cat:'View',fn:()=>this.setTheme('midnight')},
             {label:'Theme: OLED',cat:'View',fn:()=>this.setTheme('oled')},
-            {label:'Add Layer',cat:'Layer',fn:()=>this.addLayer()},
-            {label:'Delete Layer',cat:'Layer',fn:()=>this.deleteLayer()},
-            {label:'Duplicate Layer',cat:'Layer',fn:()=>this.duplicateLayer()},
-            {label:'Merge Down',cat:'Layer',fn:()=>this.mergeDown()},
+            {label:'Add Layer',cat:'Layer',fn:()=>this.addLayer(),key:this._shortcut('new-layer')},
+            {label:'Delete Layer',cat:'Layer',fn:()=>this.deleteLayer(),key:this._shortcut('delete-context')},
+            {label:'Duplicate Layer',cat:'Layer',fn:()=>this.duplicateLayer(),key:this._shortcut('duplicate-context')},
+            {label:'Merge Down',cat:'Layer',fn:()=>this.mergeSelectedOrDown(),key:this._shortcut('merge-context')},
             // Tools
             ...['select','marquee-rect','marquee-ellipse','wand','lasso','ai-segment','brush','eraser','pencil','spray',
                 'clone','healing','line','rect','circle','triangle','arrow','polygon','star','pen',
@@ -6602,13 +6825,7 @@ self.onmessage = async function(e) {
         return this._commands;
     },
     initCmdPalette() {
-        document.addEventListener('keydown', e => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); this.toggleCmdPalette(); }
-            if (e.key === 'Escape') {
-                this.closeCmdPalette();
-                const ctx = document.getElementById('context-menu'); if (ctx) ctx.classList.remove('visible');
-            }
-        });
+        // Global command-palette keys are owned by the desktop shortcut dispatcher.
     },
     toggleCmdPalette() {
         const el = document.getElementById('cmd-palette');
@@ -6693,14 +6910,14 @@ self.onmessage = async function(e) {
 
             if (active) {
                 // Object selected — object operations
-                items.push({label:'Cut',fn:()=>{this.copyObj();this.deleteSelected();},key:'Ctrl+X'});
-                items.push({label:'Copy',fn:()=>this.copyObj(),key:'Ctrl+C'});
-                items.push({label:'Paste',fn:()=>this.pasteObj(),key:'Ctrl+V'});
-                items.push({label:'Duplicate',fn:()=>this.duplicateSelected(),key:'Ctrl+J'});
-                items.push({label:'Delete',fn:()=>this.deleteSelected(),key:'Del'});
+                items.push({label:'Cut',fn:()=>{this.copyObj();this.deleteSelected();},key:this._shortcut('cut')});
+                items.push({label:'Copy',fn:()=>this.copyObj(),key:this._shortcut('copy')});
+                items.push({label:'Paste',fn:()=>this.pasteObj(),key:this._shortcut('paste')});
+                items.push({label:'Duplicate',fn:()=>this.duplicateSelected(),key:this._shortcut('duplicate-context')});
+                items.push({label:'Delete',fn:()=>this.deleteSelected(),key:this._shortcut('delete-context')});
                 items.push({sep:true});
                 items.push({label:'Transform',children:[
-                    {label:'Free Transform',fn:()=>this.showFreeTransform(),key:'Ctrl+T'},
+                    {label:'Free Transform',fn:()=>this.showFreeTransform(),key:this._shortcut('free-transform')},
                     {label:'Flip Horizontal',fn:()=>this.flipH()},
                     {label:'Flip Vertical',fn:()=>this.flipV()},
                     {sep:true},
@@ -6725,8 +6942,8 @@ self.onmessage = async function(e) {
                 }
             } else if (hasSelection) {
                 // Pixel selection active — selection operations
-                items.push({label:'Deselect',fn:()=>this.deselectAll(),key:'Ctrl+D'});
-                items.push({label:'Select Inverse',fn:()=>this.invertSelection(),key:'Ctrl+Shift+I'});
+                items.push({label:'Deselect',fn:()=>this.deselectAll(),key:this._shortcut('deselect')});
+                items.push({label:'Select Inverse',fn:()=>this.invertSelection(),key:this._shortcut('invert-selection')});
                 items.push({sep:true});
                 items.push({label:'Modify',children:[
                     {label:'Feather...',fn:()=>this.modifySelection('feather')},
@@ -6741,8 +6958,8 @@ self.onmessage = async function(e) {
                 items.push({label:'Layer Via Cut',fn:()=>this._layerViaCut()});
             } else {
                 // No object, no selection — canvas operations
-                items.push({label:'Paste',fn:()=>this.pasteObj(),key:'Ctrl+V'});
-                items.push({label:'Select All',fn:()=>this.selectAll(),key:'Ctrl+A'});
+                items.push({label:'Paste',fn:()=>this.pasteObj(),key:this._shortcut('paste')});
+                items.push({label:'Select All',fn:()=>this.selectAll(),key:this._shortcut('select-all')});
                 items.push({sep:true});
                 items.push({label:'New Layer',fn:()=>this.addLayer()});
                 items.push({label:'Flatten Image',fn:()=>this.flattenImage()});
@@ -6750,12 +6967,12 @@ self.onmessage = async function(e) {
                 items.push({label:'Zoom',children:[
                     {label:'Zoom In',fn:()=>this.zoomIn()},
                     {label:'Zoom Out',fn:()=>this.zoomOut()},
-                    {label:'Zoom to Fit',fn:()=>this.zoomFit(),key:'Ctrl+0'},
-                    {label:'Actual Pixels',fn:()=>this.zoomActual(),key:'Ctrl+1'},
+                    {label:'Zoom to Fit',fn:()=>this.zoomFit(),key:this._shortcut('zoom-fit')},
+                    {label:'Actual Pixels',fn:()=>this.zoomActual(),key:this._shortcut('zoom-100')},
                 ]});
                 items.push({sep:true});
-                items.push({label:'Toggle Grid',fn:()=>this.toggleGrid(),key:'Ctrl+G'});
-                items.push({label:'Toggle Rulers',fn:()=>this.toggleRulers(),key:'Ctrl+R'});
+                items.push({label:'Toggle Grid',fn:()=>this.toggleGrid(),key:this._shortcut('toggle-grid')});
+                items.push({label:'Toggle Rulers',fn:()=>this.toggleRulers(),key:this._shortcut('toggle-rulers')});
                 items.push({sep:true});
                 items.push({label:'Canvas Size...',fn:()=>this.showResize()});
                 items.push({label:'Image Info...',fn:()=>this.showImageInfo()});
@@ -7088,184 +7305,193 @@ self.onmessage = async function(e) {
 
     // ====================== KEYBOARD SHORTCUTS ======================
     showShortcuts() {
-        const shortcuts = [
-            // General
-            ['Ctrl+K','Command Palette'],['Ctrl+S','Save Project'],['Ctrl+N','New Document'],
-            // Edit
-            ['Ctrl+Z','Undo'],['Ctrl+Shift+Z','Redo'],['Ctrl+Y','Redo (alt)'],
-            ['Ctrl+C','Copy'],['Ctrl+X','Cut'],['Ctrl+V','Paste'],['Ctrl+J','Duplicate Object'],
-            ['Delete','Delete Selected'],['Ctrl+T','Free Transform'],
-            // Selection
-            ['Ctrl+A','Select All'],['Ctrl+D','Deselect'],
-            ['Ctrl+Shift+D','Reselect'],['Ctrl+Shift+I','Inverse Selection'],
-            // Layer
-            ['Ctrl+E','Merge Down'],['Ctrl+Shift+E','Merge Visible'],
-            // View
-            ['Ctrl+G','Toggle Grid'],['Ctrl+R','Toggle Rulers'],
-            ['Ctrl+1','Zoom 100%'],['Ctrl+0','Zoom Fit'],
-            ['Ctrl++','Zoom In'],['Ctrl+-','Zoom Out'],
-            ['Tab','Toggle UI Panels'],['F','Fullscreen'],['Scroll','Zoom'],
-            // Tools
-            ['Enter','Apply Crop / Finish Pen'],['Escape','Cancel / Deselect'],
-            ['Space (hold)','Temporary Pan'],['[ / ]','Brush Size'],['X','Swap Colors'],['D','Default Colors'],
-            ['V','Move'],['B','Brush'],['E','Eraser'],['T','Text'],['G','Gradient'],
-            ['C','Crop'],['Z','Zoom'],['H','Pan'],['L','Line'],['R / U','Rectangle'],
-            ['O','Ellipse'],['P','Pen'],['M','Marquee'],['W','Magic Wand'],
-            ['S','Clone Stamp'],['I','Eyedropper'],['J','Healing'],['A','Arrow'],
-            ['N','Sticky Note'],['Alt+Click','Set Clone Source'],
-        ];
+        const shortcuts = window.HstarOpenShopDesktopInput.shortcutRows();
         const o = document.createElement('div'); o.className = 'modal-overlay';
         o.innerHTML = `<div class="modal" style="min-width:400px"><h3 data-i18n="Keyboard Shortcuts">Keyboard Shortcuts</h3>
-            <dl class="shortcut-grid">${shortcuts.map(([k,v]) => `<dt>${k}</dt><dd>${this._esc(this._t(v))}</dd>`).join('')}</dl>
+            <dl class="shortcut-grid">${shortcuts.map(row => `<dt>${this._esc(row.keys.join(' / '))}</dt><dd>${this._esc(this._t(row.label))}</dd>`).join('')}</dl>
             <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Close">Close</button></div></div>`;
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
 
     // ====================== KEYBOARD SHORTCUT HANDLER ======================
     _clipboard: null,
+    _shortcutCommands() {
+        return {
+            'command-palette':()=>this.toggleCmdPalette(),
+            'preferences':()=>this.showPreferences(),
+            'new-document':()=>this.newImage(),
+            'open-image':()=>this.openFile(),
+            'save-project':()=>this.saveProject(),
+            'export-settings':()=>this.showExportSettings(),
+            'undo':()=>this.undo(),
+            'redo':()=>this.redo(),
+            'cut':()=>this._cutSelection(),
+            'copy':()=>this._copySelection(),
+            'paste':()=>this._pasteSelection(),
+            'duplicate-context':()=>this._keyboardContext === 'layers' ? this.duplicateLayer() : this._duplicateSelection(),
+            'free-transform':()=>this.freeTransform(),
+            'select-all':()=>this.selectAll(),
+            'deselect':()=>this.deselectAll(),
+            'reselect':()=>this.reselectSelection(),
+            'invert-selection':()=>this.invertSelection(),
+            'invert-image':()=>this.applyFilterDirect('Invert'),
+            'resize-canvas':()=>this.showResize(),
+            'levels':()=>this.showLevelsDialog(),
+            'curves':()=>this.showCurvesDialog(),
+            'color-balance':()=>this.showColorBalanceDialog(),
+            'delete-context':()=>this._deleteByContext(),
+            'new-layer':()=>this.addLayer(),
+            'merge-context':()=>this.mergeSelectedOrDown(),
+            'merge-visible':()=>this.mergeVisibleLayers(),
+            'select-layer-below':()=>this._selectAdjacentLayer(-1),
+            'select-layer-above':()=>this._selectAdjacentLayer(1),
+            'move-layers-down':()=>this._moveSelectedLayersBy(-1),
+            'move-layers-up':()=>this._moveSelectedLayersBy(1),
+            'move-layers-bottom':()=>this._moveSelectedLayersToBoundary('bottom'),
+            'move-layers-top':()=>this._moveSelectedLayersToBoundary('top'),
+            'toggle-rulers':()=>this.toggleRulers(),
+            'toggle-grid':()=>this.toggleGrid(),
+            'zoom-fit':()=>this.zoomFit(),
+            'zoom-100':()=>this.setZoom(1),
+            'zoom-in':()=>this.zoomIn(),
+            'zoom-out':()=>this.zoomOut(),
+            'toggle-panels':()=>this._toggleUIPanels(),
+            'cycle-screen-mode':()=>this.toggleFullscreen(),
+            'commit-operation':()=>this._commitActiveOperation(),
+            'cancel-operation':()=>this._cancelActiveOperation(),
+            'temporary-pan':()=>this._setTemporaryPan(true),
+            'temporary-pan-release':()=>this._setTemporaryPan(false),
+            'brush-size-down':()=>this.setBrushSize(Math.max(1, this.state.brushSize - 2)),
+            'brush-size-up':()=>this.setBrushSize(Math.min(200, this.state.brushSize + 2)),
+            'default-colors':()=>{
+                this.setFgColor('#000000'); this.setBgColor('#ffffff');
+                this.toast(this._t('Colors reset'), 'info');
+            },
+            'swap-colors':()=>this.swapColors(),
+        };
+    },
+    _deleteByContext() {
+        if (this._keyboardContext === 'layers') return this.deleteLayers();
+        if (this._selectionBounds) return this._deleteSelectionPixels();
+        if (this.canvas.getActiveObject()) return this._deleteSelected();
+    },
+    _selectAdjacentLayer(delta) {
+        if (!this.layers.length) return;
+        const nextIndex = Math.max(0, Math.min(this.layers.length - 1, this.activeLayerIdx + delta));
+        const layer = this.layers[nextIndex];
+        this._resetLayerSelection(layer);
+        this._keyboardContext = 'layers';
+        this.canvas.discardActiveObject(); this.canvas.renderAll(); this.updateLayersPanel();
+    },
+    _moveSelectedLayersBy(delta) {
+        const indices = this._selectedLayerIndices();
+        if (!indices.length) return;
+        const destination = delta < 0
+            ? Math.max(0, Math.min(...indices) - 1)
+            : Math.min(this.layers.length, Math.max(...indices) + 2);
+        this._moveSelectedLayersToIndex(destination);
+    },
+    _moveSelectedLayersToBoundary(edge) {
+        this._moveSelectedLayersToIndex(edge === 'bottom' ? 0 : this.layers.length);
+    },
+    _commitActiveOperation() {
+        if (this.state.tool === 'crop' && this._cropRegion) return this.applyCrop();
+        if (this.state.tool === 'pen' && this._penPoints.length > 1) return this._penFinish();
+    },
+    _cancelActiveOperation() {
+        const palette = document.getElementById('cmd-palette');
+        if (palette?.classList.contains('visible')) { this.closeCmdPalette(); return; }
+        document.getElementById('context-menu')?.classList.remove('visible');
+        if (this.state.tool === 'crop' && this._cropRegion) { this.cancelCrop(); return; }
+        if (this._selectionBounds || this._lassoPoints.length > 0) { this.clearSelection(); return; }
+        this.deselectAll();
+    },
+    _setTemporaryPan(active) {
+        if (active) {
+            if (this._tempPanning) return;
+            this._tempPanning = true;
+            this._prevCursor = this.canvas.defaultCursor;
+            this.canvas.defaultCursor = 'grab'; this.canvas.hoverCursor = 'grab';
+            return;
+        }
+        if (!this._tempPanning) return;
+        this._tempPanning = false;
+        this.canvas.defaultCursor = this._prevCursor || 'crosshair';
+        if (this.state.tool === 'select') {
+            this.canvas.defaultCursor = 'default'; this.canvas.hoverCursor = 'move';
+        } else {
+            this.canvas.hoverCursor = 'crosshair';
+        }
+    },
+    _toggleUIPanels() {
+        const panels = document.getElementById('panels');
+        const toolbar = document.getElementById('toolbar');
+        const toolOptions = document.getElementById('tool-options');
+        if (!panels || !toolbar || !toolOptions) return;
+        const hidden = panels.style.display === 'none';
+        panels.style.display = hidden ? '' : 'none';
+        toolbar.style.display = hidden ? '' : 'none';
+        toolOptions.style.display = hidden ? '' : 'none';
+    },
+    _activateToolShortcut(tool) {
+        const flyoutButton = [...document.querySelectorAll('.tool-flyout .tool-btn[data-tool]')]
+            .find(button => button.dataset.tool === tool);
+        const flyout = flyoutButton?.closest('.tool-flyout');
+        const group = flyout?._parentGroup;
+        if (flyoutButton && group?.dataset.group) {
+            this.flyoutSelect(flyoutButton, group.dataset.group);
+        } else {
+            this.setTool(tool);
+        }
+        this._refreshToolAccessibility();
+    },
     _initKeyboardShortcuts() {
-        document.addEventListener('keydown', e => {
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-            const ctrl = e.ctrlKey || e.metaKey;
-
-            // === Ctrl/Cmd shortcuts ===
-            if (ctrl) {
-                switch(e.key.toLowerCase()) {
-                    case 'z':
-                        e.preventDefault();
-                        if (e.shiftKey) this.redo(); else this.undo();
-                        return;
-                    case 'y':
-                        e.preventDefault(); this.redo(); return;
-                    case 's':
-                        e.preventDefault(); this.saveProject(); return;
-                    case 'a':
-                        e.preventDefault(); this.selectAll(); return;
-                    case 'd':
-                        e.preventDefault();
-                        if (e.shiftKey) { this.reselectSelection(); }
-                        else { this.deselectAll(); }
-                        return;
-                    case 'c':
-                        e.preventDefault(); this._copySelection(); return;
-                    case 'x':
-                        e.preventDefault(); this._cutSelection(); return;
-                    case 'v':
-                        e.preventDefault(); this._pasteSelection(); return;
-                    case 'j':
-                        e.preventDefault(); this._duplicateSelection(); return;
-                    case 'g':
-                        e.preventDefault(); this.toggleGrid(); return;
-                    case 'r':
-                        e.preventDefault(); this.toggleRulers(); return;
-                    case 't':
-                        e.preventDefault(); this.freeTransform(); return;
-                    case '0':
-                        e.preventDefault(); this.zoomFit(); return;
-                    case '1':
-                        e.preventDefault(); this.setZoom(1); return;
-                    case '+': case '=':
-                        e.preventDefault(); this.zoomIn(); return;
-                    case '-':
-                        e.preventDefault(); this.zoomOut(); return;
-                    case 'k':
-                        // Handled by cmd palette init
-                        return;
-                    case 'e':
-                        e.preventDefault();
-                        if (e.shiftKey) this.mergeVisibleLayers();
-                        else this.mergeDown();
-                        return;
-                    case 'n':
-                        e.preventDefault(); this.newImage(); return;
-                }
-                // Ctrl+Shift combos
-                if (e.shiftKey && e.key.toLowerCase() === 'i') {
-                    e.preventDefault();
-                    this.invertSelection();
-                    return;
-                }
-                // Ctrl+Shift+D handled inside case 'd' above
-                return;
-            }
-
-            // === Non-modifier shortcuts ===
-            switch(e.key) {
-                case 'Escape':
-                    if (this.state.tool === 'crop' && this._cropRegion) { this.cancelCrop(); return; }
-                    if (this._selectionBounds || this._lassoPoints.length > 0) { this.clearSelection(); return; }
-                    this.deselectAll();
-                    return;
-                case 'Enter':
-                    if (this.state.tool === 'crop' && this._cropRegion) { e.preventDefault(); this.applyCrop(); return; }
-                    if (this.state.tool === 'pen' && this._penPoints.length > 1) { e.preventDefault(); this._penFinish(); return; }
-                    return;
-                case 'Delete': case 'Backspace':
-                    e.preventDefault();
-                    if (this._selectionBounds) {
-                        this._deleteSelectionPixels();
-                    } else if (this.canvas.getActiveObject()) {
-                        this._deleteSelected();
-                    }
-                    return;
-                case ' ':
-                    e.preventDefault();
-                    if (!this._tempPanning) {
-                        this._tempPanning = true;
-                        this._prevCursor = this.canvas.defaultCursor;
-                        this.canvas.defaultCursor = 'grab';
-                        this.canvas.hoverCursor = 'grab';
-                    }
-                    return;
-                case 'Tab':
-                    e.preventDefault();
-                    // Toggle panels visibility like Photoshop
-                    const panels = document.getElementById('panels');
-                    const toolbar = document.getElementById('toolbar');
-                    const toolopts = document.getElementById('tool-options');
-                    const hidden = panels.style.display === 'none';
-                    panels.style.display = hidden ? '' : 'none';
-                    toolbar.style.display = hidden ? '' : 'none';
-                    toolopts.style.display = hidden ? '' : 'none';
-                    return;
-                case 'F':
-                case 'f':
-                    if (!ctrl) { this.toggleFullscreen(); return; }
-                    return;
-                case '[':
-                    this.state.brushSize = Math.max(1, this.state.brushSize - 2);
-                    this.setBrushSize(this.state.brushSize);
-                    return;
-                case ']':
-                    this.state.brushSize = Math.min(200, this.state.brushSize + 2);
-                    this.setBrushSize(this.state.brushSize);
-                    return;
-                case 'x':
-                case 'X':
-                    this.swapColors(); return;
-                case 'd':
-                case 'D':
-                    this.setFgColor('#000000'); this.setBgColor('#ffffff');
-                    this.toast(this._t("Colors reset"), 'info'); return;
-            }
-
-            // Tool switch shortcuts (single letter)
-            const map = {v:'select',b:'brush',e:'eraser',t:'text',g:'gradient',c:'crop',z:'zoom',h:'pan',
-                l:'line',r:'rect',o:'circle',p:'pen',m:'marquee-rect',w:'magic-wand',s:'clone',i:'eyedropper',
-                j:'healing',n:'note',a:'arrow',u:'rect',k:'polygon'};
-            const lower = e.key.toLowerCase();
-            if (map[lower] && !ctrl) { e.preventDefault(); this.setTool(map[lower]); }
-        });
-        // Space key release - exit temporary pan
-        document.addEventListener('keyup', e => {
-            if (e.key === ' ' && this._tempPanning) {
-                this._tempPanning = false;
-                this.canvas.defaultCursor = this._prevCursor || 'crosshair';
-                // Restore hover cursor based on current tool
-                if (this.state.tool === 'select') { this.canvas.defaultCursor = 'default'; this.canvas.hoverCursor = 'move'; }
-                else { this.canvas.hoverCursor = 'crosshair'; }
-            }
-        });
+        const desktopInput = window.HstarOpenShopDesktopInput;
+        const previous = window.__hstarOpenShopDesktopShortcutHandlers;
+        if (previous) {
+            document.removeEventListener('keydown', previous.keydown);
+            document.removeEventListener('keyup', previous.keyup);
+            document.removeEventListener('pointerdown', previous.context);
+            document.removeEventListener('focusin', previous.context);
+        }
+        const context = event => {
+            const target = event?.target instanceof Element
+                ? event.target
+                : event?.target?.parentElement || null;
+            if (target?.closest('#layers-list')) this._keyboardContext = 'layers';
+            else if (target?.closest('#canvas-area')) this._keyboardContext = 'canvas';
+        };
+        const execute = (event, resolved) => {
+            const action = resolved.command === 'cycle-tool'
+                ? () => this._activateToolShortcut(resolved.tool)
+                : this._shortcutCommands()[resolved.command];
+            if (typeof action !== 'function') return false;
+            event.preventDefault();
+            action();
+            return true;
+        };
+        const keydown = event => {
+            const activeObject = this.canvas?.getActiveObject?.();
+            if (desktopInput.isEditableShortcutTarget(event.target, activeObject)) return;
+            const resolved = desktopInput.resolveShortcut(event, {
+                context:this._keyboardContext,
+                currentTool:this.state.tool,
+            });
+            if (resolved) execute(event, resolved);
+        };
+        const keyup = event => {
+            const resolved = desktopInput.resolveShortcut(event, {
+                context:this._keyboardContext,
+                currentTool:this.state.tool,
+                phase:'keyup',
+            });
+            if (resolved) execute(event, resolved);
+        };
+        document.addEventListener('keydown', keydown);
+        document.addEventListener('keyup', keyup);
+        document.addEventListener('pointerdown', context);
+        document.addEventListener('focusin', context);
+        window.__hstarOpenShopDesktopShortcutHandlers = {keydown, keyup, context};
     },
     selectAll() {
         this.setTool('select');
@@ -7959,6 +8185,7 @@ self.onmessage = async function(e) {
             this.canvas.add(img);
             this.layers = [{ name: `Frame ${idx}`, visible: true, opacity: 100, blend: 'source-over', objects: [boundary, img] }];
             this.activeLayerIdx = 0;
+            this._resetLayerSelection(this.layers[0]);
             this.canvas.renderAll();
             this.updateLayersPanel();
         });
@@ -8972,7 +9199,7 @@ self.onmessage = async function(e) {
             this.layers.forEach((l, i) => {
                 const item = document.createElement('li');
                 const objectCount = l.objects.filter(o => o.name !== '__boundary__').length;
-                item.textContent = this._t(
+                const layerDescription = this._t(
                     i === this.activeLayerIdx
                         ? 'Active layer {index}: {name}, {visibility}, {lock}, {count} objects'
                         : 'Layer {index}: {name}, {visibility}, {lock}, {count} objects',
@@ -8984,6 +9211,11 @@ self.onmessage = async function(e) {
                         count: objectCount
                     }
                 );
+                const selectionState = [
+                    this._selectedLayers.has(l) ? this._t('Selected') : '',
+                    i === this.activeLayerIdx ? this._t('Primary') : '',
+                ].filter(Boolean).join(', ');
+                item.textContent = selectionState ? `${layerDescription}, ${selectionState}` : layerDescription;
                 list.appendChild(item);
             });
         }

@@ -2248,6 +2248,26 @@ self.onmessage = function(e) {
         this._normalizeLayerSelection();
         return this.layers.filter(layer => this._selectedLayers.has(layer));
     },
+    _refreshLayerSelectionPresentation() {
+        document.querySelectorAll('#layers-list .layer-item[data-layer-index]').forEach(row => {
+            const index = Number(row.dataset.layerIndex);
+            const layer = this.layers[index];
+            const selected = Boolean(layer && this._selectedLayers.has(layer));
+            const primary = index === this.activeLayerIdx;
+            row.classList.toggle('selected', selected);
+            row.classList.toggle('active', primary);
+            row.classList.toggle('primary', primary);
+            row.setAttribute('aria-selected', selected ? 'true' : 'false');
+        });
+        const active = this.layers[this.activeLayerIdx];
+        if (active) {
+            document.getElementById('layer-opacity').value = active.opacity;
+            document.getElementById('layer-opacity-val').textContent = active.opacity;
+            document.getElementById('layer-blend').value = active.blend;
+        }
+        this.updateInfoPanel();
+        this._renderAccessibilityTree();
+    },
     _isProtectedLayer(layer) {
         return Boolean(layer?.locked || layer?.objects?.some(object => object.name === '__boundary__'));
     },
@@ -2369,7 +2389,7 @@ self.onmessage = function(e) {
         });
         this._applyLayerSelectionState(state);
         this._keyboardContext = 'layers';
-        this.canvas.discardActiveObject(); this.canvas.renderAll(); this.updateLayersPanel();
+        this.canvas.discardActiveObject(); this.canvas.renderAll(); this._refreshLayerSelectionPresentation();
     },
     toggleLayerVisibility(idx) {
         const clicked = this.layers[idx];
