@@ -34,6 +34,7 @@ async function apiJson(response){
 }
 
 async function createCanvas(request, {kind, title, nodes, connections}){
+  await canvasCleanup.assertStorageIsolated(request);
   const created = await apiJson(await request.post(`${baseUrl}/api/canvases`, {
     data:{kind, title, icon:kind === 'smart' ? 'sparkles' : 'layers'},
   }));

@@ -4,7 +4,7 @@
 
 **Goal:** Permanently purge every canvas created by the three HstarA/OpenShop E2E suites after each test without scanning or touching any pre-existing or stable-installation canvas data.
 
-**Architecture:** Add a test-only in-memory registry scoped to each Playwright spec module. A canvas ID is registered immediately after a successful create response, then `test.afterEach` purges only those registered IDs through the same engineering server URL; successful and already-missing IDs leave the registry, while failures remain pending and fail the test with their exact IDs.
+**Architecture:** Add a test-only in-memory registry scoped to each Playwright spec module. Before creating a canvas, the registry verifies that the server's active storage root is inside the current worktree; a canvas ID is then registered immediately after a successful create response. `test.afterEach` closes the page to release Windows file handles and purges only registered IDs through the same engineering server URL; successful and already-missing IDs leave the registry, while failures remain pending and fail the test with their exact IDs.
 
 **Tech Stack:** JavaScript ES modules, Vitest, Playwright APIRequestContext, HstarA FastAPI canvas API.
 
@@ -178,7 +178,10 @@ it.each(canvasCreatingSpecs)('registers and purges canvases in %s', fileName => 
   );
   expect(source).toContain('const canvasCleanup = createTestCanvasCleanup(baseUrl);');
   expect(source).toMatch(
-    /test\.afterEach\(async \(\{request\}\) => \{\s*await canvasCleanup\.purgeAll\(request\);\s*\}\);/
+    /test\.afterEach\(async \(\{page, request\}\) => \{\s*await page\.close\(\);\s*await canvasCleanup\.purgeAll\(request\);\s*\}\);/
+  );
+  expect(source).toMatch(
+    /async function createCanvas\([\s\S]*?await canvasCleanup\.assertStorageIsolated\(request\);\s*const created = await apiJson\(await request\.post/
   );
   expect(source).toMatch(
     /const created = await apiJson\([\s\S]*?request\.post\([\s\S]*?\)\);\s*canvasCleanup\.track\(created\.canvas\);/
@@ -205,7 +208,8 @@ import { createTestCanvasCleanup } from './hstar-test-canvas-cleanup.js';
 
 const canvasCleanup = createTestCanvasCleanup(baseUrl);
 
-test.afterEach(async ({request}) => {
+test.afterEach(async ({page, request}) => {
+  await page.close();
   await canvasCleanup.purgeAll(request);
 });
 ```
@@ -213,6 +217,7 @@ test.afterEach(async ({request}) => {
 Inside each `createCanvas`, register before the first update request:
 
 ```js
+await canvasCleanup.assertStorageIsolated(request);
 const created = await apiJson(await request.post(`${baseUrl}/api/canvases`, {
   data:/* existing create payload */,
 }));
@@ -243,9 +248,9 @@ git commit -m "test: clean created canvases after E2E runs"
 **Files:**
 - No product files changed.
 
-- [ ] **Step 1: Snapshot engineering canvas IDs**
+- [ ] **Step 1: Start and verify an isolated engineering service**
 
-Query `GET http://127.0.0.1:3000/api/canvases` and save only the returned ID set in memory for comparison. Confirm the running process command line points to the current worktree before destructive calls.
+Start the current worktree on a dedicated free port with `HSTAR_DATA_DIR` pointing to a temporary profile whose `storage_root` is inside the worktree. Query `/api/software-settings` and abort unless `active_storage_root` resolves inside the current worktree. Snapshot that service's exact canvas ID set before running tests; do not use a service whose storage root points to `%APPDATA%`, an installed Hstar directory, or an external shared data root.
 
 - [ ] **Step 2: Run the complete unit suite**
 
@@ -262,9 +267,9 @@ Expected: all Vitest tests pass with exit code 0.
 Run with the engineering URL:
 
 ```powershell
-$env:HSTAR_BASE_URL='http://127.0.0.1:3000'; npm.cmd run test:hstar:canvas-integration
-$env:HSTAR_BASE_URL='http://127.0.0.1:3000'; npm.cmd run test:hstar:text-tools
-$env:HSTAR_BASE_URL='http://127.0.0.1:3000'; npm.cmd run test:hstar:generative
+$env:HSTAR_BASE_URL='http://127.0.0.1:3011'; npm.cmd run test:hstar:canvas-integration
+$env:HSTAR_BASE_URL='http://127.0.0.1:3011'; npm.cmd run test:hstar:text-tools
+$env:HSTAR_BASE_URL='http://127.0.0.1:3011'; npm.cmd run test:hstar:generative
 ```
 
 Expected: every suite passes and each `afterEach` purge request succeeds.
@@ -292,7 +297,7 @@ Keep only IDs whose worktree JSON contains unambiguous E2E markers such as `open
 For each frozen ID, call:
 
 ```text
-DELETE http://127.0.0.1:3000/api/canvases/{exact-id}/purge
+DELETE {verified-worktree-service}/api/canvases/{exact-id}/purge
 ```
 
 Abort and report the exact ID on any non-success response.

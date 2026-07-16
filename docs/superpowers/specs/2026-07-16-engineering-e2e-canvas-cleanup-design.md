@@ -10,15 +10,17 @@ OpenShop/HstarA 工程版浏览器测试创建的画布只用于当前测试。�
 
 新增一个仅供 Playwright 测试使用的共享清理器：
 
-1. 每次 `POST /api/canvases` 成功后，立即把响应中的画布 ID 登记到当前测试文件的内存集合。
-2. `test.afterEach` 使用同一个 `request` 和 `HSTAR_BASE_URL`，逐个调用 `DELETE /api/canvases/{id}/purge`。
-3. 清理器只接受本轮测试创建后登记的精确 ID，不支持按标题、前缀、时间或目录扫描删除。
-4. 即使后续 `PUT`、页面操作或断言失败，已登记 ID 仍会进入 `afterEach` 清理。
-5. 清理失败时测试必须失败并报告具体 ID，不能静默遗留数据。
+1. 每次创建前读取 `/api/software-settings`，确认 `active_storage_root` 位于当前 HstarA worktree 内；若指向稳定版或外部共享目录，必须在 `POST` 前拒绝运行。
+2. 每次 `POST /api/canvases` 成功后，立即把响应中的画布 ID 登记到当前测试文件的内存集合。
+3. `test.afterEach` 先关闭 Playwright 页面，释放 Windows 上仍在读取 OpenShop 资源的文件句柄，再使用同一个 `request` 和 `HSTAR_BASE_URL` 逐个调用 `DELETE /api/canvases/{id}/purge`。
+4. 清理器只接受本轮测试创建后登记的精确 ID，不支持按标题、前缀、时间或目录扫描删除。
+5. 即使后续 `PUT`、页面操作或断言失败，已登记 ID 仍会进入 `afterEach` 清理。
+6. 清理失败时测试必须失败并报告具体 ID，不能静默遗留数据。
 
 ## 数据隔离
 
 - 清理请求只发送到测试已经使用的 `HSTAR_BASE_URL`。
+- E2E 服务必须使用 worktree 内的临时 `storage_root`；测试会主动阻止指向 worktree 外部存储根的服务创建画布。
 - 只能删除由同一测试进程收到的创建响应 ID，因此不会命中服务中原有画布。
 - 不读取、不扫描、不修改稳定安装版的画布目录。
 - 不提供全局“删除所有 E2E 标题画布”的常驻逻辑，避免名称碰撞导致误删。
@@ -47,6 +49,6 @@ OpenShop/HstarA 工程版浏览器测试创建的画布只用于当前测试。�
 
 ## 验证
 
-- 单元测试覆盖登记、成功清理、失败报告和重复清理。
+- 单元测试覆盖存储隔离、登记、成功清理、失败报告和重复清理。
 - 运行三组会创建画布的 E2E 测试，结束后比较工程服务画布 ID 集合，确认没有新增测试画布残留。
 - 验证非测试画布 ID 在清理前后保持不变。

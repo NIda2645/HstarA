@@ -1,3 +1,8 @@
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
 function exactCanvasId(canvasOrId) {
   const value = typeof canvasOrId === 'string' ? canvasOrId : canvasOrId?.id;
   const id = typeof value === 'string' ? value.trim() : '';
@@ -11,6 +16,27 @@ export function createTestCanvasCleanup(baseUrl) {
   const ids = new Set();
 
   return {
+    async assertStorageIsolated(request) {
+      const response = await request.get(`${endpoint}/api/software-settings`);
+      const payload = await response.json().catch(() => ({}));
+      if(!response.ok()) {
+        throw new Error(`Unable to verify HstarA E2E storage: HTTP ${response.status()}`);
+      }
+      const storageRoot = String(payload?.settings?.active_storage_root || '').trim();
+      const relativePath = storageRoot ? relative(workspaceRoot, resolve(storageRoot)) : '..';
+      const isInside = relativePath === '' || (
+        relativePath !== '..'
+        && !relativePath.startsWith(`..${sep}`)
+        && !isAbsolute(relativePath)
+      );
+      if(!isInside) {
+        throw new Error(
+          `Refusing to create E2E canvases: storage root is outside the current HstarA worktree (${storageRoot || 'missing'})`
+        );
+      }
+      return storageRoot;
+    },
+
     track(canvasOrId) {
       ids.add(exactCanvasId(canvasOrId));
       return canvasOrId;

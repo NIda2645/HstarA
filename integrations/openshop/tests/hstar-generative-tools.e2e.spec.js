@@ -353,6 +353,7 @@ async function apiJson(response){
 }
 
 async function createCanvas(request, nodes, connections){
+  await canvasCleanup.assertStorageIsolated(request);
   const created = await apiJson(await request.post(`${baseUrl}/api/canvases`, {
     data:{kind:'classic', title:'OpenShop background generation', icon:'layers'},
   }));
