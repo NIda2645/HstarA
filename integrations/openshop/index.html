@@ -12,6 +12,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https://huggingface.co https://*.hf.co blob:; worker-src 'self' blob:; frame-src 'self';">
 <title>OpenShop v0.19.1 — Online Image Editor</title>
 <link rel="stylesheet" href="./host/openshop-text-properties.css">
+<link rel="stylesheet" href="./host/openshop-color-panel.css">
 <script src="./vendor/fabric-5.3.1.min.js"></script>
 <script src="./vendor/ag-psd-22.0.2.bundle.js"></script>
 <script src="./vendor/jspdf-4.2.1.umd.min.js"></script>
@@ -1273,8 +1274,8 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
                 </div>
                 <div class="fg-bg-container">
                     <div class="fg-bg-box">
-                        <div class="color-box fg" id="fg-color" style="background:#fff" onclick="document.getElementById('fg-picker').click()"></div>
-                        <div class="color-box bg" id="bg-color" style="background:#000" onclick="document.getElementById('bg-picker').click()"></div>
+                        <button type="button" class="color-box fg" id="fg-color" style="background:#fff" aria-label="选择前景色"></button>
+                        <button type="button" class="color-box bg" id="bg-color" style="background:#000" aria-label="选择背景色"></button>
                         <button class="color-swap" onclick="OS.swapColors()">&#8644;</button>
                         <input type="color" id="fg-picker" value="#ffffff" style="display:none" onchange="OS.setFgColor(this.value)">
                         <input type="color" id="bg-picker" value="#000000" style="display:none" onchange="OS.setBgColor(this.value)">
@@ -2964,6 +2965,13 @@ self.onmessage = function(e) {
     // ====================== MOUSE ======================
     onMouseDown(opt) {
         const ptr = this.canvas.getPointer(opt.e), tool = this.state.tool;
+        if (this._colorPanelController?.getState?.().sampling) {
+            const handled = this._colorPanelController.handleCanvasSample({
+                event:opt.e,
+                documentPoint:ptr,
+            });
+            if (handled) return;
+        }
         if (tool==='pan' || this._tempPanning) { this.state.isPanning=true; this.state.panStart={x:opt.e.clientX,y:opt.e.clientY}; this.canvas.defaultCursor='grabbing'; return; }
         if (tool==='zoom') { opt.e.altKey?this.zoomOut():this.zoomIn(); return; }
         if (tool==='marquee-rect'||tool==='marquee-ellipse') {
@@ -9565,6 +9573,7 @@ window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
 <script src="./host/openshop-canvas-sampler.js"></script>
 <script src="./host/openshop-live-eraser.js"></script>
+<script src="./host/openshop-color-panel.js"></script>
 <script src="./host/openshop-update-scheduler.js"></script>
 <script src="./host/openshop-snap-engine.js"></script>
 <script src="./host/openshop-protocol.js?v=2026.07.15.1784120375"></script>
@@ -9635,6 +9644,14 @@ window.HstarOpenShopAssetApi = Object.freeze({
 });
 
 window.addEventListener('DOMContentLoaded', () => {
+    window.HstarOpenShopColorPanelController?.destroy?.();
+    window.HstarOpenShopColorPanelController = window.HstarOpenShopColorPanel.createController({
+        editor:OS,
+        sampler:window.HstarOpenShopCanvasSampler,
+        documentRef:document,
+    });
+    OS._colorPanelController = window.HstarOpenShopColorPanelController;
+    window.HstarOpenShopColorPanelController.start();
     if (window.parent === window) return;
     window.HstarOpenShopRuntime.start({
         editor: OS,

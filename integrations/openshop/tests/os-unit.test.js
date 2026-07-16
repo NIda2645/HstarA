@@ -605,6 +605,25 @@ describe('OpenShop core object', () => {
     expect(OS.toast).toHaveBeenCalledWith('Canvas color could not be sampled', 'error');
   });
 
+  it('routes the next canvas click to an armed color-panel sampler', () => {
+    const OS = loadOpenShop();
+    const event = {offsetX:14, offsetY:18};
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(() => ({x:14, y:18}));
+    OS._colorPanelController = {
+      getState:vi.fn(() => ({sampling:true})),
+      handleCanvasSample:vi.fn(() => true),
+    };
+    quietUiMethods(OS);
+
+    OS.onMouseDown({e:event, target:null});
+
+    expect(OS._colorPanelController.handleCanvasSample).toHaveBeenCalledWith({
+      event,
+      documentPoint:{x:14, y:18},
+    });
+  });
+
   it('records history immediately while scheduling derived panel updates', () => {
     const OS = loadOpenShop();
     OS.canvas = createCanvasMock([{name:'Shape', type:'rect'}]);
