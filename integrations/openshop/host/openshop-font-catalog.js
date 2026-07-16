@@ -57,17 +57,198 @@
     });
   }
 
+  function defaultStyle(family){
+    const id = cleanFamily(family).toLowerCase().replace(/\s+/g, '-');
+    return {id:`${id || 'font'}-400-normal`, label:'Regular', weight:400, italic:false, localNames:[family]};
+  }
+
+  function normalizeStyle(style, family){
+    const weight = Math.max(100, Math.min(900, Number.parseInt(style?.weight, 10) || 400));
+    const italic = Boolean(style?.italic);
+    const localNames = [...new Set(
+      [family, ...(Array.isArray(style?.localNames) ? style.localNames : [])]
+        .map(cleanFamily)
+        .filter(Boolean)
+    )];
+    return {
+      id:String(style?.id || `${family.toLowerCase().replace(/\s+/g, '-')}-${weight}-${italic ? 'italic' : 'normal'}`),
+      label:cleanFamily(style?.label) || (italic ? 'Italic' : 'Regular'),
+      weight,
+      italic,
+      localNames,
+    };
+  }
+
+  function normalizeFont(value, status = 'available'){
+    const family = cleanFamily(value?.family);
+    if(!family) return null;
+    const styles = (Array.isArray(value?.styles) && value.styles.length ? value.styles : [defaultStyle(family)])
+      .map(style => normalizeStyle(style, family));
+    const deduplicated = new Map();
+    styles.forEach(style => deduplicated.set(`${style.weight}:${style.italic}`, style));
+    return {
+      family,
+      label:cleanFamily(value?.label) || family,
+      language:cleanFamily(value?.language),
+      status,
+      styles:[...deduplicated.values()].sort((left, right) => left.weight - right.weight || Number(left.italic) - Number(right.italic)),
+    };
+  }
+
+  function cloneFont(font){
+    return {
+      ...font,
+      styles:(font.styles || []).map(style => ({...style, localNames:[...(style.localNames || [])]})),
+    };
+  }
+
   function createManager(options = {}){
     const documentRef = options.documentRef || root.document;
     const fontProbe = typeof options.fontProbe === 'function'
       ? options.fontProbe
       : family => defaultFontProbe(documentRef, family);
+    const fetchImpl = typeof options.fetchImpl === 'function'
+      ? options.fetchImpl
+      : (...args) => {
+        if(typeof root.fetch !== 'function') throw new Error('本机字体目录接口不可用');
+        return root.fetch(...args);
+      };
+    const state = {
+      fonts:[],
+      systemFonts:[],
+      projectRefs:[],
+      loaded:false,
+      loading:false,
+      error:'',
+      platform:'',
+      cached:false,
+      listeners:new Set(),
+    };
+    let loadingPromise = null;
+
+    function probeAvailable(family){
+      try { return Boolean(fontProbe(family)); } catch(error) { return false; }
+    }
 
     function isAvailable(family){
       const normalized = cleanFamily(family);
       if(!normalized) return false;
       if(GENERIC_FAMILIES.has(normalized.toLowerCase())) return true;
-      try { return Boolean(fontProbe(normalized)); } catch(error) { return false; }
+      if(state.systemFonts.some(font => font.family.toLowerCase() === normalized.toLowerCase())) return true;
+      return probeAvailable(normalized);
+    }
+
+    function rebuildFonts(){
+      const merged = new Map();
+      COMMON_FONTS.forEach(value => {
+        const font = normalizeFont(value, isAvailable(value.family) ? 'available' : 'missing');
+        merged.set(font.family.toLowerCase(), font);
+      });
+      state.systemFonts.forEach(value => {
+        const font = normalizeFont(value, 'available');
+        if(!font) return;
+        const previous = merged.get(font.family.toLowerCase());
+        merged.set(font.family.toLowerCase(), {
+          ...previous,
+          ...font,
+          language:font.language || previous?.language || '',
+        });
+      });
+      state.projectRefs.forEach(ref => {
+        const family = cleanFamily(ref?.family);
+        if(!family) return;
+        const key = family.toLowerCase();
+        const requestedStatus = String(ref?.status || '').toLowerCase();
+        const status = requestedStatus === 'substituted'
+          ? 'substituted'
+          : (isAvailable(family) ? 'available' : 'missing');
+        const previous = merged.get(key);
+        const font = previous || normalizeFont({family}, status);
+        const replacementFamily = cleanFamily(ref?.replacementFamily);
+        merged.set(key, {
+          ...font,
+          status,
+          ...(status === 'substituted' && replacementFamily ? {replacementFamily} : {}),
+        });
+      });
+      state.fonts = [...merged.values()].sort((left, right) => left.family.localeCompare(right.family));
+    }
+
+    function getState(){
+      return {
+        fonts:state.fonts.map(cloneFont),
+        loaded:state.loaded,
+        loading:state.loading,
+        error:state.error,
+        platform:state.platform,
+        cached:state.cached,
+      };
+    }
+
+    function notify(){
+      const snapshot = getState();
+      state.listeners.forEach(listener => listener(snapshot));
+    }
+
+    function subscribe(listener){
+      if(typeof listener !== 'function') return () => {};
+      state.listeners.add(listener);
+      listener(getState());
+      return () => state.listeners.delete(listener);
+    }
+
+    function loadSystemFonts({refresh = false} = {}){
+      if(state.loading && loadingPromise) return loadingPromise;
+      if(state.loaded && !refresh) return Promise.resolve(state.systemFonts.map(cloneFont));
+      state.loading = true;
+      state.error = '';
+      notify();
+      loadingPromise = (async () => {
+        try {
+          const url = `/api/openshop/fonts${refresh ? '?refresh=1' : ''}`;
+          const response = await fetchImpl(url, {cache:'no-store'});
+          if(!response?.ok) throw new Error(`字体目录加载失败 (${response?.status || 0})`);
+          const payload = await response.json();
+          state.systemFonts = (Array.isArray(payload?.fonts) ? payload.fonts : [])
+            .map(value => normalizeFont(value, 'available'))
+            .filter(Boolean);
+          state.platform = cleanFamily(payload?.platform);
+          state.cached = Boolean(payload?.cached);
+          state.loaded = true;
+          rebuildFonts();
+          return state.systemFonts.map(cloneFont);
+        } catch(error) {
+          state.error = error instanceof Error ? error.message : String(error);
+          state.loaded = true;
+          rebuildFonts();
+          return [];
+        } finally {
+          state.loading = false;
+          loadingPromise = null;
+          notify();
+        }
+      })();
+      return loadingPromise;
+    }
+
+    function refreshSystemFonts(){
+      return loadSystemFonts({refresh:true});
+    }
+
+    function searchFonts(query = ''){
+      const term = cleanFamily(query).toLowerCase();
+      return state.fonts.filter(font => {
+        if(!term) return true;
+        const names = [font.family, font.label];
+        font.styles.forEach(style => names.push(...style.localNames));
+        return names.some(name => String(name || '').toLowerCase().includes(term));
+      }).map(cloneFont);
+    }
+
+    function stylesFor(family){
+      const normalized = cleanFamily(family).toLowerCase();
+      const font = state.fonts.find(item => item.family.toLowerCase() === normalized);
+      return (font?.styles || []).map(style => ({...style, localNames:[...style.localNames]}));
     }
 
     function addRef(target, seen, value){
@@ -96,6 +277,9 @@
         addRef(refs, seen, ref);
       });
       if(editor && typeof editor === 'object') editor.__hstarFontRefs = refs;
+      state.projectRefs = refs.map(ref => ({...ref}));
+      rebuildFonts();
+      notify();
       return refs;
     }
 
@@ -130,6 +314,12 @@
       isAvailable,
       scanEditor,
       replaceFont,
+      loadSystemFonts,
+      refreshSystemFonts,
+      searchFonts,
+      stylesFor,
+      subscribe,
+      getState,
       listCommonFonts:() => COMMON_FONTS.map(item => ({...item, status:isAvailable(item.family) ? 'available' : 'missing'})),
     });
   }

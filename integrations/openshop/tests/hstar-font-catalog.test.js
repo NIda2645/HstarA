@@ -83,4 +83,91 @@ describe('Hstar OpenShop font catalog', () => {
     expect(families).toContain('Georgia');
     expect(new Set(families).size).toBe(families.length);
   });
+
+  it('loads, searches and refreshes installed font families', async () => {
+    const fetchImpl = vi.fn(async url => ({
+      ok:true,
+      json:async () => ({
+        platform:'windows',
+        cached:!String(url).includes('refresh=1'),
+        fonts:[
+          {
+            family:'Microsoft YaHei UI',
+            label:'微软雅黑 UI',
+            styles:[
+              {id:'yahei-400-normal', label:'常规', weight:400, italic:false, localNames:['Microsoft YaHei UI', '微软雅黑 UI']},
+              {id:'yahei-700-normal', label:'粗体', weight:700, italic:false, localNames:['Microsoft YaHei UI', '微软雅黑 UI']},
+            ],
+          },
+          {
+            family:'Century Gothic',
+            label:'Century Gothic',
+            styles:[
+              {id:'century-400-normal', label:'Regular', weight:400, italic:false, localNames:['Century Gothic']},
+            ],
+          },
+        ],
+      }),
+    }));
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fetchImpl,
+      fontProbe:() => true,
+    });
+
+    const loaded = await manager.loadSystemFonts();
+
+    expect(loaded.map(item => item.family)).toContain('Century Gothic');
+    expect(manager.searchFonts('century').map(item => item.family)).toEqual(['Century Gothic']);
+    expect(manager.searchFonts('微软雅黑').map(item => item.family)).toContain('Microsoft YaHei UI');
+    expect(manager.stylesFor('Microsoft YaHei UI')).toEqual([
+      expect.objectContaining({weight:400, italic:false}),
+      expect.objectContaining({weight:700, italic:false}),
+    ]);
+    expect(manager.getState()).toMatchObject({loaded:true, loading:false, error:'', platform:'windows'});
+
+    await manager.loadSystemFonts();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    await manager.refreshSystemFonts();
+    expect(fetchImpl).toHaveBeenLastCalledWith('/api/openshop/fonts?refresh=1', {cache:'no-store'});
+  });
+
+  it('notifies subscribers when loading starts and finishes', async () => {
+    let resolveRequest;
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fetchImpl:() => new Promise(resolve => { resolveRequest = resolve; }),
+      fontProbe:() => true,
+    });
+    const states = [];
+    const unsubscribe = manager.subscribe(state => states.push(state));
+
+    const loading = manager.loadSystemFonts();
+    expect(states.at(-1)).toMatchObject({loading:true, loaded:false});
+
+    resolveRequest({ok:true, json:async () => ({platform:'windows', fonts:[]})});
+    await loading;
+    expect(states.at(-1)).toMatchObject({loading:false, loaded:true, platform:'windows'});
+
+    unsubscribe();
+  });
+
+  it('keeps common and project fonts usable when the system endpoint fails', async () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fetchImpl:async () => { throw new Error('offline'); },
+      fontProbe:family => !family.includes('Missing'),
+    });
+    const editor = {
+      __hstarFontRefs:[{family:'Missing Poster Font', status:'missing'}],
+      canvas:{getObjects:() => []},
+    };
+    manager.scanEditor(editor);
+
+    await expect(manager.loadSystemFonts()).resolves.toEqual([]);
+
+    expect(manager.searchFonts('Arial')[0]).toMatchObject({family:'Arial'});
+    expect(manager.searchFonts('Missing Poster')).toEqual([
+      expect.objectContaining({family:'Missing Poster Font', status:'missing'}),
+    ]);
+    expect(manager.getState().error).toContain('offline');
+  });
 });
