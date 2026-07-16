@@ -61,6 +61,50 @@ describe('OpenShop core object', () => {
     expect(document.getElementById('opt-ai-segment').style.display).toBe('flex');
   });
 
+  it('edits an existing text target without creating another object', () => {
+    const OS = loadOpenShop();
+    const text = new fabric.IText('Existing', {left:20, top:30});
+    const image = {type:'image', name:'Reference'};
+    OS.canvas = createCanvasMock([text, image]);
+    OS.canvas.getPointer = vi.fn(() => ({x:25, y:35}));
+    OS.layers = [{name:'Layer 1', locked:false, objects:[text, image]}];
+    OS.activeLayerIdx = 0;
+    OS.saveHistory = vi.fn();
+    quietUiMethods(OS);
+
+    OS.setTool('text');
+    OS.onMouseDown({e:{}, target:text});
+
+    expect(text.selectable).toBe(true);
+    expect(text.evented).toBe(true);
+    expect(image.selectable).toBe(false);
+    expect(image.evented).toBe(false);
+    expect(OS.canvas.getObjects()).toHaveLength(2);
+    expect(OS.canvas.setActiveObject).toHaveBeenCalledWith(text);
+    expect(text.enterEditing).toHaveBeenCalledOnce();
+    expect(OS.saveHistory).not.toHaveBeenCalled();
+  });
+
+  it('creates one text object only when the text tool hits empty canvas', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(() => ({x:120, y:80}));
+    OS.layers = [{name:'Layer 1', locked:false, objects:[]}];
+    OS.activeLayerIdx = 0;
+    OS.saveHistory = vi.fn();
+    quietUiMethods(OS);
+
+    OS.setTool('text');
+    OS.onMouseDown({e:{}, target:null});
+
+    expect(OS.canvas.getObjects()).toHaveLength(1);
+    expect(OS.layers[0].objects).toHaveLength(1);
+    expect(OS.canvas.getObjects()[0]).toBe(OS.layers[0].objects[0]);
+    expect(OS.canvas.getObjects()[0].enterEditing).toHaveBeenCalledOnce();
+    expect(OS.saveHistory).toHaveBeenCalledOnce();
+    expect(OS.saveHistory).toHaveBeenCalledWith('Add Text');
+  });
+
   it('applies always-on document snapping with screen-space tolerance', async () => {
     delete window.HstarOpenShopSnapEngine;
     await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);

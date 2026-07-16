@@ -2757,7 +2757,11 @@ self.onmessage = function(e) {
     _toolInteractionProfile(tool) {
         if (tool === 'select') return 'select';
         if (tool === 'fill' || tool === 'eyedropper') return 'target';
+        if (tool === 'text') return 'text';
         return 'none';
+    },
+    _isEditableTextObject(object) {
+        return ['text', 'i-text', 'textbox'].includes(String(object?.type || '').toLowerCase());
     },
     _applyToolInteractionState(tool, {force = false} = {}) {
         const runtime = this._toolRuntime || this._initToolRuntimeCache();
@@ -2772,8 +2776,9 @@ self.onmessage = function(e) {
         );
         this.canvas.forEachObject(object => {
             const blocked = object.name === '__boundary__' || lockedObjects.has(object);
-            object.selectable = !blocked && profile === 'select';
-            object.evented = !blocked && (profile === 'select' || profile === 'target');
+            const textTarget = profile === 'text' && this._isEditableTextObject(object);
+            object.selectable = !blocked && (profile === 'select' || textTarget);
+            object.evented = !blocked && (profile === 'select' || profile === 'target' || textTarget);
         });
         runtime.interactionProfile = profile;
         runtime.appliedObjectRevision = runtime.objectRevision;
@@ -2966,6 +2971,12 @@ self.onmessage = function(e) {
         if (tool==='clone'&&opt.e.altKey) { this._cloneSource={x:ptr.x,y:ptr.y}; this._cloneOffset=null; this.toast(this._t('Clone source set'),'info'); return; }
         if (tool==='clone'&&this._cloneSource) { this._cloneStart(ptr, opt.e); return; }
         if (tool==='text') {
+            if (this._isEditableTextObject(opt.target)) {
+                this.canvas.setActiveObject(opt.target);
+                if (!opt.target.isEditing) opt.target.enterEditing?.(opt.e);
+                this.canvas.requestRenderAll?.();
+                return;
+            }
             const text = new fabric.IText('Type here', { left:ptr.x, top:ptr.y, fontFamily:this.state.textFont, fontSize:this.state.textSize, fill:this.state.textColor, editable:true, fontWeight:this.state.textBold?'bold':'normal', fontStyle:this.state.textItalic?'italic':'normal' });
             this.canvas.add(text); this.layers[this.activeLayerIdx].objects.push(text);
             this.canvas.setActiveObject(text); text.enterEditing(); this.saveHistory('Add Text'); this.updateLayersPanel(); return;

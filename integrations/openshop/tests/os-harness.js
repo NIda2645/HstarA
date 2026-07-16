@@ -45,6 +45,16 @@ export function installFabricMock() {
     }
   }
 
+  class IText {
+    constructor(text, options = {}) {
+      this.type = 'i-text';
+      this.text = text;
+      this.isEditing = false;
+      Object.assign(this, options);
+      this.enterEditing = vi.fn(() => { this.isEditing = true; });
+    }
+  }
+
   globalThis.fabric = {
     util: {
       invertTransform(matrix) {
@@ -62,6 +72,7 @@ export function installFabricMock() {
     },
     PencilBrush: Brush,
     SprayBrush: class extends Brush {},
+    IText,
     Shadow: class {
       constructor(options) {
         Object.assign(this, options);
