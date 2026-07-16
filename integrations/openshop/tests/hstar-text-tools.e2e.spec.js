@@ -1,9 +1,15 @@
 import { expect, test } from '@playwright/test';
+import { createTestCanvasCleanup } from './hstar-test-canvas-cleanup.js';
 
 const baseUrl = process.env.HSTAR_BASE_URL || 'http://127.0.0.1:3010';
+const canvasCleanup = createTestCanvasCleanup(baseUrl);
 const SOURCE_IMAGE = '/static/images/logo.png';
 
 test.describe.configure({mode:'serial'});
+
+test.afterEach(async ({request}) => {
+  await canvasCleanup.purgeAll(request);
+});
 
 async function solidPngDataUrl(page, width, height) {
   return page.evaluate(({w, h}) => {
@@ -30,6 +36,7 @@ async function createCanvas(request, {kind, title, nodes, connections}){
   const created = await apiJson(await request.post(`${baseUrl}/api/canvases`, {
     data:{kind, title, icon:kind === 'smart' ? 'sparkles' : 'layers'},
   }));
+  canvasCleanup.track(created.canvas);
   const canvas = created.canvas;
   const saved = await apiJson(await request.put(`${baseUrl}/api/canvases/${canvas.id}`, {
     data:{

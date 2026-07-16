@@ -1,10 +1,16 @@
 import { expect, test } from '@playwright/test';
+import { createTestCanvasCleanup } from './hstar-test-canvas-cleanup.js';
 
 const baseUrl = process.env.HSTAR_BASE_URL || 'http://127.0.0.1:3010';
+const canvasCleanup = createTestCanvasCleanup(baseUrl);
 const openshopUrl = `${baseUrl}/static/openshop/index.html`;
 const sourceImage = '/static/images/logo.png';
 
 test.describe.configure({mode:'serial'});
+
+test.afterEach(async ({request}) => {
+  await canvasCleanup.purgeAll(request);
+});
 
 function capabilityCatalog(){
   const provider = {
@@ -349,6 +355,7 @@ async function createCanvas(request, nodes, connections){
   const created = await apiJson(await request.post(`${baseUrl}/api/canvases`, {
     data:{kind:'classic', title:'OpenShop background generation', icon:'layers'},
   }));
+  canvasCleanup.track(created.canvas);
   return (await apiJson(await request.put(`${baseUrl}/api/canvases/${created.canvas.id}`, {
     data:{
       title:'OpenShop background generation', icon:'layers', nodes, connections,

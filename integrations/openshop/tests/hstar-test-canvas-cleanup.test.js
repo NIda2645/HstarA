@@ -1,5 +1,15 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { createTestCanvasCleanup } from './hstar-test-canvas-cleanup.js';
+
+const testDir = dirname(fileURLToPath(import.meta.url));
+const canvasCreatingSpecs = [
+  'hstar-canvas-integration.e2e.spec.js',
+  'hstar-text-tools.e2e.spec.js',
+  'hstar-generative-tools.e2e.spec.js',
+];
 
 function response({ok, status, body=''}) {
   return {
@@ -59,5 +69,20 @@ describe('HstarA E2E canvas cleanup', () => {
 
     await expect(cleanup.purgeAll(request)).rejects.toThrow(/canvas-a.*canvas-b/s);
     expect(cleanup.pendingIds()).toEqual(['canvas-a', 'canvas-b']);
+  });
+
+  it.each(canvasCreatingSpecs)('registers and purges canvases in %s', fileName => {
+    const source = readFileSync(resolve(testDir, fileName), 'utf8');
+
+    expect(source).toContain(
+      "import { createTestCanvasCleanup } from './hstar-test-canvas-cleanup.js';"
+    );
+    expect(source).toContain('const canvasCleanup = createTestCanvasCleanup(baseUrl);');
+    expect(source).toMatch(
+      /test\.afterEach\(async \(\{request\}\) => \{\s*await canvasCleanup\.purgeAll\(request\);\s*\}\);/
+    );
+    expect(source).toMatch(
+      /const created = await apiJson\(await request\.post\([\s\S]*?\}\)\);\s*canvasCleanup\.track\(created\.canvas\);/
+    );
   });
 });
