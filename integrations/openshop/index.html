@@ -2854,16 +2854,18 @@ self.onmessage = function(e) {
             return;
         }
         if (tool==='eyedropper') {
-            if (window.EyeDropper) {
-                new EyeDropper().open().then(r => {
-                    this.setFgColor(r.sRGBHex); this.toast(this._t("Picked: {sRGBHex}", { sRGBHex: r.sRGBHex }),'info');
-                }).catch(() => {});
-            } else {
-                const ctx=this.canvas.getContext('2d'), vpt=this.canvas.viewportTransform;
-                const sx=ptr.x*vpt[0]+vpt[4], sy=ptr.y*vpt[3]+vpt[5];
-                const px=ctx.getImageData(sx,sy,1,1).data;
-                const hex='#'+[px[0],px[1],px[2]].map(c=>c.toString(16).padStart(2,'0')).join('');
-                this.setFgColor(hex); this.toast(this._t("Picked: {hex}", { hex: hex }),'info');
+            try {
+                const sample = window.HstarOpenShopCanvasSampler.sample({
+                    canvas:this.canvas,
+                    event:opt.e,
+                    documentPoint:ptr,
+                    documentWidth:this.canvasW,
+                    documentHeight:this.canvasH,
+                });
+                this.setFgColor(sample.hex);
+                this.toast(this._t("Picked: {hex}", { hex: sample.hex }), 'info');
+            } catch (error) {
+                this.toast(this._t(error?.message || 'Canvas color could not be sampled'), 'error');
             }
             return;
         }

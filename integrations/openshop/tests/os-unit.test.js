@@ -432,6 +432,65 @@ describe('OpenShop core object', () => {
     expect(OS._animIdx).toBe(1);
   });
 
+  it('uses the composited canvas sampler for the eyedropper tool', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(() => ({x:120, y:80}));
+    OS.canvas.getContext = vi.fn(() => ({
+      getImageData:() => ({data:new Uint8ClampedArray([0, 0, 0, 255])}),
+    }));
+    OS.canvasW = 800;
+    OS.canvasH = 600;
+    OS.state.tool = 'eyedropper';
+    quietUiMethods(OS);
+    OS.setFgColor = vi.fn();
+    const sample = vi.fn(() => ({
+      red:51,
+      green:102,
+      blue:153,
+      alpha:255,
+      hex:'#336699',
+    }));
+    window.HstarOpenShopCanvasSampler = {sample};
+    const event = {clientX:280, clientY:190};
+
+    OS.onMouseDown({e:event});
+
+    expect(sample).toHaveBeenCalledWith({
+      canvas:OS.canvas,
+      event,
+      documentPoint:{x:120, y:80},
+      documentWidth:800,
+      documentHeight:600,
+    });
+    expect(OS.setFgColor).toHaveBeenCalledWith('#336699');
+    expect(OS.toast).toHaveBeenCalledWith('Picked: #336699', 'info');
+  });
+
+  it('keeps the foreground color unchanged when eyedropper sampling fails', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(() => ({x:-5, y:20}));
+    OS.canvas.getContext = vi.fn(() => ({
+      getImageData:() => ({data:new Uint8ClampedArray([0, 0, 0, 255])}),
+    }));
+    OS.canvasW = 800;
+    OS.canvasH = 600;
+    OS.state.tool = 'eyedropper';
+    OS.state.fgColor = '#abcdef';
+    quietUiMethods(OS);
+    OS.setFgColor = vi.fn();
+    window.HstarOpenShopCanvasSampler = {
+      sample:vi.fn(() => { throw new Error('Canvas color could not be sampled'); }),
+    };
+
+    OS.onMouseDown({e:{clientX:1, clientY:1}});
+
+    expect(OS.setFgColor).not.toHaveBeenCalled();
+    expect(OS.state.fgColor).toBe('#abcdef');
+    expect(OS.toast).toHaveBeenCalledWith('Canvas color could not be sampled', 'error');
+  });
+
   it('adds and deletes layers while keeping canvas objects in sync', () => {
     const OS = loadOpenShop();
     const canvasObject = { name: 'Pixel Layer', type: 'image' };
