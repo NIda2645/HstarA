@@ -11,7 +11,8 @@ const imageUrls = [
 
 test.describe.configure({mode:'serial'});
 
-test.afterEach(async ({request}) => {
+test.afterEach(async ({page, request}) => {
+  await page.close();
   await canvasCleanup.purgeAll(request);
 });
 

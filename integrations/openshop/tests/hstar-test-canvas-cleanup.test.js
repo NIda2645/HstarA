@@ -79,7 +79,7 @@ describe('HstarA E2E canvas cleanup', () => {
     );
     expect(source).toContain('const canvasCleanup = createTestCanvasCleanup(baseUrl);');
     expect(source).toMatch(
-      /test\.afterEach\(async \(\{request\}\) => \{\s*await canvasCleanup\.purgeAll\(request\);\s*\}\);/
+      /test\.afterEach\(async \(\{page, request\}\) => \{\s*await page\.close\(\);\s*await canvasCleanup\.purgeAll\(request\);\s*\}\);/
     );
     expect(source).toMatch(
       /const created = await apiJson\(await request\.post\([\s\S]*?\}\)\);\s*canvasCleanup\.track\(created\.canvas\);/
