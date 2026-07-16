@@ -5,6 +5,7 @@ import {
   installModalDelegation,
   loadOpenShop,
   mountEditorDom,
+  quietUiMethods,
 } from './os-harness.js';
 
 function mountAnalysisPanels() {
@@ -117,5 +118,92 @@ describe('OpenShop editor performance paths', () => {
 
     expect(OS._scheduleUi).toHaveBeenCalledWith('minimap');
     expect(OS._scheduleUi).toHaveBeenCalledWith('histogram');
+  });
+
+  it('caches tool DOM, reuses brushes, and skips unchanged object interaction profiles', () => {
+    const OS = loadOpenShop();
+    const objects = Array.from({length:5000}, (_, index) => ({
+      name:`Object ${index}`,
+      selectable:false,
+      evented:false,
+    }));
+    const lockedObject = objects.at(-1);
+    OS.canvas = createCanvasMock(objects);
+    OS.layers = [
+      {name:'Content', locked:false, objects:objects.slice(0, -1)},
+      {name:'Locked', locked:true, objects:[lockedObject]},
+    ];
+    quietUiMethods(OS);
+    OS._initToolRuntimeCache();
+    const queryAll = vi.spyOn(document, 'querySelectorAll');
+
+    OS.setTool('select');
+    expect(OS.canvas.forEachObject).toHaveBeenCalledTimes(1);
+    expect(objects[0]).toMatchObject({selectable:true, evented:true});
+    expect(lockedObject).toMatchObject({selectable:false, evented:false});
+
+    OS.setTool('select');
+    expect(OS.canvas.forEachObject).toHaveBeenCalledTimes(1);
+
+    OS.setTool('brush');
+    const firstBrush = OS.canvas.freeDrawingBrush;
+    expect(OS.canvas.forEachObject).toHaveBeenCalledTimes(2);
+
+    OS.setTool('pencil');
+    expect(OS.canvas.forEachObject).toHaveBeenCalledTimes(2);
+    OS.setTool('brush');
+    expect(OS.canvas.freeDrawingBrush).toBe(firstBrush);
+    expect(queryAll).not.toHaveBeenCalled();
+  });
+
+  it('uses frame-coalesced rendering for temporary shape feedback', () => {
+    const OS = loadOpenShop();
+    document.body.insertAdjacentHTML('beforeend', '<span id="cursor-pos"></span><span id="info-cursor"></span>');
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(() => ({x:120, y:90}));
+    OS.state.tool = 'rect';
+    OS.state.isDrawing = true;
+    OS._shapeStart = {x:10, y:20};
+    OS._tempShape = {
+      set:vi.fn(),
+    };
+
+    OS.onMouseMove({e:{}});
+
+    expect(OS._tempShape.set).toHaveBeenCalled();
+    expect(OS.canvas.requestRenderAll).toHaveBeenCalledOnce();
+    expect(OS.canvas.renderAll).not.toHaveBeenCalled();
+  });
+
+  it('coalesces repeated viewport overlay updates into one animation frame', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+    OS.zoom = 1;
+    const frameQueue = [];
+    const idleQueue = [];
+    OS.drawGrid = vi.fn();
+    OS.drawRulers = vi.fn();
+    OS._drawPixelGrid = vi.fn();
+    OS._updateMinimapViewport = vi.fn();
+    OS._initUpdateScheduler({
+      frameRequest:callback => { frameQueue.push(callback); return frameQueue.length; },
+      idleRequest:callback => { idleQueue.push(callback); return idleQueue.length; },
+    });
+
+    for (let index = 0; index < 10; index += 1) {
+      OS.onMouseWheel({
+        e:{preventDefault:vi.fn(), deltaY:1, offsetX:100, offsetY:80},
+      });
+    }
+
+    expect(frameQueue).toHaveLength(1);
+    expect(OS.drawGrid).not.toHaveBeenCalled();
+    frameQueue.shift()();
+    expect(OS.drawGrid).toHaveBeenCalledOnce();
+    expect(OS.drawRulers).toHaveBeenCalledOnce();
+    expect(OS._drawPixelGrid).toHaveBeenCalledOnce();
+    expect(OS._updateMinimapViewport).toHaveBeenCalledOnce();
+    expect(idleQueue).toHaveLength(0);
   });
 });

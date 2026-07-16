@@ -92,7 +92,28 @@ test('drags selected rows as one ordered block', async ({page}) => {
   await openPreparedEditor(page);
   await layerRow(page, 'A').click();
   await layerRow(page, 'C').click({modifiers:['Control']});
-  await layerRow(page, 'C').dragTo(layerRow(page, 'Background'));
+  await page.evaluate(() => {
+    const source = [...document.querySelectorAll('#layers-list .layer-item')]
+      .find(row => row.querySelector('.layer-name')?.textContent === 'C');
+    const target = [...document.querySelectorAll('#layers-list .layer-item')]
+      .find(row => row.querySelector('.layer-name')?.textContent === 'Background');
+    const dataTransfer = new DataTransfer();
+    const targetRect = target.getBoundingClientRect();
+    source.dispatchEvent(new DragEvent('dragstart', {bubbles:true, dataTransfer}));
+    target.dispatchEvent(new DragEvent('dragover', {
+      bubbles:true,
+      cancelable:true,
+      clientY:targetRect.bottom - 1,
+      dataTransfer,
+    }));
+    target.dispatchEvent(new DragEvent('drop', {
+      bubbles:true,
+      cancelable:true,
+      clientY:targetRect.bottom - 1,
+      dataTransfer,
+    }));
+    source.dispatchEvent(new DragEvent('dragend', {bubbles:true, dataTransfer}));
+  });
 
   await expect.poll(() => page.evaluate(() => OS.layers.map(layer => layer.name)))
     .toEqual(['A', 'C', 'Background', 'B']);

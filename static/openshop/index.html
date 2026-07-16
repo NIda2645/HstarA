@@ -1586,6 +1586,9 @@ const OS = {
             stopContextMenu: true, fireRightClick: true,
         });
         this._initUpdateScheduler();
+        this._initToolRuntimeCache();
+        this.canvas.on('object:added', () => this._markToolObjectsDirty());
+        this.canvas.on('object:removed', () => this._markToolObjectsDirty());
         this.createNewDocument(this.canvasW, this.canvasH);
         this.canvas.on('mouse:move', e => this.onMouseMove(e));
         this.canvas.on('mouse:down', e => this.onMouseDown(e));
@@ -2542,11 +2545,9 @@ self.onmessage = function(e) {
         const layers = this._layersForRowAction(idx);
         layers.forEach(layer => {
             layer.locked = locked;
-            layer.objects.forEach(object => {
-                if (object.name === '__boundary__') return;
-                object.selectable = !locked; object.evented = !locked;
-            });
         });
+        this._markToolObjectsDirty();
+        this._applyToolInteractionState(this.state.tool, {force:true});
         this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Layer Lock');
         this.toast(locked ? this._t('Layer locked') : this._t('Layer unlocked'), 'info');
     },
@@ -2692,6 +2693,12 @@ self.onmessage = function(e) {
             status:() => this.updateStatus(),
             minimap:() => this._renderMinimap(),
             histogram:() => this._renderHistogram(),
+            viewportUi:() => {
+                this.drawGrid();
+                this.drawRulers();
+                this._drawPixelGrid();
+                this._updateMinimapViewport?.();
+            },
         };
         [...new Set(keys.flat())].forEach(key => immediate[key]?.());
     },
@@ -2715,16 +2722,75 @@ self.onmessage = function(e) {
         this.setTool(tool);
     },
 
+    _initToolRuntimeCache() {
+        const optionGroups = [...document.querySelectorAll('#tool-options .opt-group')];
+        const buttons = [...document.querySelectorAll('.tool-btn')];
+        this._toolRuntime = {
+            buttons,
+            optionGroups,
+            optionById:new Map(optionGroups.map(node => [node.id, node])),
+            activeButtons:buttons.filter(button => button.classList.contains('active')),
+            activeOption:null,
+            interactionProfile:'',
+            objectRevision:0,
+            appliedObjectRevision:-1,
+            brushes:new Map(),
+        };
+        optionGroups.forEach(group => { group.style.display = 'none'; });
+        return this._toolRuntime;
+    },
+    _markToolObjectsDirty() {
+        if (this._toolRuntime) this._toolRuntime.objectRevision += 1;
+    },
+    _toolInteractionProfile(tool) {
+        if (tool === 'select') return 'select';
+        if (tool === 'fill' || tool === 'eyedropper') return 'target';
+        return 'none';
+    },
+    _applyToolInteractionState(tool, {force = false} = {}) {
+        const runtime = this._toolRuntime || this._initToolRuntimeCache();
+        const profile = this._toolInteractionProfile(tool);
+        if (
+            !force
+            && runtime.interactionProfile === profile
+            && runtime.appliedObjectRevision === runtime.objectRevision
+        ) return;
+        const lockedObjects = new Set(
+            this.layers.filter(layer => layer.locked).flatMap(layer => layer.objects || [])
+        );
+        this.canvas.forEachObject(object => {
+            const blocked = object.name === '__boundary__' || lockedObjects.has(object);
+            object.selectable = !blocked && profile === 'select';
+            object.evented = !blocked && (profile === 'select' || profile === 'target');
+        });
+        runtime.interactionProfile = profile;
+        runtime.appliedObjectRevision = runtime.objectRevision;
+    },
+    _getCachedBrush(key, createBrush) {
+        const runtime = this._toolRuntime || this._initToolRuntimeCache();
+        if (!runtime.brushes.has(key)) runtime.brushes.set(key, createBrush());
+        return runtime.brushes.get(key);
+    },
 
-    setTool(tool) {
+
+    setTool(tool, {forceInteraction = false} = {}) {
         this._toolTooltipController?.hide();
         const prevTool = this.state.tool;
         this.state.tool = tool;
-        document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool===tool));
-        document.querySelectorAll('#tool-options .opt-group').forEach(g => g.style.display='none');
+        const runtime = this._toolRuntime || this._initToolRuntimeCache();
+        runtime.activeButtons.forEach(button => button.classList.remove('active'));
+        runtime.activeButtons = runtime.buttons.filter(button => button.dataset.tool === tool);
+        runtime.activeButtons.forEach(button => button.classList.add('active'));
+        if (runtime.activeOption) runtime.activeOption.style.display = 'none';
+        runtime.activeOption = null;
+        const showOption = id => {
+            const option = runtime.optionById.get(id);
+            if (!option) return;
+            option.style.display = 'flex';
+            runtime.activeOption = option;
+        };
         const c = this.canvas; c.isDrawingMode = false; c.selection = false;
         c.defaultCursor = 'crosshair'; c.hoverCursor = 'crosshair';
-        c.forEachObject(o => { o.selectable=false; o.evented=false; });
         // NOTE: Pixel selections (marquee/wand/lasso) are intentionally
         // PRESERVED across tool switches, just like Photoshop.
         // They only clear on: Esc, Ctrl+D, Edit>Deselect, or new selection.
@@ -2745,48 +2811,52 @@ self.onmessage = function(e) {
         switch(tool) {
             case 'select':
                 c.selection=true; c.defaultCursor='default'; c.hoverCursor='move';
-                c.forEachObject(o => { if(o.name!=='__boundary__'){o.selectable=true;o.evented=true;} });
-                document.getElementById('opt-select').style.display='flex'; break;
-            case 'brush': case 'pencil':
-                c.isDrawingMode=true; c.freeDrawingBrush = new fabric.PencilBrush(c);
-                c.freeDrawingBrush.color = this.state.fgColor;
-                c.freeDrawingBrush.width = tool==='pencil'?1:this.state.brushSize;
+                showOption('opt-select'); break;
+            case 'brush':
+                c.isDrawingMode=true;
                 this.setBrushPreset(this.state.brushPreset);
-                document.getElementById('opt-brush').style.display='flex'; break;
+                showOption('opt-brush'); break;
+            case 'pencil':
+                c.isDrawingMode=true;
+                c.freeDrawingBrush = this._getCachedBrush('pencil:tool', () => new fabric.PencilBrush(c));
+                c.freeDrawingBrush.color = this.state.fgColor;
+                c.freeDrawingBrush.width = 1;
+                showOption('opt-brush'); break;
             case 'eraser':
-                c.isDrawingMode=true; c.freeDrawingBrush = new fabric.PencilBrush(c);
+                c.isDrawingMode=true;
+                c.freeDrawingBrush = this._getCachedBrush('pencil:eraser', () => new fabric.PencilBrush(c));
                 c.freeDrawingBrush.color = 'rgba(0,0,0,1)'; c.freeDrawingBrush.width = this.state.brushSize;
-                document.getElementById('opt-brush').style.display='flex'; break;
+                showOption('opt-brush'); break;
             case 'spray':
-                c.isDrawingMode=true; c.freeDrawingBrush = new fabric.SprayBrush(c);
+                c.isDrawingMode=true;
+                c.freeDrawingBrush = this._getCachedBrush('spray:tool', () => new fabric.SprayBrush(c));
                 c.freeDrawingBrush.color = this.state.fgColor;
                 c.freeDrawingBrush.density = this.state.sprayDensity;
                 c.freeDrawingBrush.width = this.state.sprayWidth;
-                document.getElementById('opt-spray').style.display='flex'; break;
-            case 'clone': c.defaultCursor='crosshair'; document.getElementById('opt-clone').style.display='flex'; break;
-            case 'healing': c.defaultCursor='crosshair'; document.getElementById('opt-healing').style.display='flex'; break;
-            case 'dodge': c.defaultCursor='crosshair'; document.getElementById('opt-dodge').style.display='flex'; break;
-            case 'burn': c.defaultCursor='crosshair'; document.getElementById('opt-burn').style.display='flex'; break;
-            case 'sponge': c.defaultCursor='crosshair'; document.getElementById('opt-sponge').style.display='flex'; break;
-            case 'smudge': c.defaultCursor='crosshair'; document.getElementById('opt-smudge').style.display='flex'; break;
+                showOption('opt-spray'); break;
+            case 'clone': c.defaultCursor='crosshair'; showOption('opt-clone'); break;
+            case 'healing': c.defaultCursor='crosshair'; showOption('opt-healing'); break;
+            case 'dodge': c.defaultCursor='crosshair'; showOption('opt-dodge'); break;
+            case 'burn': c.defaultCursor='crosshair'; showOption('opt-burn'); break;
+            case 'sponge': c.defaultCursor='crosshair'; showOption('opt-sponge'); break;
+            case 'smudge': c.defaultCursor='crosshair'; showOption('opt-smudge'); break;
             case 'line': case 'rect': case 'circle': case 'triangle': case 'arrow':
-                document.getElementById('opt-shape').style.display='flex'; break;
-            case 'polygon': document.getElementById('opt-polygon').style.display='flex'; break;
-            case 'star': document.getElementById('opt-star').style.display='flex'; break;
-            case 'pen': document.getElementById('opt-pen').style.display='flex'; document.getElementById('pen-overlay').style.display='block'; c.defaultCursor='crosshair'; break;
-            case 'text': c.defaultCursor='text'; document.getElementById('opt-text').style.display='flex'; break;
-            case 'gradient': document.getElementById('opt-gradient').style.display='flex'; break;
-            case 'pattern': document.getElementById('opt-pattern').style.display='flex'; break;
-            case 'fill': c.forEachObject(o => { if(o.name!=='__boundary__'){o.selectable=false;o.evented=true;} }); break;
-            case 'eyedropper': c.defaultCursor='crosshair'; c.hoverCursor='crosshair';
-                c.forEachObject(o => { if(o.name!=='__boundary__'){o.selectable=false;o.evented=true;} }); break;
+                showOption('opt-shape'); break;
+            case 'polygon': showOption('opt-polygon'); break;
+            case 'star': showOption('opt-star'); break;
+            case 'pen': showOption('opt-pen'); document.getElementById('pen-overlay').style.display='block'; c.defaultCursor='crosshair'; break;
+            case 'text': c.defaultCursor='text'; showOption('opt-text'); break;
+            case 'gradient': showOption('opt-gradient'); break;
+            case 'pattern': showOption('opt-pattern'); break;
+            case 'fill': break;
+            case 'eyedropper': c.defaultCursor='crosshair'; c.hoverCursor='crosshair'; break;
             case 'pan': c.defaultCursor='grab'; break;
             case 'zoom': c.defaultCursor='zoom-in'; break;
-            case 'marquee-rect': case 'marquee-ellipse': document.getElementById('opt-marquee').style.display='flex'; break;
-            case 'magic-wand': document.getElementById('opt-wand').style.display='flex'; break;
-            case 'ai-segment': c.defaultCursor='crosshair'; c.hoverCursor='crosshair'; document.getElementById('opt-ai-segment').style.display='flex'; break;
+            case 'marquee-rect': case 'marquee-ellipse': showOption('opt-marquee'); break;
+            case 'magic-wand': showOption('opt-wand'); break;
+            case 'ai-segment': c.defaultCursor='crosshair'; c.hoverCursor='crosshair'; showOption('opt-ai-segment'); break;
             case 'lasso':
-                document.getElementById('opt-lasso').style.display='flex';
+                showOption('opt-lasso');
                 document.getElementById('lasso-overlay').style.display='block';
                 // If there's no existing lasso selection, reset points for new lasso
                 if (!this._selectionBounds) {
@@ -2794,18 +2864,11 @@ self.onmessage = function(e) {
                     document.querySelector('#lasso-overlay svg polygon').setAttribute('points','');
                 }
                 break;
-            case 'measure': document.getElementById('opt-measure').style.display='flex'; document.getElementById('measure-overlay').style.display='block'; break;
+            case 'measure': showOption('opt-measure'); document.getElementById('measure-overlay').style.display='block'; break;
             case 'note': c.defaultCursor='crosshair'; c.hoverCursor='crosshair'; break;
-            case 'crop': document.getElementById('opt-crop').style.display='flex'; this._initCrop(); break;
+            case 'crop': showOption('opt-crop'); this._initCrop(); break;
         }
-        const lockedObjects = new Set(
-            this.layers.filter(layer => layer.locked).flatMap(layer => layer.objects || [])
-        );
-        c.forEachObject(object => {
-            if(!lockedObjects.has(object)) return;
-            object.selectable = false;
-            object.evented = false;
-        });
+        this._applyToolInteractionState(tool, {force:forceInteraction});
         const toolNames = {'marquee-rect':'Rect Marquee','marquee-ellipse':'Ellipse Marquee','magic-wand':'Magic Wand','ai-segment':'AI Segment'};
         document.getElementById('tool-display').textContent = toolNames[tool] || tool.charAt(0).toUpperCase()+tool.replace(/-/g,' ').slice(1);
         this._renderAccessibilityTree();
@@ -2829,25 +2892,31 @@ self.onmessage = function(e) {
     setBrushPreset(preset) {
         this.state.brushPreset = preset;
         const c = this.canvas; if (!c.isDrawingMode) return;
+        let brush;
         switch(preset) {
-            case 'round': c.freeDrawingBrush = new fabric.PencilBrush(c); break;
+            case 'round':
+                brush = this._getCachedBrush('pencil:round', () => new fabric.PencilBrush(c));
+                break;
             case 'soft':
-                c.freeDrawingBrush = new fabric.PencilBrush(c);
-                c.freeDrawingBrush.shadow = new fabric.Shadow({ blur:8, color:this.state.fgColor, affectStroke:true });
+                brush = this._getCachedBrush('pencil:soft', () => new fabric.PencilBrush(c));
+                brush.shadow = new fabric.Shadow({ blur:8, color:this.state.fgColor, affectStroke:true });
                 break;
             case 'flat':
-                c.freeDrawingBrush = new fabric.PencilBrush(c);
-                c.freeDrawingBrush.strokeLineCap = 'butt';
+                brush = this._getCachedBrush('pencil:flat', () => new fabric.PencilBrush(c));
+                brush.strokeLineCap = 'butt';
                 break;
             case 'scatter':
-                c.freeDrawingBrush = new fabric.SprayBrush(c);
-                c.freeDrawingBrush.density = 15; c.freeDrawingBrush.dotWidth = 2;
+                brush = this._getCachedBrush('spray:scatter', () => new fabric.SprayBrush(c));
+                brush.density = 15; brush.dotWidth = 2;
                 break;
             case 'pixel':
-                c.freeDrawingBrush = new fabric.PencilBrush(c);
-                c.freeDrawingBrush.strokeLineCap = 'square';
+                brush = this._getCachedBrush('pencil:pixel', () => new fabric.PencilBrush(c));
+                brush.strokeLineCap = 'square';
                 break;
+            default:
+                brush = this._getCachedBrush('pencil:round', () => new fabric.PencilBrush(c));
         }
+        c.freeDrawingBrush = brush;
         c.freeDrawingBrush.color=this.state.tool==='eraser'?'rgba(0,0,0,1)':(this.state.brushOpacity<100?this._hexToRgba(this.state.fgColor,this.state.brushOpacity):this.state.fgColor);
         c.freeDrawingBrush.width = this.state.brushSize;
     },
@@ -2945,7 +3014,10 @@ self.onmessage = function(e) {
         if(this.state.isPanning&&this.state.panStart) {
             const dx=opt.e.clientX-this.state.panStart.x, dy=opt.e.clientY-this.state.panStart.y;
             const vpt=this.canvas.viewportTransform.slice(); vpt[4]+=dx; vpt[5]+=dy;
-            this.canvas.setViewportTransform(vpt); this.state.panStart={x:opt.e.clientX,y:opt.e.clientY}; this.drawGrid(); this.drawRulers(); return;
+            this.canvas.setViewportTransform(vpt);
+            this.state.panStart={x:opt.e.clientX,y:opt.e.clientY};
+            this._scheduleUi('viewportUi');
+            return;
         }
         if(this.state.isDrawing&&this._marqueeStart) {
             const el=document.getElementById('selection-overlay'), sx=this._marqueeStart.x, sy=this._marqueeStart.y, cx=opt.e.offsetX, cy=opt.e.offsetY;
@@ -2963,7 +3035,7 @@ self.onmessage = function(e) {
                 case 'triangle': this._tempShape.set({left:w<0?ptr.x:s.x,top:h<0?ptr.y:s.y,width:Math.abs(w),height:Math.abs(h)}); break;
                 case 'polygon': case 'star': this._tempShape.set({radius:Math.sqrt(w*w+h*h)}); break;
             }
-            this.canvas.renderAll();
+            this.canvas.requestRenderAll();
         }
     },
     onMouseUp(opt) {
@@ -3040,7 +3112,9 @@ self.onmessage = function(e) {
         opt.e.preventDefault(); let z=this.zoom*(0.999**opt.e.deltaY);
         z=Math.min(Math.max(0.05,z),20);
         this.canvas.zoomToPoint({x:opt.e.offsetX,y:opt.e.offsetY},z);
-        this.zoom=z; document.getElementById('zoom-display').textContent=Math.round(z*100)+'%'; this.drawGrid(); this.drawRulers(); this._drawPixelGrid(); this.updateMinimap();
+        this.zoom=z;
+        document.getElementById('zoom-display').textContent=Math.round(z*100)+'%';
+        this._scheduleUi('viewportUi');
     },
 
     _initTouchGestures(area) {
@@ -3076,9 +3150,8 @@ self.onmessage = function(e) {
             }
             lastDist = dist;
             lastCenter = center;
-            this.canvas.renderAll();
-            this.drawGrid();
-            this.updateMinimap();
+            this.canvas.requestRenderAll();
+            this._scheduleUi('viewportUi');
         }, { passive: false });
         area.addEventListener('touchend', () => { touching = false; lastDist = 0; lastCenter = null; });
     },
@@ -4191,7 +4264,9 @@ self.onmessage = function(e) {
         const layerMetadata=new Map((e.layers||[]).filter(layer=>layer.layerId).map(layer=>[layer.layerId,layer]));
         this.canvas.loadFromJSON(JSON.parse(e.snapshot), () => {
             this.canvas.renderAll(); this.rebuildLayersFromCanvas(layerMetadata);
-            this.setTool(this.state.tool); this.updateHistoryPanel(); this.updateStatus();
+            this._markToolObjectsDirty();
+            this.setTool(this.state.tool, {forceInteraction:true});
+            this.updateHistoryPanel(); this.updateStatus();
             window.dispatchEvent(new CustomEvent('openshop:project-dirty', {
                 detail: { action: String(e.action || 'History Restored') },
             }));

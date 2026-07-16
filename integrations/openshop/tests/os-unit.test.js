@@ -747,7 +747,7 @@ describe('OpenShop core object', () => {
 
     expect(restored).toEqual(['Initial', 'Edited']);
     expect(OS.historyIdx).toBe(1);
-    expect(OS.setTool).toHaveBeenCalledWith('select');
+    expect(OS.setTool).toHaveBeenCalledWith('select', {forceInteraction:true});
   });
 
   it('keeps the text kerning mode in history snapshots', () => {
