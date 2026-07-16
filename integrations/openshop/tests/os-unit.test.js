@@ -290,6 +290,125 @@ describe('OpenShop core object', () => {
     expect(OS._keyboardContext).toBe('layers');
   });
 
+  it('deletes selected unlocked layers in one history entry and keeps locked layers', () => {
+    const OS = loadOpenShop();
+    const objects = [{name:'A'}, {name:'B'}, {name:'Locked'}];
+    OS.canvas = createCanvasMock(objects);
+    quietUiMethods(OS);
+    OS.layers = [
+      {name:'Background', locked:true, visible:true, opacity:100, blend:'source-over', objects:[objects[2]]},
+      {name:'A', locked:false, visible:true, opacity:100, blend:'source-over', objects:[objects[0]]},
+      {name:'B', locked:false, visible:true, opacity:100, blend:'source-over', objects:[objects[1]]},
+    ];
+    OS._selectedLayers = new Set(OS.layers);
+    OS.activeLayerIdx = 2;
+    OS.saveHistory = vi.fn();
+
+    OS.deleteLayers();
+
+    expect(OS.layers.map(layer => layer.name)).toEqual(['Background']);
+    expect(OS.canvas.remove).toHaveBeenCalledWith(objects[0]);
+    expect(OS.canvas.remove).toHaveBeenCalledWith(objects[1]);
+    expect(OS.canvas.remove).not.toHaveBeenCalledWith(objects[2]);
+    expect(OS.saveHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies opacity and blend to every selected layer', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS);
+    OS.layers = ['A', 'B', 'C'].map(name => ({
+      name, locked:false, visible:true, opacity:100, blend:'source-over', objects:[],
+    }));
+    OS._selectedLayers = new Set([OS.layers[0], OS.layers[2]]);
+    OS.saveHistory = vi.fn();
+
+    OS.setLayerOpacity(42);
+    expect(OS.saveHistory).not.toHaveBeenCalled();
+    OS.commitLayerOpacity();
+    OS.setLayerBlend('multiply');
+
+    expect(OS.layers.map(layer => layer.opacity)).toEqual([42, 100, 42]);
+    expect(OS.layers.map(layer => layer.blend)).toEqual(['multiply', 'source-over', 'multiply']);
+    expect(OS.saveHistory).toHaveBeenNthCalledWith(1, 'Layer Opacity');
+    expect(OS.saveHistory).toHaveBeenNthCalledWith(2, 'Blend: multiply');
+  });
+
+  it('duplicates selected empty layers as one ordered block above the highest selection', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS);
+    OS.layers = ['A', 'B', 'C'].map(name => ({
+      name, locked:false, visible:true, opacity:100, blend:'source-over', objects:[],
+    }));
+    OS._selectedLayers = new Set([OS.layers[0], OS.layers[2]]);
+    OS.activeLayerIdx = 2;
+    OS.saveHistory = vi.fn();
+
+    OS.duplicateLayer();
+
+    expect(OS.layers.map(layer => layer.name)).toEqual(['A', 'B', 'C', 'A Copy', 'C Copy']);
+    expect(OS._selectedLayerList().map(layer => layer.name)).toEqual(['A Copy', 'C Copy']);
+    expect(OS.saveHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates clicked visibility and lock state to selected rows', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS);
+    OS.layers = ['A', 'B', 'C'].map(name => ({
+      name, locked:false, visible:true, opacity:100, blend:'source-over', objects:[],
+    }));
+    OS._selectedLayers = new Set([OS.layers[0], OS.layers[2]]);
+    OS.saveHistory = vi.fn();
+
+    OS.toggleLayerVisibility(0);
+    OS.toggleLayerLock(0);
+
+    expect(OS.layers.map(layer => layer.visible)).toEqual([false, true, false]);
+    expect(OS.layers.map(layer => layer.locked)).toEqual([true, false, true]);
+    expect(OS.saveHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it('moves selected layers as an ordered block and merges selected layers once', () => {
+    const OS = loadOpenShop();
+    const objects = ['A', 'B', 'C', 'D'].map(name => ({name}));
+    OS.canvas = createCanvasMock(objects);
+    quietUiMethods(OS);
+    OS.layers = objects.map(object => ({
+      name:object.name, locked:false, visible:true, opacity:100, blend:'source-over', objects:[object],
+    }));
+    OS._selectedLayers = new Set([OS.layers[1], OS.layers[3]]);
+    OS.activeLayerIdx = 3;
+    OS.saveHistory = vi.fn();
+
+    OS._moveSelectedLayersToIndex(0);
+    expect(OS.layers.map(layer => layer.name)).toEqual(['B', 'D', 'A', 'C']);
+    expect(OS.saveHistory).toHaveBeenLastCalledWith('Reorder Layers');
+
+    OS.mergeSelectedOrDown();
+    expect(OS.layers.map(layer => layer.name)).toEqual(['B', 'A', 'C']);
+    expect(OS.layers[0].objects.map(object => object.name)).toEqual(['B', 'D']);
+    expect(OS.saveHistory).toHaveBeenLastCalledWith('Merge Layers');
+  });
+
+  it('leaves selected locked layers in place during block movement', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS);
+    OS.layers = ['A', 'B', 'C', 'D'].map(name => ({
+      name, locked:name === 'B', visible:true, opacity:100, blend:'source-over', objects:[],
+    }));
+    OS._selectedLayers = new Set([OS.layers[1], OS.layers[3]]);
+    OS.activeLayerIdx = 3;
+    OS.saveHistory = vi.fn();
+
+    OS._moveSelectedLayersToIndex(0);
+
+    expect(OS.layers.map(layer => layer.name)).toEqual(['D', 'A', 'B', 'C']);
+    expect(OS.toast).toHaveBeenCalledWith('Skipped 1 locked layers', 'info');
+  });
+
   it('restores prior snapshots through undo and redo', () => {
     const OS = loadOpenShop();
     const canvas = createCanvasMock();

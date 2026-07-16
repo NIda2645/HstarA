@@ -715,7 +715,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
             <div class="dd-item" onclick="OS.addLayerMask()" data-i18n="Add Layer Mask">Add Layer Mask</div>
             <div class="dd-item" onclick="OS.removeLayerMask()" data-i18n="Remove Layer Mask">Remove Layer Mask</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.mergeDown()" data-i18n="Merge Down">Merge Down</div>
+            <div class="dd-item" onclick="OS.mergeSelectedOrDown()" data-i18n="Merge Down">Merge Down</div>
             <div class="dd-item" onclick="OS.flattenImage()" data-i18n="Flatten Image">Flatten Image</div>
         </div>
     </div>
@@ -1160,7 +1160,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
                 <div class="panel-actions" style="display:flex;gap:2px;margin-bottom:6px;justify-content:flex-end">
                     <button class="panel-action" title="New Layer" onclick="OS.addLayer()" data-i18n-title="New Layer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
                     <button class="panel-action" title="Duplicate" onclick="OS.duplicateLayer()" data-i18n-title="Duplicate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-                    <button class="panel-action" title="Merge Down" onclick="OS.mergeDown()" data-i18n-title="Merge Down"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 18L12 22L16 18"/><path d="M12 2V22"/></svg></button>
+                    <button class="panel-action" title="Merge Down" onclick="OS.mergeSelectedOrDown()" data-i18n-title="Merge Down"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 18L12 22L16 18"/><path d="M12 2V22"/></svg></button>
                     <button class="panel-action" title="Delete" onclick="OS.deleteLayer()" data-i18n-title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
                     <button class="panel-action" title="Mask" onclick="OS.canvas.getActiveObject()&&OS.canvas.getActiveObject()._hasMask?OS.removeLayerMask():OS.addLayerMask()" data-i18n-title="Mask"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="5"/></svg></button>
                 </div>
@@ -1177,7 +1177,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
                 </div>
                 <div class="opt-group" style="margin-bottom:6px">
                     <label data-i18n="Opacity">Opacity</label>
-                    <input type="range" id="layer-opacity" min="0" max="100" value="100" oninput="OS.setLayerOpacity(this.value)">
+                    <input type="range" id="layer-opacity" min="0" max="100" value="100" oninput="OS.setLayerOpacity(this.value)" onchange="OS.commitLayerOpacity()">
                     <span class="opt-val" id="layer-opacity-val">100</span>
                 </div>
                 <div id="layers-list" role="listbox" aria-label="Layers" data-i18n-aria-label="Layers"></div>
@@ -2244,47 +2244,93 @@ self.onmessage = function(e) {
             .map((layer, index) => this._selectedLayers.has(layer) ? index : -1)
             .filter(index => index >= 0);
     },
+    _selectedLayerList() {
+        this._normalizeLayerSelection();
+        return this.layers.filter(layer => this._selectedLayers.has(layer));
+    },
+    _isProtectedLayer(layer) {
+        return Boolean(layer?.locked || layer?.objects?.some(object => object.name === '__boundary__'));
+    },
+    _layersForRowAction(idx) {
+        const layer = this.layers[idx];
+        if (!layer) return [];
+        return this._selectedLayers.has(layer) ? this._selectedLayerList() : [layer];
+    },
+    _syncCanvasLayerOrder() {
+        if (typeof this.canvas?.moveTo !== 'function') return;
+        let index = 0;
+        this.layers.forEach(layer => layer.objects.forEach(object => this.canvas.moveTo(object, index++)));
+    },
     addLayer() {
         const idx = this.layers.length;
         const layer = { name:`Layer ${idx}`, visible:true, opacity:100, blend:'source-over', objects:[] };
         this.layers.push(layer);
         this.activeLayerIdx = idx; this._resetLayerSelection(layer); this.updateLayersPanel(); this.saveHistory('New Layer');
     },
-    deleteLayer() {
+    deleteLayers() {
         if (this.layers.length === 0) return;
-        const layer = this.layers[this.activeLayerIdx];
-        if (layer.locked) { this.toast(this._t("Unlock layer first"), 'error'); return; }
-        layer.objects.forEach(o => this.canvas.remove(o));
-        this.layers.splice(this.activeLayerIdx, 1);
-        if (this.layers.length === 0) {
-            this.layers.push({ name:'Layer 0', visible:true, opacity:100, blend:'source-over', objects:[] });
-            this.activeLayerIdx = 0;
-        } else {
-            this.activeLayerIdx = Math.min(this.activeLayerIdx, this.layers.length-1);
-        }
-        this._normalizeLayerSelection(this.layers[this.activeLayerIdx]);
-        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Delete Layer');
-    },
-    duplicateLayer() {
-        const src = this.layers[this.activeLayerIdx];
-        const nl = { name:src.name+' Copy', visible:true, opacity:src.opacity, blend:src.blend, objects:[] };
-        const toClone = src.objects.filter(o => o.name !== '__boundary__');
-        if (toClone.length === 0) {
-            this.layers.splice(this.activeLayerIdx+1, 0, nl); this.activeLayerIdx++; this._resetLayerSelection(nl);
-            this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Duplicate Layer');
+        const selected = this._selectedLayerList();
+        const deletable = selected.filter(layer => !this._isProtectedLayer(layer));
+        const skipped = selected.length - deletable.length;
+        if (!deletable.length) {
+            this.toast(this._t('No selected layers can be deleted'), 'info');
             return;
         }
-        let done = 0;
-        toClone.forEach(o => {
-            o.clone(c => {
-                c.set({left:o.left+10,top:o.top+10}); this.canvas.add(c); nl.objects.push(c);
-                done++;
-                if (done === toClone.length) {
-                    this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Duplicate Layer');
-                }
+        const nearestIndex = Math.min(...deletable.map(layer => this.layers.indexOf(layer)));
+        const deleting = new Set(deletable);
+        deletable.forEach(layer => layer.objects.forEach(object => this.canvas.remove(object)));
+        this.layers = this.layers.filter(layer => !deleting.has(layer));
+        if (!this.layers.length) {
+            this.layers.push({name:'Layer 0', visible:true, locked:false, opacity:100, blend:'source-over', objects:[]});
+        }
+        const next = this.layers[Math.min(nearestIndex, this.layers.length - 1)];
+        this._resetLayerSelection(next);
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Delete Layer');
+        if (skipped) this.toast(this._t('Skipped {count} locked layers', {count:skipped}), 'info');
+    },
+    deleteLayer() {
+        this.deleteLayers();
+    },
+    duplicateLayer() {
+        const sources = this._selectedLayerList();
+        if (!sources.length) return;
+        const primarySource = this.layers[this.activeLayerIdx];
+        const copies = sources.map(source => ({
+            name:`${source.name} Copy`,
+            visible:source.visible !== false,
+            locked:false,
+            opacity:source.opacity,
+            blend:source.blend,
+            objects:[],
+        }));
+        const insertionIndex = Math.max(...sources.map(layer => this.layers.indexOf(layer))) + 1;
+        this.layers.splice(insertionIndex, 0, ...copies);
+        const cloneEntries = sources.flatMap((source, sourceIndex) => (
+            source.objects
+                .filter(object => object.name !== '__boundary__')
+                .map(object => ({object, copy:copies[sourceIndex]}))
+        ));
+        let completed = 0;
+        let finalized = false;
+        const finalize = () => {
+            if (finalized || completed < cloneEntries.length) return;
+            finalized = true;
+            const primaryCopy = copies[Math.max(0, sources.indexOf(primarySource))] || copies.at(-1);
+            this._selectedLayers = new Set(copies);
+            this._layerSelectionAnchor = primaryCopy;
+            this.activeLayerIdx = this.layers.indexOf(primaryCopy);
+            this._syncCanvasLayerOrder();
+            this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Duplicate Layer');
+        };
+        cloneEntries.forEach(({object, copy}) => {
+            if (typeof object.clone !== 'function') { completed++; finalize(); return; }
+            object.clone(clone => {
+                clone.set({left:(object.left || 0) + 10, top:(object.top || 0) + 10});
+                this.canvas.add(clone); copy.objects.push(clone);
+                completed++; finalize();
             });
         });
-        this.layers.splice(this.activeLayerIdx+1, 0, nl); this.activeLayerIdx++; this._resetLayerSelection(nl);
+        finalize();
     },
     mergeDown() {
         if (this.activeLayerIdx === 0) { this.toast(this._t('Already at the bottom layer'),'info'); return; }
@@ -2292,6 +2338,24 @@ self.onmessage = function(e) {
         upper.objects.forEach(o => lower.objects.push(o));
         this.layers.splice(this.activeLayerIdx, 1); this.activeLayerIdx--; this._resetLayerSelection(lower);
         this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Merge Down');
+    },
+    mergeSelectedOrDown() {
+        const selected = this._selectedLayerList();
+        if (selected.length < 2) return this.mergeDown();
+        const mergeable = selected.filter(layer => !this._isProtectedLayer(layer));
+        const skipped = selected.length - mergeable.length;
+        if (mergeable.length < 2) {
+            this.toast(this._t('No selected layers can be merged'), 'info');
+            return;
+        }
+        const target = mergeable[0];
+        mergeable.slice(1).forEach(layer => layer.objects.forEach(object => target.objects.push(object)));
+        const removing = new Set(mergeable.slice(1));
+        this.layers = this.layers.filter(layer => !removing.has(layer));
+        this._resetLayerSelection(target);
+        this._syncCanvasLayerOrder();
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Merge Layers');
+        if (skipped) this.toast(this._t('Skipped {count} locked layers', {count:skipped}), 'info');
     },
     selectLayer(idx, event = {}) {
         const layer = this.layers[idx];
@@ -2308,18 +2372,31 @@ self.onmessage = function(e) {
         this.canvas.discardActiveObject(); this.canvas.renderAll(); this.updateLayersPanel();
     },
     toggleLayerVisibility(idx) {
-        const l = this.layers[idx]; l.visible = !l.visible;
-        l.objects.forEach(o => o.visible = l.visible);
-        this.canvas.renderAll(); this.updateLayersPanel();
+        const clicked = this.layers[idx];
+        if (!clicked) return;
+        const visible = !clicked.visible;
+        this._layersForRowAction(idx).forEach(layer => {
+            layer.visible = visible;
+            layer.objects.forEach(object => { object.visible = visible; });
+        });
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Layer Visibility');
     },
     setLayerOpacity(val) {
-        const l = this.layers[this.activeLayerIdx]; l.opacity = +val;
-        l.objects.forEach(o => { if (o.name !== '__boundary__') o.opacity = val/100; });
+        const opacity = Math.max(0, Math.min(100, Number(val) || 0));
+        this._selectedLayerList().forEach(layer => {
+            layer.opacity = opacity;
+            layer.objects.forEach(object => { if (object.name !== '__boundary__') object.opacity = opacity / 100; });
+        });
         document.getElementById('layer-opacity-val').textContent = val; this.canvas.renderAll();
     },
+    commitLayerOpacity() {
+        if (this._selectedLayerList().length) this.saveHistory('Layer Opacity');
+    },
     setLayerBlend(mode) {
-        const l = this.layers[this.activeLayerIdx]; l.blend = mode;
-        l.objects.forEach(o => { if (o.name !== '__boundary__') o.globalCompositeOperation = mode; });
+        this._selectedLayerList().forEach(layer => {
+            layer.blend = mode;
+            layer.objects.forEach(object => { if (object.name !== '__boundary__') object.globalCompositeOperation = mode; });
+        });
         this.canvas.renderAll(); this.saveHistory('Blend: '+mode);
     },
     renameLayer(idx, newName) { this.layers[idx].name = newName; this.updateLayersPanel(); },
@@ -2348,6 +2425,7 @@ self.onmessage = function(e) {
             const selected = this._selectedLayers.has(l);
             const primary = i === this.activeLayerIdx;
             d.className = `layer-item${selected?' selected':''}${primary?' active primary':''}`;
+            d.dataset.layerIndex = String(i);
             d.setAttribute('role', 'option');
             d.setAttribute('aria-selected', selected ? 'true' : 'false');
             const eyeSvg = l.visible
@@ -2388,14 +2466,19 @@ self.onmessage = function(e) {
         this._renderAccessibilityTree();
     },
     toggleLayerLock(idx) {
-        this.layers[idx].locked = !this.layers[idx].locked;
-        const l = this.layers[idx];
-        l.objects.forEach(o => {
-            if (o.name === '__boundary__') return;
-            o.selectable = !l.locked; o.evented = !l.locked;
+        const clicked = this.layers[idx];
+        if (!clicked) return;
+        const locked = !clicked.locked;
+        const layers = this._layersForRowAction(idx);
+        layers.forEach(layer => {
+            layer.locked = locked;
+            layer.objects.forEach(object => {
+                if (object.name === '__boundary__') return;
+                object.selectable = !locked; object.evented = !locked;
+            });
         });
-        this.canvas.renderAll(); this.updateLayersPanel();
-        this.toast(l.locked ? this._t('Layer locked') : this._t('Layer unlocked'), 'info');
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Layer Lock');
+        this.toast(locked ? this._t('Layer locked') : this._t('Layer unlocked'), 'info');
     },
     startRenameLayer(el, idx) {
         const inp = document.createElement('input'); inp.className = 'layer-name-input';
@@ -5812,13 +5895,56 @@ self.onmessage = async function(e) {
     },
 
     // ====================== LAYER DRAG REORDER ======================
+    _moveSelectedLayersToIndex(destinationIndex) {
+        const selected = this._selectedLayerList();
+        const movable = selected.filter(layer => !this._isProtectedLayer(layer));
+        const locked = selected.filter(layer => this._isProtectedLayer(layer));
+        if (locked.length) {
+            this.toast(this._t('Skipped {count} locked layers', {count:locked.length}), 'info');
+        }
+        if (!movable.length) return false;
+        const original = [...this.layers];
+        const primary = this.layers[this.activeLayerIdx];
+        const movableSet = new Set(movable);
+        const rawIndex = Math.max(0, Math.min(original.length, Math.trunc(Number(destinationIndex) || 0)));
+        const removedBefore = original.slice(0, rawIndex).filter(layer => movableSet.has(layer)).length;
+        const reduced = original.filter(layer => !movableSet.has(layer));
+        const insertionIndex = Math.max(0, Math.min(reduced.length, rawIndex - removedBefore));
+        reduced.splice(insertionIndex, 0, ...movable);
+        if (reduced.every((layer, index) => layer === original[index])) return false;
+        this.layers = reduced;
+        this._selectedLayers = new Set(selected.filter(layer => this.layers.includes(layer)));
+        this._layerSelectionAnchor = this.layers.includes(this._layerSelectionAnchor)
+            ? this._layerSelectionAnchor
+            : primary;
+        this.activeLayerIdx = this.layers.indexOf(primary);
+        if (this.activeLayerIdx < 0) this.activeLayerIdx = this.layers.indexOf(movable.at(-1));
+        this._syncCanvasLayerOrder();
+        this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Reorder Layers');
+        this.toast(this._t('Layer moved'), 'info');
+        return true;
+    },
     initLayerDrag(layerEl, idx) {
         layerEl.setAttribute('draggable', 'true');
         layerEl.addEventListener('dragstart', e => {
+            const layer = this.layers[idx];
+            if (!this._selectedLayers.has(layer)) {
+                this._resetLayerSelection(layer);
+                document.querySelectorAll('.layer-item').forEach(row => {
+                    const rowLayer = this.layers[Number(row.dataset.layerIndex)];
+                    row.classList.toggle('selected', rowLayer === layer);
+                    row.classList.toggle('active', rowLayer === layer);
+                    row.classList.toggle('primary', rowLayer === layer);
+                    row.setAttribute('aria-selected', rowLayer === layer ? 'true' : 'false');
+                });
+            }
+            this._keyboardContext = 'layers';
             e.dataTransfer.setData('text/plain', idx);
             layerEl.classList.add('dragging');
         });
-        layerEl.addEventListener('dragend', () => layerEl.classList.remove('dragging'));
+        layerEl.addEventListener('dragend', () => {
+            document.querySelectorAll('.layer-item').forEach(row => row.classList.remove('dragging', 'drop-above', 'drop-below'));
+        });
         layerEl.addEventListener('dragover', e => {
             e.preventDefault();
             const rect = layerEl.getBoundingClientRect();
@@ -5829,18 +5955,9 @@ self.onmessage = async function(e) {
         layerEl.addEventListener('dragleave', () => layerEl.classList.remove('drop-above', 'drop-below'));
         layerEl.addEventListener('drop', e => {
             e.preventDefault();
+            const dropAbove = layerEl.classList.contains('drop-above');
             layerEl.classList.remove('drop-above', 'drop-below');
-            const fromIdx = +e.dataTransfer.getData('text/plain');
-            const toIdx = idx;
-            if (fromIdx === toIdx) return;
-            const [moved] = this.layers.splice(fromIdx, 1);
-            this.layers.splice(toIdx, 0, moved);
-            if (this.activeLayerIdx === fromIdx) this.activeLayerIdx = toIdx;
-            else if (fromIdx < this.activeLayerIdx && toIdx >= this.activeLayerIdx) this.activeLayerIdx--;
-            else if (fromIdx > this.activeLayerIdx && toIdx <= this.activeLayerIdx) this.activeLayerIdx++;
-            this._normalizeLayerSelection();
-            this.updateLayersPanel(); this.saveHistory('Reorder Layers');
-            this.toast(this._t("Layer moved"), 'info');
+            this._moveSelectedLayersToIndex(dropAbove ? idx + 1 : idx);
         });
     },
 
@@ -6674,7 +6791,7 @@ self.onmessage = async function(e) {
             {label:'Add Layer',cat:'Layer',fn:()=>this.addLayer()},
             {label:'Delete Layer',cat:'Layer',fn:()=>this.deleteLayer()},
             {label:'Duplicate Layer',cat:'Layer',fn:()=>this.duplicateLayer()},
-            {label:'Merge Down',cat:'Layer',fn:()=>this.mergeDown()},
+            {label:'Merge Down',cat:'Layer',fn:()=>this.mergeSelectedOrDown()},
             // Tools
             ...['select','marquee-rect','marquee-ellipse','wand','lasso','ai-segment','brush','eraser','pencil','spray',
                 'clone','healing','line','rect','circle','triangle','arrow','polygon','star','pen',
