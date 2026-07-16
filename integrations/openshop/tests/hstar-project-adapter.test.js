@@ -57,9 +57,12 @@ function createEditor() {
           hstarEdgeId: object.hstarEdgeId,
           hstarSourceNodeId: object.hstarSourceNodeId,
           hstarLayerId: object.hstarLayerId,
-          ...(properties.includes('hstarSnapAnchor')
-            ? {hstarSnapAnchor:object.hstarSnapAnchor}
-            : {}),
+           ...(properties.includes('hstarSnapAnchor')
+             ? {hstarSnapAnchor:object.hstarSnapAnchor}
+             : {}),
+           ...(properties.includes('hstarKerningMode')
+             ? {hstarKerningMode:object.hstarKerningMode}
+             : {}),
         }))
       }))
     },
@@ -457,6 +460,21 @@ describe('Hstar OpenShop project adapter', () => {
     expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
     restored.__hstarAiTaskRecords[0].status = 'failed';
     expect(project.aiTaskRecords[0].status).toBe('succeeded');
+  });
+
+  it('persists the text kerning mode with the Fabric text object', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const text = {type:'i-text', text:'Kerning', hstarKerningMode:'metrics'};
+    editor.canvas.add(text);
+    editor.layers[0].objects.push(text);
+
+    const project = adapter.serializeProject({editor, context, now:() => 3000});
+
+    expect(project.editor.objects[0]).toMatchObject({
+      type:'i-text',
+      hstarKerningMode:'metrics',
+    });
   });
 
   it('round-trips exported canvas assets and keeps them referenced', async () => {
