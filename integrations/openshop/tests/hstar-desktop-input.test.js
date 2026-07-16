@@ -85,6 +85,43 @@ describe('OpenShop desktop input foundation', () => {
     expect(desktop.toolShortcut('note')).toBe('I');
   });
 
+  it('supports plain, Ctrl, Shift, and Ctrl+Shift layer selection', () => {
+    const desktop = loadDesktopInput();
+    const layers = ['A', 'B', 'C', 'D'].map(name => ({name}));
+    let state = desktop.resetLayerSelection(layers, layers[1]);
+
+    state = desktop.selectLayerRange({layers, state, layer:layers[3], ctrl:false, shift:true});
+    expect([...state.selected].map(layer => layer.name)).toEqual(['B', 'C', 'D']);
+    expect(state.primary).toBe(layers[3]);
+    expect(state.anchor).toBe(layers[1]);
+
+    state = desktop.selectLayerRange({layers, state, layer:layers[0], ctrl:true, shift:false});
+    expect([...state.selected].map(layer => layer.name)).toEqual(['A', 'B', 'C', 'D']);
+    expect(state.primary).toBe(layers[0]);
+    expect(state.anchor).toBe(layers[1]);
+
+    state = desktop.selectLayerRange({layers, state, layer:layers[2], ctrl:true, shift:true});
+    expect([...state.selected].map(layer => layer.name)).toEqual(['A', 'B', 'C', 'D']);
+    expect(state.primary).toBe(layers[2]);
+    expect(state.anchor).toBe(layers[1]);
+  });
+
+  it('never leaves a nonempty layer list without a primary selection', () => {
+    const desktop = loadDesktopInput();
+    const only = {name:'Only'};
+    const state = desktop.selectLayerRange({
+      layers:[only],
+      state:desktop.resetLayerSelection([only], only),
+      layer:only,
+      ctrl:true,
+      shift:false,
+    });
+
+    expect([...state.selected]).toEqual([only]);
+    expect(state.primary).toBe(only);
+    expect(state.anchor).toBe(only);
+  });
+
   it('keeps the editor tooltip localized and hides it when tool UI closes', () => {
     document.body.innerHTML = `
       <div id="toolbar">

@@ -267,6 +267,29 @@ describe('OpenShop core object', () => {
     expect(OS.saveHistory).toHaveBeenCalledWith('Delete Layer');
   });
 
+  it('renders primary and additive layer selections from mouse modifiers', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS, {keepLayersPanel:true});
+    OS.layers = ['A', 'B', 'C', 'D'].map(name => ({
+      name, visible:true, locked:false, opacity:100, blend:'source-over', objects:[],
+    }));
+    OS._resetLayerSelection(OS.layers[1]);
+    OS.updateLayersPanel();
+
+    OS.selectLayer(3, new MouseEvent('click', {shiftKey:true}));
+    expect(OS._selectedLayerIndices()).toEqual([1, 2, 3]);
+    expect(OS.activeLayerIdx).toBe(3);
+
+    OS.selectLayer(0, new MouseEvent('click', {ctrlKey:true}));
+    expect(OS._selectedLayerIndices()).toEqual([0, 1, 2, 3]);
+    expect(OS.activeLayerIdx).toBe(0);
+    expect(document.querySelectorAll('.layer-item.selected')).toHaveLength(4);
+    expect(document.querySelectorAll('.layer-item.primary')).toHaveLength(1);
+    expect(document.querySelector('.layer-item.primary').getAttribute('aria-selected')).toBe('true');
+    expect(OS._keyboardContext).toBe('layers');
+  });
+
   it('restores prior snapshots through undo and redo', () => {
     const OS = loadOpenShop();
     const canvas = createCanvasMock();

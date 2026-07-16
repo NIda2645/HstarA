@@ -10,6 +10,8 @@
     "Image": "图像",
     "Layer": "图层",
     "Select": "选择",
+    "Selected": "已选择",
+    "Primary": "主图层",
     "Filter": "滤镜",
     "View": "视图",
     "Move Tool": "移动工具",

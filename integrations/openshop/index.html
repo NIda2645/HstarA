@@ -127,7 +127,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 /* Layers */
 #layers-list{max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
 .layer-item{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:6px;cursor:pointer;transition:all .15s var(--ease-out);border:1px solid transparent}
-.layer-item:hover{background:var(--bg-depth-3)}.layer-item.active{background:var(--accent-dim);border-color:var(--glass-border)}
+.layer-item:hover{background:var(--bg-depth-3)}.layer-item.selected{background:var(--accent-dim)}.layer-item.active,.layer-item.primary{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
 .layer-lock{background:none;border:none;padding:2px;cursor:pointer;color:var(--text-muted);opacity:.6;transition:all .15s;flex-shrink:0}
 .layer-lock:hover{opacity:1;color:var(--text-secondary)}
 .layer-lock.locked{opacity:1;color:var(--accent)}
@@ -1499,6 +1499,9 @@ const OS = {
         return changed;
     },
     canvas: null, layers: [], activeLayerIdx: 0,
+    _selectedLayers: new Set(),
+    _layerSelectionAnchor: null,
+    _keyboardContext: 'canvas',
     history: [], historyIdx: -1, maxHistory: 60,
     zoom: 1, canvasW: 1920, canvasH: 1080,
     _shapeStart: null, _tempShape: null,
@@ -2208,10 +2211,44 @@ self.onmessage = function(e) {
     },
 
     // ====================== LAYERS ======================
+    _selectionState() {
+        return {
+            selected:this._selectedLayers,
+            primary:this.layers[this.activeLayerIdx] || null,
+            anchor:this._layerSelectionAnchor,
+        };
+    },
+    _applyLayerSelectionState(state) {
+        this._selectedLayers = state.selected;
+        this._layerSelectionAnchor = state.anchor;
+        this.activeLayerIdx = state.primary ? this.layers.indexOf(state.primary) : -1;
+        if (this.activeLayerIdx < 0 && this.layers.length) this.activeLayerIdx = 0;
+        return state;
+    },
+    _resetLayerSelection(layer = this.layers[this.activeLayerIdx]) {
+        return this._applyLayerSelectionState(
+            window.HstarOpenShopDesktopInput.resetLayerSelection(this.layers, layer)
+        );
+    },
+    _normalizeLayerSelection(preferred = this.layers[this.activeLayerIdx]) {
+        return this._applyLayerSelectionState(
+            window.HstarOpenShopDesktopInput.normalizeLayerSelection(
+                this.layers,
+                this._selectionState(),
+                preferred
+            )
+        );
+    },
+    _selectedLayerIndices() {
+        return this.layers
+            .map((layer, index) => this._selectedLayers.has(layer) ? index : -1)
+            .filter(index => index >= 0);
+    },
     addLayer() {
         const idx = this.layers.length;
-        this.layers.push({ name:`Layer ${idx}`, visible:true, opacity:100, blend:'source-over', objects:[] });
-        this.activeLayerIdx = idx; this.updateLayersPanel(); this.saveHistory('New Layer');
+        const layer = { name:`Layer ${idx}`, visible:true, opacity:100, blend:'source-over', objects:[] };
+        this.layers.push(layer);
+        this.activeLayerIdx = idx; this._resetLayerSelection(layer); this.updateLayersPanel(); this.saveHistory('New Layer');
     },
     deleteLayer() {
         if (this.layers.length === 0) return;
@@ -2225,6 +2262,7 @@ self.onmessage = function(e) {
         } else {
             this.activeLayerIdx = Math.min(this.activeLayerIdx, this.layers.length-1);
         }
+        this._normalizeLayerSelection(this.layers[this.activeLayerIdx]);
         this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Delete Layer');
     },
     duplicateLayer() {
@@ -2232,7 +2270,7 @@ self.onmessage = function(e) {
         const nl = { name:src.name+' Copy', visible:true, opacity:src.opacity, blend:src.blend, objects:[] };
         const toClone = src.objects.filter(o => o.name !== '__boundary__');
         if (toClone.length === 0) {
-            this.layers.splice(this.activeLayerIdx+1, 0, nl); this.activeLayerIdx++;
+            this.layers.splice(this.activeLayerIdx+1, 0, nl); this.activeLayerIdx++; this._resetLayerSelection(nl);
             this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Duplicate Layer');
             return;
         }
@@ -2246,16 +2284,29 @@ self.onmessage = function(e) {
                 }
             });
         });
-        this.layers.splice(this.activeLayerIdx+1, 0, nl); this.activeLayerIdx++;
+        this.layers.splice(this.activeLayerIdx+1, 0, nl); this.activeLayerIdx++; this._resetLayerSelection(nl);
     },
     mergeDown() {
         if (this.activeLayerIdx === 0) { this.toast(this._t('Already at the bottom layer'),'info'); return; }
         const upper = this.layers[this.activeLayerIdx], lower = this.layers[this.activeLayerIdx-1];
         upper.objects.forEach(o => lower.objects.push(o));
-        this.layers.splice(this.activeLayerIdx, 1); this.activeLayerIdx--;
+        this.layers.splice(this.activeLayerIdx, 1); this.activeLayerIdx--; this._resetLayerSelection(lower);
         this.canvas.renderAll(); this.updateLayersPanel(); this.saveHistory('Merge Down');
     },
-    selectLayer(idx) { this.activeLayerIdx = idx; this.canvas.discardActiveObject(); this.canvas.renderAll(); this.updateLayersPanel(); },
+    selectLayer(idx, event = {}) {
+        const layer = this.layers[idx];
+        if (!layer) return;
+        const state = window.HstarOpenShopDesktopInput.selectLayerRange({
+            layers:this.layers,
+            state:this._selectionState(),
+            layer,
+            ctrl:Boolean(event.ctrlKey || event.metaKey),
+            shift:Boolean(event.shiftKey),
+        });
+        this._applyLayerSelectionState(state);
+        this._keyboardContext = 'layers';
+        this.canvas.discardActiveObject(); this.canvas.renderAll(); this.updateLayersPanel();
+    },
     toggleLayerVisibility(idx) {
         const l = this.layers[idx]; l.visible = !l.visible;
         l.objects.forEach(o => o.visible = l.visible);
@@ -2290,10 +2341,15 @@ self.onmessage = function(e) {
         });
     },
     updateLayersPanel() {
+        this._normalizeLayerSelection();
         const list = document.getElementById('layers-list'); list.innerHTML = '';
         for (let i = this.layers.length-1; i >= 0; i--) {
             const l = this.layers[i], d = document.createElement('div');
-            d.className = 'layer-item'+(i===this.activeLayerIdx?' active':'');
+            const selected = this._selectedLayers.has(l);
+            const primary = i === this.activeLayerIdx;
+            d.className = `layer-item${selected?' selected':''}${primary?' active primary':''}`;
+            d.setAttribute('role', 'option');
+            d.setAttribute('aria-selected', selected ? 'true' : 'false');
             const eyeSvg = l.visible
                 ? '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
                 : '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
@@ -2318,7 +2374,7 @@ self.onmessage = function(e) {
             d.querySelector('.layer-vis').addEventListener('click', e => { e.stopPropagation(); this.toggleLayerVisibility(i); });
             d.querySelector('.layer-lock').addEventListener('click', e => { e.stopPropagation(); this.toggleLayerLock(i); });
             d.querySelector('.layer-name').addEventListener('dblclick', function() { OS.startRenameLayer(this, i); });
-            d.addEventListener('click', () => this.selectLayer(i));
+            d.addEventListener('click', event => this.selectLayer(i, event));
             this.initLayerDrag(d, i);
             list.appendChild(d);
         }
@@ -2382,7 +2438,7 @@ self.onmessage = function(e) {
             if(!layersById.has(layerId)) createLayer(layerId, saved.name || `Layer ${layers.length}`);
         });
         this.layers = layers.length ? layers : [{ name:'Layer 0', visible:true, opacity:100, blend:'source-over', objects:[] }];
-        this.activeLayerIdx = 0; this.updateLayersPanel();
+        this.activeLayerIdx = 0; this._resetLayerSelection(this.layers[0]); this.updateLayersPanel();
     },
 
     // ====================== TOOLS ======================
@@ -4002,6 +4058,7 @@ self.onmessage = function(e) {
             const idx = this.layers.length;
             this.layers.push({ name: 'Layer ' + idx + ' (copy)', visible: true, locked: false, opacity: 100, blend: 'source-over', objects: [c] });
             this.canvas.add(c); this.activeLayerIdx = idx;
+            this._resetLayerSelection(this.layers[idx]);
             this.canvas.setActiveObject(c); this.canvas.renderAll();
             this.saveHistory('Layer Via Copy'); this.updateLayersPanel();
             this.toast(this._t("Layer via copy"), 'success');
@@ -4020,6 +4077,7 @@ self.onmessage = function(e) {
             const idx = this.layers.length;
             this.layers.push({ name: 'Layer ' + idx + ' (cut)', visible: true, locked: false, opacity: 100, blend: 'source-over', objects: [c] });
             this.canvas.add(c); this.activeLayerIdx = idx;
+            this._resetLayerSelection(this.layers[idx]);
             this.canvas.setActiveObject(c); this.canvas.renderAll();
             this.saveHistory('Layer Via Cut'); this.updateLayersPanel();
             this.toast(this._t("Layer via cut"), 'success');
@@ -5780,6 +5838,7 @@ self.onmessage = async function(e) {
             if (this.activeLayerIdx === fromIdx) this.activeLayerIdx = toIdx;
             else if (fromIdx < this.activeLayerIdx && toIdx >= this.activeLayerIdx) this.activeLayerIdx--;
             else if (fromIdx > this.activeLayerIdx && toIdx <= this.activeLayerIdx) this.activeLayerIdx++;
+            this._normalizeLayerSelection();
             this.updateLayersPanel(); this.saveHistory('Reorder Layers');
             this.toast(this._t("Layer moved"), 'info');
         });
@@ -7982,6 +8041,7 @@ self.onmessage = async function(e) {
             this.canvas.add(img);
             this.layers = [{ name: `Frame ${idx}`, visible: true, opacity: 100, blend: 'source-over', objects: [boundary, img] }];
             this.activeLayerIdx = 0;
+            this._resetLayerSelection(this.layers[0]);
             this.canvas.renderAll();
             this.updateLayersPanel();
         });
@@ -8995,7 +9055,7 @@ self.onmessage = async function(e) {
             this.layers.forEach((l, i) => {
                 const item = document.createElement('li');
                 const objectCount = l.objects.filter(o => o.name !== '__boundary__').length;
-                item.textContent = this._t(
+                const layerDescription = this._t(
                     i === this.activeLayerIdx
                         ? 'Active layer {index}: {name}, {visibility}, {lock}, {count} objects'
                         : 'Layer {index}: {name}, {visibility}, {lock}, {count} objects',
@@ -9007,6 +9067,11 @@ self.onmessage = async function(e) {
                         count: objectCount
                     }
                 );
+                const selectionState = [
+                    this._selectedLayers.has(l) ? this._t('Selected') : '',
+                    i === this.activeLayerIdx ? this._t('Primary') : '',
+                ].filter(Boolean).join(', ');
+                item.textContent = selectionState ? `${layerDescription}, ${selectionState}` : layerDescription;
                 list.appendChild(item);
             });
         }

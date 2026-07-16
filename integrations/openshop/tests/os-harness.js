@@ -206,9 +206,9 @@ export function mountEditorDom() {
   `;
 }
 
-export function quietUiMethods(OS) {
+export function quietUiMethods(OS, {keepLayersPanel = false} = {}) {
   OS.updateInfoPanel = vi.fn();
-  OS.updateLayersPanel = vi.fn();
+  if (!keepLayersPanel) OS.updateLayersPanel = vi.fn();
   OS.updateHistoryPanel = vi.fn();
   OS.updateStatus = vi.fn();
   OS.updateMinimap = vi.fn();

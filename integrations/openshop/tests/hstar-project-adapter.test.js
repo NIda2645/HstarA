@@ -125,6 +125,21 @@ describe('Hstar OpenShop project adapter', () => {
     expect(project.updatedAt).toBe(1000);
   });
 
+  it('does not serialize ephemeral desktop layer selection state', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor._selectedLayers = new Set(editor.layers);
+    editor._layerSelectionAnchor = editor.layers[0];
+    editor._keyboardContext = 'layers';
+
+    const project = adapter.serializeProject({editor, context, now:() => 2000});
+    const serialized = JSON.stringify(project);
+
+    expect(serialized).not.toContain('_selectedLayers');
+    expect(serialized).not.toContain('_layerSelectionAnchor');
+    expect(serialized).not.toContain('_keyboardContext');
+  });
+
   it('centers a newly connected source image in the OpenShop document', async () => {
     const adapter = window.HstarOpenShopProjectAdapter;
     const editor = createEditor();

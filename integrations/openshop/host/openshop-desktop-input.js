@@ -35,6 +35,67 @@
         return TOOL_SHORTCUTS.get(String(tool || '')) || '';
     }
 
+    function orderedSelection(layers, candidates) {
+        const wanted = candidates instanceof Set ? candidates : new Set(candidates || []);
+        return new Set(layers.filter(layer => wanted.has(layer)));
+    }
+
+    function resetLayerSelection(layers = [], preferred = null) {
+        const primary = layers.includes(preferred) ? preferred : layers.at(-1) || null;
+        return {
+            selected: new Set(primary ? [primary] : []),
+            primary,
+            anchor: primary,
+        };
+    }
+
+    function normalizeLayerSelection(layers = [], state = {}, preferred = null) {
+        const selected = orderedSelection(layers, state.selected);
+        let primary = selected.has(state.primary) ? state.primary : null;
+        if (!primary && layers.length) {
+            primary = layers.includes(preferred)
+                ? preferred
+                : [...selected].at(-1) || layers.at(-1);
+            selected.add(primary);
+        }
+        const ordered = orderedSelection(layers, selected);
+        const anchor = layers.includes(state.anchor) ? state.anchor : primary;
+        return {selected:ordered, primary, anchor};
+    }
+
+    function selectLayerRange({layers = [], state = {}, layer = null, ctrl = false, shift = false} = {}) {
+        const current = normalizeLayerSelection(layers, state, layer);
+        if (!layers.includes(layer)) return current;
+
+        if (shift) {
+            const anchor = layers.includes(current.anchor) ? current.anchor : current.primary || layer;
+            const start = layers.indexOf(anchor);
+            const end = layers.indexOf(layer);
+            const range = layers.slice(Math.min(start, end), Math.max(start, end) + 1);
+            const selected = ctrl
+                ? orderedSelection(layers, new Set([...current.selected, ...range]))
+                : new Set(range);
+            return {selected, primary:layer, anchor};
+        }
+
+        if (ctrl) {
+            const selected = new Set(current.selected);
+            if (selected.has(layer) && selected.size > 1) selected.delete(layer);
+            else selected.add(layer);
+            const ordered = orderedSelection(layers, selected);
+            const primary = ordered.has(layer)
+                ? layer
+                : ordered.has(current.primary)
+                    ? current.primary
+                    : ordered.has(current.anchor)
+                        ? current.anchor
+                        : [...ordered].at(-1) || null;
+            return {selected:ordered, primary, anchor:current.anchor || primary};
+        }
+
+        return resetLayerSelection(layers, layer);
+    }
+
     function localizedToolTip(button) {
         const label = String(button?.dataset?.tip || '').trim();
         const shortcut = toolShortcut(button?.dataset?.tool);
@@ -124,6 +185,9 @@
     window.HstarOpenShopDesktopInput = Object.freeze({
         toolCycleForKey,
         toolShortcut,
+        resetLayerSelection,
+        normalizeLayerSelection,
+        selectLayerRange,
         localizedToolTip,
         createToolTooltipController,
     });
