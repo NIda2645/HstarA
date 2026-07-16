@@ -140,6 +140,11 @@
         return {command:'cycle-tool', tool};
     }
 
+    function resolveEditingShortcut(event, activeObject) {
+        if (event?.type !== 'keydown' || !activeObject?.isEditing) return null;
+        return event.code === 'NumpadEnter' ? {command:'commit-text-editing'} : null;
+    }
+
     function isEditableShortcutTarget(target, activeObject) {
         if (activeObject?.isEditing) return true;
         const element = target?.nodeType === 1 ? target : target?.parentElement;
@@ -319,6 +324,7 @@
         toolCycleForKey,
         toolShortcut,
         resolveShortcut,
+        resolveEditingShortcut,
         isEditableShortcutTarget,
         commandShortcut,
         shortcutRows,

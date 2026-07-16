@@ -7358,6 +7358,7 @@ self.onmessage = async function(e) {
             'zoom-out':()=>this.zoomOut(),
             'toggle-panels':()=>this._toggleUIPanels(),
             'cycle-screen-mode':()=>this.toggleFullscreen(),
+            'commit-text-editing':()=>this._commitTextEditing(),
             'commit-operation':()=>this._commitActiveOperation(),
             'cancel-operation':()=>this._cancelActiveOperation(),
             'temporary-pan':()=>this._setTemporaryPan(true),
@@ -7394,6 +7395,16 @@ self.onmessage = async function(e) {
     },
     _moveSelectedLayersToBoundary(edge) {
         this._moveSelectedLayersToIndex(edge === 'bottom' ? 0 : this.layers.length);
+    },
+    _commitTextEditing() {
+        const active = this.canvas?.getActiveObject?.();
+        if (!active?.isEditing || typeof active.exitEditing !== 'function') return false;
+        active.exitEditing();
+        this.canvas.setActiveObject(active);
+        this.canvas.requestRenderAll();
+        this.saveHistory('Edit Text');
+        this.updateLayersPanel();
+        return true;
     },
     _commitActiveOperation() {
         if (this.state.tool === 'crop' && this._cropRegion) return this.applyCrop();
@@ -7473,6 +7484,11 @@ self.onmessage = async function(e) {
         };
         const keydown = event => {
             const activeObject = this.canvas?.getActiveObject?.();
+            const editingShortcut = desktopInput.resolveEditingShortcut(event, activeObject);
+            if (editingShortcut) {
+                execute(event, editingShortcut);
+                return;
+            }
             if (desktopInput.isEditableShortcutTarget(event.target, activeObject)) return;
             const resolved = desktopInput.resolveShortcut(event, {
                 context:this._keyboardContext,

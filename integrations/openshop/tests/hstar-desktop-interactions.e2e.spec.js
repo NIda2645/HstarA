@@ -125,6 +125,48 @@ test('keeps Delete context separate and suppresses shortcuts while editing', asy
   expect(await page.evaluate(() => OS.layers.length)).toBe(beforeCanvasDelete);
 });
 
+test('confirms text editing with NumpadEnter while regular Enter inserts a newline', async ({page}) => {
+  await openPreparedEditor(page);
+  const initialHistoryLength = await page.evaluate(() => {
+    const text = new fabric.IText('中文 English', {
+      left:80,
+      top:80,
+      fontFamily:'Microsoft YaHei UI',
+      fontSize:48,
+      fill:'#ffffff',
+      editable:true,
+    });
+    OS.canvas.add(text);
+    OS.layers[OS.activeLayerIdx].objects.push(text);
+    OS.canvas.setActiveObject(text);
+    text.enterEditing();
+    text.selectionStart = text.selectionEnd = text.text.length;
+    text._updateTextarea();
+    text.hiddenTextarea.focus();
+    window.__hstarTextConfirmTarget = text;
+    return OS.history.length;
+  });
+
+  await page.keyboard.press('NumpadEnter');
+  expect(await page.evaluate(() => ({
+    editing:window.__hstarTextConfirmTarget.isEditing,
+    selected:OS.canvas.getActiveObject() === window.__hstarTextConfirmTarget,
+    historyLength:OS.history.length,
+  }))).toEqual({editing:false, selected:true, historyLength:initialHistoryLength + 1});
+
+  const beforeNewline = await page.evaluate(() => {
+    const text = window.__hstarTextConfirmTarget;
+    text.enterEditing();
+    text.selectionStart = text.selectionEnd = text.text.length;
+    text._updateTextarea();
+    text.hiddenTextarea.focus();
+    return text.text;
+  });
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__hstarTextConfirmTarget.text)).toBe(`${beforeNewline}\n`);
+  expect(await page.evaluate(() => window.__hstarTextConfirmTarget.isEditing)).toBe(true);
+});
+
 for (const viewport of [{width:1440, height:1000}, {width:3840, height:2160}]) {
   test(`frames tooltips at ${viewport.width}`, async ({page}) => {
     await page.setViewportSize(viewport);

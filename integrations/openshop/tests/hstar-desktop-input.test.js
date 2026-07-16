@@ -151,6 +151,24 @@ describe('OpenShop desktop input foundation', () => {
     }));
   });
 
+  it('resolves only the numeric keypad Enter while text is editing', () => {
+    const desktop = loadDesktopInput();
+    const editingText = {type:'i-text', isEditing:true};
+
+    expect(desktop.resolveEditingShortcut(
+      new KeyboardEvent('keydown', {key:'Enter', code:'NumpadEnter'}),
+      editingText,
+    )).toEqual({command:'commit-text-editing'});
+    expect(desktop.resolveEditingShortcut(
+      new KeyboardEvent('keydown', {key:'Enter', code:'Enter'}),
+      editingText,
+    )).toBeNull();
+    expect(desktop.resolveEditingShortcut(
+      new KeyboardEvent('keydown', {key:'Enter', code:'NumpadEnter'}),
+      {type:'i-text', isEditing:false},
+    )).toBeNull();
+  });
+
   it('keeps the editor tooltip localized and hides it when tool UI closes', () => {
     document.body.innerHTML = `
       <div id="toolbar">
