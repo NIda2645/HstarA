@@ -156,6 +156,27 @@ describe('OpenShop editor performance paths', () => {
     expect(queryAll).not.toHaveBeenCalled();
   });
 
+  it('creates and reuses the dedicated live eraser brush', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.layers = [{name:'Content', locked:false, objects:[]}];
+    quietUiMethods(OS);
+    const eraserBrush = new fabric.PencilBrush(OS.canvas);
+    window.HstarOpenShopLiveEraser = {
+      createBrush:vi.fn(() => eraserBrush),
+      configureFinalPath:vi.fn(path => path),
+    };
+
+    OS.setTool('eraser');
+    const firstBrush = OS.canvas.freeDrawingBrush;
+    OS.setTool('brush');
+    OS.setTool('eraser');
+
+    expect(window.HstarOpenShopLiveEraser.createBrush).toHaveBeenCalledOnce();
+    expect(firstBrush).toBe(eraserBrush);
+    expect(OS.canvas.freeDrawingBrush).toBe(firstBrush);
+  });
+
   it('uses frame-coalesced rendering for temporary shape feedback', () => {
     const OS = loadOpenShop();
     document.body.insertAdjacentHTML('beforeend', '<span id="cursor-pos"></span><span id="info-cursor"></span>');

@@ -1599,8 +1599,12 @@ const OS = {
         this.canvas.on('mouse:wheel', opt => this.onMouseWheel(opt));
         this.canvas.on('path:created', e => {
             if (this.state.tool === 'eraser') {
-                e.path.globalCompositeOperation = 'destination-out';
-                e.path.stroke = 'rgba(0,0,0,1)';
+                if (window.HstarOpenShopLiveEraser?.configureFinalPath) {
+                    window.HstarOpenShopLiveEraser.configureFinalPath(e.path);
+                } else {
+                    e.path.globalCompositeOperation = 'destination-out';
+                    e.path.stroke = 'rgba(0,0,0,1)';
+                }
             }
             this.layers[this.activeLayerIdx].objects.push(e.path);
             if (this._symmetryMode !== 'off') this._mirrorPath(e.path);
@@ -2841,8 +2845,13 @@ self.onmessage = function(e) {
                 showOption('opt-brush'); break;
             case 'eraser':
                 c.isDrawingMode=true;
-                c.freeDrawingBrush = this._getCachedBrush('pencil:eraser', () => new fabric.PencilBrush(c));
-                c.freeDrawingBrush.color = 'rgba(0,0,0,1)'; c.freeDrawingBrush.width = this.state.brushSize;
+                c.freeDrawingBrush = this._getCachedBrush('live:eraser', () => (
+                    window.HstarOpenShopLiveEraser?.createBrush
+                        ? window.HstarOpenShopLiveEraser.createBrush({fabricRef:fabric, canvas:c})
+                        : new fabric.PencilBrush(c)
+                ));
+                c.freeDrawingBrush.color = window.HstarOpenShopLiveEraser?.previewColor || 'rgba(0,0,0,1)';
+                c.freeDrawingBrush.width = this.state.brushSize;
                 showOption('opt-brush'); break;
             case 'spray':
                 c.isDrawingMode=true;
@@ -2903,12 +2912,26 @@ self.onmessage = function(e) {
     },
     _applyBrushColor() {
         if(!this.canvas.freeDrawingBrush) return;
+        if(this.state.tool === 'eraser' && window.HstarOpenShopLiveEraser?.previewColor) {
+            this.canvas.freeDrawingBrush.color = window.HstarOpenShopLiveEraser.previewColor;
+            return;
+        }
         const hex=this.state.tool==='eraser'?'#000000':this.state.fgColor;
         this.canvas.freeDrawingBrush.color=this.state.brushOpacity<100?this._hexToRgba(hex,this.state.brushOpacity):hex;
     },
     setBrushPreset(preset) {
         this.state.brushPreset = preset;
         const c = this.canvas; if (!c.isDrawingMode) return;
+        if (this.state.tool === 'eraser') {
+            c.freeDrawingBrush = this._getCachedBrush('live:eraser', () => (
+                window.HstarOpenShopLiveEraser?.createBrush
+                    ? window.HstarOpenShopLiveEraser.createBrush({fabricRef:fabric, canvas:c})
+                    : new fabric.PencilBrush(c)
+            ));
+            c.freeDrawingBrush.color = window.HstarOpenShopLiveEraser?.previewColor || 'rgba(0,0,0,1)';
+            c.freeDrawingBrush.width = this.state.brushSize;
+            return;
+        }
         let brush;
         switch(preset) {
             case 'round':
@@ -9541,6 +9564,7 @@ window.addEventListener('unhandledrejection', e => { console.error('Unhandled pr
 window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
 <script src="./host/openshop-canvas-sampler.js"></script>
+<script src="./host/openshop-live-eraser.js"></script>
 <script src="./host/openshop-update-scheduler.js"></script>
 <script src="./host/openshop-snap-engine.js"></script>
 <script src="./host/openshop-protocol.js?v=2026.07.15.1784120375"></script>
