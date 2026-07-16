@@ -135,12 +135,60 @@ describe('Hstar OpenShop text properties', () => {
 
     expect(document.querySelector('[data-hstar-text-properties-tab]').classList).toContain('active');
     expect(document.getElementById('hstar-text-properties-panel').classList).toContain('active');
-    expect(document.querySelector('[data-text-family]').value).toBe('Microsoft YaHei UI');
+    expect(document.querySelector('[data-text-family]').textContent).toContain('Microsoft YaHei UI');
 
     textObject.isEditing = true;
     canvas.fire('text:editing:entered', {target:textObject});
     expect(document.querySelector('[data-hstar-text-properties-tab]').classList).toContain('active');
     controller.destroy();
+  });
+
+  it('uses a read-only dropdown for the complete font catalog', async () => {
+    const {controller, fontManager, textObject} = createHarness();
+    const fonts = [
+      {family:'Microsoft YaHei UI', label:'微软雅黑 UI', status:'available', styles:[]},
+      {family:'Century Gothic', label:'Century Gothic', status:'available', styles:[]},
+      ...Array.from({length:94}, (_, index) => ({
+        family:`Test Font ${String(index + 1).padStart(2, '0')}`,
+        label:`Test Font ${String(index + 1).padStart(2, '0')}`,
+        status:'available',
+        styles:[],
+      })),
+    ];
+    fontManager.searchFonts.mockReturnValue(fonts);
+    const previousScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn();
+
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+
+    expect(trigger.tagName).toBe('BUTTON');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('listbox');
+    expect(trigger.querySelector('input')).toBeNull();
+    trigger.click();
+    expect(list.hidden).toBe(false);
+    expect(list.querySelectorAll('[data-family]')).toHaveLength(96);
+    expect(list.querySelector('[data-family="Microsoft YaHei UI"]').getAttribute('aria-selected')).toBe('true');
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({block:'nearest'});
+
+    trigger.click();
+    expect(list.hidden).toBe(true);
+    trigger.click();
+    trigger.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+    expect(list.hidden).toBe(true);
+
+    trigger.click();
+    list.querySelector('[data-family="Century Gothic"]').click();
+    expect(list.hidden).toBe(true);
+    expect(textObject.set).toHaveBeenCalledWith({fontFamily:'Century Gothic'});
+
+    trigger.click();
+    document.body.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+    expect(list.hidden).toBe(true);
+
+    controller.destroy();
+    Element.prototype.scrollIntoView = previousScrollIntoView;
   });
 
   it('applies styles to the whole object outside editing and syncs the top bar', async () => {

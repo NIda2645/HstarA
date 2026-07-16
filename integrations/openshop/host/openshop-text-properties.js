@@ -30,6 +30,7 @@
       target:null,
       caretStyles:{},
       previousText:'',
+      familyValue:'',
       listeners:[],
       unsubscribeFonts:null,
       panel:null,
@@ -90,6 +91,17 @@
       control.value = points ? String(Number(pixelsToPoints(value).toFixed(2))) : String(value);
     }
 
+    function syncFamilyControl(value){
+      const control = documentRef.querySelector('[data-text-family]');
+      const label = control?.querySelector('[data-text-family-label]');
+      if(!control || !label) return;
+      const mixed = value === MIXED;
+      state.familyValue = mixed ? '' : clean(value);
+      control.dataset.mixed = mixed ? 'true' : 'false';
+      label.textContent = mixed ? '多种字体' : state.familyValue;
+      control.title = label.textContent;
+    }
+
     function ensureOption(select, value, label = value){
       if(!select || !value || value === MIXED) return;
       const existing = [...select.options].find(option => option.value === String(value));
@@ -141,7 +153,7 @@
       const target = activeTextObject();
       if(!target) return;
       const family = propertyValue(target, 'fontFamily');
-      setControlValue('[data-text-family]', family);
+      syncFamilyControl(family);
       updateStyleOptions(family === MIXED ? '' : family);
       setControlValue('[data-text-size]', propertyValue(target, 'fontSize'), {points:true});
       setControlValue('[data-text-line-height]', propertyValue(target, 'lineHeight'));
@@ -278,7 +290,9 @@
         <div class="ptc-inner hstar-text-properties-inner">
           <div class="hstar-text-property-grid">
             <label class="hstar-text-property-wide">字体
-              <input type="text" data-text-family role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off">
+              <button type="button" class="hstar-font-select" data-text-family aria-haspopup="listbox" aria-expanded="false">
+                <span data-text-family-label></span><span aria-hidden="true">▾</span>
+              </button>
               <div class="hstar-font-list" data-text-font-list role="listbox" hidden></div>
             </label>
             <label>字形 <select data-text-style></select></label>
@@ -310,46 +324,49 @@
     function bindPanelControls(){
       const family = documentRef.querySelector('[data-text-family]');
       const list = documentRef.querySelector('[data-text-font-list]');
+      const closeFontList = () => {
+        if(list) list.hidden = true;
+        family?.setAttribute('aria-expanded', 'false');
+      };
       const renderFontList = () => {
-        if(!list) return;
+        if(!list || !family) return;
         list.innerHTML = '';
-        (fontManager.searchFonts?.(family?.value || '') || []).slice(0, 80).forEach(font => {
+        let selectedOption = null;
+        (fontManager.searchFonts?.('') || []).forEach(font => {
           const option = documentRef.createElement('button');
           option.type = 'button';
           option.className = 'hstar-font-option';
           option.dataset.family = font.family;
           option.setAttribute('role', 'option');
+          const selected = clean(font.family).toLowerCase() === state.familyValue.toLowerCase();
+          option.setAttribute('aria-selected', selected ? 'true' : 'false');
+          if(selected) selectedOption = option;
           option.textContent = font.status === 'missing' ? `${font.label}（缺失字体）` : font.label;
           option.style.fontFamily = `'${font.family.replaceAll("'", '')}'`;
           option.addEventListener('mousedown', event => event.preventDefault());
           option.addEventListener('click', () => {
-            family.value = font.family;
-            list.hidden = true;
-            family.setAttribute('aria-expanded', 'false');
+            closeFontList();
             applyProperty('fontFamily', font.family);
           });
           list.append(option);
         });
         list.hidden = false;
-        family?.setAttribute('aria-expanded', 'true');
+        family.setAttribute('aria-expanded', 'true');
+        selectedOption?.scrollIntoView?.({block:'nearest'});
       };
-      family?.addEventListener('focus', renderFontList);
-      family?.addEventListener('input', renderFontList);
-      family?.addEventListener('keydown', event => {
-        if(event.key === 'Enter') {
-          const first = list?.querySelector('[data-family]');
-          if(first) first.click();
+      addDomListener(family, 'click', () => {
+        if(list?.hidden) renderFontList();
+        else closeFontList();
+      });
+      addDomListener(family, 'keydown', event => {
+        if(event.key === 'Escape') {
+          closeFontList();
           event.preventDefault();
         }
-        if(event.key === 'Escape') {
-          list.hidden = true;
-          family.setAttribute('aria-expanded', 'false');
-        }
       });
-      documentRef.addEventListener('mousedown', event => {
-        if(list && !list.contains(event.target) && event.target !== family) {
-          list.hidden = true;
-          family?.setAttribute('aria-expanded', 'false');
+      addDomListener(documentRef, 'mousedown', event => {
+        if(list && !list.contains(event.target) && !family?.contains(event.target)) {
+          closeFontList();
         }
       });
 

@@ -54,9 +54,19 @@ test('edits mixed-language text with installed fonts and preserves the project s
   });
 
   await expect(frame.locator('[data-hstar-text-properties-tab]')).toHaveClass(/active/);
-  const familyInput = frame.locator('[data-text-family]');
-  await familyInput.fill(selectedFamily);
+  const familyTrigger = frame.locator('[data-text-family]');
+  await expect(familyTrigger).toHaveJSProperty('tagName', 'BUTTON');
+  await familyTrigger.click();
   await expect(frame.locator('[data-text-font-list]')).toBeVisible();
+  const listMetrics = await frame.locator('[data-text-font-list]').evaluate(list => ({
+    clientHeight:list.clientHeight,
+    scrollHeight:list.scrollHeight,
+  }));
+  expect(listMetrics.scrollHeight).toBeGreaterThan(listMetrics.clientHeight);
+  await expect(frame.locator(`[data-family="${selectedFamily.replaceAll('"', '\\"')}"]`).first()).toHaveAttribute('aria-selected', 'true');
+  await frame.locator('#tool-options').click({position:{x:4, y:4}});
+  await expect(frame.locator('[data-text-font-list]')).toBeHidden();
+  await familyTrigger.click();
   await frame.locator(`[data-family="${selectedFamily.replaceAll('"', '\\"')}"]`).first().click();
   await expect(frame.locator('[data-text-font-list]')).toBeHidden();
 
