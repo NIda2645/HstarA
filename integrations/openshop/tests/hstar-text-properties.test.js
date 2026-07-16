@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const controllerPath = resolve(testDir, '..', 'host', 'openshop-text-properties.js');
+const controllerCssPath = resolve(testDir, '..', 'host', 'openshop-text-properties.css');
 
 class FakeCanvas {
   constructor() {
@@ -189,6 +190,14 @@ describe('Hstar OpenShop text properties', () => {
 
     controller.destroy();
     Element.prototype.scrollIntoView = previousScrollIntoView;
+  });
+
+  it('keeps a closed font list visually hidden from the layout', () => {
+    const css = readFileSync(controllerCssPath, 'utf8');
+
+    expect(css).toMatch(
+      /\.hstar-font-list\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*\}/
+    );
   });
 
   it('applies styles to the whole object outside editing and syncs the top bar', async () => {

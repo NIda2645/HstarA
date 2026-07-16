@@ -192,6 +192,36 @@ describe('Hstar OpenShop font catalog', () => {
     expect(fetchImpl).toHaveBeenLastCalledWith('/api/openshop/fonts?refresh=1', {cache:'no-store'});
   });
 
+  it('sorts Chinese fonts before every non-Chinese family', async () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fontProbe:() => true,
+      fetchImpl:async () => ({
+        ok:true,
+        json:async () => ({
+          fonts:[
+            {family:'04b', label:'04b'},
+            {family:'Arial', label:'Arial'},
+            {family:'Alibaba PuHuiTi', label:'阿里巴巴普惠体', language:'zh'},
+            {family:'FZHei', label:'方正黑体'},
+          ],
+        }),
+      }),
+    });
+
+    await manager.loadSystemFonts();
+    const fonts = manager.searchFonts('');
+    const isChinese = font => (
+      String(font.language || '').toLowerCase().startsWith('zh')
+      || /[\u3400-\u9fff]/u.test(`${font.family} ${font.label}`)
+    );
+    const groups = fonts.map(font => isChinese(font));
+    const firstOther = groups.indexOf(false);
+
+    expect(firstOther).toBeGreaterThan(0);
+    expect(groups.slice(0, firstOther).every(Boolean)).toBe(true);
+    expect(groups.slice(firstOther).some(Boolean)).toBe(false);
+  });
+
   it('notifies subscribers when loading starts and finishes', async () => {
     let resolveRequest;
     const manager = window.HstarOpenShopFontCatalog.createManager({
