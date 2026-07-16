@@ -121,9 +121,12 @@ Core Photoshop-compatible mappings for current OpenShop functionality:
 
 | Keys | OpenShop action |
 | --- | --- |
+| Ctrl+Alt+K | Command palette (custom, non-conflicting) |
+| Ctrl+K | Preferences |
 | Ctrl+N | New document |
 | Ctrl+O | Open image |
 | Ctrl+S | Save project |
+| Ctrl+Alt+Shift+W | Export settings / Export As |
 | Ctrl+Z | Undo |
 | Ctrl+Shift+Z | Redo |
 | Ctrl+X / Ctrl+C / Ctrl+V | Cut / Copy / Paste |
@@ -131,6 +134,9 @@ Core Photoshop-compatible mappings for current OpenShop functionality:
 | Ctrl+T | Free transform |
 | Ctrl+A / Ctrl+D | Select all / Deselect |
 | Ctrl+Shift+D / Ctrl+Shift+I | Reselect / Invert selection |
+| Ctrl+I | Invert image |
+| Ctrl+Alt+C | Resize canvas |
+| Ctrl+L / Ctrl+M / Ctrl+B | Levels / Curves / Color Balance |
 | Ctrl+Shift+N | New layer |
 | Ctrl+E / Ctrl+Shift+E | Merge selected or down / Merge visible |
 | Alt+[ / Alt+] | Select adjacent lower / upper layer |
