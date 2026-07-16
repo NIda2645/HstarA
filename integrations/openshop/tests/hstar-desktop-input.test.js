@@ -169,6 +169,20 @@ describe('OpenShop desktop input foundation', () => {
     )).toBeNull();
   });
 
+  it('resolves foreground and background fill without changing plain Delete', () => {
+    const desktop = loadDesktopInput();
+
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'Delete', altKey:true}),
+    )).toEqual({command:'fill-foreground'});
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'Delete', ctrlKey:true}),
+    )).toEqual({command:'fill-background'});
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'Delete'}),
+    )).toEqual({command:'delete-context'});
+  });
+
   it('keeps the editor tooltip localized and hides it when tool UI closes', () => {
     document.body.innerHTML = `
       <div id="toolbar">

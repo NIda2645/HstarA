@@ -72,6 +72,8 @@
         {id:'zoom-out', label:'Zoom Out', keys:['Ctrl+-']},
         {id:'toggle-panels', label:'Toggle UI Panels', keys:['Tab']},
         {id:'cycle-screen-mode', label:'Cycle Screen Mode', keys:['F']},
+        {id:'fill-foreground', label:'Fill Foreground', keys:['Alt+Delete']},
+        {id:'fill-background', label:'Fill Background', keys:['Ctrl+Delete']},
         {id:'delete-context', label:'Delete Selected', keys:['Delete', 'Backspace']},
         {id:'commit-operation', label:'Apply Crop / Finish Pen', keys:['Enter']},
         {id:'cancel-operation', label:'Cancel / Deselect', keys:['Escape']},

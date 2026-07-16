@@ -167,6 +167,112 @@ test('confirms text editing with NumpadEnter while regular Enter inserts a newli
   expect(await page.evaluate(() => window.__hstarTextConfirmTarget.isEditing)).toBe(true);
 });
 
+test('fills only active image pixels with foreground and background shortcuts', async ({page}) => {
+  await openPreparedEditor(page);
+  await page.evaluate(async () => {
+    const makeImage = color => new Promise(resolve => {
+      const source = document.createElement('canvas');
+      source.width = 4;
+      source.height = 4;
+      const context = source.getContext('2d');
+      context.fillStyle = color;
+      context.fillRect(0, 0, 4, 4);
+      fabric.Image.fromURL(source.toDataURL('image/png'), resolve);
+    });
+    const activeImage = await makeImage('#111111');
+    activeImage.set({left:0, top:0, originX:'left', originY:'top', name:'Active Pixels'});
+    const inactiveImage = await makeImage('#334455');
+    inactiveImage.set({left:20, top:0, originX:'left', originY:'top', name:'Inactive Pixels'});
+    OS.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    OS.layers[1].objects.push(activeImage);
+    OS.layers[2].objects.push(inactiveImage);
+    OS.canvas.add(activeImage, inactiveImage);
+    OS.activeLayerIdx = 1;
+    OS._resetLayerSelection(OS.layers[1]);
+    OS.canvas.setActiveObject(activeImage);
+    OS.setFgColor('#ff0000');
+    OS.setBgColor('#00ff00');
+    OS.updateLayersPanel();
+  });
+  const layerPixels = layerIndex => page.evaluate(index => {
+    const image = OS.layers[index].objects.find(object => object.type === 'image');
+    const element = image.getElement();
+    const canvas = document.createElement('canvas');
+    canvas.width = element.naturalWidth || element.width;
+    canvas.height = element.naturalHeight || element.height;
+    const context = canvas.getContext('2d');
+    context.drawImage(element, 0, 0);
+    return [...context.getImageData(0, 0, canvas.width, canvas.height).data];
+  }, layerIndex);
+
+  const inactiveBefore = await layerPixels(2);
+  const historyBefore = await page.evaluate(() => OS.history.length);
+  await page.keyboard.press('Alt+Delete');
+  await expect.poll(() => layerPixels(1)).toEqual(Array.from({length:16}, () => [255, 0, 0, 255]).flat());
+  expect(await page.evaluate(() => OS.history.length)).toBe(historyBefore + 1);
+  expect(await layerPixels(2)).toEqual(inactiveBefore);
+
+  await page.evaluate(() => {
+    OS._selectionMask = null;
+    OS._selectionBounds = {x:0, y:0, w:2, h:4};
+  });
+  await page.keyboard.press('Control+Delete');
+  await expect.poll(() => layerPixels(1)).toEqual([
+    0,255,0,255, 0,255,0,255, 255,0,0,255, 255,0,0,255,
+    0,255,0,255, 0,255,0,255, 255,0,0,255, 255,0,0,255,
+    0,255,0,255, 0,255,0,255, 255,0,0,255, 255,0,0,255,
+    0,255,0,255, 0,255,0,255, 255,0,0,255, 255,0,0,255,
+  ]);
+
+  await page.evaluate(() => {
+    const mask = new Uint8Array(OS.canvas.width * OS.canvas.height);
+    mask[1 * OS.canvas.width + 1] = 1;
+    OS._selectionMask = {mask, w:OS.canvas.width, h:OS.canvas.height};
+    OS._selectionBounds = {x:1, y:1, w:1, h:1};
+    OS.setFgColor('#0000ff');
+  });
+  await page.keyboard.press('Alt+Delete');
+  await expect.poll(() => layerPixels(1)).toEqual([
+    0,0,255,255, 0,255,0,255, 255,0,0,255, 255,0,0,255,
+    0,255,0,255, 0,255,0,255, 255,0,0,255, 255,0,0,255,
+    0,255,0,255, 0,255,0,255, 255,0,0,255, 255,0,0,255,
+    0,255,0,255, 0,255,0,255, 255,0,0,255, 255,0,0,255,
+  ]);
+
+  const beforeEditingFill = await layerPixels(1);
+  await page.evaluate(() => {
+    const text = new fabric.IText('Keep editing', {left:40, top:40, editable:true});
+    OS.layers[1].objects.push(text);
+    OS.canvas.add(text);
+    OS.canvas.setActiveObject(text);
+    text.enterEditing();
+    text.hiddenTextarea.focus();
+    window.__fillEditingText = text;
+  });
+  await page.keyboard.press('Alt+Delete');
+  expect(await layerPixels(1)).toEqual(beforeEditingFill);
+
+  await page.evaluate(() => window.__fillEditingText.exitEditing());
+  const opacityInput = page.locator('#layer-opacity');
+  await opacityInput.focus();
+  await page.keyboard.press('Control+Delete');
+  expect(await layerPixels(1)).toEqual(beforeEditingFill);
+  expect(await layerPixels(2)).toEqual(inactiveBefore);
+
+  await page.evaluate(() => {
+    document.activeElement?.blur?.();
+    OS.activeLayerIdx = 3;
+    OS._resetLayerSelection(OS.layers[3]);
+    OS.canvas.discardActiveObject();
+    OS._selectionMask = null;
+    OS._selectionBounds = null;
+  });
+  await page.keyboard.press('Alt+Delete');
+  await expect(page.locator('#toast-container .toast').last()).toContainText('请先选择图像');
+  expect(await layerPixels(1)).toEqual(beforeEditingFill);
+  expect(await layerPixels(2)).toEqual(inactiveBefore);
+});
+
 for (const viewport of [{width:1440, height:1000}, {width:3840, height:2160}]) {
   test(`frames tooltips at ${viewport.width}`, async ({page}) => {
     await page.setViewportSize(viewport);

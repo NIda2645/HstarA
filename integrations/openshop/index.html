@@ -1452,6 +1452,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 
 <script src="./host/openshop-i18n.js"></script>
 <script src="./locales/zh-CN.js"></script>
+<script src="./host/openshop-pixel-fill.js"></script>
 <script src="./host/openshop-desktop-input.js"></script>
 <script>
 // ================================================================
@@ -5386,6 +5387,49 @@ self.onmessage = async function(e) {
             this.canvas.renderAll(); this.saveHistory(histName); this.updateLayersPanel();
         });
     },
+    _fillActiveImage(color, historyName) {
+        const layer = this.layers[this.activeLayerIdx];
+        const active = this.canvas.getActiveObject();
+        const target = active?.type === 'image' && layer?.objects?.includes(active)
+            ? active
+            : [...(layer?.objects || [])].reverse().find(object => object?.type === 'image');
+        if (!target) {
+            this.toast(this._t('Select an image first'), 'info');
+            return false;
+        }
+        const element = target.getElement();
+        const output = document.createElement('canvas');
+        output.width = element.naturalWidth || element.width;
+        output.height = element.naturalHeight || element.height;
+        const context = output.getContext('2d');
+        context.drawImage(element, 0, 0);
+        const imageData = context.getImageData(0, 0, output.width, output.height);
+        const matrix = target.calcTransformMatrix();
+        const viewport = this.canvas.viewportTransform || [1, 0, 0, 1, 0, 0];
+        const mask = this._selectionMask;
+        const selection = !mask && this._selectionBounds ? this._selToCanvasCoords() : null;
+        const includesPixel = (x, y) => {
+            if (!mask && !selection) return true;
+            const point = fabric.util.transformPoint({
+                x:x + 0.5 - output.width / 2,
+                y:y + 0.5 - output.height / 2,
+            }, matrix);
+            if (mask) {
+                const screenX = Math.round(point.x * viewport[0] + viewport[4]);
+                const screenY = Math.round(point.y * viewport[3] + viewport[5]);
+                return screenX >= 0 && screenY >= 0 && screenX < mask.w && screenY < mask.h
+                    && Boolean(mask.mask[screenY * mask.w + screenX]);
+            }
+            return point.x >= selection.x && point.y >= selection.y
+                && point.x < selection.x + selection.w && point.y < selection.y + selection.h;
+        };
+        const count = window.HstarOpenShopPixelFill.fillImageData(imageData, color, includesPixel);
+        if (!count) return false;
+        context.putImageData(imageData, 0, 0);
+        this._replaceActiveImage(target, output.toDataURL('image/png'), historyName);
+        this.toast(this._t('Filled {count} px', {count:count.toLocaleString()}), 'success');
+        return true;
+    },
     _floodFillImage(target,ptr){
         const el=target.getElement();
         const oc=document.createElement('canvas');
@@ -7359,6 +7403,8 @@ self.onmessage = async function(e) {
             'toggle-panels':()=>this._toggleUIPanels(),
             'cycle-screen-mode':()=>this.toggleFullscreen(),
             'commit-text-editing':()=>this._commitTextEditing(),
+            'fill-foreground':()=>this._fillActiveImage(this.state.fgColor, 'Fill Foreground'),
+            'fill-background':()=>this._fillActiveImage(this.state.bgColor, 'Fill Background'),
             'commit-operation':()=>this._commitActiveOperation(),
             'cancel-operation':()=>this._cancelActiveOperation(),
             'temporary-pan':()=>this._setTemporaryPan(true),
