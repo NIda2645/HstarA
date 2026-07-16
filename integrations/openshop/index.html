@@ -1750,18 +1750,37 @@ const OS = {
             ? this._t('Image pasted from clipboard')
             : this._t('Added: {name}', { name: this._safeText(name, 80) }), 'success');
     },
-    async openFile() {
-        if (window.showOpenFilePicker) {
-            try {
-                const [handle] = await window.showOpenFilePicker({
-                    types: [{ description: 'Images', accept: { 'image/*': ['.png','.jpg','.jpeg','.webp','.gif','.bmp'] } }]
-                });
-                const file = await handle.getFile();
-                this._handleFileLoad(file);
-                return;
-            } catch(e) { if (e.name === 'AbortError') return; }
+    async _requestNativeLocalFile(kind) {
+        const response = await fetch('/api/native/open-local-file', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({kind}),
+        });
+        if (response.status === 204) return {file:null, fallback:false};
+        if (response.status === 501) return {file:null, fallback:true};
+        if (!response.ok) {
+            const value = await response.json().catch(() => ({}));
+            throw new Error(value.detail || `Native file picker failed (${response.status})`);
         }
-        document.getElementById('file-input').click();
+        const blob = await response.blob();
+        const encodedName = response.headers.get('X-Hstar-Filename') || '';
+        let name = '';
+        try { name = decodeURIComponent(encodedName); } catch (_) {}
+        if (!name) name = kind === 'psd' ? 'document.psd' : 'image.png';
+        const type = blob.type || response.headers.get('Content-Type') || '';
+        return {file:new File([blob], name, {type}), fallback:false};
+    },
+    async openFile() {
+        try {
+            const result = await this._requestNativeLocalFile('image');
+            if (result.fallback) {
+                document.getElementById('file-input').click();
+                return;
+            }
+            if (result.file) this._handleFileLoad(result.file);
+        } catch (error) {
+            this.toast(error?.message || this._t('Could not open file'), 'error');
+        }
     },
     _handleFileLoad(file) {
         try { this._validateImageFile(file); } catch(e) { this.toast(this._t(e.message), 'error'); return; }
@@ -1977,7 +1996,18 @@ const OS = {
         supportedColorModes: [3]
     },
     _psdLibUrl: './vendor/ag-psd-22.0.2.bundle.js',
-    openPSD() { document.getElementById('psd-input').click(); },
+    async openPSD() {
+        try {
+            const result = await this._requestNativeLocalFile('psd');
+            if (result.fallback) {
+                document.getElementById('psd-input').click();
+                return;
+            }
+            if (result.file) this._loadPSDFile(result.file);
+        } catch (error) {
+            this.toast(error?.message || this._t('Could not open PSD'), 'error');
+        }
+    },
     handlePSDOpen(e) { const file = e.target.files[0]; if (file) this._loadPSDFile(file); e.target.value=''; },
     _readPSDHeader(bytes) {
         if (!bytes || bytes.byteLength < 26) throw new Error('PSD header is truncated');

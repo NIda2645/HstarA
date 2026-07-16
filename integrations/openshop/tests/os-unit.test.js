@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -20,6 +20,10 @@ describe('OpenShop core object', () => {
     installFabricMock();
     installModalDelegation();
     mountEditorDom();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('switches tools and updates canvas interaction state', () => {
@@ -137,6 +141,106 @@ describe('OpenShop core object', () => {
 
     expect(object.left).toBe(50);
     expect(object.top).toBe(40);
+  });
+
+  it('opens an image through the native backend without clicking the iframe input', async () => {
+    const OS = loadOpenShop();
+    quietUiMethods(OS);
+    document.body.insertAdjacentHTML('beforeend', '<input id="file-input" type="file">');
+    const input = document.getElementById('file-input');
+    const click = vi.spyOn(input, 'click');
+    OS._handleFileLoad = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      new Blob(['image-bytes'], {type:'image/png'}),
+      {status:200, headers:{
+        'Content-Type':'image/png',
+        'X-Hstar-Filename':encodeURIComponent('测试图片.png'),
+      }},
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await OS.openFile();
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/native/open-local-file', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'image'}),
+    });
+    expect(OS._handleFileLoad).toHaveBeenCalledOnce();
+    const file = OS._handleFileLoad.mock.calls[0][0];
+    expect(file).toBeInstanceOf(File);
+    expect(file.name).toBe('测试图片.png');
+    expect(file.type).toBe('image/png');
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it('opens a PSD through the native backend without clicking the iframe input', async () => {
+    const OS = loadOpenShop();
+    quietUiMethods(OS);
+    document.body.insertAdjacentHTML('beforeend', '<input id="psd-input" type="file">');
+    const click = vi.spyOn(document.getElementById('psd-input'), 'click');
+    OS._loadPSDFile = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      new Blob(['8BPS'], {type:'image/vnd.adobe.photoshop'}),
+      {status:200, headers:{
+        'Content-Type':'image/vnd.adobe.photoshop',
+        'X-Hstar-Filename':encodeURIComponent('分层文件.psd'),
+      }},
+    )));
+
+    await OS.openPSD();
+
+    expect(OS._loadPSDFile).toHaveBeenCalledOnce();
+    expect(OS._loadPSDFile.mock.calls[0][0]).toEqual(expect.objectContaining({
+      name:'分层文件.psd',
+      type:'image/vnd.adobe.photoshop',
+    }));
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it('keeps the document unchanged on cancel or Windows picker failure', async () => {
+    const OS = loadOpenShop();
+    quietUiMethods(OS);
+    document.body.insertAdjacentHTML('beforeend', '<input id="file-input" type="file">');
+    const click = vi.spyOn(document.getElementById('file-input'), 'click');
+    OS._handleFileLoad = vi.fn();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, {status:204}))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({detail:'独立文件窗口启动失败'}),
+        {status:500, headers:{'Content-Type':'application/json'}},
+      ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await OS.openFile();
+    await OS.openFile();
+
+    expect(OS._handleFileLoad).not.toHaveBeenCalled();
+    expect(click).not.toHaveBeenCalled();
+    expect(OS.toast).toHaveBeenCalledWith('独立文件窗口启动失败', 'error');
+  });
+
+  it('falls back to browser input only when the backend reports an unsupported platform', async () => {
+    const OS = loadOpenShop();
+    quietUiMethods(OS);
+    document.body.insertAdjacentHTML('beforeend', '<input id="psd-input" type="file">');
+    const click = vi.spyOn(document.getElementById('psd-input'), 'click');
+    OS._loadPSDFile = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({detail:'unsupported'}),
+      {status:501, headers:{'Content-Type':'application/json'}},
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await OS.openPSD();
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/native/open-local-file', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'psd'}),
+    });
+    expect(click).toHaveBeenCalledOnce();
+    expect(OS._loadPSDFile).not.toHaveBeenCalled();
   });
 
   it('adds and deletes layers while keeping canvas objects in sync', () => {
