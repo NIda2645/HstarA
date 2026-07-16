@@ -62,9 +62,26 @@ describe('OpenShop geometry snap engine', () => {
     expect(result).toEqual({
       left:400,
       top:600,
-      sourceX:'document-geometry',
-      sourceY:'document-geometry',
+      sourceX:'document-center-x',
+      sourceY:'document-bottom',
     });
+  });
+
+  it.each([
+    ['left', {left:3, top:143}, {left:0, top:143, sourceX:'document-left', sourceY:'none'}],
+    ['right', {left:797, top:143}, {left:800, top:143, sourceX:'document-right', sourceY:'none'}],
+    ['top', {left:137, top:-4}, {left:137, top:0, sourceX:'none', sourceY:'document-top'}],
+    ['bottom', {left:137, top:603}, {left:137, top:600, sourceX:'none', sourceY:'document-bottom'}],
+  ])('snaps the %s document boundary independently', (_edge, position, expected) => {
+    const result = window.HstarOpenShopSnapEngine.resolveMovement({
+      position,
+      objectRect:{...position, width:200, height:200},
+      documentRect:{left:0, top:0, width:1000, height:800},
+      tolerance:5,
+      grid:{enabled:false, size:20},
+    });
+
+    expect(result).toEqual(expected);
   });
 
   it('uses grid rounding only for axes without a geometry match', () => {
@@ -79,7 +96,7 @@ describe('OpenShop geometry snap engine', () => {
     expect(result).toEqual({
       left:0,
       top:40,
-      sourceX:'document-geometry',
+      sourceX:'document-left',
       sourceY:'grid',
     });
   });

@@ -146,6 +146,38 @@ describe('OpenShop core object', () => {
     expect(object.top).toBe(0);
   });
 
+  it('applies right and bottom document snaps to the Fabric object origin', async () => {
+    delete window.HstarOpenShopSnapEngine;
+    await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
+    const OS = loadOpenShop();
+    const object = {
+      left:797,
+      top:603,
+      width:200,
+      height:200,
+      scaleX:1,
+      scaleY:1,
+      selectable:true,
+      set(values) { Object.assign(this, values); },
+      setCoords:vi.fn(),
+      getBoundingRect() {
+        return {left:this.left, top:this.top, width:200, height:200};
+      },
+    };
+    OS.canvas = createCanvasMock([object]);
+    OS.canvasW = 1000;
+    OS.canvasH = 800;
+    OS.layers = [{name:'普通图层', locked:false, objects:[object]}];
+    OS._prefs.snapTolerance = 5;
+
+    OS._applyObjectSnapping(object);
+
+    expect(object.left).toBe(800);
+    expect(object.top).toBe(600);
+    expect(object.getBoundingRect()).toMatchObject({left:800, top:600, width:200, height:200});
+    expect(object.setCoords).toHaveBeenCalledOnce();
+  });
+
   it('derives local selection snapping from legacy generation layer metadata', async () => {
     delete window.HstarOpenShopSnapEngine;
     await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);

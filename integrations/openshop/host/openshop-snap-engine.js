@@ -53,6 +53,22 @@
     }
   }
 
+  function addDocumentGeometry(xCandidates, yCandidates, objectRect, documentRect, tolerance){
+    if(!objectRect || !documentRect) return;
+    const pairs = [
+      [xCandidates, objectRect.left, documentRect.left, 'document-left'],
+      [xCandidates, objectRect.left + objectRect.width, documentRect.left + documentRect.width, 'document-right'],
+      [yCandidates, objectRect.top, documentRect.top, 'document-top'],
+      [yCandidates, objectRect.top + objectRect.height, documentRect.top + documentRect.height, 'document-bottom'],
+      [xCandidates, objectRect.left + objectRect.width / 2, documentRect.left + documentRect.width / 2, 'document-center-x'],
+      [yCandidates, objectRect.top + objectRect.height / 2, documentRect.top + documentRect.height / 2, 'document-center-y'],
+    ];
+    pairs.forEach(([list, current, target, source]) => {
+      const delta = target - current;
+      if(Math.abs(delta) <= tolerance) list.push({delta, priority:2, source});
+    });
+  }
+
   function choose(candidates){
     return candidates.sort((left, right) => (
       left.priority - right.priority || Math.abs(left.delta) - Math.abs(right.delta)
@@ -86,12 +102,7 @@
       yCandidates, localAnchorRect, localTargetRect, 'y', tolerance, 0, 'local-selection'
     );
     addDocumentOverlap(xCandidates, yCandidates, objectRect, documentRect, tolerance);
-    addMatching(
-      xCandidates, objectRect, documentRect, 'x', tolerance, 2, 'document-geometry'
-    );
-    addMatching(
-      yCandidates, objectRect, documentRect, 'y', tolerance, 2, 'document-geometry'
-    );
+    addDocumentGeometry(xCandidates, yCandidates, objectRect, documentRect, tolerance);
 
     const x = choose(xCandidates);
     const y = choose(yCandidates);
