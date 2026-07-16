@@ -72,6 +72,8 @@
         {id:'zoom-out', label:'Zoom Out', keys:['Ctrl+-']},
         {id:'toggle-panels', label:'Toggle UI Panels', keys:['Tab']},
         {id:'cycle-screen-mode', label:'Cycle Screen Mode', keys:['F']},
+        {id:'fill-foreground', label:'Fill Foreground', keys:['Alt+Delete']},
+        {id:'fill-background', label:'Fill Background', keys:['Ctrl+Delete']},
         {id:'delete-context', label:'Delete Selected', keys:['Delete', 'Backspace']},
         {id:'commit-operation', label:'Apply Crop / Finish Pen', keys:['Enter']},
         {id:'cancel-operation', label:'Cancel / Deselect', keys:['Escape']},
@@ -138,6 +140,11 @@
             ? cycle[(currentIndex + 1 + cycle.length) % cycle.length]
             : currentIndex >= 0 ? currentTool : cycle[0];
         return {command:'cycle-tool', tool};
+    }
+
+    function resolveEditingShortcut(event, activeObject) {
+        if (event?.type !== 'keydown' || !activeObject?.isEditing) return null;
+        return event.code === 'NumpadEnter' ? {command:'commit-text-editing'} : null;
     }
 
     function isEditableShortcutTarget(target, activeObject) {
@@ -319,6 +326,7 @@
         toolCycleForKey,
         toolShortcut,
         resolveShortcut,
+        resolveEditingShortcut,
         isEditableShortcutTarget,
         commandShortcut,
         shortcutRows,

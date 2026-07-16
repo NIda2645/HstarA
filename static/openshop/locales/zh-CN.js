@@ -7,6 +7,7 @@
   const messages = Object.freeze({
     "File": "文件",
     "Edit": "编辑",
+    "Edit Text": "编辑文字",
     "Image": "图像",
     "Layer": "图层",
     "Layer Lock": "图层锁定",
@@ -69,6 +70,8 @@
     "Opacity": "不透明度",
     "Blend Mode": "混合模式",
     "Fill": "填充",
+    "Fill Foreground": "填充前景色",
+    "Fill Background": "填充背景色",
     "Preferences": "首选项",
     "+ Add FG": "+ 添加前景色",
     "+ Frame": "+ 帧",
