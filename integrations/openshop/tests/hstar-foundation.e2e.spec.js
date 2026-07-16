@@ -1,7 +1,12 @@
 import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const hstarBaseUrl = process.env.HSTAR_BASE_URL || 'http://127.0.0.1:3010';
 const openshopUrl = `${hstarBaseUrl}/static/openshop/index.html`;
+const testDir = dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = resolve(testDir, '..', '..', '..');
 
 test('uses the same-origin iframe bridge with stable source layer order', async ({ page }) => {
   const pageErrors = [];
@@ -157,6 +162,76 @@ test('keeps a top menu open while the pointer crosses into its dropdown', async 
   await expect(dropdown).toBeVisible();
   await newLayer.click();
   await expect.poll(() => page.evaluate(() => OS.layers.length)).toBe(initialLayerCount + 1);
+});
+
+test('imports local image and PSD through the crash-safe backend route', async ({ page }) => {
+  test.setTimeout(60000);
+  const imageBytes = readFileSync(resolve(repositoryRoot, 'static', 'images', 'logo.png'));
+  const psdBytes = readFileSync(resolve(testDir, 'golden', 'openshop-text-layer-probe.psd'));
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+
+  await page.route('**/api/native/open-local-file', async route => {
+    const kind = route.request().postDataJSON().kind;
+    const isPsd = kind === 'psd';
+    await route.fulfill({
+      status:200,
+      contentType:isPsd ? 'image/vnd.adobe.photoshop' : 'image/png',
+      headers:{
+        'Cache-Control':'no-store',
+        'X-Hstar-Filename':encodeURIComponent(isPsd ? 'openshop-text-layer-probe.psd' : 'logo.png'),
+      },
+      body:isPsd ? psdBytes : imageBytes,
+    });
+  });
+
+  await page.goto(openshopUrl, {waitUntil:'domcontentloaded'});
+  await page.waitForFunction(() => Boolean(typeof OS !== 'undefined' && OS.canvas));
+  await page.evaluate(() => {
+    OS.dismissWelcome();
+    window.__nativeImportCalls = {imageInput:0, psdInput:0, browserPicker:0};
+    document.getElementById('file-input').click = () => { window.__nativeImportCalls.imageInput += 1; };
+    document.getElementById('psd-input').click = () => { window.__nativeImportCalls.psdInput += 1; };
+    window.showOpenFilePicker = async () => {
+      window.__nativeImportCalls.browserPicker += 1;
+      throw new Error('Browser file picker must not be used');
+    };
+  });
+
+  await page.evaluate(() => OS.openFile());
+  await expect.poll(() => page.evaluate(() => ({
+    width:OS.canvasW,
+    height:OS.canvasH,
+    imageObjects:OS.canvas.getObjects().filter(object => object.type === 'image').length,
+  }))).toEqual({width:150, height:150, imageObjects:1});
+
+  await page.evaluate(() => OS.openPSD());
+  await expect.poll(() => page.evaluate(() => ({
+    width:OS.canvasW,
+    height:OS.canvasH,
+    layerCount:OS.layers.length,
+    backgroundLocked:OS.layers[0]?.name === 'Background' && OS.layers[0]?.locked === true,
+    composite:OS.layers[1]?.objects?.some(object => (
+      object.name === 'PSD Composite'
+      && object.type === 'image'
+      && object.width === 1024
+      && object.height === 512
+    )) || false,
+  })), {timeout:30000}).toEqual({
+    width:1024,
+    height:512,
+    layerCount:2,
+    backgroundLocked:true,
+    composite:true,
+  });
+
+  const result = await page.evaluate(() => ({
+    calls:window.__nativeImportCalls,
+    errorToasts:[...document.querySelectorAll('#toast-container .toast.error')].map(item => item.textContent),
+  }));
+  expect(result.calls).toEqual({imageInput:0, psdInput:0, browserPicker:0});
+  expect(result.errorToasts).toEqual([]);
+  expect(pageErrors).toEqual([]);
 });
 
 test('4K ten-layer foundation baseline', async ({ page }) => {
