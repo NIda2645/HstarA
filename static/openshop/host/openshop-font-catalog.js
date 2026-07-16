@@ -2,6 +2,8 @@
   const GENERIC_FAMILIES = new Set([
     'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
   ]);
+  const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
+  const FONT_COLLATOR = new Intl.Collator('zh-CN', {numeric:true, sensitivity:'base'});
   const COMMON_FONTS = [
     {family:'Microsoft YaHei UI', label:'微软雅黑 UI', language:'zh'},
     {family:'Microsoft YaHei', label:'微软雅黑', language:'zh'},
@@ -109,6 +111,18 @@
     };
   }
 
+  function isChineseFont(font){
+    return cleanFamily(font?.language).toLowerCase().startsWith('zh')
+      || CJK_RE.test(`${cleanFamily(font?.label)} ${cleanFamily(font?.family)}`);
+  }
+
+  function compareFonts(left, right){
+    const group = Number(isChineseFont(right)) - Number(isChineseFont(left));
+    return group
+      || FONT_COLLATOR.compare(left.label || left.family, right.label || right.family)
+      || FONT_COLLATOR.compare(left.family, right.family);
+  }
+
   function createManager(options = {}){
     const documentRef = options.documentRef || root.document;
     const fontProbe = typeof options.fontProbe === 'function'
@@ -178,7 +192,7 @@
           ...(status === 'substituted' && replacementFamily ? {replacementFamily} : {}),
         });
       });
-      state.fonts = [...merged.values()].sort((left, right) => left.family.localeCompare(right.family));
+      state.fonts = [...merged.values()].sort(compareFonts);
     }
 
     function getState(){
