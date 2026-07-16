@@ -26,6 +26,65 @@
             tools.map(tool => [tool, key.toUpperCase()])
         ))
     );
+    const TOOL_GROUP_LABELS = Object.freeze({
+        v:'Move / Select Tool', m:'Marquee Tools', l:'Lasso Tool', w:'Selection Tools',
+        c:'Crop Tool', b:'Brush Tools', j:'Healing Brush Tool', s:'Clone Stamp Tool',
+        e:'Eraser Tool', g:'Fill Tools', o:'Toning Tools', r:'Smudge Tool', p:'Pen Tool',
+        t:'Text Tool', u:'Shape Tools', i:'Sampling Tools', h:'Hand Tool', z:'Zoom Tool',
+    });
+    const COMMAND_SHORTCUTS = Object.freeze([
+        {id:'command-palette', label:'Command Palette', keys:['Ctrl+Alt+K']},
+        {id:'preferences', label:'Preferences', keys:['Ctrl+K']},
+        {id:'new-document', label:'New Document', keys:['Ctrl+N']},
+        {id:'open-image', label:'Open Image', keys:['Ctrl+O']},
+        {id:'save-project', label:'Save Project', keys:['Ctrl+S']},
+        {id:'export-settings', label:'Export Settings', keys:['Ctrl+Alt+Shift+W']},
+        {id:'undo', label:'Undo', keys:['Ctrl+Z']},
+        {id:'redo', label:'Redo', keys:['Ctrl+Shift+Z']},
+        {id:'cut', label:'Cut', keys:['Ctrl+X']},
+        {id:'copy', label:'Copy', keys:['Ctrl+C']},
+        {id:'paste', label:'Paste', keys:['Ctrl+V']},
+        {id:'duplicate-context', label:'Duplicate', keys:['Ctrl+J']},
+        {id:'free-transform', label:'Free Transform', keys:['Ctrl+T']},
+        {id:'select-all', label:'Select All', keys:['Ctrl+A']},
+        {id:'deselect', label:'Deselect', keys:['Ctrl+D']},
+        {id:'reselect', label:'Reselect', keys:['Ctrl+Shift+D']},
+        {id:'invert-selection', label:'Inverse Selection', keys:['Ctrl+Shift+I']},
+        {id:'invert-image', label:'Invert Image', keys:['Ctrl+I']},
+        {id:'resize-canvas', label:'Resize Canvas', keys:['Ctrl+Alt+C']},
+        {id:'levels', label:'Levels', keys:['Ctrl+L']},
+        {id:'curves', label:'Curves', keys:['Ctrl+M']},
+        {id:'color-balance', label:'Color Balance', keys:['Ctrl+B']},
+        {id:'new-layer', label:'New Layer', keys:['Ctrl+Shift+N']},
+        {id:'merge-context', label:'Merge Down', keys:['Ctrl+E']},
+        {id:'merge-visible', label:'Merge Visible', keys:['Ctrl+Shift+E']},
+        {id:'select-layer-below', label:'Select Layer Below', keys:['Alt+[']},
+        {id:'select-layer-above', label:'Select Layer Above', keys:['Alt+]']},
+        {id:'move-layers-down', label:'Move Layers Down', keys:['Ctrl+[']},
+        {id:'move-layers-up', label:'Move Layers Up', keys:['Ctrl+]']},
+        {id:'move-layers-bottom', label:'Move Layers to Bottom', keys:['Ctrl+Shift+[']},
+        {id:'move-layers-top', label:'Move Layers to Top', keys:['Ctrl+Shift+]']},
+        {id:'toggle-rulers', label:'Toggle Rulers', keys:['Ctrl+R']},
+        {id:'toggle-grid', label:'Toggle Grid', keys:["Ctrl+'"]},
+        {id:'zoom-fit', label:'Zoom Fit', keys:['Ctrl+0']},
+        {id:'zoom-100', label:'Zoom 100%', keys:['Ctrl+1']},
+        {id:'zoom-in', label:'Zoom In', keys:['Ctrl++', 'Ctrl+=']},
+        {id:'zoom-out', label:'Zoom Out', keys:['Ctrl+-']},
+        {id:'toggle-panels', label:'Toggle UI Panels', keys:['Tab']},
+        {id:'cycle-screen-mode', label:'Cycle Screen Mode', keys:['F']},
+        {id:'delete-context', label:'Delete Selected', keys:['Delete', 'Backspace']},
+        {id:'commit-operation', label:'Apply Crop / Finish Pen', keys:['Enter']},
+        {id:'cancel-operation', label:'Cancel / Deselect', keys:['Escape']},
+        {id:'temporary-pan', label:'Temporary Pan', keys:['Space'], releaseCommand:'temporary-pan-release'},
+        {id:'brush-size-down', label:'Decrease Brush Size', keys:['[']},
+        {id:'brush-size-up', label:'Increase Brush Size', keys:[']']},
+        {id:'default-colors', label:'Default Colors', keys:['D']},
+        {id:'swap-colors', label:'Swap Colors', keys:['X']},
+    ].map(descriptor => Object.freeze({...descriptor, keys:Object.freeze([...descriptor.keys])})));
+    const COMMAND_BY_ID = new Map(COMMAND_SHORTCUTS.map(descriptor => [descriptor.id, descriptor]));
+    const COMMAND_BY_KEY = new Map(COMMAND_SHORTCUTS.flatMap(descriptor => (
+        descriptor.keys.map(key => [key, descriptor])
+    )));
 
     function toolCycleForKey(key) {
         return [...(TOOL_CYCLES[String(key || '').toLowerCase()] || [])];
@@ -33,6 +92,80 @@
 
     function toolShortcut(tool) {
         return TOOL_SHORTCUTS.get(String(tool || '')) || '';
+    }
+
+    function normalizedEventKey(value) {
+        const key = String(value || '');
+        const aliases = {
+            ' ': 'Space',
+            Spacebar: 'Space',
+            Esc: 'Escape',
+            Del: 'Delete',
+            Add: '+',
+            Subtract: '-',
+            '{': '[',
+            '}': ']',
+            '"': "'",
+        };
+        if (aliases[key]) return aliases[key];
+        return key.length === 1 && /[a-z]/i.test(key) ? key.toUpperCase() : key;
+    }
+
+    function eventShortcut(event) {
+        const key = normalizedEventKey(event?.key);
+        if (!key) return '';
+        const parts = [];
+        if (event?.ctrlKey || event?.metaKey) parts.push('Ctrl');
+        if (event?.altKey) parts.push('Alt');
+        if (event?.shiftKey && key !== '+') parts.push('Shift');
+        parts.push(key);
+        return parts.join('+');
+    }
+
+    function resolveShortcut(event, {currentTool = '', phase = 'keydown'} = {}) {
+        const descriptor = COMMAND_BY_KEY.get(eventShortcut(event));
+        if (descriptor) {
+            if (phase === 'keyup') {
+                return descriptor.releaseCommand ? {command:descriptor.releaseCommand} : null;
+            }
+            return {command:descriptor.id};
+        }
+        if (phase !== 'keydown' || event?.ctrlKey || event?.metaKey || event?.altKey) return null;
+        const cycle = toolCycleForKey(normalizedEventKey(event?.key).toLowerCase());
+        if (!cycle.length) return null;
+        const currentIndex = cycle.indexOf(currentTool);
+        const tool = event?.shiftKey
+            ? cycle[(currentIndex + 1 + cycle.length) % cycle.length]
+            : currentIndex >= 0 ? currentTool : cycle[0];
+        return {command:'cycle-tool', tool};
+    }
+
+    function isEditableShortcutTarget(target, activeObject) {
+        if (activeObject?.isEditing) return true;
+        const element = target?.nodeType === 1 ? target : target?.parentElement;
+        if (!element) return false;
+        if (/^(INPUT|TEXTAREA|SELECT)$/i.test(element.tagName || '')) return true;
+        if (element.isContentEditable) return true;
+        const editable = element.closest?.('[contenteditable]');
+        return Boolean(editable && editable.getAttribute('contenteditable') !== 'false');
+    }
+
+    function commandShortcut(commandId) {
+        return COMMAND_BY_ID.get(String(commandId || ''))?.keys?.[0] || '';
+    }
+
+    function shortcutRows() {
+        const commands = COMMAND_SHORTCUTS.map(descriptor => ({
+            id:descriptor.id,
+            label:descriptor.label,
+            keys:[...descriptor.keys],
+        }));
+        const tools = Object.entries(TOOL_CYCLES).map(([key, cycle]) => ({
+            id:`tool-${key}`,
+            label:TOOL_GROUP_LABELS[key],
+            keys:cycle.length > 1 ? [key.toUpperCase(), `Shift+${key.toUpperCase()}`] : [key.toUpperCase()],
+        }));
+        return [...commands, ...tools];
     }
 
     function orderedSelection(layers, candidates) {
@@ -185,6 +318,10 @@
     window.HstarOpenShopDesktopInput = Object.freeze({
         toolCycleForKey,
         toolShortcut,
+        resolveShortcut,
+        isEditableShortcutTarget,
+        commandShortcut,
+        shortcutRows,
         resetLayerSelection,
         normalizeLayerSelection,
         selectLayerRange,

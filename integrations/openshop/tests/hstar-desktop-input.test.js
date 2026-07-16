@@ -122,6 +122,35 @@ describe('OpenShop desktop input foundation', () => {
     expect(state.anchor).toBe(only);
   });
 
+  it('resolves Photoshop commands and ignores editable targets', () => {
+    const desktop = loadDesktopInput();
+
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'j', ctrlKey:true}),
+      {context:'layers'},
+    )).toEqual({command:'duplicate-context'});
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'Delete'}),
+      {context:'layers'},
+    )).toEqual({command:'delete-context'});
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'u', shiftKey:true}),
+      {context:'canvas', currentTool:'rect'},
+    )).toEqual({command:'cycle-tool', tool:'circle'});
+
+    const input = document.createElement('input');
+    expect(desktop.isEditableShortcutTarget(input, null)).toBe(true);
+    expect(desktop.isEditableShortcutTarget(document.body, {isEditing:true})).toBe(true);
+    expect(desktop.commandShortcut('duplicate-context')).toBe('Ctrl+J');
+    expect(desktop.commandShortcut('preferences')).toBe('Ctrl+K');
+    expect(desktop.shortcutRows()).toContainEqual(expect.objectContaining({
+      id:'duplicate-context', keys:['Ctrl+J'],
+    }));
+    expect(desktop.shortcutRows()).toContainEqual(expect.objectContaining({
+      id:'tool-b', keys:['B', 'Shift+B'],
+    }));
+  });
+
   it('keeps the editor tooltip localized and hides it when tool UI closes', () => {
     document.body.innerHTML = `
       <div id="toolbar">

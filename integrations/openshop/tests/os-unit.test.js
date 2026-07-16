@@ -490,6 +490,64 @@ describe('OpenShop core object', () => {
     expect(OS.setTool).toHaveBeenCalledWith('brush');
   });
 
+  it('routes Delete to layers or canvas according to the last editing context', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([{name:'Canvas Object'}]);
+    quietUiMethods(OS);
+    OS.deleteLayers = vi.fn();
+    OS._deleteSelected = vi.fn();
+    OS._initKeyboardShortcuts();
+
+    OS._keyboardContext = 'layers';
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'Delete', bubbles:true}));
+    expect(OS.deleteLayers).toHaveBeenCalledOnce();
+
+    OS._keyboardContext = 'canvas';
+    OS.canvas.setActiveObject(OS.canvas.getObjects()[0]);
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'Delete', bubbles:true}));
+    expect(OS._deleteSelected).toHaveBeenCalledOnce();
+  });
+
+  it('does not run editor shortcuts while an editable target or Fabric text is active', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS);
+    OS.deleteLayers = vi.fn();
+    OS.setTool = vi.fn();
+    OS._initKeyboardShortcuts();
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.dispatchEvent(new KeyboardEvent('keydown', {key:'Delete', bubbles:true}));
+
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    document.body.appendChild(editable);
+    editable.dispatchEvent(new KeyboardEvent('keydown', {key:'b', bubbles:true}));
+
+    OS.canvas.setActiveObject({type:'i-text', isEditing:true});
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'Delete', bubbles:true}));
+
+    expect(OS.deleteLayers).not.toHaveBeenCalled();
+    expect(OS.setTool).not.toHaveBeenCalled();
+  });
+
+  it('uses Ctrl+K for preferences and Ctrl+Alt+K for the command palette once', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS);
+    OS.showPreferences = vi.fn();
+    OS.toggleCmdPalette = vi.fn();
+    OS.initCmdPalette();
+    OS._initKeyboardShortcuts();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'k', ctrlKey:true, bubbles:true}));
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'k', ctrlKey:true, altKey:true, bubbles:true}));
+
+    expect(OS.showPreferences).toHaveBeenCalledOnce();
+    expect(OS.toggleCmdPalette).toHaveBeenCalledOnce();
+  });
+
   it('mirrors canvas state into hidden accessibility nodes', () => {
     const OS = loadOpenShop();
     const canvasObject = { name: 'Subject', type: 'image' };

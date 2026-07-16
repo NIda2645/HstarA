@@ -1368,7 +1368,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <!-- ===== COMMAND PALETTE ===== -->
 <div id="cmd-palette" role="dialog" aria-label="Command palette" onclick="if(event.target===this)OS.closeCmdPalette()" data-i18n-aria-label="Command palette">
     <div id="cmd-box">
-        <input id="cmd-input" type="text" placeholder="Type a command... (Ctrl+K)" aria-label="Search commands" oninput="OS.filterCommands(this.value)" onkeydown="OS.cmdKeyDown(event)" data-i18n-aria-label="Search commands" data-i18n-placeholder="Type a command... (Ctrl+K)">
+        <input id="cmd-input" type="text" placeholder="Type a command... (Ctrl+Alt+K)" aria-label="Search commands" oninput="OS.filterCommands(this.value)" onkeydown="OS.cmdKeyDown(event)" data-i18n-aria-label="Search commands" data-i18n-placeholder="Type a command... (Ctrl+Alt+K)">
         <div id="cmd-results"></div>
     </div>
 </div>
@@ -6682,11 +6682,14 @@ self.onmessage = async function(e) {
 
     // ====================== PHASE 8: COMMAND PALETTE ======================
     _commands: null,
+    _shortcut(commandId) {
+        return window.HstarOpenShopDesktopInput.commandShortcut(commandId);
+    },
     _getCommands() {
         if (this._commands) return this._commands;
         this._commands = [
-            {label:'New Document',cat:'File',fn:()=>this.newImage(),key:'Ctrl+N'},
-            {label:'Open Image',cat:'File',fn:()=>this.openFile()},
+            {label:'New Document',cat:'File',fn:()=>this.newImage(),key:this._shortcut('new-document')},
+            {label:'Open Image',cat:'File',fn:()=>this.openFile(),key:this._shortcut('open-image')},
             {label:'Open PSD',cat:'File',fn:()=>this.openPSD()},
             {label:'Export PNG',cat:'File',fn:()=>this.saveFile('png'),key:'Ctrl+Shift+P'},
             {label:'Export JPEG',cat:'File',fn:()=>this.saveFile('jpeg')},
@@ -6694,21 +6697,22 @@ self.onmessage = async function(e) {
             {label:'Export SVG',cat:'File',fn:()=>this.saveFile('svg')},
             {label:'Export PDF',cat:'File',fn:()=>this.exportPDF()},
             {label:'Export PSD',cat:'File',fn:()=>this.exportPSD()},
-            {label:'Export Settings',cat:'File',fn:()=>this.showExportSettings()},
-            {label:'Save Project',cat:'File',fn:()=>this.saveProject()},
+            {label:'Export Settings',cat:'File',fn:()=>this.showExportSettings(),key:this._shortcut('export-settings')},
+            {label:'Save Project',cat:'File',fn:()=>this.saveProject(),key:this._shortcut('save-project')},
             {label:'Open Project',cat:'File',fn:()=>this.openProject()},
             {label:'Recovery Storage',cat:'File',fn:()=>this.showRecoveryManager()},
             {label:'Templates',cat:'File',fn:()=>this.showTemplates()},
-            {label:'Undo',cat:'Edit',fn:()=>this.undo(),key:'Ctrl+Z'},
-            {label:'Redo',cat:'Edit',fn:()=>this.redo(),key:'Ctrl+Shift+Z'},
-            {label:'Copy',cat:'Edit',fn:()=>this.copyObj(),key:'Ctrl+C'},
-            {label:'Paste',cat:'Edit',fn:()=>this.pasteObj(),key:'Ctrl+V'},
-            {label:'Duplicate',cat:'Edit',fn:()=>this.duplicateSelected(),key:'Ctrl+J'},
-            {label:'Delete',cat:'Edit',fn:()=>this.deleteSelected(),key:'Del'},
-            {label:'Select All',cat:'Select',fn:()=>this.selectAll(),key:'Ctrl+A'},
-            {label:'Deselect',cat:'Select',fn:()=>this.deselectAll(),key:'Ctrl+D'},
-            {label:'Reselect',cat:'Select',fn:()=>this.reselectSelection(),key:'Ctrl+Shift+D'},
-            {label:'Inverse Selection',cat:'Select',fn:()=>this.invertSelection(),key:'Ctrl+Shift+I'},
+            {label:'Undo',cat:'Edit',fn:()=>this.undo(),key:this._shortcut('undo')},
+            {label:'Redo',cat:'Edit',fn:()=>this.redo(),key:this._shortcut('redo')},
+            {label:'Cut',cat:'Edit',fn:()=>this._cutSelection(),key:this._shortcut('cut')},
+            {label:'Copy',cat:'Edit',fn:()=>this.copyObj(),key:this._shortcut('copy')},
+            {label:'Paste',cat:'Edit',fn:()=>this.pasteObj(),key:this._shortcut('paste')},
+            {label:'Duplicate',cat:'Edit',fn:()=>this._shortcutCommands()['duplicate-context'](),key:this._shortcut('duplicate-context')},
+            {label:'Delete',cat:'Edit',fn:()=>this._deleteByContext(),key:this._shortcut('delete-context')},
+            {label:'Select All',cat:'Select',fn:()=>this.selectAll(),key:this._shortcut('select-all')},
+            {label:'Deselect',cat:'Select',fn:()=>this.deselectAll(),key:this._shortcut('deselect')},
+            {label:'Reselect',cat:'Select',fn:()=>this.reselectSelection(),key:this._shortcut('reselect')},
+            {label:'Inverse Selection',cat:'Select',fn:()=>this.invertSelection(),key:this._shortcut('invert-selection')},
             {label:'Color Range...',cat:'Select',fn:()=>this.showColorRange()},
             {label:'Grow Selection',cat:'Select',fn:()=>this.growSelection()},
             {label:'Similar',cat:'Select',fn:()=>this.similarSelection()},
@@ -6716,9 +6720,9 @@ self.onmessage = async function(e) {
             {label:'Contract Selection...',cat:'Select',fn:()=>this.modifySelection('contract')},
             {label:'Feather Selection...',cat:'Select',fn:()=>this.modifySelection('feather')},
             {label:'Smooth Selection',cat:'Select',fn:()=>this.modifySelection('smooth')},
-            {label:'Free Transform',cat:'Edit',fn:()=>this.showFreeTransform(),key:'Ctrl+T'},
-            {label:'Preferences',cat:'Edit',fn:()=>this.showPreferences()},
-            {label:'Resize Canvas',cat:'Image',fn:()=>this.showResize()},
+            {label:'Free Transform',cat:'Edit',fn:()=>this.showFreeTransform(),key:this._shortcut('free-transform')},
+            {label:'Preferences',cat:'Edit',fn:()=>this.showPreferences(),key:this._shortcut('preferences')},
+            {label:'Resize Canvas',cat:'Image',fn:()=>this.showResize(),key:this._shortcut('resize-canvas')},
             {label:'Flip Horizontal',cat:'Image',fn:()=>this.flipH()},
             {label:'Flip Vertical',cat:'Image',fn:()=>this.flipV()},
             {label:'Rotate 90 CW',cat:'Image',fn:()=>this.rotateObj(90)},
@@ -6731,7 +6735,7 @@ self.onmessage = async function(e) {
             {label:'Image Info',cat:'Image',fn:()=>this.showImageInfo()},
             {label:'Before / After',cat:'Image',fn:()=>this.showBeforeAfter()},
             {label:'Grayscale',cat:'Filter',fn:()=>this.applyFilterDirect('Grayscale')},
-            {label:'Invert',cat:'Filter',fn:()=>this.applyFilterDirect('Invert')},
+            {label:'Invert',cat:'Filter',fn:()=>this.applyFilterDirect('Invert'),key:this._shortcut('invert-image')},
             {label:'Sepia',cat:'Filter',fn:()=>this.applyFilterDirect('Sepia')},
             {label:'B&W',cat:'Filter',fn:()=>this.applyFilterDirect('BlackWhite')},
             {label:'Posterize',cat:'Filter',fn:()=>this.filterPosterize()},
@@ -6747,9 +6751,9 @@ self.onmessage = async function(e) {
             {label:'Chromatic Aberration',cat:'Filter',fn:()=>this.filterChromaticAberration()},
             {label:'Generate Noise',cat:'Filter',fn:()=>this.filterNoiseGen()},
             {label:'Gradient Map',cat:'Filter',fn:()=>this.showGradientMap()},
-            {label:'Curves',cat:'Filter',fn:()=>this.showCurvesDialog()},
-            {label:'Levels',cat:'Filter',fn:()=>this.showLevelsDialog()},
-            {label:'Color Balance',cat:'Filter',fn:()=>this.showColorBalanceDialog()},
+            {label:'Curves',cat:'Filter',fn:()=>this.showCurvesDialog(),key:this._shortcut('curves')},
+            {label:'Levels',cat:'Filter',fn:()=>this.showLevelsDialog(),key:this._shortcut('levels')},
+            {label:'Color Balance',cat:'Filter',fn:()=>this.showColorBalanceDialog(),key:this._shortcut('color-balance')},
             {label:'Channel Mixer',cat:'Filter',fn:()=>this.showChannelMixer()},
             {label:'Auto Levels',cat:'Filter',fn:()=>this.autoLevels()},
             {label:'Photo Presets',cat:'Filter',fn:()=>this.showPresets()},
@@ -6772,26 +6776,26 @@ self.onmessage = async function(e) {
             {label:'Animation Timeline',cat:'View',fn:()=>this.toggleTimeline()},
             {label:'Actions / Macros',cat:'View',fn:()=>this.toggleMacroPanel()},
             {label:'Pixel Grid',cat:'View',fn:()=>this.togglePixelGrid()},
-            {label:'Toggle Grid',cat:'View',fn:()=>this.toggleGrid(),key:'Ctrl+G'},
-            {label:'Toggle Rulers',cat:'View',fn:()=>this.toggleRulers()},
+            {label:'Toggle Grid',cat:'View',fn:()=>this.toggleGrid(),key:this._shortcut('toggle-grid')},
+            {label:'Toggle Rulers',cat:'View',fn:()=>this.toggleRulers(),key:this._shortcut('toggle-rulers')},
             {label:'Toggle Snap',cat:'View',fn:()=>this.toggleSnap()},
             {label:'Symmetry: Off',cat:'View',fn:()=>this.setSymmetryMode('off')},
             {label:'Symmetry: Horizontal',cat:'View',fn:()=>this.setSymmetryMode('horizontal')},
             {label:'Symmetry: Vertical',cat:'View',fn:()=>this.setSymmetryMode('vertical')},
             {label:'Symmetry: Both Axes',cat:'View',fn:()=>this.setSymmetryMode('both')},
             {label:'Symmetry: Radial',cat:'View',fn:()=>this.setSymmetryMode('radial')},
-            {label:'Fullscreen',cat:'View',fn:()=>this.toggleFullscreen(),key:'F11'},
-            {label:'Zoom In',cat:'View',fn:()=>this.zoomIn(),key:'Ctrl++'},
-            {label:'Zoom Out',cat:'View',fn:()=>this.zoomOut(),key:'Ctrl+-'},
-            {label:'Zoom Fit',cat:'View',fn:()=>this.zoomFit(),key:'Ctrl+0'},
+            {label:'Fullscreen',cat:'View',fn:()=>this.toggleFullscreen(),key:this._shortcut('cycle-screen-mode')},
+            {label:'Zoom In',cat:'View',fn:()=>this.zoomIn(),key:this._shortcut('zoom-in')},
+            {label:'Zoom Out',cat:'View',fn:()=>this.zoomOut(),key:this._shortcut('zoom-out')},
+            {label:'Zoom Fit',cat:'View',fn:()=>this.zoomFit(),key:this._shortcut('zoom-fit')},
             {label:'Keyboard Shortcuts',cat:'View',fn:()=>this.showShortcuts()},
             {label:'Theme: Dark',cat:'View',fn:()=>this.setTheme('default')},
             {label:'Theme: Midnight',cat:'View',fn:()=>this.setTheme('midnight')},
             {label:'Theme: OLED',cat:'View',fn:()=>this.setTheme('oled')},
-            {label:'Add Layer',cat:'Layer',fn:()=>this.addLayer()},
-            {label:'Delete Layer',cat:'Layer',fn:()=>this.deleteLayer()},
-            {label:'Duplicate Layer',cat:'Layer',fn:()=>this.duplicateLayer()},
-            {label:'Merge Down',cat:'Layer',fn:()=>this.mergeSelectedOrDown()},
+            {label:'Add Layer',cat:'Layer',fn:()=>this.addLayer(),key:this._shortcut('new-layer')},
+            {label:'Delete Layer',cat:'Layer',fn:()=>this.deleteLayer(),key:this._shortcut('delete-context')},
+            {label:'Duplicate Layer',cat:'Layer',fn:()=>this.duplicateLayer(),key:this._shortcut('duplicate-context')},
+            {label:'Merge Down',cat:'Layer',fn:()=>this.mergeSelectedOrDown(),key:this._shortcut('merge-context')},
             // Tools
             ...['select','marquee-rect','marquee-ellipse','wand','lasso','ai-segment','brush','eraser','pencil','spray',
                 'clone','healing','line','rect','circle','triangle','arrow','polygon','star','pen',
@@ -6801,13 +6805,7 @@ self.onmessage = async function(e) {
         return this._commands;
     },
     initCmdPalette() {
-        document.addEventListener('keydown', e => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); this.toggleCmdPalette(); }
-            if (e.key === 'Escape') {
-                this.closeCmdPalette();
-                const ctx = document.getElementById('context-menu'); if (ctx) ctx.classList.remove('visible');
-            }
-        });
+        // Global command-palette keys are owned by the desktop shortcut dispatcher.
     },
     toggleCmdPalette() {
         const el = document.getElementById('cmd-palette');
@@ -6892,14 +6890,14 @@ self.onmessage = async function(e) {
 
             if (active) {
                 // Object selected — object operations
-                items.push({label:'Cut',fn:()=>{this.copyObj();this.deleteSelected();},key:'Ctrl+X'});
-                items.push({label:'Copy',fn:()=>this.copyObj(),key:'Ctrl+C'});
-                items.push({label:'Paste',fn:()=>this.pasteObj(),key:'Ctrl+V'});
-                items.push({label:'Duplicate',fn:()=>this.duplicateSelected(),key:'Ctrl+J'});
-                items.push({label:'Delete',fn:()=>this.deleteSelected(),key:'Del'});
+                items.push({label:'Cut',fn:()=>{this.copyObj();this.deleteSelected();},key:this._shortcut('cut')});
+                items.push({label:'Copy',fn:()=>this.copyObj(),key:this._shortcut('copy')});
+                items.push({label:'Paste',fn:()=>this.pasteObj(),key:this._shortcut('paste')});
+                items.push({label:'Duplicate',fn:()=>this.duplicateSelected(),key:this._shortcut('duplicate-context')});
+                items.push({label:'Delete',fn:()=>this.deleteSelected(),key:this._shortcut('delete-context')});
                 items.push({sep:true});
                 items.push({label:'Transform',children:[
-                    {label:'Free Transform',fn:()=>this.showFreeTransform(),key:'Ctrl+T'},
+                    {label:'Free Transform',fn:()=>this.showFreeTransform(),key:this._shortcut('free-transform')},
                     {label:'Flip Horizontal',fn:()=>this.flipH()},
                     {label:'Flip Vertical',fn:()=>this.flipV()},
                     {sep:true},
@@ -6924,8 +6922,8 @@ self.onmessage = async function(e) {
                 }
             } else if (hasSelection) {
                 // Pixel selection active — selection operations
-                items.push({label:'Deselect',fn:()=>this.deselectAll(),key:'Ctrl+D'});
-                items.push({label:'Select Inverse',fn:()=>this.invertSelection(),key:'Ctrl+Shift+I'});
+                items.push({label:'Deselect',fn:()=>this.deselectAll(),key:this._shortcut('deselect')});
+                items.push({label:'Select Inverse',fn:()=>this.invertSelection(),key:this._shortcut('invert-selection')});
                 items.push({sep:true});
                 items.push({label:'Modify',children:[
                     {label:'Feather...',fn:()=>this.modifySelection('feather')},
@@ -6940,8 +6938,8 @@ self.onmessage = async function(e) {
                 items.push({label:'Layer Via Cut',fn:()=>this._layerViaCut()});
             } else {
                 // No object, no selection — canvas operations
-                items.push({label:'Paste',fn:()=>this.pasteObj(),key:'Ctrl+V'});
-                items.push({label:'Select All',fn:()=>this.selectAll(),key:'Ctrl+A'});
+                items.push({label:'Paste',fn:()=>this.pasteObj(),key:this._shortcut('paste')});
+                items.push({label:'Select All',fn:()=>this.selectAll(),key:this._shortcut('select-all')});
                 items.push({sep:true});
                 items.push({label:'New Layer',fn:()=>this.addLayer()});
                 items.push({label:'Flatten Image',fn:()=>this.flattenImage()});
@@ -6949,12 +6947,12 @@ self.onmessage = async function(e) {
                 items.push({label:'Zoom',children:[
                     {label:'Zoom In',fn:()=>this.zoomIn()},
                     {label:'Zoom Out',fn:()=>this.zoomOut()},
-                    {label:'Zoom to Fit',fn:()=>this.zoomFit(),key:'Ctrl+0'},
-                    {label:'Actual Pixels',fn:()=>this.zoomActual(),key:'Ctrl+1'},
+                    {label:'Zoom to Fit',fn:()=>this.zoomFit(),key:this._shortcut('zoom-fit')},
+                    {label:'Actual Pixels',fn:()=>this.zoomActual(),key:this._shortcut('zoom-100')},
                 ]});
                 items.push({sep:true});
-                items.push({label:'Toggle Grid',fn:()=>this.toggleGrid(),key:'Ctrl+G'});
-                items.push({label:'Toggle Rulers',fn:()=>this.toggleRulers(),key:'Ctrl+R'});
+                items.push({label:'Toggle Grid',fn:()=>this.toggleGrid(),key:this._shortcut('toggle-grid')});
+                items.push({label:'Toggle Rulers',fn:()=>this.toggleRulers(),key:this._shortcut('toggle-rulers')});
                 items.push({sep:true});
                 items.push({label:'Canvas Size...',fn:()=>this.showResize()});
                 items.push({label:'Image Info...',fn:()=>this.showImageInfo()});
@@ -7287,184 +7285,193 @@ self.onmessage = async function(e) {
 
     // ====================== KEYBOARD SHORTCUTS ======================
     showShortcuts() {
-        const shortcuts = [
-            // General
-            ['Ctrl+K','Command Palette'],['Ctrl+S','Save Project'],['Ctrl+N','New Document'],
-            // Edit
-            ['Ctrl+Z','Undo'],['Ctrl+Shift+Z','Redo'],['Ctrl+Y','Redo (alt)'],
-            ['Ctrl+C','Copy'],['Ctrl+X','Cut'],['Ctrl+V','Paste'],['Ctrl+J','Duplicate Object'],
-            ['Delete','Delete Selected'],['Ctrl+T','Free Transform'],
-            // Selection
-            ['Ctrl+A','Select All'],['Ctrl+D','Deselect'],
-            ['Ctrl+Shift+D','Reselect'],['Ctrl+Shift+I','Inverse Selection'],
-            // Layer
-            ['Ctrl+E','Merge Down'],['Ctrl+Shift+E','Merge Visible'],
-            // View
-            ['Ctrl+G','Toggle Grid'],['Ctrl+R','Toggle Rulers'],
-            ['Ctrl+1','Zoom 100%'],['Ctrl+0','Zoom Fit'],
-            ['Ctrl++','Zoom In'],['Ctrl+-','Zoom Out'],
-            ['Tab','Toggle UI Panels'],['F','Fullscreen'],['Scroll','Zoom'],
-            // Tools
-            ['Enter','Apply Crop / Finish Pen'],['Escape','Cancel / Deselect'],
-            ['Space (hold)','Temporary Pan'],['[ / ]','Brush Size'],['X','Swap Colors'],['D','Default Colors'],
-            ['V','Move'],['B','Brush'],['E','Eraser'],['T','Text'],['G','Gradient'],
-            ['C','Crop'],['Z','Zoom'],['H','Pan'],['L','Line'],['R / U','Rectangle'],
-            ['O','Ellipse'],['P','Pen'],['M','Marquee'],['W','Magic Wand'],
-            ['S','Clone Stamp'],['I','Eyedropper'],['J','Healing'],['A','Arrow'],
-            ['N','Sticky Note'],['Alt+Click','Set Clone Source'],
-        ];
+        const shortcuts = window.HstarOpenShopDesktopInput.shortcutRows();
         const o = document.createElement('div'); o.className = 'modal-overlay';
         o.innerHTML = `<div class="modal" style="min-width:400px"><h3 data-i18n="Keyboard Shortcuts">Keyboard Shortcuts</h3>
-            <dl class="shortcut-grid">${shortcuts.map(([k,v]) => `<dt>${k}</dt><dd>${this._esc(this._t(v))}</dd>`).join('')}</dl>
+            <dl class="shortcut-grid">${shortcuts.map(row => `<dt>${this._esc(row.keys.join(' / '))}</dt><dd>${this._esc(this._t(row.label))}</dd>`).join('')}</dl>
             <div class="modal-btns"><button class="btn" data-modal-close data-i18n="Close">Close</button></div></div>`;
         document.body.appendChild(o); requestAnimationFrame(() => o.classList.add('show'));
     },
 
     // ====================== KEYBOARD SHORTCUT HANDLER ======================
     _clipboard: null,
+    _shortcutCommands() {
+        return {
+            'command-palette':()=>this.toggleCmdPalette(),
+            'preferences':()=>this.showPreferences(),
+            'new-document':()=>this.newImage(),
+            'open-image':()=>this.openFile(),
+            'save-project':()=>this.saveProject(),
+            'export-settings':()=>this.showExportSettings(),
+            'undo':()=>this.undo(),
+            'redo':()=>this.redo(),
+            'cut':()=>this._cutSelection(),
+            'copy':()=>this._copySelection(),
+            'paste':()=>this._pasteSelection(),
+            'duplicate-context':()=>this._keyboardContext === 'layers' ? this.duplicateLayer() : this._duplicateSelection(),
+            'free-transform':()=>this.freeTransform(),
+            'select-all':()=>this.selectAll(),
+            'deselect':()=>this.deselectAll(),
+            'reselect':()=>this.reselectSelection(),
+            'invert-selection':()=>this.invertSelection(),
+            'invert-image':()=>this.applyFilterDirect('Invert'),
+            'resize-canvas':()=>this.showResize(),
+            'levels':()=>this.showLevelsDialog(),
+            'curves':()=>this.showCurvesDialog(),
+            'color-balance':()=>this.showColorBalanceDialog(),
+            'delete-context':()=>this._deleteByContext(),
+            'new-layer':()=>this.addLayer(),
+            'merge-context':()=>this.mergeSelectedOrDown(),
+            'merge-visible':()=>this.mergeVisibleLayers(),
+            'select-layer-below':()=>this._selectAdjacentLayer(-1),
+            'select-layer-above':()=>this._selectAdjacentLayer(1),
+            'move-layers-down':()=>this._moveSelectedLayersBy(-1),
+            'move-layers-up':()=>this._moveSelectedLayersBy(1),
+            'move-layers-bottom':()=>this._moveSelectedLayersToBoundary('bottom'),
+            'move-layers-top':()=>this._moveSelectedLayersToBoundary('top'),
+            'toggle-rulers':()=>this.toggleRulers(),
+            'toggle-grid':()=>this.toggleGrid(),
+            'zoom-fit':()=>this.zoomFit(),
+            'zoom-100':()=>this.setZoom(1),
+            'zoom-in':()=>this.zoomIn(),
+            'zoom-out':()=>this.zoomOut(),
+            'toggle-panels':()=>this._toggleUIPanels(),
+            'cycle-screen-mode':()=>this.toggleFullscreen(),
+            'commit-operation':()=>this._commitActiveOperation(),
+            'cancel-operation':()=>this._cancelActiveOperation(),
+            'temporary-pan':()=>this._setTemporaryPan(true),
+            'temporary-pan-release':()=>this._setTemporaryPan(false),
+            'brush-size-down':()=>this.setBrushSize(Math.max(1, this.state.brushSize - 2)),
+            'brush-size-up':()=>this.setBrushSize(Math.min(200, this.state.brushSize + 2)),
+            'default-colors':()=>{
+                this.setFgColor('#000000'); this.setBgColor('#ffffff');
+                this.toast(this._t('Colors reset'), 'info');
+            },
+            'swap-colors':()=>this.swapColors(),
+        };
+    },
+    _deleteByContext() {
+        if (this._keyboardContext === 'layers') return this.deleteLayers();
+        if (this._selectionBounds) return this._deleteSelectionPixels();
+        if (this.canvas.getActiveObject()) return this._deleteSelected();
+    },
+    _selectAdjacentLayer(delta) {
+        if (!this.layers.length) return;
+        const nextIndex = Math.max(0, Math.min(this.layers.length - 1, this.activeLayerIdx + delta));
+        const layer = this.layers[nextIndex];
+        this._resetLayerSelection(layer);
+        this._keyboardContext = 'layers';
+        this.canvas.discardActiveObject(); this.canvas.renderAll(); this.updateLayersPanel();
+    },
+    _moveSelectedLayersBy(delta) {
+        const indices = this._selectedLayerIndices();
+        if (!indices.length) return;
+        const destination = delta < 0
+            ? Math.max(0, Math.min(...indices) - 1)
+            : Math.min(this.layers.length, Math.max(...indices) + 2);
+        this._moveSelectedLayersToIndex(destination);
+    },
+    _moveSelectedLayersToBoundary(edge) {
+        this._moveSelectedLayersToIndex(edge === 'bottom' ? 0 : this.layers.length);
+    },
+    _commitActiveOperation() {
+        if (this.state.tool === 'crop' && this._cropRegion) return this.applyCrop();
+        if (this.state.tool === 'pen' && this._penPoints.length > 1) return this._penFinish();
+    },
+    _cancelActiveOperation() {
+        const palette = document.getElementById('cmd-palette');
+        if (palette?.classList.contains('visible')) { this.closeCmdPalette(); return; }
+        document.getElementById('context-menu')?.classList.remove('visible');
+        if (this.state.tool === 'crop' && this._cropRegion) { this.cancelCrop(); return; }
+        if (this._selectionBounds || this._lassoPoints.length > 0) { this.clearSelection(); return; }
+        this.deselectAll();
+    },
+    _setTemporaryPan(active) {
+        if (active) {
+            if (this._tempPanning) return;
+            this._tempPanning = true;
+            this._prevCursor = this.canvas.defaultCursor;
+            this.canvas.defaultCursor = 'grab'; this.canvas.hoverCursor = 'grab';
+            return;
+        }
+        if (!this._tempPanning) return;
+        this._tempPanning = false;
+        this.canvas.defaultCursor = this._prevCursor || 'crosshair';
+        if (this.state.tool === 'select') {
+            this.canvas.defaultCursor = 'default'; this.canvas.hoverCursor = 'move';
+        } else {
+            this.canvas.hoverCursor = 'crosshair';
+        }
+    },
+    _toggleUIPanels() {
+        const panels = document.getElementById('panels');
+        const toolbar = document.getElementById('toolbar');
+        const toolOptions = document.getElementById('tool-options');
+        if (!panels || !toolbar || !toolOptions) return;
+        const hidden = panels.style.display === 'none';
+        panels.style.display = hidden ? '' : 'none';
+        toolbar.style.display = hidden ? '' : 'none';
+        toolOptions.style.display = hidden ? '' : 'none';
+    },
+    _activateToolShortcut(tool) {
+        const flyoutButton = [...document.querySelectorAll('.tool-flyout .tool-btn[data-tool]')]
+            .find(button => button.dataset.tool === tool);
+        const flyout = flyoutButton?.closest('.tool-flyout');
+        const group = flyout?._parentGroup;
+        if (flyoutButton && group?.dataset.group) {
+            this.flyoutSelect(flyoutButton, group.dataset.group);
+        } else {
+            this.setTool(tool);
+        }
+        this._refreshToolAccessibility();
+    },
     _initKeyboardShortcuts() {
-        document.addEventListener('keydown', e => {
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-            const ctrl = e.ctrlKey || e.metaKey;
-
-            // === Ctrl/Cmd shortcuts ===
-            if (ctrl) {
-                switch(e.key.toLowerCase()) {
-                    case 'z':
-                        e.preventDefault();
-                        if (e.shiftKey) this.redo(); else this.undo();
-                        return;
-                    case 'y':
-                        e.preventDefault(); this.redo(); return;
-                    case 's':
-                        e.preventDefault(); this.saveProject(); return;
-                    case 'a':
-                        e.preventDefault(); this.selectAll(); return;
-                    case 'd':
-                        e.preventDefault();
-                        if (e.shiftKey) { this.reselectSelection(); }
-                        else { this.deselectAll(); }
-                        return;
-                    case 'c':
-                        e.preventDefault(); this._copySelection(); return;
-                    case 'x':
-                        e.preventDefault(); this._cutSelection(); return;
-                    case 'v':
-                        e.preventDefault(); this._pasteSelection(); return;
-                    case 'j':
-                        e.preventDefault(); this._duplicateSelection(); return;
-                    case 'g':
-                        e.preventDefault(); this.toggleGrid(); return;
-                    case 'r':
-                        e.preventDefault(); this.toggleRulers(); return;
-                    case 't':
-                        e.preventDefault(); this.freeTransform(); return;
-                    case '0':
-                        e.preventDefault(); this.zoomFit(); return;
-                    case '1':
-                        e.preventDefault(); this.setZoom(1); return;
-                    case '+': case '=':
-                        e.preventDefault(); this.zoomIn(); return;
-                    case '-':
-                        e.preventDefault(); this.zoomOut(); return;
-                    case 'k':
-                        // Handled by cmd palette init
-                        return;
-                    case 'e':
-                        e.preventDefault();
-                        if (e.shiftKey) this.mergeVisibleLayers();
-                        else this.mergeDown();
-                        return;
-                    case 'n':
-                        e.preventDefault(); this.newImage(); return;
-                }
-                // Ctrl+Shift combos
-                if (e.shiftKey && e.key.toLowerCase() === 'i') {
-                    e.preventDefault();
-                    this.invertSelection();
-                    return;
-                }
-                // Ctrl+Shift+D handled inside case 'd' above
-                return;
-            }
-
-            // === Non-modifier shortcuts ===
-            switch(e.key) {
-                case 'Escape':
-                    if (this.state.tool === 'crop' && this._cropRegion) { this.cancelCrop(); return; }
-                    if (this._selectionBounds || this._lassoPoints.length > 0) { this.clearSelection(); return; }
-                    this.deselectAll();
-                    return;
-                case 'Enter':
-                    if (this.state.tool === 'crop' && this._cropRegion) { e.preventDefault(); this.applyCrop(); return; }
-                    if (this.state.tool === 'pen' && this._penPoints.length > 1) { e.preventDefault(); this._penFinish(); return; }
-                    return;
-                case 'Delete': case 'Backspace':
-                    e.preventDefault();
-                    if (this._selectionBounds) {
-                        this._deleteSelectionPixels();
-                    } else if (this.canvas.getActiveObject()) {
-                        this._deleteSelected();
-                    }
-                    return;
-                case ' ':
-                    e.preventDefault();
-                    if (!this._tempPanning) {
-                        this._tempPanning = true;
-                        this._prevCursor = this.canvas.defaultCursor;
-                        this.canvas.defaultCursor = 'grab';
-                        this.canvas.hoverCursor = 'grab';
-                    }
-                    return;
-                case 'Tab':
-                    e.preventDefault();
-                    // Toggle panels visibility like Photoshop
-                    const panels = document.getElementById('panels');
-                    const toolbar = document.getElementById('toolbar');
-                    const toolopts = document.getElementById('tool-options');
-                    const hidden = panels.style.display === 'none';
-                    panels.style.display = hidden ? '' : 'none';
-                    toolbar.style.display = hidden ? '' : 'none';
-                    toolopts.style.display = hidden ? '' : 'none';
-                    return;
-                case 'F':
-                case 'f':
-                    if (!ctrl) { this.toggleFullscreen(); return; }
-                    return;
-                case '[':
-                    this.state.brushSize = Math.max(1, this.state.brushSize - 2);
-                    this.setBrushSize(this.state.brushSize);
-                    return;
-                case ']':
-                    this.state.brushSize = Math.min(200, this.state.brushSize + 2);
-                    this.setBrushSize(this.state.brushSize);
-                    return;
-                case 'x':
-                case 'X':
-                    this.swapColors(); return;
-                case 'd':
-                case 'D':
-                    this.setFgColor('#000000'); this.setBgColor('#ffffff');
-                    this.toast(this._t("Colors reset"), 'info'); return;
-            }
-
-            // Tool switch shortcuts (single letter)
-            const map = {v:'select',b:'brush',e:'eraser',t:'text',g:'gradient',c:'crop',z:'zoom',h:'pan',
-                l:'line',r:'rect',o:'circle',p:'pen',m:'marquee-rect',w:'magic-wand',s:'clone',i:'eyedropper',
-                j:'healing',n:'note',a:'arrow',u:'rect',k:'polygon'};
-            const lower = e.key.toLowerCase();
-            if (map[lower] && !ctrl) { e.preventDefault(); this.setTool(map[lower]); }
-        });
-        // Space key release - exit temporary pan
-        document.addEventListener('keyup', e => {
-            if (e.key === ' ' && this._tempPanning) {
-                this._tempPanning = false;
-                this.canvas.defaultCursor = this._prevCursor || 'crosshair';
-                // Restore hover cursor based on current tool
-                if (this.state.tool === 'select') { this.canvas.defaultCursor = 'default'; this.canvas.hoverCursor = 'move'; }
-                else { this.canvas.hoverCursor = 'crosshair'; }
-            }
-        });
+        const desktopInput = window.HstarOpenShopDesktopInput;
+        const previous = window.__hstarOpenShopDesktopShortcutHandlers;
+        if (previous) {
+            document.removeEventListener('keydown', previous.keydown);
+            document.removeEventListener('keyup', previous.keyup);
+            document.removeEventListener('pointerdown', previous.context);
+            document.removeEventListener('focusin', previous.context);
+        }
+        const context = event => {
+            const target = event?.target instanceof Element
+                ? event.target
+                : event?.target?.parentElement || null;
+            if (target?.closest('#layers-list')) this._keyboardContext = 'layers';
+            else if (target?.closest('#canvas-area')) this._keyboardContext = 'canvas';
+        };
+        const execute = (event, resolved) => {
+            const action = resolved.command === 'cycle-tool'
+                ? () => this._activateToolShortcut(resolved.tool)
+                : this._shortcutCommands()[resolved.command];
+            if (typeof action !== 'function') return false;
+            event.preventDefault();
+            action();
+            return true;
+        };
+        const keydown = event => {
+            const activeObject = this.canvas?.getActiveObject?.();
+            if (desktopInput.isEditableShortcutTarget(event.target, activeObject)) return;
+            const resolved = desktopInput.resolveShortcut(event, {
+                context:this._keyboardContext,
+                currentTool:this.state.tool,
+            });
+            if (resolved) execute(event, resolved);
+        };
+        const keyup = event => {
+            const resolved = desktopInput.resolveShortcut(event, {
+                context:this._keyboardContext,
+                currentTool:this.state.tool,
+                phase:'keyup',
+            });
+            if (resolved) execute(event, resolved);
+        };
+        document.addEventListener('keydown', keydown);
+        document.addEventListener('keyup', keyup);
+        document.addEventListener('pointerdown', context);
+        document.addEventListener('focusin', context);
+        window.__hstarOpenShopDesktopShortcutHandlers = {keydown, keyup, context};
     },
     selectAll() {
         this.setTool('select');
