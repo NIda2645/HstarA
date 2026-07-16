@@ -61,7 +61,7 @@ Run from the worktree root:
 
 ```powershell
 $repoRoot = (Resolve-Path (Join-Path (git rev-parse --git-common-dir) '..')).Path
-& "$repoRoot\python\python.exe" -m unittest discover -s tests -p 'test_native_file_picker.py' -v
+& "$repoRoot\python\python.exe" -c "import os,sys,unittest;sys.path.insert(0,os.getcwd());suite=unittest.defaultTestLoader.discover('tests',pattern='test_native_file_picker.py');result=unittest.TextTestRunner(verbosity=2).run(suite);sys.exit(0 if result.wasSuccessful() else 1)"
 ```
 
 Expected: FAIL because `native_file_picker` does not exist.
