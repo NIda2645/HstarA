@@ -432,6 +432,44 @@ describe('OpenShop core object', () => {
     expect(OS._animIdx).toBe(1);
   });
 
+  it('clears animation ownership when a new document replaces the workspace', () => {
+    const OS = loadOpenShop();
+    const oldLayer = {name:'motion.gif', animationFrames:['frame-1', 'frame-2'], objects:[]};
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.clear = vi.fn();
+    OS.canvas.setBackgroundColor = vi.fn((_color, callback) => callback());
+    OS._createCheckerBoundary = vi.fn(() => ({name:'__boundary__'}));
+    OS.zoomFit = vi.fn();
+    OS.saveHistory = vi.fn();
+    OS.updateLayersPanel = vi.fn();
+    OS._captureBA = vi.fn();
+    OS.addLayer = vi.fn(function addLayer() {
+      const layer = {name:'Layer 1', visible:true, locked:false, opacity:100, blend:'source-over', objects:[]};
+      this.layers.push(layer);
+      this.activeLayerIdx = this.layers.length - 1;
+    });
+    document.body.insertAdjacentHTML('beforeend', `
+      <span id="canvas-dims"></span>
+      <div id="timeline-panel" class="visible"></div>
+      <button id="tl-play" class="active"></button>
+    `);
+    OS._activeAnimationLayer = oldLayer;
+    OS._animFrames = oldLayer.animationFrames;
+    OS._animIdx = 1;
+    OS._animPlaying = true;
+    OS._animTimer = setInterval(() => {}, 1000);
+
+    OS.createNewDocument(1024, 768);
+
+    expect(OS._activeAnimationLayer).toBeNull();
+    expect(OS._animFrames).toEqual([]);
+    expect(OS._animIdx).toBe(0);
+    expect(OS._animPlaying).toBe(false);
+    expect(OS._animTimer).toBeNull();
+    expect(document.getElementById('timeline-panel').classList.contains('visible')).toBe(false);
+    expect(document.getElementById('tl-play').classList.contains('active')).toBe(false);
+  });
+
   it('uses the composited canvas sampler for the eyedropper tool', () => {
     const OS = loadOpenShop();
     OS.canvas = createCanvasMock([]);

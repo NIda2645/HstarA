@@ -1654,6 +1654,7 @@ const OS = {
 
     // ====================== DOCUMENT ======================
     createNewDocument(w, h) {
+        this._resetAnimationState();
         this.canvasW = w; this.canvasH = h; this.layers = []; this.canvas.clear();
         this.canvas.setBackgroundColor(null, this.canvas.renderAll.bind(this.canvas));
         const boundary = this._createCheckerBoundary(w, h);
@@ -1759,6 +1760,17 @@ const OS = {
     _sanitizePresetList(data) {
         const presets = Array.isArray(data) ? data : [data];
         return presets.map(p => this._safePreset(p)).filter(Boolean).slice(0, this._importLimits.maxPresets);
+    },
+    _resetAnimationState() {
+        if (this._animTimer) clearInterval(this._animTimer);
+        this._animTimer = null;
+        this._animPlaying = false;
+        this._activeAnimationLayer = null;
+        this._animFrames = [];
+        this._animIdx = 0;
+        document.getElementById('timeline-panel')?.classList.remove('visible');
+        document.getElementById('tl-play')?.classList.remove('active');
+        this._renderFrames();
     },
     _activateAnimationLayer(layer) {
         if (!layer || !Array.isArray(layer.animationFrames) || !layer.animationFrames.length) return false;
