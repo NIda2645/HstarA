@@ -256,7 +256,7 @@ test('imports local image and PSD through the crash-safe backend route', async (
   expect(pageErrors).toEqual([]);
 });
 
-test('4K ten-layer foundation baseline', async ({ page }) => {
+test('high-resolution ten-layer foundation baseline using a 4096 square sample', async ({ page }) => {
   test.setTimeout(120000);
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));
@@ -352,7 +352,7 @@ test('4K ten-layer foundation baseline', async ({ page }) => {
     return result;
   });
 
-  console.log(`HSTAR_4K_BASELINE=${JSON.stringify(metrics)}`);
+  console.log(`HSTAR_HIGH_RES_BASELINE=${JSON.stringify(metrics)}`);
   expect(metrics.layerCount).toBe(10);
   expect(metrics.createMs).toBeGreaterThanOrEqual(0);
   expect(metrics.serializeMs).toBeGreaterThanOrEqual(0);
