@@ -506,6 +506,8 @@ describe('OpenShop core object', () => {
     OS.updateStatus = vi.fn();
     OS.updateMinimap = vi.fn();
     OS.updateHistogram = vi.fn();
+    OS._renderMinimap = vi.fn();
+    OS._renderHistogram = vi.fn();
     OS.recordMacroStep = vi.fn();
     OS._initUpdateScheduler({
       frameRequest:callback => { frameQueue.push(callback); return frameQueue.length; },
@@ -520,17 +522,19 @@ describe('OpenShop core object', () => {
     expect(OS.updateStatus).not.toHaveBeenCalled();
     expect(OS.updateMinimap).not.toHaveBeenCalled();
     expect(OS.updateHistogram).not.toHaveBeenCalled();
+    expect(OS._renderMinimap).not.toHaveBeenCalled();
+    expect(OS._renderHistogram).not.toHaveBeenCalled();
     expect(frameQueue).toHaveLength(1);
     expect(idleQueue).toHaveLength(1);
 
     frameQueue.shift()();
     expect(OS.updateHistoryPanel).toHaveBeenCalledOnce();
     expect(OS.updateStatus).toHaveBeenCalledOnce();
-    expect(OS.updateMinimap).not.toHaveBeenCalled();
+    expect(OS._renderMinimap).not.toHaveBeenCalled();
 
     idleQueue.shift()({didTimeout:false, timeRemaining:() => 10});
-    expect(OS.updateMinimap).toHaveBeenCalledOnce();
-    expect(OS.updateHistogram).toHaveBeenCalledOnce();
+    expect(OS._renderMinimap).toHaveBeenCalledOnce();
+    expect(OS._renderHistogram).toHaveBeenCalledOnce();
   });
 
   it('adds and deletes layers while keeping canvas objects in sync', () => {

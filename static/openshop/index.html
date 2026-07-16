@@ -2690,8 +2690,8 @@ self.onmessage = function(e) {
             layers:() => this.updateLayersPanel(),
             history:() => this.updateHistoryPanel(),
             status:() => this.updateStatus(),
-            minimap:() => this.updateMinimap(),
-            histogram:() => this.updateHistogram(),
+            minimap:() => this._renderMinimap(),
+            histogram:() => this._renderHistogram(),
         };
         [...new Set(keys.flat())].forEach(key => immediate[key]?.());
     },
@@ -5767,17 +5767,34 @@ self.onmessage = async function(e) {
     },
 
     // ====================== HISTOGRAM ======================
+    _getAnalysisPreview({maxWidth = 320, maxHeight = 320} = {}) {
+        const scale = Math.min(maxWidth / this.canvasW, maxHeight / this.canvasH, 1);
+        const width = Math.max(1, Math.round(this.canvasW * scale));
+        const height = Math.max(1, Math.round(this.canvasH * scale));
+        const key = `${this._analysisRevision || 0}:${width}x${height}`;
+        if (this._analysisPreviewCache?.key === key) return this._analysisPreviewCache.canvas;
+        const preview = this.canvas.toCanvasElement(scale, {
+            left:0,
+            top:0,
+            width:this.canvasW,
+            height:this.canvasH,
+        });
+        this._analysisPreviewCache = {key, canvas:preview};
+        return preview;
+    },
     updateHistogram() {
+        this._scheduleUi('histogram');
+    },
+    _renderHistogram() {
         const cv = document.getElementById('histogram-canvas');
         if (!cv) return;
         const ctx = cv.getContext('2d', { willReadFrequently: true });
         ctx.clearRect(0, 0, cv.width, cv.height);
         ctx.fillStyle = '#1c2230'; ctx.fillRect(0, 0, cv.width, cv.height);
         try {
-            const vpt = this.canvas.viewportTransform.slice();
-            this.canvas.viewportTransform = [1,0,0,1,0,0]; this.canvas.renderAll();
-            const data = this.canvas.getContext('2d').getImageData(0, 0, Math.min(this.canvasW, 800), Math.min(this.canvasH, 800));
-            this.canvas.viewportTransform = vpt; this.canvas.renderAll();
+            const preview = this._getAnalysisPreview();
+            const data = preview.getContext('2d', {willReadFrequently:true})
+                .getImageData(0, 0, preview.width, preview.height);
             const d = data.data;
             const bins = { r: new Uint32Array(256), g: new Uint32Array(256), b: new Uint32Array(256), l: new Uint32Array(256) };
             for (let i = 0; i < d.length; i += 4) {
@@ -7275,35 +7292,48 @@ self.onmessage = async function(e) {
     // ====================== MINIMAP / NAVIGATOR ======================
     initMinimap() { this.updateMinimap(); },
     updateMinimap() {
+        this._scheduleUi('minimap');
+    },
+    _renderMinimap() {
         const cv = document.getElementById('minimap-canvas');
         const wrap = document.getElementById('minimap-wrap');
         if (!cv || !wrap) return;
         const w = wrap.clientWidth, h = wrap.clientHeight;
+        if (w <= 0 || h <= 0) return;
         cv.width = w; cv.height = h;
         const ctx = cv.getContext('2d');
         ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, w, h);
         try {
-            const vpt = this.canvas.viewportTransform.slice();
-            this.canvas.viewportTransform = [1,0,0,1,0,0]; this.canvas.renderAll();
-            const dataUrl = this.canvas.toDataURL({ format: 'png', left: 0, top: 0, width: this.canvasW, height: this.canvasH });
-            this.canvas.viewportTransform = vpt; this.canvas.renderAll();
-            const img = new Image();
-            img.onload = () => {
-                const scale = Math.min(w / this.canvasW, h / this.canvasH);
-                const dx = (w - this.canvasW * scale) / 2, dy = (h - this.canvasH * scale) / 2;
-                ctx.drawImage(img, dx, dy, this.canvasW * scale, this.canvasH * scale);
-                // Viewport rect
-                const vpEl = document.getElementById('minimap-vp');
-                const cvw = this.canvas.width, cvh = this.canvas.height;
-                const z = this.zoom;
-                const vpW = cvw / z / this.canvasW * (this.canvasW * scale);
-                const vpH = cvh / z / this.canvasH * (this.canvasH * scale);
-                const vpX = dx + (-vpt[4] / z / this.canvasW) * (this.canvasW * scale);
-                const vpY = dy + (-vpt[5] / z / this.canvasH) * (this.canvasH * scale);
-                vpEl.style.left = vpX + 'px'; vpEl.style.top = vpY + 'px';
-                vpEl.style.width = Math.min(vpW, w) + 'px'; vpEl.style.height = Math.min(vpH, h) + 'px';
-            }; img.src = dataUrl;
+            const preview = this._getAnalysisPreview();
+            const scale = Math.min(w / preview.width, h / preview.height);
+            const drawWidth = preview.width * scale;
+            const drawHeight = preview.height * scale;
+            const dx = (w - drawWidth) / 2;
+            const dy = (h - drawHeight) / 2;
+            ctx.drawImage(preview, dx, dy, drawWidth, drawHeight);
+            this._updateMinimapViewport();
         } catch(e) { console.debug('Minimap update skipped:', e.message); }
+    },
+    _updateMinimapViewport() {
+        const wrap = document.getElementById('minimap-wrap');
+        const vpEl = document.getElementById('minimap-vp');
+        if (!wrap || !vpEl || !this.canvas) return;
+        const w = wrap.clientWidth, h = wrap.clientHeight;
+        if (w <= 0 || h <= 0 || this.canvasW <= 0 || this.canvasH <= 0) return;
+        const scale = Math.min(w / this.canvasW, h / this.canvasH);
+        const dx = (w - this.canvasW * scale) / 2;
+        const dy = (h - this.canvasH * scale) / 2;
+        const vpt = this.canvas.viewportTransform;
+        const z = Math.max(Number(this.zoom) || 1, 0.0001);
+        const cvw = this.canvas.width, cvh = this.canvas.height;
+        const vpW = cvw / z * scale;
+        const vpH = cvh / z * scale;
+        const vpX = dx + (-vpt[4] / z) * scale;
+        const vpY = dy + (-vpt[5] / z) * scale;
+        vpEl.style.left = vpX + 'px';
+        vpEl.style.top = vpY + 'px';
+        vpEl.style.width = Math.min(vpW, w) + 'px';
+        vpEl.style.height = Math.min(vpH, h) + 'px';
     },
     _minimapClick(e) {
         const wrap = document.getElementById('minimap-wrap');
@@ -7320,7 +7350,7 @@ self.onmessage = async function(e) {
         vpt[4] = -(canvasX * z - cvw / 2);
         vpt[5] = -(canvasY * z - cvh / 2);
         this.canvas.setViewportTransform(vpt);
-        this.drawGrid(); this.drawRulers(); this.updateMinimap();
+        this.drawGrid(); this.drawRulers(); this._updateMinimapViewport();
     },
 
     // ====================== STICKY NOTES / ANNOTATIONS ======================
