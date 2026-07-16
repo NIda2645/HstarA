@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const html = readFileSync(resolve(testDir, '..', 'index.html'), 'utf8');
 const manifestPath = resolve(testDir, '..', 'vendor', 'runtime-manifest.json');
+const buildScript = readFileSync(resolve(testDir, '..', 'scripts', 'build-hstar.mjs'), 'utf8');
 
 describe('Hstar OpenShop offline runtime', () => {
   it('uses only local browser runtime dependencies', () => {
@@ -18,6 +19,11 @@ describe('Hstar OpenShop offline runtime', () => {
     expect(html).toContain("'./vendor/gif/gif.js'");
     expect(html).toContain("workerScript: './vendor/gif/gif.worker.js'");
     expect(html).toContain("import('./vendor/transformers/transformers.web.min.js')");
+    expect(html).toContain('<link rel="stylesheet" href="./host/openshop-text-properties.css">');
+    expect(html).toContain('<script src="./host/openshop-text-properties.js"></script>');
+    expect(html).toContain('HstarOpenShopTextProperties.createController');
+    expect(buildScript).toContain("'host/openshop-text-properties.js'");
+    expect(buildScript).toContain("'host/openshop-text-properties.css'");
     expect(html).toContain('_precacheRuntime()');
     expect(html).not.toMatch(/<script[^>]+https?:\/\//i);
     expect(html).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com/i);

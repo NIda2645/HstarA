@@ -456,6 +456,16 @@ describe('OpenShop core object', () => {
     expect(OS.setTool).toHaveBeenCalledWith('select');
   });
 
+  it('keeps the text kerning mode in history snapshots', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS);
+
+    OS.saveHistory('Text Kerning');
+
+    expect(OS.canvas.toJSON).toHaveBeenCalledWith(expect.arrayContaining(['hstarKerningMode']));
+  });
+
   it('exports PNG using a sanitized download name', () => {
     const OS = loadOpenShop();
     const boundary = {

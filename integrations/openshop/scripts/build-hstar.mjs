@@ -50,6 +50,8 @@ const runtimeFiles = [...new Set([
   'host/openshop-host-runtime.js',
   'host/openshop-ai-client.js',
   'host/openshop-font-catalog.js',
+  'host/openshop-text-properties.js',
+  'host/openshop-text-properties.css',
   'host/openshop-text-tools.js',
   'host/openshop-reference-manager.js',
   'host/openshop-generative-client.js',
