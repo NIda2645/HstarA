@@ -9,6 +9,7 @@ const i18nRuntimePath = join(__dirname, '..', 'host', 'openshop-i18n.js');
 const chineseLocalePath = join(__dirname, '..', 'locales', 'zh-CN.js');
 const desktopInputPath = join(__dirname, '..', 'host', 'openshop-desktop-input.js');
 const canvasSamplerPath = join(__dirname, '..', 'host', 'openshop-canvas-sampler.js');
+const updateSchedulerPath = join(__dirname, '..', 'host', 'openshop-update-scheduler.js');
 
 export function loadOpenShop() {
   delete globalThis.OS;
@@ -18,6 +19,7 @@ export function loadOpenShop() {
   new Function(readFileSync(chineseLocalePath, 'utf8'))();
   new Function(readFileSync(desktopInputPath, 'utf8'))();
   new Function(readFileSync(canvasSamplerPath, 'utf8'))();
+  new Function(readFileSync(updateSchedulerPath, 'utf8'))();
   window.HstarOpenShopI18n.setLocale('en-US');
   const html = readFileSync(indexPath, 'utf8');
   const start = html.indexOf('const OS = {');

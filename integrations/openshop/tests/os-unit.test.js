@@ -491,6 +491,48 @@ describe('OpenShop core object', () => {
     expect(OS.toast).toHaveBeenCalledWith('Canvas color could not be sampled', 'error');
   });
 
+  it('records history immediately while scheduling derived panel updates', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([{name:'Shape', type:'rect'}]);
+    OS.layers = [
+      {name:'Layer 0', visible:true, locked:false, opacity:100, blend:'source-over', objects:[]},
+    ];
+    OS.history = [];
+    OS.historyIdx = -1;
+    const frameQueue = [];
+    const idleQueue = [];
+    document.body.insertAdjacentHTML('beforeend', '<div id="ptg3-nav" class="active"></div>');
+    OS.updateHistoryPanel = vi.fn();
+    OS.updateStatus = vi.fn();
+    OS.updateMinimap = vi.fn();
+    OS.updateHistogram = vi.fn();
+    OS.recordMacroStep = vi.fn();
+    OS._initUpdateScheduler({
+      frameRequest:callback => { frameQueue.push(callback); return frameQueue.length; },
+      idleRequest:callback => { idleQueue.push(callback); return idleQueue.length; },
+    });
+
+    OS.saveHistory('Shape changed');
+
+    expect(OS.history).toHaveLength(1);
+    expect(OS.historyIdx).toBe(0);
+    expect(OS.updateHistoryPanel).not.toHaveBeenCalled();
+    expect(OS.updateStatus).not.toHaveBeenCalled();
+    expect(OS.updateMinimap).not.toHaveBeenCalled();
+    expect(OS.updateHistogram).not.toHaveBeenCalled();
+    expect(frameQueue).toHaveLength(1);
+    expect(idleQueue).toHaveLength(1);
+
+    frameQueue.shift()();
+    expect(OS.updateHistoryPanel).toHaveBeenCalledOnce();
+    expect(OS.updateStatus).toHaveBeenCalledOnce();
+    expect(OS.updateMinimap).not.toHaveBeenCalled();
+
+    idleQueue.shift()({didTimeout:false, timeRemaining:() => 10});
+    expect(OS.updateMinimap).toHaveBeenCalledOnce();
+    expect(OS.updateHistogram).toHaveBeenCalledOnce();
+  });
+
   it('adds and deletes layers while keeping canvas objects in sync', () => {
     const OS = loadOpenShop();
     const canvasObject = { name: 'Pixel Layer', type: 'image' };

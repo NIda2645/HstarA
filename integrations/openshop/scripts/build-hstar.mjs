@@ -45,6 +45,8 @@ const runtimeFiles = [...new Set([
   'LICENSE',
   'host/openshop-protocol.js',
   'host/openshop-desktop-input.js',
+  'host/openshop-canvas-sampler.js',
+  'host/openshop-update-scheduler.js',
   'host/openshop-pixel-fill.js',
   'host/openshop-project-adapter.js',
   'host/openshop-snap-engine.js',

@@ -22,8 +22,12 @@ describe('Hstar OpenShop offline runtime', () => {
     expect(html).toContain('<link rel="stylesheet" href="./host/openshop-text-properties.css">');
     expect(html).toContain('<script src="./host/openshop-text-properties.js"></script>');
     expect(html).toContain('HstarOpenShopTextProperties.createController');
+    expect(html).toContain('<script src="./host/openshop-canvas-sampler.js"></script>');
+    expect(html).toContain('<script src="./host/openshop-update-scheduler.js"></script>');
     expect(buildScript).toContain("'host/openshop-text-properties.js'");
     expect(buildScript).toContain("'host/openshop-text-properties.css'");
+    expect(buildScript).toContain("'host/openshop-canvas-sampler.js'");
+    expect(buildScript).toContain("'host/openshop-update-scheduler.js'");
     expect(html).toContain('_precacheRuntime()');
     expect(html).not.toMatch(/<script[^>]+https?:\/\//i);
     expect(html).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com/i);

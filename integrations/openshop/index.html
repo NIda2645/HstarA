@@ -1585,6 +1585,7 @@ const OS = {
             preserveObjectStacking: true, enableRetinaScaling: true,
             stopContextMenu: true, fireRightClick: true,
         });
+        this._initUpdateScheduler();
         this.createNewDocument(this.canvasW, this.canvasH);
         this.canvas.on('mouse:move', e => this.onMouseMove(e));
         this.canvas.on('mouse:down', e => this.onMouseDown(e));
@@ -2650,6 +2651,49 @@ self.onmessage = function(e) {
         // Show target content, hide siblings
         document.querySelectorAll('.panel-tab-content[data-group="' + groupId + '"]').forEach(c => c.classList.remove('active'));
         document.getElementById(contentId).classList.add('active');
+        if (contentId === 'ptg3-nav') {
+            this._updateScheduler?.flushVisible('minimap', 'histogram');
+        }
+    },
+    _initUpdateScheduler(overrides = {}) {
+        this._updateScheduler?.dispose?.();
+        this._updateScheduler = window.HstarOpenShopUpdateScheduler.create({
+            handlers:{
+                layers:() => this.updateLayersPanel(),
+                history:() => this.updateHistoryPanel(),
+                status:() => this.updateStatus(),
+                minimap:() => this._renderMinimap ? this._renderMinimap() : this.updateMinimap(),
+                histogram:() => this._renderHistogram ? this._renderHistogram() : this.updateHistogram(),
+                viewportUi:() => {
+                    this.drawGrid();
+                    this.drawRulers();
+                    this._drawPixelGrid();
+                    this._updateMinimapViewport?.();
+                },
+            },
+            idleKeys:['minimap', 'histogram'],
+            isVisible:key => {
+                if (key !== 'minimap' && key !== 'histogram') return true;
+                return document.getElementById('ptg3-nav')?.classList.contains('active') === true;
+            },
+            onError:(error, key) => console.debug(`OpenShop ${key} update skipped:`, error?.message || error),
+            ...overrides,
+        });
+        return this._updateScheduler;
+    },
+    _scheduleUi(...keys) {
+        if (this._updateScheduler) {
+            this._updateScheduler.request(...keys);
+            return;
+        }
+        const immediate = {
+            layers:() => this.updateLayersPanel(),
+            history:() => this.updateHistoryPanel(),
+            status:() => this.updateStatus(),
+            minimap:() => this.updateMinimap(),
+            histogram:() => this.updateHistogram(),
+        };
+        [...new Set(keys.flat())].forEach(key => immediate[key]?.());
     },
     _closeAllFlyouts() {
         this._toolTooltipController?.hide();
@@ -4130,9 +4174,12 @@ self.onmessage = function(e) {
         this.history.push({action,snapshot:snap,layers});
         if(this.history.length>this.maxHistory) this.history.shift();
         this._lastAction = action;
-        this.historyIdx=this.history.length-1; this._autoSaveDirty=true; this.updateHistoryPanel(); this.updateStatus(); this.updateMinimap();
+        this.historyIdx=this.history.length-1;
+        this._autoSaveDirty=true;
+        this._analysisRevision = (this._analysisRevision || 0) + 1;
+        this._analysisPreviewCache = null;
+        this._scheduleUi('history', 'status', 'minimap', 'histogram');
         this.recordMacroStep(action);
-        this.updateHistogram();
         window.dispatchEvent(new CustomEvent('openshop:project-dirty', {
             detail: { action: String(action || '') },
         }));
@@ -9365,6 +9412,8 @@ window.addEventListener('error', e => { console.error('Unhandled error:', e.erro
 window.addEventListener('unhandledrejection', e => { console.error('Unhandled promise rejection:', e.reason); if (typeof OS !== 'undefined' && OS.toast) OS.toast(OS._t('Something went wrong — see console'), 'error'); });
 window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
+<script src="./host/openshop-canvas-sampler.js"></script>
+<script src="./host/openshop-update-scheduler.js"></script>
 <script src="./host/openshop-snap-engine.js"></script>
 <script src="./host/openshop-protocol.js?v=2026.07.15.1784120375"></script>
 <script src="./host/openshop-project-adapter.js?v=2026.07.15.1784123441"></script>
