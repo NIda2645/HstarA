@@ -61,6 +61,11 @@ from openshop_ai import (
     normalize_ocr_layout,
 )
 from openshop_image_ops import normalize_local_generation
+from native_file_picker import (
+    NativeFilePickerError,
+    choose_open_file_path,
+    selected_file_metadata,
+)
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -2856,6 +2861,9 @@ class SoftwareStorageRequest(BaseModel):
 class NativeFolderRequest(BaseModel):
     initial_dir: str = ""
     purpose: str = ""
+
+class NativeOpenFileRequest(BaseModel):
+    kind: str = "image"
 
 class SaveOutputBatchRequest(BaseModel):
     items: List[Dict[str, Any]] = []
@@ -12527,6 +12535,26 @@ def choose_external_executable(payload: ExternalAppSaveRequest):
     app_id = normalize_external_app_id(payload.app)
     found = choose_external_executable_path(app_id)
     return {"ok": True, "app": app_id, "path": found}
+
+@app.post("/api/native/open-local-file")
+def open_native_local_file(payload: NativeOpenFileRequest, request: Request):
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
+    if not is_gemini_cli_loopback_hostname(client_host):
+        raise HTTPException(status_code=403, detail="仅允许本机打开本地文件。")
+    ensure_same_origin_request(request)
+    try:
+        selected = choose_open_file_path(payload.kind)
+        if not selected:
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
+        metadata = selected_file_metadata(selected, payload.kind)
+    except NativeFilePickerError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+    headers = {
+        "X-Hstar-Filename": urllib.parse.quote(metadata["name"], safe=""),
+        "X-Hstar-File-Size": str(metadata["size"]),
+        "Cache-Control": "no-store",
+    }
+    return FileResponse(metadata["path"], media_type=metadata["mime"], headers=headers)
 
 @app.post("/api/open-external-image")
 def open_external_image(payload: ExternalImageOpenRequest):

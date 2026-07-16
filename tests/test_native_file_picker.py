@@ -3,6 +3,10 @@ import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from fastapi import HTTPException
+from starlette.requests import Request
 
 from native_file_picker import (
     MAX_BYTES,
@@ -105,6 +109,75 @@ class NativeFilePickerTests(unittest.TestCase):
         with self.assertRaises(NativeFilePickerError) as timeout:
             choose_open_file_path("image", runner=timed_out, platform="nt")
         self.assertEqual(timeout.exception.status_code, 504)
+
+
+class NativeOpenFileEndpointTests(unittest.TestCase):
+    @staticmethod
+    def _request(client="127.0.0.1", origin="http://127.0.0.1:3000"):
+        return Request({
+            "type":"http",
+            "method":"POST",
+            "path":"/api/native/open-local-file",
+            "scheme":"http",
+            "query_string":b"",
+            "server":("127.0.0.1", 3000),
+            "client":(client, 50000),
+            "headers":[
+                (b"host", b"127.0.0.1:3000"),
+                (b"origin", origin.encode("ascii")),
+            ],
+        })
+
+    def test_streams_only_safe_file_metadata_for_a_local_same_origin_request(self):
+        import main
+
+        with tempfile.TemporaryDirectory() as folder:
+            selected = os.path.join(folder, "测试图片.png")
+            with open(selected, "wb") as handle:
+                handle.write(b"\x89PNG\r\n\x1a\n")
+            with patch.object(main, "choose_open_file_path", return_value=selected):
+                response = main.open_native_local_file(
+                    main.NativeOpenFileRequest(kind="image"),
+                    self._request(),
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-hstar-filename"], "%E6%B5%8B%E8%AF%95%E5%9B%BE%E7%89%87.png")
+        self.assertEqual(response.headers["x-hstar-file-size"], "8")
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertNotIn(folder, str(response.headers))
+
+    def test_returns_no_content_when_the_native_dialog_is_cancelled(self):
+        import main
+
+        with patch.object(main, "choose_open_file_path", return_value=""):
+            response = main.open_native_local_file(
+                main.NativeOpenFileRequest(kind="psd"),
+                self._request(),
+            )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_rejects_remote_and_cross_origin_requests_before_opening_a_dialog(self):
+        import main
+
+        with patch.object(main, "choose_open_file_path") as picker:
+            with self.assertRaises(HTTPException) as remote:
+                main.open_native_local_file(
+                    main.NativeOpenFileRequest(kind="image"),
+                    self._request(client="192.168.1.50"),
+                )
+            self.assertEqual(remote.exception.status_code, 403)
+
+            with self.assertRaises(HTTPException) as cross_origin:
+                main.open_native_local_file(
+                    main.NativeOpenFileRequest(kind="image"),
+                    self._request(origin="http://example.test"),
+                )
+            self.assertEqual(cross_origin.exception.status_code, 403)
+            picker.assert_not_called()
 
 
 if __name__ == "__main__":
