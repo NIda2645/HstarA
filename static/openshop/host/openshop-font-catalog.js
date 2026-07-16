@@ -37,6 +37,13 @@
     return ['text', 'i-text', 'textbox'].includes(String(object?.type || '').toLowerCase());
   }
 
+  function walkTextStyles(styles, visit, seen = new Set()){
+    if(!styles || typeof styles !== 'object' || seen.has(styles)) return;
+    seen.add(styles);
+    if(Object.prototype.hasOwnProperty.call(styles, 'fontFamily')) visit(styles);
+    Object.values(styles).forEach(value => walkTextStyles(value, visit, seen));
+  }
+
   function defaultFontProbe(documentRef, family){
     const normalized = cleanFamily(family);
     if(!normalized) return false;
@@ -271,7 +278,9 @@
       const refs = [];
       const seen = new Set();
       walkObjects(editor?.canvas?.getObjects?.() || [], object => {
-        if(textObject(object)) addRef(refs, seen, {family:object.fontFamily});
+        if(!textObject(object)) return;
+        addRef(refs, seen, {family:object.fontFamily});
+        walkTextStyles(object.styles, style => addRef(refs, seen, {family:style.fontFamily}));
       });
       (Array.isArray(editor?.__hstarFontRefs) ? editor.__hstarFontRefs : []).forEach(ref => {
         addRef(refs, seen, ref);
@@ -290,9 +299,26 @@
       if(!isAvailable(target)) throw new Error('替代字体不可用');
       let changed = 0;
       walkObjects(editor?.canvas?.getObjects?.() || [], object => {
-        if(!textObject(object) || cleanFamily(object.fontFamily).toLowerCase() !== from.toLowerCase()) return;
-        if(typeof object.set === 'function') object.set({fontFamily:target});
-        else object.fontFamily = target;
+        if(!textObject(object)) return;
+        let objectChanged = false;
+        let stylesChanged = false;
+        if(cleanFamily(object.fontFamily).toLowerCase() === from.toLowerCase()){
+          if(typeof object.set === 'function') object.set({fontFamily:target});
+          else object.fontFamily = target;
+          objectChanged = true;
+        }
+        walkTextStyles(object.styles, style => {
+          if(cleanFamily(style.fontFamily).toLowerCase() !== from.toLowerCase()) return;
+          style.fontFamily = target;
+          objectChanged = true;
+          stylesChanged = true;
+        });
+        if(!objectChanged) return;
+        if(stylesChanged){
+          object.dirty = true;
+          object.initDimensions?.();
+          object.setCoords?.();
+        }
         changed += 1;
       });
       if(!changed) return 0;

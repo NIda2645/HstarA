@@ -73,6 +73,66 @@ describe('Hstar OpenShop font catalog', () => {
     expect(editor.saveHistory).toHaveBeenCalledWith('替换缺失字体');
   });
 
+  it('collects fonts used by per-character text styles', () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({fontProbe:() => true});
+    const editor = {
+      canvas:{
+        getObjects:() => [{
+          type:'i-text',
+          fontFamily:'Microsoft YaHei UI',
+          text:'中文 English',
+          styles:{
+            0:{
+              0:{fontFamily:'Century Gothic'},
+              1:{fontFamily:'Century Gothic'},
+              3:{fontFamily:'Arial'},
+            },
+          },
+        }],
+      },
+    };
+
+    expect(manager.scanEditor(editor)).toEqual([
+      {family:'Microsoft YaHei UI', status:'available'},
+      {family:'Century Gothic', status:'available'},
+      {family:'Arial', status:'available'},
+    ]);
+  });
+
+  it('replaces a missing font inside per-character text styles', () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fontProbe:family => !family.includes('Missing'),
+    });
+    const text = {
+      type:'i-text',
+      fontFamily:'Arial',
+      text:'海报 Title',
+      styles:{0:{0:{fontFamily:'Missing Poster Font'}, 1:{fontFamily:'Arial'}}},
+      set:vi.fn(function set(values){ Object.assign(this, values); }),
+      initDimensions:vi.fn(),
+      setCoords:vi.fn(),
+    };
+    const editor = {
+      canvas:{getObjects:() => [text], renderAll:vi.fn()},
+      updateLayersPanel:vi.fn(),
+      saveHistory:vi.fn(),
+    };
+
+    manager.scanEditor(editor);
+    const changed = manager.replaceFont(editor, 'Missing Poster Font', 'Microsoft YaHei UI');
+
+    expect(changed).toBe(1);
+    expect(text.fontFamily).toBe('Arial');
+    expect(text.styles[0][0].fontFamily).toBe('Microsoft YaHei UI');
+    expect(text.initDimensions).toHaveBeenCalledTimes(1);
+    expect(text.setCoords).toHaveBeenCalledTimes(1);
+    expect(editor.__hstarFontRefs).toContainEqual({
+      family:'Missing Poster Font',
+      status:'substituted',
+      replacementFamily:'Microsoft YaHei UI',
+    });
+  });
+
   it('exposes a restrained common font catalog for mixed-language editing', () => {
     const manager = window.HstarOpenShopFontCatalog.createManager({fontProbe:() => true});
     const families = manager.listCommonFonts().map(item => item.family);
