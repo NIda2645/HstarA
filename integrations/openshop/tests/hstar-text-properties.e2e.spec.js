@@ -170,9 +170,26 @@ test('edits mixed-language text with installed fonts and preserves the project s
       await frame.locator('.mobile-panel-toggle').click();
       await expect(panels).toHaveClass(/mobile-open/);
       await page.waitForFunction(() => {
-        const rect = document.querySelector('#panels')?.getBoundingClientRect();
-        return rect && Math.abs(rect.right - window.innerWidth) < 0.5;
+        const element = document.querySelector('#panels');
+        const rect = element?.getBoundingClientRect();
+        return rect && getComputedStyle(element).right === '0px'
+          && Math.abs(rect.right - window.innerWidth) < 0.01;
       });
+    }
+    if (viewport.name === 'desktop' || viewport.name === 'mobile') {
+      await familyTrigger.click();
+      const fontList = frame.locator('[data-text-font-list]');
+      await expect(fontList).toBeVisible();
+      const listBox = await fontList.boundingBox();
+      expect(listBox).not.toBeNull();
+      expect(listBox.x).toBeGreaterThanOrEqual(0);
+      expect(listBox.x + listBox.width).toBeLessThanOrEqual(viewport.width);
+      expect(listBox.y + listBox.height).toBeLessThanOrEqual(viewport.height);
+      const dropdownScreenshot = await page.screenshot({
+        path:`test-results/hstar-font-dropdown-${viewport.name}.png`,
+      });
+      expect(dropdownScreenshot.length).toBeGreaterThan(1000);
+      await familyTrigger.click();
     }
     const panel = frame.locator('#hstar-text-properties-panel');
     const box = await panel.boundingBox();
