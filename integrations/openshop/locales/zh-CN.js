@@ -151,6 +151,8 @@
     "Contrast": "对比度",
     "Contrast...": "对比度...",
     "Copy": "复制",
+    "Could not open file": "无法打开文件",
+    "Could not open PSD": "无法打开 PSD",
     "Crop": "裁剪工具",
     "Crop (C)": "裁剪工具（C）",
     "Crop region too small": "裁剪区域过小",

@@ -5,6 +5,21 @@ const SOURCE_IMAGE = '/static/images/logo.png';
 
 test.describe.configure({mode:'serial'});
 
+async function solidPngDataUrl(page, width, height) {
+  return page.evaluate(({w, h}) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#1d4ed8';
+    context.fillRect(0, 0, w, h);
+    context.fillStyle = '#ffffff';
+    context.font = '96px sans-serif';
+    context.fillText(`${w} x ${h}`, 160, 220);
+    return canvas.toDataURL('image/png');
+  }, {w:width, h:height});
+}
+
 async function apiJson(response){
   const value = await response.json().catch(() => ({}));
   expect(response.ok(), JSON.stringify(value)).toBeTruthy();
@@ -472,10 +487,11 @@ test('4K document handles twenty OCR blocks and selection removal without a blan
     };
   });
   await installAiRoutes(page, {ocrBlocks:blocks, width:4096, height:4096});
+  const fourKSource = await solidPngDataUrl(page, 4096, 4096);
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const image = {
     id:'four-k-source', type:'image', x:80, y:120, w:280, h:240,
-    url:SOURCE_IMAGE, name:'4K 测试源图.png', mediaKind:'image', assetVersion:'4k-v1',
+    url:fourKSource, name:'4K 测试源图.png', mediaKind:'image', assetVersion:'4k-v1',
   };
   const node = {
     id:'four-k-text-node', type:'openshop-layered', projectId:`e2e_4k_text_${runId}`,
