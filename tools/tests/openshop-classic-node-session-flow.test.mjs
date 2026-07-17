@@ -226,6 +226,48 @@ assert.equal(clone.cloneSourceCanvasId, '');
 assert.equal(clone.cloneSourceNodeId, '');
 
 canvasId = 'canvas-source';
+const pendingCloneB = {...node, id:'openshop-pending-b'};
+adapter.prepareClone(node, pendingCloneB);
+assert.equal(pendingCloneB.cloneSourceProjectId, node.projectId);
+assert.equal(pendingCloneB.cloneSourceCanvasId, 'canvas-source');
+assert.equal(pendingCloneB.cloneSourceNodeId, node.id);
+
+canvasId = 'canvas-pending-b';
+const pendingClipboardCopy = {...pendingCloneB};
+adapter.captureCloneSource(pendingCloneB, pendingClipboardCopy);
+assert.equal(pendingClipboardCopy.cloneSourceProjectId, node.projectId);
+assert.equal(pendingClipboardCopy.cloneSourceCanvasType, 'classic');
+assert.equal(pendingClipboardCopy.cloneSourceCanvasId, 'canvas-source');
+assert.equal(pendingClipboardCopy.cloneSourceNodeId, node.id);
+
+canvasId = 'canvas-pending-c';
+const pendingCloneC = {...pendingClipboardCopy, id:'openshop-pending-c'};
+adapter.prepareClone(pendingClipboardCopy, pendingCloneC);
+assert.equal(pendingCloneC.cloneSourceProjectId, node.projectId);
+assert.equal(pendingCloneC.cloneSourceCanvasType, 'classic');
+assert.equal(pendingCloneC.cloneSourceCanvasId, 'canvas-source');
+assert.equal(pendingCloneC.cloneSourceNodeId, node.id);
+
+canvasId = 'canvas-partial-owner';
+const partialSource = {
+  ...pendingCloneB,
+  id:'openshop-partial-b',
+  projectId:'project-partial-b',
+  cloneSourceProjectId:node.projectId,
+  cloneSourceCanvasType:'classic',
+  cloneSourceCanvasId:'',
+  cloneSourceNodeId:node.id,
+};
+const partialClipboardCopy = {...partialSource};
+adapter.captureCloneSource(partialSource, partialClipboardCopy);
+assert.equal(partialClipboardCopy.cloneSourceProjectId, 'project-partial-b');
+assert.equal(partialClipboardCopy.cloneSourceCanvasType, 'classic');
+assert.equal(partialClipboardCopy.cloneSourceCanvasId, 'canvas-partial-owner');
+assert.equal(partialClipboardCopy.cloneSourceNodeId, 'openshop-partial-b');
+assert.equal(partialSource.cloneSourceProjectId, node.projectId);
+assert.equal(partialSource.cloneSourceCanvasId, '');
+
+canvasId = 'canvas-source';
 assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
 assert.equal(adapter.disposeNode(node), true);
 assert.equal(disposedProjects.length, 1);

@@ -204,10 +204,18 @@
     }
 
     function captureCloneSource(source, clipboardCopy){
-        clipboardCopy.cloneSourceProjectId = clean(source?.projectId);
-        clipboardCopy.cloneSourceCanvasType = 'classic';
-        clipboardCopy.cloneSourceCanvasId = currentCanvasId();
-        clipboardCopy.cloneSourceNodeId = clean(source?.id);
+        const existing = {
+            cloneSourceProjectId:clean(source?.cloneSourceProjectId),
+            cloneSourceCanvasType:clean(source?.cloneSourceCanvasType),
+            cloneSourceCanvasId:clean(source?.cloneSourceCanvasId),
+            cloneSourceNodeId:clean(source?.cloneSourceNodeId),
+        };
+        Object.assign(clipboardCopy, Object.values(existing).every(Boolean) ? existing : {
+            cloneSourceProjectId:clean(source?.projectId),
+            cloneSourceCanvasType:'classic',
+            cloneSourceCanvasId:currentCanvasId(),
+            cloneSourceNodeId:clean(source?.id),
+        });
         return clipboardCopy;
     }
 

@@ -266,6 +266,48 @@ assert.equal(clone.cloneSourceCanvasId, '');
 assert.equal(clone.cloneSourceNodeId, '');
 
 canvasId = 'smart-canvas-source';
+const pendingCloneB = {...projectNode, id:'smart-openshop-pending-b'};
+adapter.prepareClone(projectNode, pendingCloneB);
+assert.equal(pendingCloneB.cloneSourceProjectId, projectNode.projectId);
+assert.equal(pendingCloneB.cloneSourceCanvasId, 'smart-canvas-source');
+assert.equal(pendingCloneB.cloneSourceNodeId, projectNode.id);
+
+canvasId = 'smart-canvas-pending-b';
+const pendingClipboardCopy = {...pendingCloneB};
+adapter.captureCloneSource(pendingCloneB, pendingClipboardCopy);
+assert.equal(pendingClipboardCopy.cloneSourceProjectId, projectNode.projectId);
+assert.equal(pendingClipboardCopy.cloneSourceCanvasType, 'smart');
+assert.equal(pendingClipboardCopy.cloneSourceCanvasId, 'smart-canvas-source');
+assert.equal(pendingClipboardCopy.cloneSourceNodeId, projectNode.id);
+
+canvasId = 'smart-canvas-pending-c';
+const pendingCloneC = {...pendingClipboardCopy, id:'smart-openshop-pending-c'};
+adapter.prepareClone(pendingClipboardCopy, pendingCloneC);
+assert.equal(pendingCloneC.cloneSourceProjectId, projectNode.projectId);
+assert.equal(pendingCloneC.cloneSourceCanvasType, 'smart');
+assert.equal(pendingCloneC.cloneSourceCanvasId, 'smart-canvas-source');
+assert.equal(pendingCloneC.cloneSourceNodeId, projectNode.id);
+
+canvasId = 'smart-canvas-partial-owner';
+const partialSource = {
+  ...pendingCloneB,
+  id:'smart-openshop-partial-b',
+  projectId:'smart-project-partial-b',
+  cloneSourceProjectId:projectNode.projectId,
+  cloneSourceCanvasType:'smart',
+  cloneSourceCanvasId:'',
+  cloneSourceNodeId:projectNode.id,
+};
+const partialClipboardCopy = {...partialSource};
+adapter.captureCloneSource(partialSource, partialClipboardCopy);
+assert.equal(partialClipboardCopy.cloneSourceProjectId, 'smart-project-partial-b');
+assert.equal(partialClipboardCopy.cloneSourceCanvasType, 'smart');
+assert.equal(partialClipboardCopy.cloneSourceCanvasId, 'smart-canvas-partial-owner');
+assert.equal(partialClipboardCopy.cloneSourceNodeId, 'smart-openshop-partial-b');
+assert.equal(partialSource.cloneSourceProjectId, projectNode.projectId);
+assert.equal(partialSource.cloneSourceCanvasId, '');
+
+canvasId = 'smart-canvas-source';
 assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
 assert.equal(adapter.disposeNode(projectNode), true);
 assert.equal(disposedProjects.length, 1);
