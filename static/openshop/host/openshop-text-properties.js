@@ -117,7 +117,7 @@
       const current = select.value;
       select.innerHTML = '';
       styles.forEach(style => {
-        const option = new Option(style.label, style.id);
+        const option = new Option(style.label === 'Default' ? '默认' : style.label, style.id);
         option.dataset.family = clean(style.family) || groupedFamily;
         option.dataset.weight = String(style.weight);
         option.dataset.italic = style.italic ? 'true' : 'false';
