@@ -96,6 +96,28 @@ test('edits mixed-language text with installed fonts and preserves the project s
   }));
   expect(underlineState).toEqual({isEditing:false, objectValue:true, controlValue:true});
 
+  const allSelectionControls = await frame.evaluate(() => {
+    const text = OS.canvas.getActiveObject();
+    text.enterEditing();
+    text.selectionStart = 0;
+    text.selectionEnd = text.text.length;
+    OS.canvas.fire('text:selection:changed', {target:text});
+    return {
+      family:document.querySelector('[data-text-family-label]')?.textContent,
+      style:document.querySelector('[data-text-style]')?.value,
+      size:document.querySelector('[data-text-size]')?.value,
+      topFamily:document.querySelector('#text-font')?.value,
+      topSize:document.querySelector('#text-size')?.value,
+    };
+  });
+  expect(allSelectionControls).toMatchObject({
+    family:selectedFamily,
+    size:'48',
+    topFamily:selectedFamily,
+    topSize:'48',
+  });
+  expect(allSelectionControls.style).not.toBe('');
+
   const selectedRange = await frame.evaluate(family => {
     const text = OS.canvas.getActiveObject();
     text.enterEditing();

@@ -189,12 +189,12 @@ test('imports local image and PSD through the crash-safe backend route', async (
   await page.waitForFunction(() => Boolean(typeof OS !== 'undefined' && OS.canvas));
   await page.evaluate(() => {
     OS.dismissWelcome();
-    OS.createNewDocument(800, 600);
+    OS.createNewDocument(100, 80);
     const marker = new fabric.Rect({
-      left:24,
-      top:36,
-      width:80,
-      height:60,
+      left:8,
+      top:12,
+      width:40,
+      height:30,
       fill:'#22c55e',
       name:'Existing marker',
     });
@@ -215,16 +215,24 @@ test('imports local image and PSD through the crash-safe backend route', async (
     height:OS.canvasH,
     imageObjects:OS.canvas.getObjects().filter(object => object.type === 'image').length,
     existingMarker:OS.canvas.getObjects().some(object => object.name === 'Existing marker'),
-    importedLayer:OS.layers.some(layer => (
-      layer.name === 'logo.png'
-      && layer.objects.some(object => object.type === 'image' && object.width === 150 && object.height === 150)
-    )),
+    importedImage:(() => {
+      const image = OS.layers.find(layer => layer.name === 'logo.png')?.objects
+        ?.find(object => object.type === 'image');
+      return image ? {
+        width:image.width,
+        height:image.height,
+        left:Number(image.left.toFixed(3)),
+        top:Number(image.top.toFixed(3)),
+        scaleX:Number(image.scaleX.toFixed(3)),
+        scaleY:Number(image.scaleY.toFixed(3)),
+      } : null;
+    })(),
   }))).toEqual({
-    width:800,
-    height:600,
+    width:100,
+    height:80,
     imageObjects:1,
     existingMarker:true,
-    importedLayer:true,
+    importedImage:{width:150, height:150, left:10, top:0, scaleX:0.533, scaleY:0.533},
   });
 
   await page.evaluate(() => OS.openPSD());

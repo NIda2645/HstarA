@@ -224,11 +224,42 @@ describe('OpenShop core object', () => {
     OS.onMouseDown({e:{}, target:null});
 
     expect(OS.canvas.getObjects()).toHaveLength(1);
-    expect(OS.layers[0].objects).toHaveLength(1);
-    expect(OS.canvas.getObjects()[0]).toBe(OS.layers[0].objects[0]);
+    expect(OS.layers).toHaveLength(2);
+    expect(OS.layers[0].objects).toHaveLength(0);
+    expect(OS.layers[1]).toMatchObject({name:'Type here', objects:[OS.canvas.getObjects()[0]]});
+    expect(OS.activeLayerIdx).toBe(1);
     expect(OS.canvas.getObjects()[0].enterEditing).toHaveBeenCalledOnce();
     expect(OS.saveHistory).toHaveBeenCalledOnce();
     expect(OS.saveHistory).toHaveBeenCalledWith('Add Text');
+  });
+
+  it('creates each completed shape on its own layer', () => {
+    const OS = loadOpenShop();
+    class Rect {
+      constructor(options = {}) { this.type = 'rect'; Object.assign(this, options); }
+      set(values) { Object.assign(this, values); }
+      setCoords() {}
+    }
+    fabric.Rect = Rect;
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(event => ({x:event.x, y:event.y}));
+    OS.layers = [{name:'Layer 0', locked:false, visible:true, opacity:100, blend:'source-over', objects:[]}];
+    OS.activeLayerIdx = 0;
+    OS.saveHistory = vi.fn();
+    quietUiMethods(OS);
+
+    OS.setTool('rect');
+    OS.onMouseDown({e:{x:40, y:50}});
+    OS.onMouseMove({e:{x:240, y:170}});
+    OS.onMouseUp({e:{x:240, y:170}});
+
+    const shape = OS.canvas.getObjects()[0];
+    expect(OS.layers).toHaveLength(2);
+    expect(OS.layers[0].objects).toEqual([]);
+    expect(OS.layers[1]).toMatchObject({name:'Rectangle', objects:[shape]});
+    expect(OS.activeLayerIdx).toBe(1);
+    expect(shape).toMatchObject({left:40, top:50, width:200, height:120, selectable:true});
+    expect(OS.saveHistory).toHaveBeenCalledWith('Draw rect');
   });
 
   it('applies always-on document snapping with screen-space tolerance', async () => {
@@ -346,6 +377,34 @@ describe('OpenShop core object', () => {
     expect(object.setCoords).toHaveBeenCalledTimes(2);
   });
 
+  it('applies left and top scaling snaps through the Fabric object transform', async () => {
+    delete window.HstarOpenShopSnapEngine;
+    await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
+    const OS = loadOpenShop();
+    const object = {
+      left:3, top:2, width:900, height:600,
+      scaleX:1, scaleY:1, angle:0, skewX:0, skewY:0, selectable:true,
+      set(values) { Object.assign(this, values); },
+      setCoords:vi.fn(),
+      getBoundingRect() {
+        return {left:this.left, top:this.top, width:this.width*this.scaleX, height:this.height*this.scaleY};
+      },
+    };
+    OS.canvas = createCanvasMock([object]);
+    OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+    OS.canvasW = 1000;
+    OS.canvasH = 800;
+    OS.layers = [{name:'Image', locked:false, objects:[object]}];
+
+    OS._applyObjectScaleSnapping(object, {corner:'tl'});
+
+    expect(object.left).toBeCloseTo(0, 8);
+    expect(object.top).toBeCloseTo(0, 8);
+    expect(object.getBoundingRect().left).toBeCloseTo(0, 8);
+    expect(object.getBoundingRect().top).toBeCloseTo(0, 8);
+    expect(object.setCoords).toHaveBeenCalledTimes(2);
+  });
+
   it('preserves image proportions when a corner snaps on only one document axis', async () => {
     delete window.HstarOpenShopSnapEngine;
     await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
@@ -388,7 +447,7 @@ describe('OpenShop core object', () => {
     expect(object.top).toBeCloseTo(200, 6);
   });
 
-  it('uses a one-screen-pixel scale snap range instead of a sticky preference range', async () => {
+  it('keeps scale snapping discoverable within three screen pixels', async () => {
     delete window.HstarOpenShopSnapEngine;
     await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
     const OS = loadOpenShop();
@@ -411,9 +470,10 @@ describe('OpenShop core object', () => {
 
     OS._applyObjectScaleSnapping(object, {corner:'br'});
 
-    expect(object.scaleX).toBeCloseTo(2.245, 8);
-    expect(object.scaleY).toBeCloseTo(2.245, 8);
-    expect(object.setCoords).not.toHaveBeenCalled();
+    expect(object.scaleX).toBeCloseTo(2.25, 8);
+    expect(object.scaleY).toBeCloseTo(2.25, 8);
+    expect(object.left + object.width*object.scaleX).toBeCloseTo(1000, 8);
+    expect(object.setCoords).toHaveBeenCalledTimes(2);
   });
 
   it('zooms around the pointer only while Ctrl or Command is held', () => {
@@ -743,7 +803,7 @@ describe('OpenShop core object', () => {
     expect(OS._loadPSDFile).not.toHaveBeenCalled();
   });
 
-  it('imports an opened image as an original-size layer in the current document', () => {
+  it('fits an oversized opened image proportionally inside the current document', () => {
     const OS = loadOpenShop();
     const base = {name:'__boundary__', type:'rect'};
     const existing = {name:'Existing content', type:'rect'};
@@ -787,11 +847,12 @@ describe('OpenShop core object', () => {
     });
     expect(image.set).toHaveBeenCalledWith(expect.objectContaining({
       left:0,
-      top:0,
-      scaleX:1,
-      scaleY:1,
       name:'reference-wide.png',
     }));
+    expect(image.scaleX).toBeCloseTo(3840 / 9000, 8);
+    expect(image.scaleY).toBeCloseTo(3840 / 9000, 8);
+    expect(image.left).toBeCloseTo(0, 8);
+    expect(image.top).toBeCloseTo((2160 - 4000 * (3840 / 9000)) / 2, 8);
     expect(image.scaleToWidth).not.toHaveBeenCalled();
     expect(OS.canvas.setActiveObject).toHaveBeenCalledWith(image);
     expect(OS.saveHistory).toHaveBeenCalledOnce();

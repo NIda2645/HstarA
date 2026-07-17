@@ -69,7 +69,7 @@
       if(!range || range.start >= range.end || typeof target.getSelectionStyles !== 'function') {
         return target[property];
       }
-      const styles = target.getSelectionStyles(range.start, range.end) || [];
+      const styles = target.getSelectionStyles(range.start, range.end, true) || [];
       if(!styles.length) return target[property];
       const values = styles.map(style => style[property]);
       return values.every(value => value === values[0]) ? values[0] : MIXED;

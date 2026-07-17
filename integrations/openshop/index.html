@@ -1814,13 +1814,18 @@ const OS = {
         return true;
     },
     _createImportedImageLayer(img, { name, animationFrames = [] }) {
-        this._validateDecodedImage(img);
+        const {width, height} = this._validateDecodedImage(img);
         const safeName = this._safeText(name, 120);
+        const documentWidth = Math.max(1, Number(this.canvasW) || width);
+        const documentHeight = Math.max(1, Number(this.canvasH) || height);
+        const scale = Math.min(1, documentWidth / width, documentHeight / height);
+        const displayedWidth = width * scale;
+        const displayedHeight = height * scale;
         img.set({
-            left:0,
-            top:0,
-            scaleX:1,
-            scaleY:1,
+            left:Math.max(0, (documentWidth - displayedWidth) / 2),
+            top:Math.max(0, (documentHeight - displayedHeight) / 2),
+            scaleX:scale,
+            scaleY:scale,
             originX:'left',
             originY:'top',
             selectable:true,
@@ -2389,6 +2394,30 @@ self.onmessage = function(e) {
         const layer = { name:`Layer ${idx}`, visible:true, opacity:100, blend:'source-over', objects:[] };
         this.layers.push(layer);
         this.activeLayerIdx = idx; this._resetLayerSelection(layer); this.updateLayersPanel(); this.saveHistory('New Layer');
+    },
+    _nextObjectLayerName(value) {
+        const base = this._safeText(value, 80) || 'Layer';
+        const names = new Set(this.layers.map(layer => String(layer.name || '').toLowerCase()));
+        if (!names.has(base.toLowerCase())) return base;
+        let index = 2;
+        while (names.has(`${base} ${index}`.toLowerCase())) index += 1;
+        return `${base} ${index}`;
+    },
+    _createObjectLayer(object, requestedName) {
+        const name = this._nextObjectLayerName(requestedName);
+        if (!object.name) object.name = name;
+        const layer = {
+            name,
+            visible:true,
+            locked:false,
+            opacity:100,
+            blend:'source-over',
+            objects:[object],
+        };
+        this.layers.push(layer);
+        this.activeLayerIdx = this.layers.length - 1;
+        this._resetLayerSelection(layer);
+        return layer;
     },
     deleteLayers() {
         if (this.layers.length === 0) return;
@@ -3071,7 +3100,7 @@ self.onmessage = function(e) {
                 return;
             }
             const text = new fabric.IText('Type here', { left:ptr.x, top:ptr.y, fontFamily:this.state.textFont, fontSize:this.state.textSize, fill:this.state.textColor, editable:true, fontWeight:this.state.textBold?'bold':'normal', fontStyle:this.state.textItalic?'italic':'normal' });
-            this.canvas.add(text); this.layers[this.activeLayerIdx].objects.push(text);
+            this.canvas.add(text); this._createObjectLayer(text, text.text);
             this.canvas.setActiveObject(text); text.enterEditing(); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
         }
         if (tool==='fill') {
@@ -3200,6 +3229,7 @@ self.onmessage = function(e) {
         }
         if(this.state.isDrawing&&this._tempShape) {
             // Replace placeholders with final shapes
+            let finalShape = this._tempShape;
             if (this._tempShape._isArrow) {
                 const l = this._tempShape;
                 const x1=l.x1,y1=l.y1,x2=l.x2,y2=l.y2;
@@ -3213,7 +3243,7 @@ self.onmessage = function(e) {
                 const grp = new fabric.Group([l, head],{selectable:true});
                 this.canvas.remove(this._tempShape);
                 this.canvas.add(grp);
-                this.layers[this.activeLayerIdx].objects.push(grp);
+                finalShape = grp;
             } else if (this._tempShape._polyPlaceholder) {
                 const cx=this._tempShape.left, cy=this._tempShape.top, r=this._tempShape.radius||50;
                 const sides=this._tempShape._polySides||5;
@@ -3222,7 +3252,7 @@ self.onmessage = function(e) {
                 this.canvas.remove(this._tempShape);
                 const poly=new fabric.Polygon(pts,{fill,stroke:sk,strokeWidth:sw,selectable:true});
                 this.canvas.add(poly);
-                this.layers[this.activeLayerIdx].objects.push(poly);
+                finalShape = poly;
             } else if (this._tempShape._starPlaceholder) {
                 const cx=this._tempShape.left, cy=this._tempShape.top, r=this._tempShape.radius||50;
                 const pts_count=this.state.starPoints||5, innerR=r*(this.state.starInner||40)/100;
@@ -3231,11 +3261,16 @@ self.onmessage = function(e) {
                 this.canvas.remove(this._tempShape);
                 const star=new fabric.Polygon(pts,{fill,stroke:sk,strokeWidth:sw,selectable:true});
                 this.canvas.add(star);
-                this.layers[this.activeLayerIdx].objects.push(star);
+                finalShape = star;
             } else {
                 this._tempShape.setCoords(); this._tempShape.selectable=true;
-                this.layers[this.activeLayerIdx].objects.push(this._tempShape);
             }
+            const shapeNames = {
+                line:'Line', rect:'Rectangle', circle:'Ellipse', triangle:'Triangle',
+                arrow:'Arrow', polygon:'Polygon', star:'Star',
+            };
+            this._createObjectLayer(finalShape, shapeNames[this.state.tool] || 'Shape');
+            this.canvas.setActiveObject(finalShape);
             this.saveHistory('Draw '+this.state.tool); this.updateLayersPanel();
             this.updateHistogram();
             this._tempShape=null; this._shapeStart=null; this.state.isDrawing=false;
@@ -5001,7 +5036,7 @@ self.onmessage = function(e) {
             0.0001,
             Math.abs(Number(this.canvas?.viewportTransform?.[0] || this.zoom || 1))
         );
-        const scaleTolerance = Math.max(0.25, 1 / zoom);
+        const scaleTolerance = 3 / zoom;
         const result = engine.resolveScale({
             objectRect,
             documentRect:{left:0, top:0, width:this.canvasW, height:this.canvasH},

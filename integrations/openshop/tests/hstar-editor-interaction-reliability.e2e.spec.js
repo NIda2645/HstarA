@@ -97,16 +97,50 @@ test('closes and sorts the font list while editing existing text in place', asyn
     const originalGetPointer = OS.canvas.getPointer;
     OS.canvas.getPointer = () => ({x:100, y:110});
     const before = OS.canvas.getObjects().filter(object => object.type === 'i-text').length;
+    const layersBefore = OS.layers.length;
     OS.onMouseDown({e:{}, target:text});
     const afterExisting = OS.canvas.getObjects().filter(object => object.type === 'i-text').length;
+    const layersAfterExisting = OS.layers.length;
     const editing = text.isEditing;
     OS.canvas.getPointer = () => ({x:420, y:320});
     OS.onMouseDown({e:{}, target:null});
     const afterEmpty = OS.canvas.getObjects().filter(object => object.type === 'i-text').length;
+    const textLayer = OS.layers.at(-1);
     OS.canvas.getPointer = originalGetPointer;
-    return {before, afterExisting, afterEmpty, editing};
+    return {
+      before, afterExisting, afterEmpty, editing,
+      layersBefore, layersAfterExisting, layersAfterEmpty:OS.layers.length,
+      textLayerObjects:textLayer.objects.length,
+      textLayerType:textLayer.objects[0]?.type,
+    };
   });
-  expect(textResult).toEqual({before:1, afterExisting:1, afterEmpty:2, editing:true});
+  expect(textResult).toEqual({
+    before:1, afterExisting:1, afterEmpty:2, editing:true,
+    layersBefore:2, layersAfterExisting:2, layersAfterEmpty:3,
+    textLayerObjects:1, textLayerType:'i-text',
+  });
+
+  const shapeResult = await page.evaluate(() => {
+    const originalGetPointer = OS.canvas.getPointer;
+    OS.canvas.getPointer = event => ({x:event.x, y:event.y});
+    OS.setTool('rect');
+    const layersBefore = OS.layers.length;
+    OS.onMouseDown({e:{x:60, y:70}});
+    OS.onMouseMove({e:{x:260, y:190}});
+    OS.onMouseUp({e:{x:260, y:190}});
+    OS.canvas.getPointer = originalGetPointer;
+    const layer = OS.layers.at(-1);
+    return {
+      layersBefore,
+      layersAfter:OS.layers.length,
+      layerName:layer.name,
+      objectCount:layer.objects.length,
+      objectType:layer.objects[0]?.type,
+    };
+  });
+  expect(shapeResult).toEqual({
+    layersBefore:3, layersAfter:4, layerName:'Rectangle', objectCount:1, objectType:'rect',
+  });
   expect(pageErrors).toEqual([]);
 });
 
@@ -117,7 +151,7 @@ test('snaps movement and scaling while raster tools stay inside the active layer
 
   const snapResult = await page.evaluate(() => {
     OS.createNewDocument(1000, 800);
-    const object = new fabric.Rect({left:797, top:603, width:200, height:200, fill:'#ef4444'});
+    const object = new fabric.Rect({left:797, top:603, width:200, height:200, fill:'#ef4444', strokeWidth:0});
     OS.canvas.add(object);
     OS.layers[OS.activeLayerIdx].objects.push(object);
     OS._prefs.snapTolerance = 5;
@@ -156,7 +190,7 @@ test('snaps movement and scaling while raster tools stay inside the active layer
         tolerance:5,
       }).sourceY,
     ];
-    object.set({left:100, top:200, width:900, height:600, scaleX:0.997, scaleY:0.995});
+    object.set({left:100, top:200, width:900, height:600, scaleX:0.997, scaleY:0.997});
     object.setCoords();
     OS.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
     OS._applyObjectScaleSnapping(object, {corner:'br'});

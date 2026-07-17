@@ -267,6 +267,36 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
+  it('keeps complete font properties populated when all text is selected', async () => {
+    const {controller, canvas, textObject} = createHarness({
+      editing:true,
+      selectionStart:0,
+      selectionEnd:3,
+    });
+    textObject.getSelectionStyles.mockImplementation(function getSelectionStyles(start, end, complete) {
+      return Array.from({length:Math.max(0, end - start)}, () => complete ? {
+        fontFamily:this.fontFamily,
+        fontSize:this.fontSize,
+        fontWeight:this.fontWeight,
+        fontStyle:this.fontStyle,
+        fill:this.fill,
+        underline:this.underline,
+        linethrough:this.linethrough,
+      } : {});
+    });
+
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    expect(textObject.getSelectionStyles).toHaveBeenCalledWith(0, 3, true);
+    expect(document.querySelector('[data-text-family-label]').textContent).toBe('Microsoft YaHei UI');
+    expect(document.querySelector('[data-text-style]').value).not.toBe('');
+    expect(document.querySelector('[data-text-size]').value).toBe('36');
+    expect(document.getElementById('text-font').value).toBe('Microsoft YaHei UI');
+    expect(document.getElementById('text-size').value).toBe('36');
+    controller.destroy();
+  });
+
   it('applies supported character styles only to the selected range', async () => {
     const {controller, canvas, textObject} = createHarness({editing:true, selectionStart:1, selectionEnd:3});
     await controller.start();

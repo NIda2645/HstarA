@@ -85,7 +85,7 @@ test('imports PNG and GIF as independent layers without replacing the document',
       scaleX:image.scaleX,
       scaleY:image.scaleY,
     } : null;
-  })).toEqual({width:150, height:150, left:0, top:0, scaleX:1, scaleY:1});
+  })).toEqual({width:150, height:150, left:885, top:465, scaleX:1, scaleY:1});
 
   const afterPng = await page.evaluate(() => ({
     width:OS.canvasW,
