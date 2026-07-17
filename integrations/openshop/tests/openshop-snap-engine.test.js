@@ -115,4 +115,31 @@ describe('OpenShop geometry snap engine', () => {
     expect(result.top).toBe(0);
     expect(result.sourceY).toBe('document-overlap');
   });
+
+  it.each([
+    ['left', 'ml', {left:3, top:120, width:497, height:300}, {left:0, top:120, width:500, height:300, sourceX:'document-left', sourceY:'none'}],
+    ['right', 'mr', {left:100, top:120, width:897, height:300}, {left:100, top:120, width:900, height:300, sourceX:'document-right', sourceY:'none'}],
+    ['top', 'mt', {left:100, top:-4, width:400, height:304}, {left:100, top:0, width:400, height:300, sourceX:'none', sourceY:'document-top'}],
+    ['bottom', 'mb', {left:100, top:200, width:400, height:597}, {left:100, top:200, width:400, height:600, sourceX:'none', sourceY:'document-bottom'}],
+    ['right-bottom corner', 'br', {left:100, top:200, width:897, height:597}, {left:100, top:200, width:900, height:600, sourceX:'document-right', sourceY:'document-bottom'}],
+  ])('snaps the scaling %s edge to the corresponding document boundary', (_edge, corner, objectRect, expected) => {
+    const result = window.HstarOpenShopSnapEngine.resolveScale({
+      objectRect,
+      documentRect:{left:0, top:0, width:1000, height:800},
+      corner,
+      tolerance:5,
+    });
+
+    expect(result).toEqual(expected);
+  });
+
+  it('releases scaling snap after the moving edge leaves tolerance', () => {
+    const objectRect = {left:100, top:200, width:880, height:580};
+    expect(window.HstarOpenShopSnapEngine.resolveScale({
+      objectRect,
+      documentRect:{left:0, top:0, width:1000, height:800},
+      corner:'br',
+      tolerance:5,
+    })).toEqual({...objectRect, sourceX:'none', sourceY:'none'});
+  });
 });

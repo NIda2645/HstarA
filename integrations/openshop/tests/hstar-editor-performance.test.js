@@ -146,35 +146,33 @@ describe('OpenShop editor performance paths', () => {
     expect(OS.canvas.forEachObject).toHaveBeenCalledTimes(1);
 
     OS.setTool('brush');
-    const firstBrush = OS.canvas.freeDrawingBrush;
+    expect(OS.canvas.isDrawingMode).toBe(false);
+    expect(OS.canvas.freeDrawingBrush).toBeUndefined();
     expect(OS.canvas.forEachObject).toHaveBeenCalledTimes(2);
 
     OS.setTool('pencil');
+    const pencilBrush = OS.canvas.freeDrawingBrush;
     expect(OS.canvas.forEachObject).toHaveBeenCalledTimes(2);
     OS.setTool('brush');
-    expect(OS.canvas.freeDrawingBrush).toBe(firstBrush);
+    expect(OS.canvas.isDrawingMode).toBe(false);
+    expect(OS.canvas.freeDrawingBrush).toBe(pencilBrush);
     expect(queryAll).not.toHaveBeenCalled();
   });
 
-  it('creates and reuses the dedicated live eraser brush', () => {
+  it('keeps brush and eraser outside Fabric free drawing mode', () => {
     const OS = loadOpenShop();
     OS.canvas = createCanvasMock([]);
     OS.layers = [{name:'Content', locked:false, objects:[]}];
     quietUiMethods(OS);
-    const eraserBrush = new fabric.PencilBrush(OS.canvas);
-    window.HstarOpenShopLiveEraser = {
-      createBrush:vi.fn(() => eraserBrush),
-      configureFinalPath:vi.fn(path => path),
-    };
 
     OS.setTool('eraser');
-    const firstBrush = OS.canvas.freeDrawingBrush;
+    expect(OS.canvas.isDrawingMode).toBe(false);
+    expect(OS.canvas.freeDrawingBrush).toBeUndefined();
     OS.setTool('brush');
     OS.setTool('eraser');
 
-    expect(window.HstarOpenShopLiveEraser.createBrush).toHaveBeenCalledOnce();
-    expect(firstBrush).toBe(eraserBrush);
-    expect(OS.canvas.freeDrawingBrush).toBe(firstBrush);
+    expect(OS.canvas.isDrawingMode).toBe(false);
+    expect(OS.canvas.freeDrawingBrush).toBeUndefined();
   });
 
   it('uses frame-coalesced rendering for temporary shape feedback', () => {

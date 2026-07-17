@@ -68,19 +68,21 @@
 
   function defaultStyle(family){
     const id = cleanFamily(family).toLowerCase().replace(/\s+/g, '-');
-    return {id:`${id || 'font'}-400-normal`, label:'Regular', weight:400, italic:false, localNames:[family]};
+    return {id:`${id || 'font'}-400-normal`, family, label:'Regular', weight:400, italic:false, localNames:[family]};
   }
 
   function normalizeStyle(style, family){
+    const faceFamily = cleanFamily(style?.family) || family;
     const weight = Math.max(100, Math.min(900, Number.parseInt(style?.weight, 10) || 400));
     const italic = Boolean(style?.italic);
     const localNames = [...new Set(
-      [family, ...(Array.isArray(style?.localNames) ? style.localNames : [])]
+      [faceFamily, family, ...(Array.isArray(style?.localNames) ? style.localNames : [])]
         .map(cleanFamily)
         .filter(Boolean)
     )];
     return {
       id:String(style?.id || `${family.toLowerCase().replace(/\s+/g, '-')}-${weight}-${italic ? 'italic' : 'normal'}`),
+      family:faceFamily,
       label:cleanFamily(style?.label) || (italic ? 'Italic' : 'Regular'),
       weight,
       italic,
@@ -94,7 +96,7 @@
     const styles = (Array.isArray(value?.styles) && value.styles.length ? value.styles : [defaultStyle(family)])
       .map(style => normalizeStyle(style, family));
     const deduplicated = new Map();
-    styles.forEach(style => deduplicated.set(`${style.weight}:${style.italic}`, style));
+    styles.forEach(style => deduplicated.set(`${style.family.toLowerCase()}:${style.weight}:${style.italic}`, style));
     return {
       family,
       label:cleanFamily(value?.label) || family,
@@ -155,7 +157,10 @@
       const normalized = cleanFamily(family);
       if(!normalized) return false;
       if(GENERIC_FAMILIES.has(normalized.toLowerCase())) return true;
-      if(state.systemFonts.some(font => font.family.toLowerCase() === normalized.toLowerCase())) return true;
+      if(state.systemFonts.some(font => (
+        font.family.toLowerCase() === normalized.toLowerCase()
+        || font.styles.some(style => style.family.toLowerCase() === normalized.toLowerCase())
+      ))) return true;
       return probeAvailable(normalized);
     }
 
@@ -183,10 +188,15 @@
         const status = requestedStatus === 'substituted'
           ? 'substituted'
           : (isAvailable(family) ? 'available' : 'missing');
-        const previous = merged.get(key);
+        const groupedEntry = [...merged.entries()].find(([, font]) => (
+          font.family.toLowerCase() === key
+          || font.styles.some(style => style.family.toLowerCase() === key)
+        ));
+        const mergedKey = groupedEntry?.[0] || key;
+        const previous = groupedEntry?.[1] || merged.get(key);
         const font = previous || normalizeFont({family}, status);
         const replacementFamily = cleanFamily(ref?.replacementFamily);
-        merged.set(key, {
+        merged.set(mergedKey, {
           ...font,
           status,
           ...(status === 'substituted' && replacementFamily ? {replacementFamily} : {}),
@@ -266,10 +276,40 @@
       }).map(cloneFont);
     }
 
-    function stylesFor(family){
+    function fontForFace(family){
       const normalized = cleanFamily(family).toLowerCase();
+      return state.fonts.find(font => (
+        font.family.toLowerCase() === normalized
+        || font.styles.some(style => style.family.toLowerCase() === normalized)
+      )) || null;
+    }
+
+    function resolveFamily(family){
+      return fontForFace(family)?.family || cleanFamily(family);
+    }
+
+    function stylesFor(family){
+      const normalized = resolveFamily(family).toLowerCase();
       const font = state.fonts.find(item => item.family.toLowerCase() === normalized);
       return (font?.styles || []).map(style => ({...style, localNames:[...style.localNames]}));
+    }
+
+    function defaultStyleFor(family){
+      const styles = stylesFor(family);
+      return styles.sort((left, right) => (
+        Number(left.italic) - Number(right.italic)
+        || Math.abs(left.weight - 400) - Math.abs(right.weight - 400)
+        || left.weight - right.weight
+      ))[0] || null;
+    }
+
+    function styleForFace(family){
+      const normalized = cleanFamily(family).toLowerCase();
+      const font = fontForFace(family);
+      if(!font) return null;
+      const exact = font.styles.find(style => style.family.toLowerCase() === normalized);
+      const style = exact || (font.family.toLowerCase() === normalized ? defaultStyleFor(font.family) : null);
+      return style ? {...style, localNames:[...style.localNames]} : null;
     }
 
     function addRef(target, seen, value){
@@ -358,6 +398,9 @@
       refreshSystemFonts,
       searchFonts,
       stylesFor,
+      resolveFamily,
+      defaultStyleFor,
+      styleForFace,
       subscribe,
       getState,
       listCommonFonts:() => COMMON_FONTS.map(item => ({...item, status:isAvailable(item.family) ? 'available' : 'missing'})),

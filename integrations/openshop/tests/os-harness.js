@@ -9,6 +9,7 @@ const i18nRuntimePath = join(__dirname, '..', 'host', 'openshop-i18n.js');
 const chineseLocalePath = join(__dirname, '..', 'locales', 'zh-CN.js');
 const desktopInputPath = join(__dirname, '..', 'host', 'openshop-desktop-input.js');
 const canvasSamplerPath = join(__dirname, '..', 'host', 'openshop-canvas-sampler.js');
+const rasterToolsPath = join(__dirname, '..', 'host', 'openshop-raster-tools.js');
 const updateSchedulerPath = join(__dirname, '..', 'host', 'openshop-update-scheduler.js');
 
 export function loadOpenShop() {
@@ -19,6 +20,7 @@ export function loadOpenShop() {
   new Function(readFileSync(chineseLocalePath, 'utf8'))();
   new Function(readFileSync(desktopInputPath, 'utf8'))();
   new Function(readFileSync(canvasSamplerPath, 'utf8'))();
+  new Function(readFileSync(rasterToolsPath, 'utf8'))();
   new Function(readFileSync(updateSchedulerPath, 'utf8'))();
   window.HstarOpenShopI18n.setLocale('en-US');
   const html = readFileSync(indexPath, 'utf8');
@@ -216,6 +218,8 @@ export function mountEditorDom() {
     <div id="macro-list"></div>
     <div id="ai-progress"><div id="ai-title"></div><div id="ai-msg"></div><div id="ai-bar"></div><div id="ai-pct"></div></div>
     <span id="brush-size-val"></span>
+    <span id="cursor-pos"></span>
+    <span id="info-cursor"></span>
     <span id="zoom-display"></span>
     <div id="panels"></div>
   `;

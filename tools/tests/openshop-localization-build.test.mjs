@@ -40,7 +40,7 @@ const expectedFiles = [
   'host/openshop-host-runtime.js',
   'host/openshop-ai-client.js',
   'host/openshop-canvas-sampler.js',
-  'host/openshop-live-eraser.js',
+  'host/openshop-raster-tools.js',
   'host/openshop-color-panel.css',
   'host/openshop-color-panel.js',
   'host/openshop-desktop-input.js',

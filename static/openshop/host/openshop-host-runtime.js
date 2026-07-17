@@ -118,8 +118,7 @@
       state.editor._selectionMask = null;
       state.editor._cropRegion = null;
       state.editor._marqueeStart = null;
-      state.editor._cloneSource = null;
-      state.editor._cloneOffset = null;
+      state.editor._rasterTools?.reset?.();
       state.editor._lassoPoints = [];
       state.editor._penPoints = [];
       state.editor.canvas?.discardActiveObject?.();

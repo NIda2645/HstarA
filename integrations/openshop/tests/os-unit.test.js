@@ -36,11 +36,12 @@ describe('OpenShop core object', () => {
       {name:'Locked source', locked:true, objects:[lockedObject]},
     ];
     quietUiMethods(OS);
+    OS._rasterTools = {end:vi.fn()};
 
     OS.setTool('brush');
 
     expect(OS.state.tool).toBe('brush');
-    expect(OS.canvas.isDrawingMode).toBe(true);
+    expect(OS.canvas.isDrawingMode).toBe(false);
     expect(document.querySelector('[data-tool="brush"]').classList.contains('active')).toBe(true);
     expect(document.getElementById('opt-brush').style.display).toBe('flex');
 
@@ -59,6 +60,119 @@ describe('OpenShop core object', () => {
     expect(OS.canvas.defaultCursor).toBe('crosshair');
     expect(document.querySelector('[data-tool="ai-segment"]').classList.contains('active')).toBe(true);
     expect(document.getElementById('opt-ai-segment').style.display).toBe('flex');
+  });
+
+  it('routes brush and eraser pointers through one raster session instead of Fabric paths', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(event => ({x:event.x, y:event.y}));
+    OS.layers = [{name:'Raster', locked:false, visible:true, objects:[]}];
+    OS.activeLayerIdx = 0;
+    quietUiMethods(OS);
+    let rasterActive = false;
+    OS._rasterTools = {
+      begin:vi.fn(() => { rasterActive = true; return {ok:true}; }),
+      move:vi.fn(() => true),
+      end:vi.fn(() => { rasterActive = false; return true; }),
+      cancel:vi.fn(),
+      getState:vi.fn(() => ({active:rasterActive, tool:OS.state.tool})),
+    };
+
+    OS.setTool('eraser');
+    OS.onMouseDown({e:{x:10, y:12, buttons:1}});
+    OS.onMouseMove({e:{x:18, y:20, buttons:1}});
+    OS.onMouseUp({e:{x:18, y:20, buttons:0}});
+
+    expect(OS.canvas.isDrawingMode).toBe(false);
+    expect(OS._rasterTools.begin).toHaveBeenCalledWith('eraser', {x:10, y:12});
+    expect(OS._rasterTools.move).toHaveBeenCalledWith({x:18, y:20});
+    expect(OS._rasterTools.end).toHaveBeenCalledOnce();
+    expect(OS.canvas.add).not.toHaveBeenCalled();
+  });
+
+  it('resolves raster commands exclusively inside the visible unlocked active layer', () => {
+    const OS = loadOpenShop();
+    const lower = {type:'image', name:'Lower image'};
+    const active = {type:'image', name:'Active image'};
+    OS.canvas = createCanvasMock([lower, active]);
+    OS.canvas.setActiveObject(lower);
+    OS.layers = [
+      {name:'Lower', locked:false, visible:true, objects:[lower]},
+      {name:'Active', locked:false, visible:true, objects:[active]},
+    ];
+    OS.activeLayerIdx = 1;
+
+    expect(OS._activeLayerRasterTarget()).toBe(active);
+
+    OS.layers[1].locked = true;
+    expect(OS._activeLayerRasterTarget()).toBeNull();
+
+    OS.layers[1].locked = false;
+    OS.layers[1].visible = false;
+    expect(OS._activeLayerRasterTarget()).toBeNull();
+  });
+
+  it('replaces raster content at its original canvas and layer index', () => {
+    const OS = loadOpenShop();
+    const before = {type:'rect', name:'Before'};
+    const active = {
+      type:'image', name:'Source', left:12, top:34, scaleX:1.5, scaleY:0.75,
+      angle:0, flipX:false, flipY:false, originX:'left', originY:'top',
+      hstarLayerId:'layer-active', hstarAssetId:'asset-active', hstarSnapAnchor:{type:'selection', x:1},
+    };
+    const after = {type:'rect', name:'After'};
+    const objects = [before, active, after];
+    OS.canvas = createCanvasMock(objects);
+    OS.canvas.insertAt = vi.fn((object, index) => OS.canvas.objects.splice(index, 0, object));
+    OS.layers = [{name:'Active', locked:false, visible:true, objects:[active]}];
+    OS.activeLayerIdx = 0;
+    OS.saveHistory = vi.fn();
+    quietUiMethods(OS);
+    const replacement = {type:'image', set:vi.fn(function set(values){ Object.assign(this, values); })};
+    fabric.Image = {fromURL:vi.fn((_url, callback) => callback(replacement))};
+
+    OS._replaceActiveImage(active, 'data:image/png;base64,TEST', 'Retouch');
+
+    expect(OS.canvas.getObjects()).toEqual([before, replacement, after]);
+    expect(OS.layers[0].objects).toEqual([replacement]);
+    expect(replacement).toMatchObject({
+      left:12,
+      top:34,
+      scaleX:1.5,
+      scaleY:0.75,
+      hstarLayerId:'layer-active',
+      hstarAssetId:'asset-active',
+      hstarSnapAnchor:{type:'selection', x:1},
+    });
+    expect(OS.saveHistory).toHaveBeenCalledWith('Retouch');
+  });
+
+  it('finalizes healing and retouch sessions exactly once without per-stroke listeners', () => {
+    const OS = loadOpenShop();
+    const healingTarget = {type:'image', name:'Healing target'};
+    const retouchTarget = {type:'image', name:'Retouch target'};
+    OS._replaceActiveImage = vi.fn();
+
+    OS._healOC = {toDataURL:vi.fn(() => 'data:image/png;base64,HEAL')};
+    OS._healTarget = healingTarget;
+    expect(OS._finishDeferredRasterOperation()).toBe(true);
+    expect(OS._replaceActiveImage).toHaveBeenCalledWith(
+      healingTarget,
+      'data:image/png;base64,HEAL',
+      'Healing Brush',
+    );
+    expect(OS._finishDeferredRasterOperation()).toBe(false);
+
+    OS._retouchOC = {toDataURL:vi.fn(() => 'data:image/png;base64,RETOUCH')};
+    OS._retouchTarget = retouchTarget;
+    expect(OS._finishDeferredRasterOperation()).toBe(true);
+    expect(OS._replaceActiveImage).toHaveBeenCalledWith(
+      retouchTarget,
+      'data:image/png;base64,RETOUCH',
+      'Retouch',
+    );
+    expect(OS._finishDeferredRasterOperation()).toBe(false);
+    expect(OS._replaceActiveImage).toHaveBeenCalledTimes(2);
   });
 
   it('edits an existing text target without creating another object', () => {
@@ -176,6 +290,48 @@ describe('OpenShop core object', () => {
     expect(object.top).toBe(600);
     expect(object.getBoundingRect()).toMatchObject({left:800, top:600, width:200, height:200});
     expect(object.setCoords).toHaveBeenCalledOnce();
+  });
+
+  it('applies right and bottom scaling snaps to the transformed object bounds', async () => {
+    delete window.HstarOpenShopSnapEngine;
+    await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
+    const OS = loadOpenShop();
+    const object = {
+      left:100,
+      top:200,
+      width:900,
+      height:600,
+      scaleX:0.997,
+      scaleY:0.995,
+      angle:0,
+      skewX:0,
+      skewY:0,
+      selectable:true,
+      set(values) { Object.assign(this, values); },
+      setCoords:vi.fn(),
+      getBoundingRect() {
+        return {
+          left:this.left,
+          top:this.top,
+          width:this.width * this.scaleX,
+          height:this.height * this.scaleY,
+        };
+      },
+    };
+    OS.canvas = createCanvasMock([object]);
+    OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+    OS.canvasW = 1000;
+    OS.canvasH = 800;
+    OS.layers = [{name:'普通图层', locked:false, objects:[object]}];
+    OS._prefs.snapTolerance = 5;
+
+    OS._applyObjectScaleSnapping(object, {corner:'br'});
+
+    expect(object.scaleX).toBeCloseTo(1, 6);
+    expect(object.scaleY).toBeCloseTo(1, 6);
+    expect(object.getBoundingRect().left + object.getBoundingRect().width).toBeCloseTo(1000, 6);
+    expect(object.getBoundingRect().top + object.getBoundingRect().height).toBeCloseTo(800, 6);
+    expect(object.setCoords).toHaveBeenCalledTimes(2);
   });
 
   it('derives local selection snapping from legacy generation layer metadata', async () => {

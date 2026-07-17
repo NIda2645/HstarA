@@ -192,6 +192,44 @@ describe('Hstar OpenShop font catalog', () => {
     expect(fetchImpl).toHaveBeenLastCalledWith('/api/openshop/fonts?refresh=1', {cache:'no-store'});
   });
 
+  it('resolves real installed faces through a grouped family and default style', async () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fontProbe:() => true,
+      fetchImpl:async () => ({
+        ok:true,
+        json:async () => ({fonts:[{
+          family:'DengXian',
+          label:'等线',
+          language:'zh',
+          styles:[
+            {id:'dengxian-light', family:'DengXian Light', label:'Light', weight:300, italic:false, localNames:['等线 Light']},
+            {id:'dengxian-regular', family:'DengXian', label:'Regular', weight:400, italic:false, localNames:['等线']},
+          ],
+        }]}),
+      }),
+    });
+
+    await manager.loadSystemFonts();
+
+    expect(manager.searchFonts('')).toEqual(expect.arrayContaining([
+      expect.objectContaining({family:'DengXian', styles:expect.any(Array)}),
+    ]));
+    expect(manager.resolveFamily('DengXian Light')).toBe('DengXian');
+    expect(manager.defaultStyleFor('DengXian')).toMatchObject({
+      id:'dengxian-regular', family:'DengXian', weight:400, italic:false,
+    });
+    expect(manager.styleForFace('DengXian Light')).toMatchObject({
+      id:'dengxian-light', family:'DengXian Light', weight:300,
+    });
+
+    manager.scanEditor({
+      canvas:{getObjects:() => [{type:'i-text', fontFamily:'DengXian Light', text:'已用字型'}]},
+    });
+    expect(manager.searchFonts('').filter(font => font.family.startsWith('DengXian'))).toEqual([
+      expect.objectContaining({family:'DengXian', styles:expect.any(Array)}),
+    ]);
+  });
+
   it('sorts Chinese fonts before every non-Chinese family', async () => {
     const manager = window.HstarOpenShopFontCatalog.createManager({
       fontProbe:() => true,

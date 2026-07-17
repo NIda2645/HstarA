@@ -114,5 +114,54 @@
     };
   }
 
-  root.HstarOpenShopSnapEngine = Object.freeze({resolveMovement});
+  function resolveScale(input={}){
+    const objectRect = rect(input.objectRect);
+    const documentRect = rect(input.documentRect);
+    const corner = String(input.corner || '').toLowerCase();
+    const tolerance = Math.max(0, finite(input.tolerance));
+    if(!objectRect || !documentRect){
+      return objectRect
+        ? {...objectRect, sourceX:'none', sourceY:'none'}
+        : {left:0, top:0, width:0, height:0, sourceX:'none', sourceY:'none'};
+    }
+    const result = {...objectRect, sourceX:'none', sourceY:'none'};
+    const objectRight = objectRect.left + objectRect.width;
+    const objectBottom = objectRect.top + objectRect.height;
+    const documentRight = documentRect.left + documentRect.width;
+    const documentBottom = documentRect.top + documentRect.height;
+
+    if(corner.includes('l') && Math.abs(objectRect.left - documentRect.left) <= tolerance){
+      const width = objectRight - documentRect.left;
+      if(width > 0){
+        result.left = documentRect.left;
+        result.width = width;
+        result.sourceX = 'document-left';
+      }
+    } else if(corner.includes('r') && Math.abs(objectRight - documentRight) <= tolerance){
+      const width = documentRight - objectRect.left;
+      if(width > 0){
+        result.width = width;
+        result.sourceX = 'document-right';
+      }
+    }
+
+    if(corner.includes('t') && Math.abs(objectRect.top - documentRect.top) <= tolerance){
+      const height = objectBottom - documentRect.top;
+      if(height > 0){
+        result.top = documentRect.top;
+        result.height = height;
+        result.sourceY = 'document-top';
+      }
+    } else if(corner.includes('b') && Math.abs(objectBottom - documentBottom) <= tolerance){
+      const height = documentBottom - objectRect.top;
+      if(height > 0){
+        result.height = height;
+        result.sourceY = 'document-bottom';
+      }
+    }
+
+    return result;
+  }
+
+  root.HstarOpenShopSnapEngine = Object.freeze({resolveMovement, resolveScale});
 })(window);

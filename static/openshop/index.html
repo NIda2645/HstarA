@@ -1508,7 +1508,8 @@ const OS = {
     history: [], historyIdx: -1, maxHistory: 60,
     zoom: 1, canvasW: 1920, canvasH: 1080,
     _shapeStart: null, _tempShape: null,
-    _marqueeStart: null, _cloneSource: null, _cloneOffset: null,
+    _marqueeStart: null,
+    _rasterTools: null,
     _adjDebounce: null,
     _cropRegion: null,
     plugins: [],
@@ -1586,6 +1587,10 @@ const OS = {
             preserveObjectStacking: true, enableRetinaScaling: true,
             stopContextMenu: true, fireRightClick: true,
         });
+        this._rasterTools = window.HstarOpenShopRasterTools?.createController({
+            editor:this,
+            fabricRef:fabric,
+        }) || null;
         this._initUpdateScheduler();
         this._initToolRuntimeCache();
         this.canvas.on('object:added', () => this._markToolObjectsDirty());
@@ -1599,14 +1604,7 @@ const OS = {
         this.canvas.on('selection:cleared', () => this.updateStatus());
         this.canvas.on('mouse:wheel', opt => this.onMouseWheel(opt));
         this.canvas.on('path:created', e => {
-            if (this.state.tool === 'eraser') {
-                if (window.HstarOpenShopLiveEraser?.configureFinalPath) {
-                    window.HstarOpenShopLiveEraser.configureFinalPath(e.path);
-                } else {
-                    e.path.globalCompositeOperation = 'destination-out';
-                    e.path.stroke = 'rgba(0,0,0,1)';
-                }
-            }
+            if (this.state.tool === 'brush' || this.state.tool === 'eraser') return;
             this.layers[this.activeLayerIdx].objects.push(e.path);
             if (this._symmetryMode !== 'off') this._mirrorPath(e.path);
             this.saveHistory('Draw'); this.updateLayersPanel();
@@ -1614,6 +1612,14 @@ const OS = {
         window.addEventListener('resize', () => {
             this._toolTooltipController?.hide();
             this.resizeCanvas(); this.drawGrid(); this.drawRulers();
+        });
+        window.addEventListener('pointerup', () => {
+            if (this._rasterTools?.getState?.().active) this._rasterTools.end();
+            else this._finishDeferredRasterOperation();
+        });
+        window.addEventListener('blur', () => {
+            if (this._rasterTools?.getState?.().active) this._rasterTools.end();
+            else this._finishDeferredRasterOperation();
         });
         window.addEventListener('beforeunload', e => {
             if (this.historyIdx > 0) { e.preventDefault(); e.returnValue = ''; }
@@ -1627,6 +1633,7 @@ const OS = {
         ca.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); this.handleDrop(e); });
         this._initTouchGestures(ca);
         this.canvas.on('object:moving', opt => this._applyObjectSnapping(opt.target));
+        this.canvas.on('object:scaling', opt => this._applyObjectScaleSnapping(opt.target, opt.transform));
         // Welcome screen
         this.populateTemplates();
         this.populateRecentFiles();
@@ -2315,6 +2322,17 @@ self.onmessage = function(e) {
         this._normalizeLayerSelection();
         return this.layers.filter(layer => this._selectedLayers.has(layer));
     },
+    _activeLayerRasterTarget() {
+        const layer = this.layers[this.activeLayerIdx];
+        if (!layer || layer.locked || layer.visible === false) return null;
+        const active = this.canvas.getActiveObject?.();
+        if (active?.type === 'image' && active.visible !== false && layer.objects?.includes(active)) {
+            return active;
+        }
+        return [...(layer.objects || [])].reverse().find(object => (
+            object?.type === 'image' && object.visible !== false
+        )) || null;
+    },
     _refreshLayerSelectionPresentation() {
         document.querySelectorAll('#layers-list .layer-item[data-layer-index]').forEach(row => {
             const index = Number(row.dataset.layerIndex);
@@ -2798,6 +2816,10 @@ self.onmessage = function(e) {
     setTool(tool, {forceInteraction = false} = {}) {
         this._toolTooltipController?.hide();
         const prevTool = this.state.tool;
+        if (prevTool !== tool && this._rasterTools?.getState?.().active) {
+            this._rasterTools.end();
+        }
+        if (prevTool !== tool) this._finishDeferredRasterOperation();
         this.state.tool = tool;
         const runtime = this._toolRuntime || this._initToolRuntimeCache();
         runtime.activeButtons.forEach(button => button.classList.remove('active'));
@@ -2835,8 +2857,7 @@ self.onmessage = function(e) {
                 c.selection=true; c.defaultCursor='default'; c.hoverCursor='move';
                 showOption('opt-select'); break;
             case 'brush':
-                c.isDrawingMode=true;
-                this.setBrushPreset(this.state.brushPreset);
+                c.isDrawingMode=false;
                 showOption('opt-brush'); break;
             case 'pencil':
                 c.isDrawingMode=true;
@@ -2845,14 +2866,7 @@ self.onmessage = function(e) {
                 c.freeDrawingBrush.width = 1;
                 showOption('opt-brush'); break;
             case 'eraser':
-                c.isDrawingMode=true;
-                c.freeDrawingBrush = this._getCachedBrush('live:eraser', () => (
-                    window.HstarOpenShopLiveEraser?.createBrush
-                        ? window.HstarOpenShopLiveEraser.createBrush({fabricRef:fabric, canvas:c})
-                        : new fabric.PencilBrush(c)
-                ));
-                c.freeDrawingBrush.color = window.HstarOpenShopLiveEraser?.previewColor || 'rgba(0,0,0,1)';
-                c.freeDrawingBrush.width = this.state.brushSize;
+                c.isDrawingMode=false;
                 showOption('opt-brush'); break;
             case 'spray':
                 c.isDrawingMode=true;
@@ -2900,7 +2914,13 @@ self.onmessage = function(e) {
         document.getElementById('tool-display').textContent = toolNames[tool] || tool.charAt(0).toUpperCase()+tool.replace(/-/g,' ').slice(1);
         this._renderAccessibilityTree();
     },
-    setBrushSize(v) { this.state.brushSize=+v; document.getElementById('brush-size-val').textContent=v; if(this.canvas.freeDrawingBrush) this.canvas.freeDrawingBrush.width=+v; },
+    setBrushSize(v) {
+        this.state.brushSize=+v;
+        document.getElementById('brush-size-val').textContent=v;
+        if(!['brush','eraser'].includes(this.state.tool) && this.canvas.freeDrawingBrush) {
+            this.canvas.freeDrawingBrush.width=+v;
+        }
+    },
     setBrushOpacity(v) {
         this.state.brushOpacity=+v; document.getElementById('brush-opacity-val').textContent=v;
         this._applyBrushColor();
@@ -2913,26 +2933,13 @@ self.onmessage = function(e) {
     },
     _applyBrushColor() {
         if(!this.canvas.freeDrawingBrush) return;
-        if(this.state.tool === 'eraser' && window.HstarOpenShopLiveEraser?.previewColor) {
-            this.canvas.freeDrawingBrush.color = window.HstarOpenShopLiveEraser.previewColor;
-            return;
-        }
-        const hex=this.state.tool==='eraser'?'#000000':this.state.fgColor;
+        if(['brush','eraser'].includes(this.state.tool)) return;
+        const hex=this.state.fgColor;
         this.canvas.freeDrawingBrush.color=this.state.brushOpacity<100?this._hexToRgba(hex,this.state.brushOpacity):hex;
     },
     setBrushPreset(preset) {
         this.state.brushPreset = preset;
         const c = this.canvas; if (!c.isDrawingMode) return;
-        if (this.state.tool === 'eraser') {
-            c.freeDrawingBrush = this._getCachedBrush('live:eraser', () => (
-                window.HstarOpenShopLiveEraser?.createBrush
-                    ? window.HstarOpenShopLiveEraser.createBrush({fabricRef:fabric, canvas:c})
-                    : new fabric.PencilBrush(c)
-            ));
-            c.freeDrawingBrush.color = window.HstarOpenShopLiveEraser?.previewColor || 'rgba(0,0,0,1)';
-            c.freeDrawingBrush.width = this.state.brushSize;
-            return;
-        }
         let brush;
         switch(preset) {
             case 'round':
@@ -2958,7 +2965,7 @@ self.onmessage = function(e) {
                 brush = this._getCachedBrush('pencil:round', () => new fabric.PencilBrush(c));
         }
         c.freeDrawingBrush = brush;
-        c.freeDrawingBrush.color=this.state.tool==='eraser'?'rgba(0,0,0,1)':(this.state.brushOpacity<100?this._hexToRgba(this.state.fgColor,this.state.brushOpacity):this.state.fgColor);
+        c.freeDrawingBrush.color=this.state.brushOpacity<100?this._hexToRgba(this.state.fgColor,this.state.brushOpacity):this.state.fgColor;
         c.freeDrawingBrush.width = this.state.brushSize;
     },
 
@@ -2996,11 +3003,19 @@ self.onmessage = function(e) {
         if (tool==='lasso') { this._lassoClick(opt.e); return; }
         if (tool==='pen') { this._penClick(ptr, opt.e); return; }
         if (tool==='note') { this.addStickyNote(opt.e); return; }
+        if (tool==='brush'||tool==='eraser') {
+            this._rasterTools?.begin(tool, ptr);
+            return;
+        }
         if (['dodge','burn','sponge','smudge'].includes(tool)) { this._retouchStart(tool, ptr, opt.e); return; }
         if (tool==='healing') { this._healStart(ptr, opt.e); return; }
         if (tool==='measure') { this._measureClick(ptr, opt.e); return; }
-        if (tool==='clone'&&opt.e.altKey) { this._cloneSource={x:ptr.x,y:ptr.y}; this._cloneOffset=null; this.toast(this._t('Clone source set'),'info'); return; }
-        if (tool==='clone'&&this._cloneSource) { this._cloneStart(ptr, opt.e); return; }
+        if (tool==='clone'&&opt.e.altKey) {
+            this._rasterTools?.setCloneSource(ptr);
+            this.toast(this._t('Clone source set'),'info');
+            return;
+        }
+        if (tool==='clone') { this._rasterTools?.begin('clone', ptr); return; }
         if (tool==='text') {
             if (this._isEditableTextObject(opt.target)) {
                 this.canvas.setActiveObject(opt.target);
@@ -3063,7 +3078,7 @@ self.onmessage = function(e) {
     },
     onMouseMove(opt) {
         const ptr=this.canvas.getPointer(opt.e);
-        document.getElementById('cursor-pos').textContent=`X: ${Math.round(ptr.x)} Y: ${Math.round(ptr.y)}`;
+        const cursorPos=document.getElementById('cursor-pos'); if(cursorPos) cursorPos.textContent=`X: ${Math.round(ptr.x)} Y: ${Math.round(ptr.y)}`;
         const ic=document.getElementById('info-cursor'); if(ic) ic.textContent=`${Math.round(ptr.x)}, ${Math.round(ptr.y)}`;
         if(this.state.isPanning&&this.state.panStart) {
             const dx=opt.e.clientX-this.state.panStart.x, dy=opt.e.clientY-this.state.panStart.y;
@@ -3077,7 +3092,11 @@ self.onmessage = function(e) {
             const el=document.getElementById('selection-overlay'), sx=this._marqueeStart.x, sy=this._marqueeStart.y, cx=opt.e.offsetX, cy=opt.e.offsetY;
             el.style.left=Math.min(sx,cx)+'px'; el.style.top=Math.min(sy,cy)+'px'; el.style.width=Math.abs(cx-sx)+'px'; el.style.height=Math.abs(cy-sy)+'px'; return;
         }
-        if(this.state.tool==='clone'&&this._cloneOC&&(opt.e.buttons&1)) { this._cloneStroke(ptr); }
+        if(['brush','eraser','clone'].includes(this.state.tool)
+            && this._rasterTools?.getState?.().active) {
+            this._rasterTools.move(ptr);
+            return;
+        }
         if(['dodge','burn','sponge','smudge'].includes(this.state.tool)&&(opt.e.buttons&1)) { this._retouchStroke(this.state.tool, ptr); }
         if(this.state.tool==='healing'&&this._healOC&&(opt.e.buttons&1)) { this._healStroke(ptr); }
         if(this.state.isDrawing&&this._tempShape&&this._shapeStart) {
@@ -3093,6 +3112,11 @@ self.onmessage = function(e) {
         }
     },
     onMouseUp(opt) {
+        if(this._rasterTools?.getState?.().active) {
+            this._rasterTools.end();
+            return;
+        }
+        if(this._finishDeferredRasterOperation()) return;
         if(this.state.isPanning){
             this.state.isPanning=false;
             if (this._tempPanning) { this.canvas.defaultCursor='grab'; }
@@ -3208,75 +3232,6 @@ self.onmessage = function(e) {
             this._scheduleUi('viewportUi');
         }, { passive: false });
         area.addEventListener('touchend', () => { touching = false; lastDist = 0; lastCenter = null; });
-    },
-
-    // ====================== CLONE STAMP ======================
-    _cloneOC: null, _cloneSrcOC: null, _cloneTarget: null,
-    _cloneStart(ptr, evt) {
-        if (!this._cloneSource) { this.toast(this._t("Alt+click to set source first"), 'info'); return; }
-        if (!this._cloneOffset) this._cloneOffset = { x: ptr.x - this._cloneSource.x, y: ptr.y - this._cloneSource.y };
-        let target = this.canvas.getActiveObject();
-        if (!target || target.type !== 'image') {
-            const objs = this.canvas.getObjects().filter(o => o.type === 'image' && o.containsPoint(ptr));
-            target = objs.length ? objs[objs.length - 1] : null;
-        }
-        if (!target || target.type !== 'image') { this.toast(this._t("Click on an image to clone"), 'info'); return; }
-        const el = target.getElement();
-        const oc = document.createElement('canvas');
-        oc.width = el.naturalWidth || el.width; oc.height = el.naturalHeight || el.height;
-        oc.getContext('2d').drawImage(el, 0, 0);
-        const srcOC = document.createElement('canvas');
-        srcOC.width = oc.width; srcOC.height = oc.height;
-        srcOC.getContext('2d').drawImage(el, 0, 0);
-        this._cloneOC = oc; this._cloneSrcOC = srcOC; this._cloneTarget = target;
-        this._cloneStroke(ptr);
-        const commitFn = () => {
-            document.removeEventListener('mouseup', commitFn);
-            if (this._cloneOC && this._cloneTarget) {
-                this._replaceActiveImage(this._cloneTarget, this._cloneOC.toDataURL(), 'Clone Stamp');
-                this._cloneOC = null; this._cloneSrcOC = null; this._cloneTarget = null;
-            }
-        };
-        document.addEventListener('mouseup', commitFn);
-    },
-    _cloneStroke(ptr) {
-        if (!this._cloneOC || !this._cloneSrcOC || !this._cloneTarget) return;
-        const oc = this._cloneOC, srcOC = this._cloneSrcOC, ctx = oc.getContext('2d'), srcCtx = srcOC.getContext('2d');
-        const target = this._cloneTarget;
-        const matrix = target.calcTransformMatrix();
-        const inv = fabric.util.invertTransform(matrix);
-        const localDst = fabric.util.transformPoint(ptr, inv);
-        const dx = localDst.x + oc.width / 2, dy = localDst.y + oc.height / 2;
-        const srcPt = { x: ptr.x - this._cloneOffset.x, y: ptr.y - this._cloneOffset.y };
-        const localSrc = fabric.util.transformPoint(srcPt, inv);
-        const sx = localSrc.x + oc.width / 2, sy = localSrc.y + oc.height / 2;
-        const size = this.state.cloneSize, r = Math.ceil(size / 2);
-        try {
-            const x0s = Math.max(0, Math.floor(sx - r)), y0s = Math.max(0, Math.floor(sy - r));
-            const x0d = Math.max(0, Math.floor(dx - r)), y0d = Math.max(0, Math.floor(dy - r));
-            const rr = r * 2;
-            const srcData = srcCtx.getImageData(x0s, y0s, rr, rr);
-            const dstData = ctx.getImageData(x0d, y0d, rr, rr);
-            const sd = srcData.data, dd = dstData.data, w = Math.min(srcData.width, dstData.width);
-            const h = Math.min(srcData.height, dstData.height);
-            for (let py = 0; py < h; py++) {
-                for (let px = 0; px < w; px++) {
-                    const dist = Math.sqrt((px - r) ** 2 + (py - r) ** 2);
-                    if (dist > r) continue;
-                    const blend = 1 - (dist / r);
-                    const i = (py * srcData.width + px) * 4;
-                    const j = (py * dstData.width + px) * 4;
-                    if (i + 3 < sd.length && j + 3 < dd.length) {
-                        for (let c = 0; c < 4; c++) dd[j+c] = Math.round(dd[j+c] * (1 - blend) + sd[i+c] * blend);
-                    }
-                }
-            }
-            ctx.putImageData(dstData, x0d, y0d);
-            // Live preview
-            const vpt = this.canvas.viewportTransform, canvasCtx = this.canvas.getContext('2d');
-            const screenX = ptr.x * vpt[0] + vpt[4], screenY = ptr.y * vpt[3] + vpt[5];
-            try { canvasCtx.putImageData(dstData, screenX - r, screenY - r); } catch(e2) { console.debug('Clone preview clipped:', e2.message); }
-        } catch(e) { console.warn('Clone stroke error:', e.message); }
     },
 
     // ====================== MAGIC WAND ======================
@@ -4878,6 +4833,51 @@ self.onmessage = function(e) {
         object.set({ left: result.left, top: result.top });
         object.setCoords?.();
     },
+    _applyObjectScaleSnapping(object, transform = {}) {
+        const engine = window.HstarOpenShopSnapEngine;
+        if (!engine?.resolveScale || !object || object.name === '__boundary__'
+            || object.selectable === false) return;
+        const layer = this.layers.find(item => item.objects?.includes(object));
+        if (layer?.locked) return;
+        const angle = Math.abs(Number(object.angle) || 0) % 360;
+        if ((angle > 0.0001 && Math.abs(angle - 360) > 0.0001)
+            || Math.abs(Number(object.skewX) || 0) > 0.0001
+            || Math.abs(Number(object.skewY) || 0) > 0.0001) return;
+        const objectRect = this._objectSnapRect(object);
+        if (!objectRect) return;
+        const zoom = Math.max(
+            0.0001,
+            Math.abs(Number(this.canvas?.viewportTransform?.[0] || this.zoom || 1))
+        );
+        const result = engine.resolveScale({
+            objectRect,
+            documentRect:{left:0, top:0, width:this.canvasW, height:this.canvasH},
+            corner:transform?.corner,
+            tolerance:Math.max(1, Number(this._prefs.snapTolerance) || 5) / zoom,
+        });
+        if (!result || (result.sourceX === 'none' && result.sourceY === 'none')) return;
+        const values = {};
+        if (result.sourceX !== 'none' && objectRect.width > 0) {
+            values.scaleX = Number(object.scaleX) * result.width / objectRect.width;
+        }
+        if (result.sourceY !== 'none' && objectRect.height > 0) {
+            values.scaleY = Number(object.scaleY) * result.height / objectRect.height;
+        }
+        if (Object.values(values).some(value => !Number.isFinite(value) || value === 0)) return;
+        object.set(values);
+        object.setCoords?.();
+        const scaledRect = this._objectSnapRect(object);
+        if (!scaledRect) return;
+        const position = {};
+        if (result.sourceX !== 'none') {
+            position.left = Number(object.left) + result.left - scaledRect.left;
+        }
+        if (result.sourceY !== 'none') {
+            position.top = Number(object.top) + result.top - scaledRect.top;
+        }
+        if (Object.keys(position).length) object.set(position);
+        object.setCoords?.();
+    },
     toggleSnap() {
         this.snapEnabled = !this.snapEnabled;
         this.toast(this.snapEnabled
@@ -5178,11 +5178,8 @@ self.onmessage = async function(e) {
     // ====================== HEALING BRUSH ======================
     _healOC: null, _healTarget: null,
     _healStart(ptr, evt) {
-        let target = this.canvas.getActiveObject();
-        if (!target || target.type !== 'image') {
-            const objs = this.canvas.getObjects().filter(o => o.type === 'image' && o.containsPoint(ptr));
-            target = objs.length ? objs[objs.length - 1] : null;
-        }
+        this._finishDeferredRasterOperation();
+        const target = this._activeLayerRasterTarget();
         if (!target || target.type !== 'image') { this.toast(this._t("Click on an image to heal"), 'info'); return; }
         const el = target.getElement();
         const oc = document.createElement('canvas');
@@ -5190,14 +5187,6 @@ self.onmessage = async function(e) {
         oc.getContext('2d').drawImage(el, 0, 0);
         this._healOC = oc; this._healTarget = target;
         this._healStroke(ptr);
-        const commitFn = () => {
-            document.removeEventListener('mouseup', commitFn);
-            if (this._healOC && this._healTarget) {
-                this._replaceActiveImage(this._healTarget, this._healOC.toDataURL(), 'Healing Brush');
-                this._healOC = null; this._healTarget = null;
-            }
-        };
-        document.addEventListener('mouseup', commitFn);
     },
     _healStroke(ptr) {
         if (!this._healOC || !this._healTarget) return;
@@ -5604,20 +5593,42 @@ self.onmessage = async function(e) {
         this.toast(this._t("Auto enhance applied"), 'success');
     },
     _replaceActiveImage(active, dataUrl, histName) {
+        const layerIndex = this.layers.findIndex(layer => layer.objects.includes(active));
+        const objectIndex = layerIndex >= 0 ? this.layers[layerIndex].objects.indexOf(active) : -1;
+        const canvasIndex = this.canvas.getObjects().indexOf(active);
         fabric.Image.fromURL(dataUrl, newImg => {
-            newImg.set({ left: active.left, top: active.top, scaleX: active.scaleX, scaleY: active.scaleY, angle: active.angle, flipX: active.flipX, flipY: active.flipY, originX: active.originX, originY: active.originY, selectable: true, name: histName });
-            const li = this.layers.findIndex(l => l.objects.includes(active));
-            if (li >= 0) { const idx = this.layers[li].objects.indexOf(active); this.layers[li].objects[idx] = newImg; }
-            this.canvas.remove(active); this.canvas.add(newImg); this.canvas.setActiveObject(newImg);
+            const metadata = {};
+            [
+                'hstarAssetId', 'hstarAssetRole', 'hstarEdgeId', 'hstarSourceNodeId',
+                'hstarLayerId', 'hstarSnapAnchor', 'hstarAiGeneration', 'sourceBinding',
+                'globalCompositeOperation', 'opacity', 'visible', 'evented', 'selectable',
+            ].forEach(property => {
+                if (active[property] !== undefined) metadata[property] = active[property];
+            });
+            newImg.set({
+                left:active.left, top:active.top, scaleX:active.scaleX, scaleY:active.scaleY,
+                angle:active.angle, flipX:active.flipX, flipY:active.flipY,
+                originX:active.originX, originY:active.originY,
+                selectable:active.selectable !== false,
+                name:active.name || histName,
+                ...metadata,
+            });
+            if (layerIndex >= 0 && objectIndex >= 0) {
+                this.layers[layerIndex].objects[objectIndex] = newImg;
+            }
+            this.canvas.remove(active);
+            if (canvasIndex >= 0 && typeof this.canvas.insertAt === 'function') {
+                this.canvas.insertAt(newImg, canvasIndex, false);
+            } else {
+                this.canvas.add(newImg);
+                if (canvasIndex >= 0) this.canvas.moveTo?.(newImg, canvasIndex);
+            }
+            this.canvas.setActiveObject(newImg);
             this.canvas.renderAll(); this.saveHistory(histName); this.updateLayersPanel();
         });
     },
     _fillActiveImage(color, historyName) {
-        const layer = this.layers[this.activeLayerIdx];
-        const active = this.canvas.getActiveObject();
-        const target = active?.type === 'image' && layer?.objects?.includes(active)
-            ? active
-            : [...(layer?.objects || [])].reverse().find(object => object?.type === 'image');
+        const target = this._activeLayerRasterTarget();
         if (!target) {
             this.toast(this._t('Select an image first'), 'info');
             return false;
@@ -6554,7 +6565,7 @@ self.onmessage = async function(e) {
 
     // ====================== PHASE 7: ADVANCED FILTERS ======================
     _getActiveImageData() {
-        const active = this.canvas.getActiveObject();
+        const active = this._activeLayerRasterTarget();
         if (!active || active.type !== 'image') { this.toast(this._t("Select an image first"), 'info'); return null; }
         const el = active.getElement();
         const oc = document.createElement('canvas'); oc.width = el.naturalWidth||el.width; oc.height = el.naturalHeight||el.height;
@@ -7893,12 +7904,7 @@ self.onmessage = async function(e) {
     },
     // Delete pixels within current selection on the active image
     _deleteSelectionPixels() {
-        // Find the target image — active object or first image under selection
-        let target = this.canvas.getActiveObject();
-        if (!target || target.type !== 'image') {
-            const imgs = this.canvas.getObjects().filter(o => o.type === 'image');
-            target = imgs.length ? imgs[imgs.length - 1] : null;
-        }
+        const target = this._activeLayerRasterTarget();
         if (!target || target.type !== 'image') {
             // No image? Just delete selected objects
             if (this.canvas.getActiveObject()) this._deleteSelected();
@@ -8045,11 +8051,8 @@ self.onmessage = async function(e) {
     _retouchOC: null,
     _retouchTarget: null,
     _retouchStart(tool, ptr, evt) {
-        let target = this.canvas.getActiveObject();
-        if (!target || target.type !== 'image') {
-            const objs = this.canvas.getObjects().filter(o => o.type === 'image' && o.containsPoint(ptr));
-            target = objs.length ? objs[objs.length-1] : null;
-        }
+        this._finishDeferredRasterOperation();
+        const target = this._activeLayerRasterTarget();
         if (!target || target.type !== 'image') { this.toast(this._t("Select an image to retouch"), 'info'); return; }
         const el = target.getElement();
         const oc = document.createElement('canvas');
@@ -8057,14 +8060,25 @@ self.onmessage = async function(e) {
         oc.getContext('2d').drawImage(el, 0, 0);
         this._retouchOC = oc; this._retouchTarget = target;
         this._retouchStroke(tool, ptr);
-        const commitFn = () => {
-            document.removeEventListener('mouseup', commitFn);
-            if (this._retouchOC && this._retouchTarget) {
-                this._replaceActiveImage(this._retouchTarget, this._retouchOC.toDataURL(), 'Retouch');
-                this._retouchOC = null; this._retouchTarget = null;
-            }
-        };
-        document.addEventListener('mouseup', commitFn);
+    },
+    _finishDeferredRasterOperation() {
+        if (this._healOC && this._healTarget) {
+            const canvas = this._healOC;
+            const target = this._healTarget;
+            this._healOC = null;
+            this._healTarget = null;
+            this._replaceActiveImage(target, canvas.toDataURL(), 'Healing Brush');
+            return true;
+        }
+        if (this._retouchOC && this._retouchTarget) {
+            const canvas = this._retouchOC;
+            const target = this._retouchTarget;
+            this._retouchOC = null;
+            this._retouchTarget = null;
+            this._replaceActiveImage(target, canvas.toDataURL(), 'Retouch');
+            return true;
+        }
+        return false;
     },
     _retouchStroke(tool, ptr) {
         if (!this._retouchOC || !this._retouchTarget) return;
@@ -8792,12 +8806,9 @@ self.onmessage = async function(e) {
     },
 
     _getActiveImage() {
-        let target = this.canvas.getActiveObject();
-        if (target && target.type === 'image') return target;
-        const imgs = this.canvas.getObjects().filter(o => o.type === 'image');
-        if (imgs.length === 1) return imgs[0];
-        if (imgs.length > 1) { this.toast(this._t("Select an image first"), 'info'); return null; }
-        this.toast(this._t("No image found on canvas"), 'info');
+        const target = this._activeLayerRasterTarget();
+        if (target) return target;
+        this.toast(this._t("Select an image first"), 'info');
         return null;
     },
 
@@ -9572,7 +9583,7 @@ window.addEventListener('unhandledrejection', e => { console.error('Unhandled pr
 window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
 <script src="./host/openshop-canvas-sampler.js"></script>
-<script src="./host/openshop-live-eraser.js"></script>
+<script src="./host/openshop-raster-tools.js"></script>
 <script src="./host/openshop-color-panel.js"></script>
 <script src="./host/openshop-update-scheduler.js"></script>
 <script src="./host/openshop-snap-engine.js"></script>

@@ -96,7 +96,7 @@
       const label = control?.querySelector('[data-text-family-label]');
       if(!control || !label) return;
       const mixed = value === MIXED;
-      state.familyValue = mixed ? '' : clean(value);
+      state.familyValue = mixed ? '' : clean(fontManager.resolveFamily?.(value) || value);
       control.dataset.mixed = mixed ? 'true' : 'false';
       label.textContent = mixed ? '多种字体' : state.familyValue;
       control.title = label.textContent;
@@ -112,23 +112,44 @@
     function updateStyleOptions(family){
       const select = documentRef.querySelector('[data-text-style]');
       if(!select) return;
-      const styles = fontManager.stylesFor?.(family) || [];
+      const groupedFamily = clean(fontManager.resolveFamily?.(family) || family);
+      const styles = fontManager.stylesFor?.(groupedFamily) || [];
       const current = select.value;
       select.innerHTML = '';
       styles.forEach(style => {
-        const option = new Option(style.label, `${style.weight}:${style.italic ? 'italic' : 'normal'}`);
+        const option = new Option(style.label, style.id);
+        option.dataset.family = clean(style.family) || groupedFamily;
         option.dataset.weight = String(style.weight);
         option.dataset.italic = style.italic ? 'true' : 'false';
         select.append(option);
       });
       const target = activeTextObject();
+      const face = propertyValue(target, 'fontFamily');
       const weight = propertyValue(target, 'fontWeight');
       const italic = propertyValue(target, 'fontStyle') === 'italic';
+      const exact = face !== MIXED ? fontManager.styleForFace?.(face) : null;
+      if(exact && [...select.options].some(option => option.value === exact.id)) {
+        select.value = exact.id;
+        return;
+      }
       if(weight !== MIXED && weight !== undefined) {
-        const value = `${weight === 'bold' ? 700 : Number(weight)}:${italic ? 'italic' : 'normal'}`;
-        if([...select.options].some(option => option.value === value)) select.value = value;
+        const normalizedWeight = weight === 'bold' ? 700 : Number(weight);
+        const option = [...select.options].find(item => (
+          Number(item.dataset.weight) === normalizedWeight
+          && (item.dataset.italic === 'true') === italic
+        ));
+        if(option) select.value = option.value;
         else if(current && [...select.options].some(option => option.value === current)) select.value = current;
       }
+    }
+
+    function applyFontStyle(style, {commit = true} = {}){
+      if(!style) return false;
+      applyProperty('fontFamily', clean(style.family), {commit:false});
+      applyProperty('fontWeight', Number(style.weight) || 400, {commit:false});
+      applyProperty('fontStyle', style.italic ? 'italic' : 'normal', {commit:false});
+      if(commit) commitChange('字型');
+      return true;
     }
 
     function syncTopBar(target){
@@ -346,7 +367,8 @@
           option.addEventListener('mousedown', event => event.preventDefault());
           option.addEventListener('click', () => {
             closeFontList();
-            applyProperty('fontFamily', font.family);
+            const style = fontManager.defaultStyleFor?.(font.family);
+            if(!applyFontStyle(style)) applyProperty('fontFamily', font.family);
           });
           list.append(option);
         });
@@ -371,10 +393,14 @@
       });
 
       documentRef.querySelector('[data-text-style]')?.addEventListener('change', event => {
-        const [weight, style] = String(event.target.value).split(':');
-        applyProperty('fontWeight', Number(weight), {commit:false});
-        applyProperty('fontStyle', style, {commit:false});
-        commitChange('字形');
+        const option = event.target.selectedOptions?.[0];
+        if(!option) return;
+        applyFontStyle({
+          id:option.value,
+          family:option.dataset.family,
+          weight:Number(option.dataset.weight),
+          italic:option.dataset.italic === 'true',
+        });
       });
       bindCommitControl('[data-text-size]', value => applyProperty('fontSize', Number(value), {commit:false}), '字号');
       bindCommitControl('[data-text-line-height]', value => applyProperty('lineHeight', Number(value), {commit:false}), '行距');

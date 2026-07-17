@@ -3,6 +3,38 @@ from unittest.mock import patch
 
 
 class OpenShopFontCatalogTests(unittest.TestCase):
+    def test_groups_separate_light_faces_under_the_base_family(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "DengXian", "weight": 400, "italic": False},
+                {"family": "DengXian Light", "weight": 300, "italic": False},
+                {"family": "DengXian Medium", "weight": 400, "italic": False},
+                {"family": "DengXian Italic", "weight": 400, "italic": False},
+                {"family": "Microsoft YaHei UI", "weight": 400, "italic": False},
+                {"family": "Microsoft YaHei UI Light", "weight": 290, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
+
+        self.assertEqual(set(fonts), {"DengXian", "Microsoft YaHei UI"})
+        self.assertEqual(
+            [(style["family"], style["weight"], style["label"]) for style in fonts["DengXian"]["styles"]],
+            [
+                ("DengXian Light", 300, "Light"),
+                ("DengXian", 400, "Regular"),
+                ("DengXian Italic", 400, "Regular Italic"),
+                ("DengXian Medium", 500, "Medium"),
+            ],
+        )
+        self.assertEqual(
+            [style["family"] for style in fonts["Microsoft YaHei UI"]["styles"]],
+            ["Microsoft YaHei UI Light", "Microsoft YaHei UI"],
+        )
+
     def test_groups_styles_and_filters_vertical_aliases(self):
         from openshop_fonts import OpenShopFontCatalog
 
@@ -77,6 +109,7 @@ class OpenShopFontCatalogTests(unittest.TestCase):
         self.assertEqual(result["platform"], "linux")
         self.assertIn("Microsoft YaHei UI", families)
         self.assertIn("Arial", families)
+        self.assertIn("Times New Roman", families)
 
 
 class OpenShopFontEndpointTests(unittest.TestCase):

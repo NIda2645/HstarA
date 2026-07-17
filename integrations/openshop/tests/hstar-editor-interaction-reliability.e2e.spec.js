@@ -10,7 +10,7 @@ async function openStandaloneEditor(page){
     && OS.canvas
     && window.HstarOpenShopFontCatalog
     && window.HstarOpenShopTextProperties
-    && window.HstarOpenShopLiveEraser
+    && window.HstarOpenShopRasterTools
     && window.HstarOpenShopColorPanelController
   ));
   await page.evaluate(() => {
@@ -78,6 +78,19 @@ test('closes and sorts the font list while editing existing text in place', asyn
   expect(await list.evaluate(element => ({hidden:element.hidden, display:getComputedStyle(element).display})))
     .toEqual({hidden:true, display:'none'});
 
+  await trigger.click();
+  const dengXian = list.locator('[data-family="等线"]');
+  await expect(dengXian).toHaveCount(1);
+  await expect(list.locator('[data-family="等线 Light"]')).toHaveCount(0);
+  await dengXian.click();
+  await expect(page.locator('[data-text-family-label]')).toHaveText('等线');
+  const styleLabels = await page.locator('[data-text-style] option').allTextContents();
+  expect(styleLabels).toEqual(expect.arrayContaining(['Regular', 'Light']));
+  await page.locator('[data-text-style]').selectOption({label:'Light'});
+  expect(await page.evaluate(() => (
+    OS.canvas.getObjects().find(object => object.type === 'i-text')?.fontFamily
+  ))).toBe('等线 Light');
+
   const textResult = await page.evaluate(() => {
     const text = OS.canvas.getObjects().find(object => object.type === 'i-text');
     OS.setTool('text');
@@ -97,7 +110,7 @@ test('closes and sorts the font list while editing existing text in place', asyn
   expect(pageErrors).toEqual([]);
 });
 
-test('snaps all document edges and erases pixels before pointer release', async ({page}) => {
+test('snaps movement and scaling while raster tools stay inside the active layer', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.stack || error.message));
   await openStandaloneEditor(page);
@@ -143,33 +156,78 @@ test('snaps all document edges and erases pixels before pointer release', async 
         tolerance:5,
       }).sourceY,
     ];
-    return {atOne, atFit, sources};
+    object.set({left:100, top:200, width:900, height:600, scaleX:0.997, scaleY:0.995});
+    object.setCoords();
+    OS.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    OS._applyObjectScaleSnapping(object, {corner:'br'});
+    const scaled = object.getBoundingRect(true, true);
+    return {atOne, atFit, sources, scaled};
   });
   expect(snapResult.atOne.rect.left + snapResult.atOne.rect.width).toBe(1000);
   expect(snapResult.atOne.rect.top + snapResult.atOne.rect.height).toBe(800);
   expect(snapResult.atFit.rect.left + snapResult.atFit.rect.width).toBe(1000);
   expect(snapResult.atFit.rect.top + snapResult.atFit.rect.height).toBe(800);
   expect(snapResult.sources).toEqual(['document-left', 'document-right', 'document-top', 'document-bottom']);
+  expect(snapResult.scaled.left + snapResult.scaled.width).toBeCloseTo(1000, 5);
+  expect(snapResult.scaled.top + snapResult.scaled.height).toBeCloseTo(800, 5);
 
-  const eraseResult = await page.evaluate(() => {
+  const rasterResult = await page.evaluate(() => {
     OS.createNewDocument(200, 200);
     OS.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
-    const fill = new fabric.Rect({left:0, top:0, width:200, height:200, fill:'#ef4444', selectable:true});
-    OS.canvas.add(fill);
-    OS.layers[OS.activeLayerIdx].objects.push(fill);
-    OS.canvas.renderAll();
-    const context = OS.canvas.lowerCanvasEl.getContext('2d');
-    const before = [...context.getImageData(60, 60, 1, 1).data];
-    const brush = window.HstarOpenShopLiveEraser.createBrush({fabricRef:fabric, canvas:OS.canvas});
-    brush.width = 24;
-    brush.onMouseDown(new fabric.Point(20, 20), {e:{}});
-    brush.onMouseMove(new fabric.Point(100, 100), {e:{}});
-    const after = [...context.getImageData(60, 60, 1, 1).data];
-    return {before, after};
+    const makeImage = color => {
+      const source = document.createElement('canvas');
+      source.width = 200;
+      source.height = 200;
+      const context = source.getContext('2d');
+      context.fillStyle = color;
+      context.fillRect(0, 0, 200, 200);
+      return new fabric.Image(source, {left:0, top:0, originX:'left', originY:'top', selectable:true});
+    };
+    const lower = makeImage('#ef4444');
+    OS.canvas.add(lower);
+    OS.layers[OS.activeLayerIdx].objects.push(lower);
+    OS.layers[OS.activeLayerIdx].name = 'Lower';
+    OS.addLayer();
+    const upper = makeImage('#2563eb');
+    OS.canvas.add(upper);
+    OS.layers[OS.activeLayerIdx].objects.push(upper);
+    OS.canvas.setActiveObject(upper);
+    const objectCount = OS.canvas.getObjects().length;
+
+    OS._rasterTools.begin('eraser', {x:50, y:50});
+    OS._rasterTools.move({x:80, y:50});
+    OS._rasterTools.end();
+    const erasedUpper = [...upper.getElement().getContext('2d').getImageData(50, 50, 1, 1).data];
+    const intactLower = [...lower.getElement().getContext('2d').getImageData(50, 50, 1, 1).data];
+
+    OS.state.fgColor = '#22c55e';
+    OS.state.brushOpacity = 100;
+    OS._rasterTools.begin('brush', {x:50, y:50});
+    OS._rasterTools.move({x:70, y:50});
+    OS._rasterTools.end();
+    const paintedUpper = [...upper.getElement().getContext('2d').getImageData(50, 50, 1, 1).data];
+
+    OS._rasterTools.setCloneSource({x:50, y:50});
+    OS._rasterTools.begin('clone', {x:120, y:120});
+    OS._rasterTools.end();
+    const clonedUpper = [...upper.getElement().getContext('2d').getImageData(120, 120, 1, 1).data];
+    return {
+      erasedUpper,
+      intactLower,
+      paintedUpper,
+      clonedUpper,
+      objectCount,
+      finalObjectCount:OS.canvas.getObjects().length,
+      sameUpper:OS.layers[OS.activeLayerIdx].objects[0] === upper,
+    };
   });
-  expect(eraseResult.before[3]).toBe(255);
-  expect(eraseResult.before[0]).toBeGreaterThan(200);
-  expect(eraseResult.after[3]).toBe(0);
+  expect(rasterResult.erasedUpper[3]).toBe(0);
+  expect(rasterResult.intactLower[3]).toBe(255);
+  expect(rasterResult.intactLower[0]).toBeGreaterThan(200);
+  expect(rasterResult.paintedUpper[1]).toBeGreaterThan(150);
+  expect(rasterResult.clonedUpper[1]).toBeGreaterThan(150);
+  expect(rasterResult.finalObjectCount).toBe(rasterResult.objectCount);
+  expect(rasterResult.sameUpper).toBe(true);
   expect(pageErrors).toEqual([]);
 });
 

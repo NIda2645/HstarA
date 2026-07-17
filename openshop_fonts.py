@@ -48,14 +48,20 @@ class LOGFONTW(ctypes.Structure):
 def _style_label(weight, italic):
     if weight <= 150:
         base = "Thin"
+    elif weight <= 250:
+        base = "Extra Light"
     elif weight <= 350:
         base = "Light"
-    elif weight <= 550:
+    elif weight <= 450:
         base = "Regular"
+    elif weight <= 550:
+        base = "Medium"
     elif weight <= 650:
         base = "Semibold"
-    elif weight <= 800:
+    elif weight <= 750:
         base = "Bold"
+    elif weight <= 850:
+        base = "Extra Bold"
     else:
         base = "Black"
     return f"{base} Italic" if italic else base
@@ -65,6 +71,37 @@ def _style_id(family, weight, italic):
     slug = re.sub(r"\s+", "-", family.casefold()).strip("-") or "font"
     suffix = "italic" if italic else "normal"
     return f"{slug}-{weight}-{suffix}"
+
+
+STYLE_SUFFIXES = (
+    (re.compile(r"\s+(?:thin)$", re.IGNORECASE), 100),
+    (re.compile(r"\s+(?:extra\s*light|ultra\s*light)$", re.IGNORECASE), 200),
+    (re.compile(r"\s+(?:light)$", re.IGNORECASE), 300),
+    (re.compile(r"\s+(?:medium)$", re.IGNORECASE), 500),
+    (re.compile(r"\s+(?:semi\s*bold|demi\s*bold)$", re.IGNORECASE), 600),
+    (re.compile(r"\s+(?:bold)$", re.IGNORECASE), 700),
+    (re.compile(r"\s+(?:extra\s*bold|ultra\s*bold)$", re.IGNORECASE), 800),
+    (re.compile(r"\s+(?:black|heavy)$", re.IGNORECASE), 900),
+)
+ITALIC_SUFFIX = re.compile(r"\s+(?:italic|oblique)$", re.IGNORECASE)
+REGULAR_SUFFIX = re.compile(r"\s+(?:regular|normal)$", re.IGNORECASE)
+
+
+def _font_family_for_face(family, weight, italic):
+    base = ITALIC_SUFFIX.sub("", family).strip()
+    if base != family:
+        italic = True
+    regular_base = REGULAR_SUFFIX.sub("", base).strip()
+    if regular_base != base:
+        base = regular_base
+        weight = 400
+    for pattern, implied_weight in STYLE_SUFFIXES:
+        candidate = pattern.sub("", base).strip()
+        if candidate != base and candidate:
+            base = candidate
+            weight = implied_weight
+            break
+    return base or family, weight, italic
 
 
 def _normalize_faces(faces):
@@ -78,14 +115,16 @@ def _normalize_faces(faces):
         except (TypeError, ValueError):
             weight = 400
         italic = bool(face.get("italic"))
-        key = family.casefold()
-        group = grouped.setdefault(key, {"family": family, "styles": {}})
+        group_family, weight, italic = _font_family_for_face(family, weight, italic)
+        key = group_family.casefold()
+        group = grouped.setdefault(key, {"family": group_family, "styles": {}})
         group["styles"][(weight, italic)] = {
             "id": _style_id(group["family"], weight, italic),
+            "family": family,
             "label": _style_label(weight, italic),
             "weight": weight,
             "italic": italic,
-            "localNames": [group["family"]],
+            "localNames": list(dict.fromkeys([family, group["family"]])),
         }
 
     return [

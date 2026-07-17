@@ -214,6 +214,38 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
+  it('shows a grouped family while applying the selected real installed face', async () => {
+    const {controller, canvas, textObject, fontManager} = createHarness();
+    textObject.fontFamily = 'DengXian Light';
+    textObject.fontWeight = 300;
+    fontManager.resolveFamily = vi.fn(face => face.startsWith('DengXian') ? 'DengXian' : face);
+    fontManager.stylesFor = vi.fn(family => family === 'DengXian' ? [
+      {id:'dengxian-light', family:'DengXian Light', label:'Light', weight:300, italic:false, localNames:['等线 Light']},
+      {id:'dengxian-regular', family:'DengXian', label:'Regular', weight:400, italic:false, localNames:['等线']},
+    ] : []);
+    fontManager.styleForFace = vi.fn(face => face === 'DengXian Light'
+      ? {id:'dengxian-light', family:'DengXian Light', label:'Light', weight:300, italic:false}
+      : null);
+    fontManager.defaultStyleFor = vi.fn(() => (
+      {id:'dengxian-regular', family:'DengXian', label:'Regular', weight:400, italic:false}
+    ));
+
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    expect(document.querySelector('[data-text-family-label]').textContent).toBe('DengXian');
+    const style = document.querySelector('[data-text-style]');
+    expect(style.value).toBe('dengxian-light');
+
+    style.value = 'dengxian-regular';
+    style.dispatchEvent(new Event('change', {bubbles:true}));
+
+    expect(textObject.set).toHaveBeenCalledWith({fontFamily:'DengXian'});
+    expect(textObject.set).toHaveBeenCalledWith({fontWeight:400});
+    expect(textObject.set).toHaveBeenCalledWith({fontStyle:'normal'});
+    controller.destroy();
+  });
+
   it('applies supported character styles only to the selected range', async () => {
     const {controller, canvas, textObject} = createHarness({editing:true, selectionStart:1, selectionEnd:3});
     await controller.start();
