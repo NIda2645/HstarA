@@ -79,6 +79,144 @@ def png_bytes(color):
     return output.getvalue()
 
 
+with tempfile.TemporaryDirectory(prefix="hstara-openshop-provisional-") as data_dir:
+    canvas_dir = Path(data_dir) / "canvases"
+    store = OpenShopProjectStore(data_dir, canvas_dir=canvas_dir)
+    clock = {"now": 1_700_000_000_000}
+    store._now = lambda: clock["now"]
+    owner = {
+        "canvasType": "classic",
+        "canvasId": "canvas-provisional",
+        "nodeId": "node-provisional",
+    }
+    prepared_before_upload = store.initialize(
+        "project-provisional", owner, {"width": 8, "height": 6}
+    )
+    uploaded_source_data = png_bytes((61, 137, 203, 255))
+    uploaded_source = store.store_image(
+        "project-provisional", owner, uploaded_source_data,
+        "image/png", "uploaded-source.png", "source",
+    )
+    uploaded_project = store.load("project-provisional", owner)
+    assert uploaded_project["assetRefs"] == []
+    expected_pending = [{
+        "assetId": uploaded_source["assetId"],
+        "expiresAt": clock["now"] + store.PENDING_ASSET_REF_TTL_MS,
+    }]
+    assert uploaded_project["pendingAssetRefs"] == expected_pending
+    assert uploaded_project["autosaveVersion"] == prepared_before_upload["autosaveVersion"] == 1
+    assert store.collect_garbage() == []
+    uploaded_source_path, _ = store.asset_path(uploaded_source["assetId"])
+    assert Path(uploaded_source_path).read_bytes() == uploaded_source_data
+
+    stale_saved = store.save(
+        "project-provisional", owner, prepared_before_upload, base_version=1
+    )
+    assert stale_saved["assetRefs"] == []
+    assert stale_saved["pendingAssetRefs"] == expected_pending
+    assert stale_saved["autosaveVersion"] == 2
+    assert store.collect_garbage() == []
+    store.asset_path(uploaded_source["assetId"])
+
+    commit_candidate = copy.deepcopy(stale_saved)
+    commit_candidate["layers"] = [{
+        "layerId": "uploaded-layer",
+        "name": "Uploaded layer",
+        "assetRef": uploaded_source["assetId"],
+    }]
+    commit_candidate["assetRefs"] = [uploaded_source["assetId"]]
+    commit_candidate["pendingAssetRefs"] = [{
+        "assetId": "0" * 64,
+        "expiresAt": clock["now"] + store.PENDING_ASSET_REF_TTL_MS,
+    }]
+    committed = store.save(
+        "project-provisional", owner, commit_candidate, base_version=2
+    )
+    assert committed["assetRefs"] == [uploaded_source["assetId"]]
+    assert committed["pendingAssetRefs"] == []
+
+    injection_candidate = copy.deepcopy(committed)
+    injection_candidate["pendingAssetRefs"] = [{
+        "assetId": "f" * 64,
+        "expiresAt": clock["now"] + store.PENDING_ASSET_REF_TTL_MS,
+    }]
+    injection_saved = store.save(
+        "project-provisional", owner, injection_candidate, base_version=3
+    )
+    assert injection_saved["pendingAssetRefs"] == []
+
+    output_data = png_bytes((190, 72, 44, 255))
+    output_asset = store.store_image(
+        "project-provisional", owner, output_data,
+        "image/png", "output.png", "output",
+    )
+    output_project = store.load("project-provisional", owner)
+    assert output_project["autosaveVersion"] == injection_saved["autosaveVersion"] == 4
+    assert output_asset["assetId"] in output_project["assetRefs"]
+    assert output_project["pendingAssetRefs"] == []
+    assert output_project["exportRecords"][-1]["assetId"] == output_asset["assetId"]
+
+    abandoned_owner = {**owner, "nodeId": "node-abandoned"}
+    store.initialize("project-abandoned", abandoned_owner, {"width": 8, "height": 6})
+    abandoned_asset = store.store_image(
+        "project-abandoned", abandoned_owner, png_bytes((17, 29, 43, 255)),
+        "image/png", "abandoned.png", "source",
+    )
+    abandoned_project = store.load("project-abandoned", abandoned_owner)
+    abandoned_expiry = abandoned_project["pendingAssetRefs"][0]["expiresAt"]
+    clone_owner = {**owner, "nodeId": "node-abandoned-clone"}
+    abandoned_clone = store.clone(
+        "project-abandoned", abandoned_owner,
+        "project-abandoned-clone", clone_owner,
+    )
+    assert abandoned_clone["pendingAssetRefs"] == []
+    assert store.collect_garbage() == []
+
+    clock["now"] = abandoned_expiry
+    assert store.collect_garbage() == [abandoned_asset["assetId"]]
+    assert store.load("project-abandoned", abandoned_owner)["pendingAssetRefs"] == []
+    try:
+        store.asset_path(abandoned_asset["assetId"])
+        raise AssertionError("expired provisional asset should be removed")
+    except OpenShopNotFound:
+        pass
+
+
+with tempfile.TemporaryDirectory(prefix="hstara-openshop-provisional-limit-") as data_dir:
+    store = OpenShopProjectStore(data_dir, canvas_dir=Path(data_dir) / "canvases")
+    store.MAX_PENDING_ASSET_REFS = 2
+    store._now = lambda: 1_700_000_000_000
+    owner = {
+        "canvasType": "classic",
+        "canvasId": "canvas-provisional-limit",
+        "nodeId": "node-provisional-limit",
+    }
+    store.initialize("project-provisional-limit", owner, {"width": 8, "height": 6})
+    retained_assets = [
+        store.store_image(
+            "project-provisional-limit", owner, png_bytes(color),
+            "image/png", name, "source",
+        )
+        for color, name in [
+            ((11, 22, 33, 255), "first.png"),
+            ((44, 55, 66, 255), "second.png"),
+        ]
+    ]
+    try:
+        store.store_image(
+            "project-provisional-limit", owner, png_bytes((77, 88, 99, 255)),
+            "image/png", "overflow.png", "source",
+        )
+        raise AssertionError("a distinct provisional upload beyond the limit should be rejected")
+    except OpenShopValidationError as exc:
+        assert "pendingAssetRefs limit" in str(exc)
+    limited_project = store.load("project-provisional-limit", owner)
+    assert [item["assetId"] for item in limited_project["pendingAssetRefs"]] == [
+        item["assetId"] for item in retained_assets
+    ]
+    assert store.collect_garbage() == []
+
+
 with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     canvas_dir = Path(data_dir) / "canvases"
     store = OpenShopProjectStore(data_dir, canvas_dir=canvas_dir)
@@ -94,38 +232,6 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     assert created["autosaveVersion"] == 1
     assert created["aiReferenceRecords"] == []
     assert created["aiPendingResults"] == []
-
-    upload_owner = {
-        **owner_a,
-        "canvasId": "canvas-upload-reference",
-        "nodeId": "node-upload-reference",
-    }
-    upload_project = store.initialize(
-        "project-upload-reference", upload_owner, {"width": 8, "height": 6}
-    )
-    uploaded_source_data = png_bytes((61, 137, 203, 255))
-    uploaded_source = store.store_image(
-        "project-upload-reference", upload_owner, uploaded_source_data,
-        "image/png", "uploaded-source.png", "source",
-    )
-    uploaded_project = store.load("project-upload-reference", upload_owner)
-    assert uploaded_project["autosaveVersion"] == upload_project["autosaveVersion"] == 1
-    assert store.collect_garbage() == []
-    assert uploaded_project["assetRefs"] == [uploaded_source["assetId"]]
-    uploaded_source_path, _ = store.asset_path(uploaded_source["assetId"])
-    assert Path(uploaded_source_path).read_bytes() == uploaded_source_data
-
-    saved_without_upload = store.save(
-        "project-upload-reference", upload_owner, upload_project, base_version=1
-    )
-    assert saved_without_upload["assetRefs"] == []
-    assert saved_without_upload["autosaveVersion"] == 2
-    assert store.collect_garbage() == [uploaded_source["assetId"]]
-    try:
-        store.asset_path(uploaded_source["assetId"])
-        raise AssertionError("asset omitted by a later project save should be removed")
-    except OpenShopNotFound:
-        pass
 
     first_asset = store.store_image(
         "project-a", owner_a, png_bytes((22, 91, 180, 255)), "image/png", "source.png", "source"
@@ -500,6 +606,7 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-migration-") as data_di
 
     migrated = store.initialize("project-old", owner, {"width": 1, "height": 1})
     assert migrated["autosaveVersion"] == 7
+    assert migrated["pendingAssetRefs"] == []
     assert migrated["editor"]["objects"][0]["text"] == "legacy marker"
     assert migrated["layers"][0]["name"] == "Legacy Layer"
     assert sidecar.is_file()

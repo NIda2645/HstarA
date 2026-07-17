@@ -49,6 +49,8 @@ class OpenShopProjectStore:
     SCHEMA_VERSION = 1
     MAX_IMAGE_BYTES = 64 * 1024 * 1024
     MAX_IMAGE_DIMENSION = 16384
+    MAX_PENDING_ASSET_REFS = 256
+    PENDING_ASSET_REF_TTL_MS = 24 * 60 * 60 * 1000
     ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp"}
 
     _ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
@@ -99,6 +101,7 @@ class OpenShopProjectStore:
                 "aiTaskRecords": [],
                 "aiPendingResults": [],
                 "assetRefs": [],
+                "pendingAssetRefs": [],
                 "previewAssetId": "",
                 "autosaveVersion": 1,
                 "exportRecords": [],
@@ -178,6 +181,7 @@ class OpenShopProjectStore:
             clone["aiTaskRecords"] = []
             clone["aiReferenceRecords"] = []
             clone["aiPendingResults"] = []
+            clone["pendingAssetRefs"] = []
             self._atomic_write_json(target_path, clone)
             return copy.deepcopy(clone)
 
@@ -280,9 +284,23 @@ class OpenShopProjectStore:
         extension, _ = self._MIME_DETAILS[normalized_mime]
         asset_path = self.assets_dir / f"{asset_id}.{extension}"
         metadata_path = self.assets_dir / f"{asset_id}.json"
+        result_name = self._safe_label(name, "OpenShop image")
+        result_role = self._safe_label(role, "asset")
 
         with self._lock:
             project = self._read_project(project_id, normalized_owner)
+            pending_asset_refs = self._unexpired_pending_asset_refs(
+                project.get("pendingAssetRefs", []),
+                self._now(),
+            )
+            pending_asset_ids = {item["assetId"] for item in pending_asset_refs}
+            if (
+                result_role != "output"
+                and asset_id not in pending_asset_ids
+                and len(pending_asset_refs) >= self.MAX_PENDING_ASSET_REFS
+            ):
+                raise OpenShopValidationError("OpenShop pendingAssetRefs limit reached")
+
             if not asset_path.exists():
                 self._atomic_write_bytes(asset_path, data)
 
@@ -302,16 +320,18 @@ class OpenShopProjectStore:
                 }
                 self._atomic_write_json(metadata_path, metadata)
 
-            result_name = self._safe_label(name, "OpenShop image")
-            result_role = self._safe_label(role, "asset")
-            asset_refs = project.get("assetRefs", [])
-            if not isinstance(asset_refs, list):
-                raise OpenShopValidationError("assetRefs must be an array")
-            project["assetRefs"] = sorted({
-                *(self._validate_asset_id(value) for value in asset_refs),
-                asset_id,
-            })
             if result_role == "output":
+                asset_refs = project.get("assetRefs", [])
+                if not isinstance(asset_refs, list):
+                    raise OpenShopValidationError("assetRefs must be an array")
+                project["assetRefs"] = sorted({
+                    *(self._validate_asset_id(value) for value in asset_refs),
+                    asset_id,
+                })
+                project["pendingAssetRefs"] = [
+                    item for item in pending_asset_refs
+                    if item["assetId"] != asset_id
+                ]
                 export_records = project.get("exportRecords", [])
                 if not isinstance(export_records, list):
                     raise OpenShopValidationError("exportRecords must be an array")
@@ -330,6 +350,17 @@ class OpenShopProjectStore:
                     export_record,
                 ][-256:]
                 project["updatedAt"] = export_record["createdAt"]
+            else:
+                project["pendingAssetRefs"] = [
+                    *(
+                        item for item in pending_asset_refs
+                        if item["assetId"] != asset_id
+                    ),
+                    {
+                        "assetId": asset_id,
+                        "expiresAt": self._now() + self.PENDING_ASSET_REF_TTL_MS,
+                    },
+                ]
             self._atomic_write_json(self._project_path(normalized_owner), project)
 
             result = copy.deepcopy(metadata)
@@ -361,8 +392,10 @@ class OpenShopProjectStore:
     def collect_garbage(self, additional_asset_refs=None) -> list[str]:
         with self._lock:
             referenced = set()
+            now = self._now()
             for path in self._iter_project_paths():
                 project = self._read_json(path, "project")
+                raw_pending_asset_refs = project.get("pendingAssetRefs", [])
                 project_id = self._validate_id(project.get("projectId"), "projectId")
                 if path.parent == self.legacy_projects_dir:
                     owner = self._normalize_owner(project.get("owner"))
@@ -397,6 +430,15 @@ class OpenShopProjectStore:
                 preview_asset_id = project.get("previewAssetId")
                 if preview_asset_id:
                     referenced.add(self._validate_asset_id(preview_asset_id))
+                pending_asset_refs = self._unexpired_pending_asset_refs(
+                    project.get("pendingAssetRefs", []),
+                    now,
+                )
+                if pending_asset_refs != raw_pending_asset_refs:
+                    project["pendingAssetRefs"] = pending_asset_refs
+                    self._atomic_write_json(path, project)
+                for item in pending_asset_refs:
+                    referenced.add(item["assetId"])
             for asset_id in additional_asset_refs or []:
                 referenced.add(self._validate_asset_id(asset_id))
 
@@ -434,6 +476,7 @@ class OpenShopProjectStore:
         if supplied_owner is not None and self._normalize_owner(supplied_owner) != owner:
             raise OpenShopOwnershipError("OpenShop project owner cannot be changed")
 
+        candidate.pop("pendingAssetRefs", None)
         self._reject_embedded_data(candidate)
         font_refs = self._normalize_font_refs(candidate.get("fontRefs", []))
         ai_tool_preferences = self._normalize_ai_tool_preferences(
@@ -479,6 +522,15 @@ class OpenShopProjectStore:
                 for value in [*asset_refs, *discovered_asset_refs]
             }
         )
+        committed_asset_refs = set(normalized_asset_refs)
+        pending_asset_refs = [
+            item
+            for item in self._unexpired_pending_asset_refs(
+                current.get("pendingAssetRefs", []),
+                self._now(),
+            )
+            if item["assetId"] not in committed_asset_refs
+        ]
         preview_asset_id = candidate.get("previewAssetId") or ""
         if preview_asset_id:
             preview_asset_id = self._validate_asset_id(preview_asset_id)
@@ -493,6 +545,7 @@ class OpenShopProjectStore:
             candidate.get("document") or current.get("document")
         )
         candidate["assetRefs"] = normalized_asset_refs
+        candidate["pendingAssetRefs"] = pending_asset_refs
         candidate["previewAssetId"] = preview_asset_id
         candidate["fontRefs"] = font_refs
         candidate["aiToolPreferences"] = ai_tool_preferences
@@ -510,6 +563,33 @@ class OpenShopProjectStore:
         candidate.setdefault("aiTaskRecords", [])
         candidate.setdefault("aiPendingResults", [])
         return candidate
+
+    def _normalize_pending_asset_refs(self, value: Any) -> list[dict]:
+        if not isinstance(value, list):
+            raise OpenShopValidationError("pendingAssetRefs must be an array")
+        normalized = {}
+        for item in value:
+            if not isinstance(item, dict):
+                raise OpenShopValidationError("pendingAssetRefs entries must be objects")
+            asset_id = self._validate_asset_id(item.get("assetId"))
+            expires_at = item.get("expiresAt")
+            if type(expires_at) is not int or expires_at < 0:
+                raise OpenShopValidationError("pendingAssetRefs expiresAt is invalid")
+            normalized.pop(asset_id, None)
+            normalized[asset_id] = {
+                "assetId": asset_id,
+                "expiresAt": expires_at,
+            }
+        normalized_records = list(normalized.values())
+        if len(normalized_records) > self.MAX_PENDING_ASSET_REFS:
+            raise OpenShopValidationError("OpenShop pendingAssetRefs limit exceeded")
+        return normalized_records
+
+    def _unexpired_pending_asset_refs(self, value: Any, now: int) -> list[dict]:
+        return [
+            item for item in self._normalize_pending_asset_refs(value)
+            if item["expiresAt"] > now
+        ]
 
     def _normalize_export_records(self, value: Any) -> list[dict]:
         if not isinstance(value, list):
@@ -835,6 +915,9 @@ class OpenShopProjectStore:
         self._assert_owner(project, owner)
         project.setdefault("aiReferenceRecords", [])
         project.setdefault("aiPendingResults", [])
+        project["pendingAssetRefs"] = self._normalize_pending_asset_refs(
+            project.get("pendingAssetRefs", [])
+        )
         return project
 
     def _migrate_legacy_project(self, project_id: str, owner: dict) -> Path:
