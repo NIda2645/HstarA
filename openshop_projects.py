@@ -294,8 +294,22 @@ class OpenShopProjectStore:
                 self._now(),
             )
             pending_asset_ids = {item["assetId"] for item in pending_asset_refs}
-            if (
+            asset_refs = project.get("assetRefs", [])
+            if not isinstance(asset_refs, list):
+                raise OpenShopValidationError("assetRefs must be an array")
+            permanent_asset_refs = {
+                self._validate_asset_id(value) for value in asset_refs
+            }
+            preview_asset_id = project.get("previewAssetId") or ""
+            if preview_asset_id:
+                preview_asset_id = self._validate_asset_id(preview_asset_id)
+            needs_provisional_ref = (
                 result_role != "output"
+                and asset_id not in permanent_asset_refs
+                and asset_id != preview_asset_id
+            )
+            if (
+                needs_provisional_ref
                 and asset_id not in pending_asset_ids
                 and len(pending_asset_refs) >= self.MAX_PENDING_ASSET_REFS
             ):
@@ -321,11 +335,8 @@ class OpenShopProjectStore:
                 self._atomic_write_json(metadata_path, metadata)
 
             if result_role == "output":
-                asset_refs = project.get("assetRefs", [])
-                if not isinstance(asset_refs, list):
-                    raise OpenShopValidationError("assetRefs must be an array")
                 project["assetRefs"] = sorted({
-                    *(self._validate_asset_id(value) for value in asset_refs),
+                    *permanent_asset_refs,
                     asset_id,
                 })
                 project["pendingAssetRefs"] = [
@@ -350,7 +361,7 @@ class OpenShopProjectStore:
                     export_record,
                 ][-256:]
                 project["updatedAt"] = export_record["createdAt"]
-            else:
+            elif needs_provisional_ref:
                 project["pendingAssetRefs"] = [
                     *(
                         item for item in pending_asset_refs
@@ -360,6 +371,11 @@ class OpenShopProjectStore:
                         "assetId": asset_id,
                         "expiresAt": self._now() + self.PENDING_ASSET_REF_TTL_MS,
                     },
+                ]
+            else:
+                project["pendingAssetRefs"] = [
+                    item for item in pending_asset_refs
+                    if item["assetId"] != asset_id
                 ]
             self._atomic_write_json(self._project_path(normalized_owner), project)
 

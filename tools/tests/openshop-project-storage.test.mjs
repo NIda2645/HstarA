@@ -185,36 +185,133 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-provisional-") as data_
 with tempfile.TemporaryDirectory(prefix="hstara-openshop-provisional-limit-") as data_dir:
     store = OpenShopProjectStore(data_dir, canvas_dir=Path(data_dir) / "canvases")
     store.MAX_PENDING_ASSET_REFS = 2
-    store._now = lambda: 1_700_000_000_000
+    clock = {"now": 1_700_000_000_000}
+    store._now = lambda: clock["now"]
     owner = {
         "canvasType": "classic",
         "canvasId": "canvas-provisional-limit",
         "nodeId": "node-provisional-limit",
     }
-    store.initialize("project-provisional-limit", owner, {"width": 8, "height": 6})
+    project = store.initialize(
+        "project-provisional-limit", owner, {"width": 8, "height": 6}
+    )
+    preview_owner = {**owner, "nodeId": "node-preview-source"}
+    store.initialize("project-preview-source", preview_owner, {"width": 8, "height": 6})
+    preview_data = png_bytes((5, 15, 25, 255))
+    preview_asset = store.store_image(
+        "project-preview-source", preview_owner, preview_data,
+        "image/png", "preview.png", "output",
+    )
+    project["previewAssetId"] = preview_asset["assetId"]
+    project = store.save("project-provisional-limit", owner, project, base_version=1)
+
+    first_data = png_bytes((11, 22, 33, 255))
+    second_data = png_bytes((44, 55, 66, 255))
     retained_assets = [
         store.store_image(
-            "project-provisional-limit", owner, png_bytes(color),
+            "project-provisional-limit", owner, data,
             "image/png", name, "source",
         )
-        for color, name in [
-            ((11, 22, 33, 255), "first.png"),
-            ((44, 55, 66, 255), "second.png"),
+        for data, name in [
+            (first_data, "first.png"),
+            (second_data, "second.png"),
         ]
     ]
+    clock["now"] += 1_000
+    refreshed_asset = store.store_image(
+        "project-provisional-limit", owner, first_data,
+        "image/png", "first-refreshed.png", "source",
+    )
+    assert refreshed_asset["assetId"] == retained_assets[0]["assetId"]
+    refreshed_project = store.load("project-provisional-limit", owner)
+    assert [item["assetId"] for item in refreshed_project["pendingAssetRefs"]] == [
+        retained_assets[1]["assetId"],
+        retained_assets[0]["assetId"],
+    ]
+    assert refreshed_project["pendingAssetRefs"][-1]["expiresAt"] == (
+        clock["now"] + store.PENDING_ASSET_REF_TTL_MS
+    )
+
+    store.store_image(
+        "project-provisional-limit", owner, preview_data,
+        "image/png", "preview-again.png", "source",
+    )
+    preview_reused = store.load("project-provisional-limit", owner)
+    assert preview_reused["pendingAssetRefs"] == refreshed_project["pendingAssetRefs"]
+    assert preview_asset["assetId"] not in preview_reused["assetRefs"]
+
+    permanent_data = png_bytes((31, 41, 51, 255))
+    permanent_asset = store.store_image(
+        "project-provisional-limit", owner, permanent_data,
+        "image/png", "permanent.png", "output",
+    )
+    store.store_image(
+        "project-provisional-limit", owner, permanent_data,
+        "image/png", "permanent-again.png", "source",
+    )
+    permanent_reused = store.load("project-provisional-limit", owner)
+    assert permanent_asset["assetId"] in permanent_reused["assetRefs"]
+    assert permanent_reused["pendingAssetRefs"] == refreshed_project["pendingAssetRefs"]
+
+    overflow_data = png_bytes((77, 88, 99, 255))
     try:
         store.store_image(
-            "project-provisional-limit", owner, png_bytes((77, 88, 99, 255)),
+            "project-provisional-limit", owner, overflow_data,
             "image/png", "overflow.png", "source",
         )
         raise AssertionError("a distinct provisional upload beyond the limit should be rejected")
     except OpenShopValidationError as exc:
         assert "pendingAssetRefs limit" in str(exc)
-    limited_project = store.load("project-provisional-limit", owner)
-    assert [item["assetId"] for item in limited_project["pendingAssetRefs"]] == [
-        item["assetId"] for item in retained_assets
+
+    promoted_asset = store.store_image(
+        "project-provisional-limit", owner, second_data,
+        "image/png", "second-output.png", "output",
+    )
+    promoted_project = store.load("project-provisional-limit", owner)
+    assert promoted_asset["assetId"] in promoted_project["assetRefs"]
+    assert promoted_project["exportRecords"][-1]["assetId"] == promoted_asset["assetId"]
+    assert [item["assetId"] for item in promoted_project["pendingAssetRefs"]] == [
+        retained_assets[0]["assetId"]
     ]
-    assert store.collect_garbage() == []
+
+    clock["now"] += 500
+    filler_asset = store.store_image(
+        "project-provisional-limit", owner, png_bytes((101, 111, 121, 255)),
+        "image/png", "filler.png", "source",
+    )
+    first_expiry = next(
+        item["expiresAt"]
+        for item in store.load("project-provisional-limit", owner)["pendingAssetRefs"]
+        if item["assetId"] == retained_assets[0]["assetId"]
+    )
+    clock["now"] = first_expiry
+    reused_slot_asset = store.store_image(
+        "project-provisional-limit", owner, overflow_data,
+        "image/png", "reused-slot.png", "source",
+    )
+    reused_slot_project = store.load("project-provisional-limit", owner)
+    assert [item["assetId"] for item in reused_slot_project["pendingAssetRefs"]] == [
+        filler_asset["assetId"],
+        reused_slot_asset["assetId"],
+    ]
+
+    ordering_owner = {**owner, "nodeId": "node-save-before-upload"}
+    ordering_project = store.initialize(
+        "project-save-before-upload", ordering_owner, {"width": 8, "height": 6}
+    )
+    ordering_project["editor"] = {"objects": [{"type": "text", "text": "latest"}]}
+    ordering_saved = store.save(
+        "project-save-before-upload", ordering_owner, ordering_project, base_version=1
+    )
+    ordering_asset = store.store_image(
+        "project-save-before-upload", ordering_owner, png_bytes((131, 141, 151, 255)),
+        "image/png", "after-save.png", "source",
+    )
+    ordered_project = store.load("project-save-before-upload", ordering_owner)
+    assert ordered_project["autosaveVersion"] == ordering_saved["autosaveVersion"] == 2
+    assert ordered_project["editor"] == ordering_saved["editor"]
+    assert ordered_project["assetRefs"] == []
+    assert ordered_project["pendingAssetRefs"][0]["assetId"] == ordering_asset["assetId"]
 
 
 with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
