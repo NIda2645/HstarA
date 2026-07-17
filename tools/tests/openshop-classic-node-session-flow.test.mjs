@@ -267,6 +267,14 @@ assert.equal(partialClipboardCopy.cloneSourceNodeId, 'openshop-partial-b');
 assert.equal(partialSource.cloneSourceProjectId, node.projectId);
 assert.equal(partialSource.cloneSourceCanvasId, '');
 
+canvasId = 'canvas-direct-partial';
+const directPartialClone = {...partialSource, id:'openshop-direct-partial-copy'};
+adapter.prepareClone(partialSource, directPartialClone);
+assert.equal(directPartialClone.cloneSourceProjectId, 'project-partial-b');
+assert.equal(directPartialClone.cloneSourceCanvasType, 'classic');
+assert.equal(directPartialClone.cloneSourceCanvasId, 'canvas-direct-partial');
+assert.equal(directPartialClone.cloneSourceNodeId, 'openshop-partial-b');
+
 canvasId = 'canvas-source';
 assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
 assert.equal(adapter.disposeNode(node), true);

@@ -307,6 +307,14 @@ assert.equal(partialClipboardCopy.cloneSourceNodeId, 'smart-openshop-partial-b')
 assert.equal(partialSource.cloneSourceProjectId, projectNode.projectId);
 assert.equal(partialSource.cloneSourceCanvasId, '');
 
+canvasId = 'smart-canvas-direct-partial';
+const directPartialClone = {...partialSource, id:'smart-openshop-direct-partial-copy'};
+adapter.prepareClone(partialSource, directPartialClone);
+assert.equal(directPartialClone.cloneSourceProjectId, 'smart-project-partial-b');
+assert.equal(directPartialClone.cloneSourceCanvasType, 'smart');
+assert.equal(directPartialClone.cloneSourceCanvasId, 'smart-canvas-direct-partial');
+assert.equal(directPartialClone.cloneSourceNodeId, 'smart-openshop-partial-b');
+
 canvasId = 'smart-canvas-source';
 assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
 assert.equal(adapter.disposeNode(projectNode), true);

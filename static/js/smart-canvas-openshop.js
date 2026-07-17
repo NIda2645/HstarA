@@ -184,28 +184,33 @@
         return true;
     }
 
-    function captureCloneSource(source, clipboardCopy){
+    function completeCloneSource(source){
         const existing = {
             cloneSourceProjectId:clean(source?.cloneSourceProjectId),
             cloneSourceCanvasType:clean(source?.cloneSourceCanvasType),
             cloneSourceCanvasId:clean(source?.cloneSourceCanvasId),
             cloneSourceNodeId:clean(source?.cloneSourceNodeId),
         };
-        Object.assign(clipboardCopy, Object.values(existing).every(Boolean) ? existing : {
+        return Object.values(existing).every(Boolean) ? existing : null;
+    }
+
+    function cloneSourceFor(source){
+        return completeCloneSource(source) || {
             cloneSourceProjectId:clean(source?.projectId),
             cloneSourceCanvasType:'smart',
             cloneSourceCanvasId:currentCanvasId(),
             cloneSourceNodeId:clean(source?.id),
-        });
+        };
+    }
+
+    function captureCloneSource(source, clipboardCopy){
+        Object.assign(clipboardCopy, cloneSourceFor(source));
         return clipboardCopy;
     }
 
     function prepareClone(source, copy){
         copy.projectId = newProjectId();
-        copy.cloneSourceProjectId = clean(source?.cloneSourceProjectId) || clean(source?.projectId);
-        copy.cloneSourceCanvasType = clean(source?.cloneSourceCanvasType) || 'smart';
-        copy.cloneSourceCanvasId = clean(source?.cloneSourceCanvasId) || currentCanvasId();
-        copy.cloneSourceNodeId = clean(source?.cloneSourceNodeId) || clean(source?.id);
+        Object.assign(copy, cloneSourceFor(source));
         copy.autosaveVersion = 0;
         copy.saveState = 'new';
         copy.saveError = '';
