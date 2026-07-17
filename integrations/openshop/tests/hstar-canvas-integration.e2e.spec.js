@@ -173,6 +173,8 @@ async function openNode(page, canvasFrame, kind, nodeId, expectedSources = null,
   if(expectedSources !== null){
     await editor.waitForFunction(count => OS.layers.filter(layer => layer.sourceBinding).length >= count, expectedSources);
   }
+  await expect(editor.locator('[data-recovery-restore]')).toHaveCount(0);
+  await expect(editor.locator('[data-recovery-discard]')).toHaveCount(0);
   return editor;
 }
 
@@ -189,6 +191,36 @@ async function saveEditorMarker(editor, marker){
     window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'e2e-marker'}}));
   }, marker);
   await editor.evaluate(() => window.HstarOpenShopRuntime.requestSave({reason:'e2e-marker'}));
+}
+
+async function exactLayerSummary(editor){
+  return editor.evaluate(() => {
+    const normalizedNumber = (value, fallback) => {
+      const number = Number(value ?? fallback);
+      if(!Number.isFinite(number)) return null;
+      const rounded = Math.round(number * 1e6) / 1e6;
+      return Object.is(rounded, -0) ? 0 : rounded;
+    };
+    return OS.layers.map((layer, index) => ({
+      index,
+      name:String(layer?.name || ''),
+      type:String(layer?.type || 'normal'),
+      visible:layer?.visible !== false,
+      opacity:normalizedNumber(layer?.opacity, 100),
+      blend:String(layer?.blend || 'source-over'),
+      locked:Boolean(layer?.locked),
+      objects:(Array.isArray(layer?.objects) ? layer.objects : []).map(object => ({
+        type:String(object?.type || ''),
+        name:String(object?.name || ''),
+        text:typeof object?.text === 'string' ? object.text : null,
+        left:normalizedNumber(object?.left, 0),
+        top:normalizedNumber(object?.top, 0),
+        scaleX:normalizedNumber(object?.scaleX, 1),
+        scaleY:normalizedNumber(object?.scaleY, 1),
+        angle:normalizedNumber(object?.angle, 0),
+      })),
+    }));
+  });
 }
 
 async function editorSnapshot(editor){
@@ -472,9 +504,11 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   expect(snapshot.layers.filter(layer => layer.source).map(layer => layer.name)).toEqual(['来源 1.png', '来源 2.png', '来源 3.png']);
   expect(snapshot.layers.filter(layer => layer.source).map(layer => layer.source.sequence)).toEqual([0, 1, 2]);
   await saveEditorMarker(editor, 'A 独立文字');
+  const nodeASummary = await exactLayerSummary(editor);
 
   editor = await openNode(page, frame, 'classic', nodeB.id, 0);
   await saveEditorMarker(editor, 'B 独立文字');
+  const nodeBSummary = await exactLayerSummary(editor);
   editor = await openNode(page, frame, 'classic', nodeA.id, 3);
   snapshot = await editorSnapshot(editor);
   expect(snapshot.texts).toContain('A 独立文字');
@@ -485,7 +519,28 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   await page.waitForFunction(() => Boolean(window.HstarOpenShopHost));
   frame = await mountCanvas(page, 'classic', classic.id);
   editor = await openNode(page, frame, 'classic', nodeA.id, 3);
-  expect((await editorSnapshot(editor)).texts).toContain('A 独立文字');
+  expect(await exactLayerSummary(editor)).toEqual(nodeASummary);
+  snapshot = await editorSnapshot(editor);
+  expect(snapshot.texts).toContain('A 独立文字');
+  expect(snapshot.texts).not.toContain('B 独立文字');
+  expect(await editor.evaluate(() => ({
+    mode:OS._persistenceMode,
+    timerActive:OS._autoSaveTimer !== null,
+    dirty:OS._autoSaveDirty,
+  }))).toEqual({mode:'embedded-hstara', timerActive:false, dirty:false});
+
+  editor = await openNode(page, frame, 'classic', nodeB.id, 0);
+  expect(await exactLayerSummary(editor)).toEqual(nodeBSummary);
+  snapshot = await editorSnapshot(editor);
+  expect(snapshot.texts).toContain('B 独立文字');
+  expect(snapshot.texts).not.toContain('A 独立文字');
+  expect(await editor.evaluate(() => ({
+    mode:OS._persistenceMode,
+    timerActive:OS._autoSaveTimer !== null,
+    dirty:OS._autoSaveDirty,
+  }))).toEqual({mode:'embedded-hstara', timerActive:false, dirty:false});
+
+  editor = await openNode(page, frame, 'classic', nodeA.id, 3);
 
   await frame.evaluate(async () => {
     const source = window.HstarClassicOpenShopHooks.getNodes().find(node => node.id === 'classic-image-2');
