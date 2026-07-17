@@ -784,6 +784,7 @@
 
     const layers = editor.layers.map(layer => ({
       layerId: ensureLayerId(layer),
+      type: clean(layer.type) || 'normal',
       name: safeName(layer.name, '图层'),
       visible: layer.visible !== false,
       locked: Boolean(layer.locked),
@@ -893,6 +894,7 @@
     const metadataLayerId = clean(metadata?.layerId);
     if(metadataLayerId) layer.layerId = metadataLayerId;
     ensureLayerId(layer);
+    layer.type = clean(metadata?.type) || clean(layer.type) || 'normal';
     layer.name = safeName(metadata?.name, `Layer ${index}`);
     layer.visible = metadata?.visible !== false;
     layer.locked = Boolean(metadata?.locked);
