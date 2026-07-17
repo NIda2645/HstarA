@@ -659,6 +659,7 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
         "modelId": _clean_text(value.get("modelId"), 240),
         "status": status,
         "mode": "selection" if str(value.get("mode") or "").lower() == "selection" else "layer",
+        "sourceLayerId": _clean_text(value.get("sourceLayerId"), 160),
         "sourceAssetId": _task_asset_id(value.get("sourceAssetId"), "sourceAssetId"),
         "maskAssetId": _task_asset_id(value.get("maskAssetId"), "maskAssetId"),
         "outputAssetId": _task_asset_id(value.get("outputAssetId"), "outputAssetId"),

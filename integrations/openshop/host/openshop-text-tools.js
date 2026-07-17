@@ -70,10 +70,30 @@
       return editor.layers?.[Number(editor.activeLayerIdx || 0)] || null;
     }
 
+    function pixelImages(layer){
+      return (layer?.objects || []).filter(object => clean(object?.type).toLowerCase() === 'image');
+    }
+
     function activePixelLayer(){
+      const layers = Array.isArray(editor.layers) ? editor.layers : [];
+      const selected = editor.canvas?.getActiveObject?.();
+      const selectedObjects = selected?._objects?.length ? selected._objects : selected ? [selected] : [];
+      const selectedLayer = layers.find(layer => selectedObjects.some(object => layer?.objects?.includes(object)));
+      const selectedImages = pixelImages(selectedLayer);
+      if(selectedLayer && selectedImages.length) return {layer:selectedLayer, images:selectedImages};
+
       const layer = activeLayer();
-      const images = (layer?.objects || []).filter(object => clean(object?.type).toLowerCase() === 'image');
-      return layer && images.length ? {layer, images} : null;
+      const images = pixelImages(layer);
+      if(layer && images.length) return {layer, images};
+
+      for(let index = layers.length - 1; index >= 0; index -= 1){
+        const fallbackLayer = layers[index];
+        const fallbackImages = pixelImages(fallbackLayer);
+        if(fallbackLayer?.visible !== false && fallbackImages.length){
+          return {layer:fallbackLayer, images:fallbackImages};
+        }
+      }
+      return null;
     }
 
     function preferenceFor(toolId){
@@ -118,6 +138,7 @@
         modelId:clean(request.modelId),
         status:'running',
         mode:request.mode === 'selection' ? 'selection' : 'layer',
+        sourceLayerId:clean(request.sourceLayerId),
         sourceAssetId:clean(request.sourceAssetId),
         maskAssetId:clean(request.maskAssetId),
         outputAssetId:'',
@@ -242,6 +263,7 @@
         const {captured, asset} = await uploadActiveLayer();
         const task = await executeTask(TOOL_EXTRACT, {
           toolId:TOOL_EXTRACT,
+          sourceLayerId:clean(captured.layer?.layerId),
           sourceAssetId:asset.assetId,
           maskAssetId:'',
           apiConfigId:selected.apiConfigId,
@@ -286,8 +308,12 @@
       };
     }
 
-    function insertLayerAboveActive(layer){
-      const index = Math.max(0, Math.min(editor.layers.length, Number(editor.activeLayerIdx || 0) + 1));
+    function insertLayerAboveSource(layer, sourceLayerId = ''){
+      const sourceIndex = clean(sourceLayerId)
+        ? editor.layers.findIndex(item => clean(item?.layerId) === clean(sourceLayerId))
+        : -1;
+      const baseIndex = sourceIndex >= 0 ? sourceIndex : Number(editor.activeLayerIdx || 0);
+      const index = Math.max(0, Math.min(editor.layers.length, baseIndex + 1));
       editor.layers.splice(index, 0, layer);
       editor.activeLayerIdx = index;
       return layer;
@@ -322,6 +348,8 @@
         layerId, name:'提取文字', visible:true, opacity:100,
         blend:'source-over', objects:[],
       };
+      const record = state.reviewTaskRecord
+        || [...taskRecords()].reverse().find(item => item.toolId === TOOL_EXTRACT && item.status === 'succeeded' && !item.appliedAt);
       blocks.forEach((block, index) => {
         const text = clean(block?.text);
         if(!text) return;
@@ -355,13 +383,11 @@
         editor.canvas.add?.(object);
       });
       if(!layer.objects.length) throw new Error('校对结果没有可创建的文字');
-      insertLayerAboveActive(layer);
+      insertLayerAboveSource(layer, record?.sourceLayerId);
       editor.canvas.renderAll?.();
       editor.updateLayersPanel?.();
       editor.saveHistory?.('文字提取');
       fontManager.scanEditor(editor);
-      const record = state.reviewTaskRecord
-        || [...taskRecords()].reverse().find(item => item.toolId === TOOL_EXTRACT && item.status === 'succeeded' && !item.appliedAt);
       if(record){ record.appliedAt = Date.now(); record.updatedAt = record.appliedAt; }
       state.reviewBlocks = [];
       state.reviewSourceDataUrl = '';
@@ -395,13 +421,13 @@
         layerId, name:'去除文字', visible:true, opacity:100,
         blend:'source-over', objects:[image],
       };
-      insertLayerAboveActive(layer);
+      const record = taskRecord
+        || [...taskRecords()].reverse().find(item => item.toolId === TOOL_REMOVE && item.status === 'succeeded' && !item.appliedAt);
+      insertLayerAboveSource(layer, record?.sourceLayerId);
       editor.canvas.add?.(image);
       editor.canvas.renderAll?.();
       editor.updateLayersPanel?.();
       editor.saveHistory?.('去除文字');
-      const record = taskRecord
-        || [...taskRecords()].reverse().find(item => item.toolId === TOOL_REMOVE && item.status === 'succeeded' && !item.appliedAt);
       if(record){ record.appliedAt = Date.now(); record.updatedAt = record.appliedAt; }
       markDirty('Apply text removal');
       return layer;
@@ -481,6 +507,7 @@
         const mask = mode === 'selection' ? await uploadSelectionMask() : null;
         const task = await executeTask(TOOL_REMOVE, {
           toolId:TOOL_REMOVE,
+          sourceLayerId:clean(captured.layer?.layerId),
           sourceAssetId:asset.assetId,
           maskAssetId:mask?.assetId || '',
           apiConfigId:selected.apiConfigId,
@@ -540,13 +567,14 @@
         .hstar-text-section:last-child{border-bottom:0}.hstar-text-label{font-size:11px;color:var(--text-muted);margin-bottom:6px}.hstar-text-model{font-size:12px;line-height:1.5;word-break:break-word}
         .hstar-text-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.hstar-text-actions .btn{padding:6px 10px}.hstar-text-actions .btn-primary{flex:1;min-width:128px}
         .hstar-text-segments{display:grid;grid-template-columns:1fr 1fr;gap:2px;background:var(--bg-depth-3);padding:2px;border:1px solid var(--border);border-radius:4px}.hstar-text-segments button{border:0;border-radius:3px;background:transparent;color:var(--text-secondary);padding:6px;font-size:11px}.hstar-text-segments button.active{background:var(--bg-depth-1);color:var(--text-primary)}
+        .hstar-text-provider-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}.hstar-text-provider-grid label{display:grid;gap:5px;min-width:0;font-size:11px;color:var(--text-muted)}.hstar-text-provider-grid select{width:100%;min-width:0;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px;font-size:12px;box-sizing:border-box}
         .hstar-text-field{display:grid;gap:5px;margin-top:9px}.hstar-text-field label{font-size:11px;color:var(--text-muted)}.hstar-text-field select,.hstar-text-field textarea{width:100%;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px;font-size:12px;box-sizing:border-box}.hstar-text-field textarea{min-height:70px;resize:vertical}
         .hstar-text-status{font-size:11px;line-height:1.5;color:var(--text-secondary);min-height:18px}.hstar-text-status.error{color:var(--danger)}
         .hstar-ocr-preview{position:relative;aspect-ratio:16/9;background:#171717;border:1px solid var(--border);overflow:hidden}.hstar-ocr-preview img{width:100%;height:100%;object-fit:contain}.hstar-ocr-box{position:absolute;border:1px solid #f7c948;background:rgba(247,201,72,.12);pointer-events:none}.hstar-ocr-box.low{border-color:#ff6b6b;background:rgba(255,107,107,.14)}
         .hstar-ocr-list{display:grid;gap:7px;margin-top:9px}.hstar-ocr-row{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center}.hstar-ocr-row input{min-width:0;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px}.hstar-ocr-confidence{font-size:10px;color:var(--text-muted)}.hstar-ocr-confidence.low{color:#ff8c8c;font-weight:700}
         .hstar-text-modal{position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:16px}.hstar-text-dialog{width:min(560px,100%);max-height:min(720px,90vh);overflow:auto;background:var(--bg-depth-1);border:1px solid var(--border-active);border-radius:6px;box-shadow:0 18px 60px rgba(0,0,0,.45);padding:16px}.hstar-text-dialog h3{font-size:15px;margin:0 0 12px}.hstar-font-list{display:grid;gap:5px;max-height:360px;overflow:auto}.hstar-font-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
         #hstar-font-manage-btn{padding:3px 7px;font-size:10px}
-        @media(max-width:760px){#hstar-text-tools-panel{right:0;top:74px;bottom:48px;width:min(324px,calc(100vw - var(--toolbar-w)));max-width:calc(100vw - var(--toolbar-w))}.hstar-text-dialog{padding:12px}}
+        @media(max-width:760px){#hstar-text-tools-panel{right:0;top:74px;bottom:48px;width:min(324px,calc(100vw - var(--toolbar-w)));max-width:calc(100vw - var(--toolbar-w))}.hstar-text-provider-grid{grid-template-columns:1fr}.hstar-text-dialog{padding:12px}}
       `;
       documentRef.head?.appendChild(style);
     }
@@ -611,13 +639,22 @@
     function modelSection(toolId){
       const selected = resolvedPreference(toolId);
       const preference = preferenceFor(toolId);
+      const tool = aiClient.getCatalog?.()?.tools?.[toolId];
+      const providers = Array.isArray(tool?.providers) ? tool.providers : [];
+      const providerId = clean(selected.apiConfigId || preference.apiConfigId || providers[0]?.id);
+      const provider = providers.find(item => clean(item?.id) === providerId) || providers[0];
+      const models = Array.isArray(provider?.models) ? provider.models : [];
+      const preferredModelId = clean(selected.modelId || preference.modelId);
+      const modelId = models.some(model => clean(model?.id) === preferredModelId)
+        ? preferredModelId
+        : clean(models.find(model => model?.available !== false)?.id || models[0]?.id);
       return `<section class="hstar-text-section">
-        <div class="hstar-text-label">API 与模型</div>
-        <div class="hstar-text-model">${selected.available
-          ? `${escapeHtml(selected.providerName)} · ${escapeHtml(selected.modelName)}`
-          : '<span style="color:var(--danger)">配置不可用</span>'}</div>
-        <div class="hstar-text-label" style="margin-top:4px">${preference.mode === 'project' ? '本项目单独指定' : '跟随全局默认'}</div>
-        <div class="hstar-text-actions"><button type="button" class="btn" data-hstar-action="choose-api">选择 API / 模型</button></div>
+        <div class="hstar-text-provider-grid">
+          <label><span>API</span><select data-text-provider aria-label="API">${providers.map(item => `<option value="${escapeHtml(item.id)}" ${clean(item.id) === providerId ? 'selected' : ''} ${item.available === false ? 'disabled' : ''}>${escapeHtml(item.name || item.id)}</option>`).join('')}</select></label>
+          <label><span>模型</span><select data-text-model aria-label="模型">${models.map(model => `<option value="${escapeHtml(model.id)}" ${clean(model.id) === modelId ? 'selected' : ''} ${model.available === false ? 'disabled' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('')}</select></label>
+        </div>
+        <div class="hstar-text-label" style="margin-top:7px">${preference.mode === 'project' ? '本项目单独指定' : '跟随全局默认'}</div>
+        ${selected.available ? '' : `<div class="hstar-text-status error">${escapeHtml(selected.reason || '配置不可用')}</div>`}
       </section>`;
     }
 
@@ -679,7 +716,6 @@
     async function handlePanelClick(event){
       const action = event.target.closest?.('[data-hstar-action]')?.dataset?.hstarAction;
       if(action === 'close') closePanel();
-      else if(action === 'choose-api') openApiSelector(state.activeTool);
       else if(action === 'run-extraction') await runTextExtraction();
       else if(action === 'run-removal') await runTextRemoval(state.lastRemovalOptions);
       else if(action === 'cancel') await cancelActiveTask();
@@ -689,70 +725,25 @@
     }
 
     function handlePanelInput(event){
+      if(event.type === 'change' && event.target.matches?.('[data-text-provider]')){
+        const providerId = clean(event.target.value);
+        const tool = aiClient.getCatalog?.()?.tools?.[state.activeTool];
+        const provider = (tool?.providers || []).find(item => clean(item?.id) === providerId);
+        const model = (provider?.models || []).find(item => item?.available !== false) || provider?.models?.[0];
+        setPreference(state.activeTool, {mode:'project', apiConfigId:providerId, modelId:clean(model?.id)});
+        return;
+      }
+      if(event.type === 'change' && event.target.matches?.('[data-text-model]')){
+        const providerId = clean(ensurePanel().querySelector('[data-text-provider]')?.value);
+        setPreference(state.activeTool, {mode:'project', apiConfigId:providerId, modelId:clean(event.target.value)});
+        return;
+      }
       if(event.target.id === 'hstar-remove-quality') state.lastRemovalOptions.quality = event.target.value;
       if(event.target.id === 'hstar-remove-prompt') state.lastRemovalOptions.prompt = event.target.value.slice(0, 2000);
       if(event.target.dataset?.hstarOcrIndex !== undefined){
         const block = state.reviewBlocks[Number(event.target.dataset.hstarOcrIndex)];
         if(block) block.text = event.target.value;
       }
-    }
-
-    function openApiSelector(toolId){
-      documentRef.getElementById('hstar-api-selector')?.remove();
-      const catalog = aiClient.getCatalog?.();
-      const tool = catalog?.tools?.[toolId];
-      const preference = preferenceFor(toolId);
-      const providers = Array.isArray(tool?.providers) ? tool.providers : [];
-      const selected = resolvedPreference(toolId);
-      const modal = documentRef.createElement('div');
-      modal.id = 'hstar-api-selector';
-      modal.className = 'hstar-text-modal';
-      modal.innerHTML = `<div class="hstar-text-dialog"><h3>${toolId === TOOL_EXTRACT ? '文字提取' : '去除文字'} · API / 模型</h3>
-        <div class="hstar-text-segments"><button type="button" data-api-mode="global" class="${preference.mode !== 'project' ? 'active' : ''}">跟随全局默认</button><button type="button" data-api-mode="project" class="${preference.mode === 'project' ? 'active' : ''}">本项目单独指定</button></div>
-        <div class="hstar-text-field"><label>API 配置</label><select data-api-provider>${providers.map(provider => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name || provider.id)}</option>`).join('')}</select></div>
-        <div class="hstar-text-field"><label>模型</label><select data-api-model></select></div>
-        <div class="hstar-text-status" data-api-discovery>当前：${escapeHtml(selected.providerName || '')} · ${escapeHtml(selected.modelName || selected.reason || '')}</div>
-        <div class="hstar-text-actions"><button type="button" class="btn" data-api-refresh>实时刷新模型</button><button type="button" class="btn" data-api-manage>管理 API 配置</button></div>
-        <div class="hstar-text-actions"><button type="button" class="btn" data-api-cancel>取消</button><button type="button" class="btn btn-primary" data-api-confirm>确认</button></div>
-      </div>`;
-      documentRef.body.appendChild(modal);
-      const providerSelect = modal.querySelector('[data-api-provider]');
-      const modelSelect = modal.querySelector('[data-api-model]');
-      const modeButtons = [...modal.querySelectorAll('[data-api-mode]')];
-      providerSelect.value = preference.apiConfigId || selected.apiConfigId || providers[0]?.id || '';
-      let mode = preference.mode === 'project' ? 'project' : 'global';
-      function renderModels(){
-        const provider = providers.find(item => item.id === providerSelect.value);
-        modelSelect.innerHTML = (provider?.models || []).map(model => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>`).join('');
-        modelSelect.value = preference.modelId || selected.modelId || provider?.models?.[0]?.id || '';
-        const disabled = mode === 'global';
-        providerSelect.disabled = disabled;
-        modelSelect.disabled = disabled;
-      }
-      renderModels();
-      providerSelect.addEventListener('change', renderModels);
-      modeButtons.forEach(button => button.addEventListener('click', () => {
-        mode = button.dataset.apiMode;
-        modeButtons.forEach(item => item.classList.toggle('active', item === button));
-        renderModels();
-      }));
-      modal.querySelector('[data-api-refresh]').addEventListener('click', async () => {
-        const label = modal.querySelector('[data-api-discovery]');
-        label.textContent = '正在实时拉取模型...';
-        try {
-          const result = await aiClient.discoverModels(providerSelect.value || selected.apiConfigId);
-          label.textContent = `实时发现 ${Number(result.total || result.all?.length || 0)} 个模型；请在全局 API 设置中确认导入后使用。`;
-        } catch(error){ label.textContent = error?.message || '实时拉取失败'; }
-      });
-      modal.querySelector('[data-api-manage]').addEventListener('click', () => {
-        root.dispatchEvent?.(new CustomEvent('openshop:open-api-settings'));
-        modal.remove();
-      });
-      modal.querySelector('[data-api-cancel]').addEventListener('click', () => modal.remove());
-      modal.querySelector('[data-api-confirm]').addEventListener('click', () => {
-        setPreference(toolId, {mode, apiConfigId:providerSelect.value, modelId:modelSelect.value});
-        modal.remove();
-      });
     }
 
     function openFontManager(){

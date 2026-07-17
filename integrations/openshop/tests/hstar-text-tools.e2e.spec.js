@@ -280,6 +280,9 @@ test('classic canvas keeps OCR, removal, cancellation and API state isolated per
   const canvas = await mountCanvas(page, 'classic', classic.id);
   let editor = await openNode(page, canvas, 'classic', nodeA.id, 1);
   await editor.locator('[data-hstar-text-tool="text-extract"]').click();
+  await expect(editor.locator('[data-text-provider]')).toHaveValue('e2e-ai');
+  await expect(editor.locator('[data-text-model]')).toHaveValue('e2e-vision');
+  await expect(editor.getByText('选择 API / 模型', {exact:true})).toHaveCount(0);
   await editor.locator('[data-hstar-action="run-extraction"]').click();
   await expect(editor.locator('.hstar-ocr-row')).toHaveCount(3);
   await expect(editor.locator('.hstar-ocr-confidence.low')).toContainText('低置信度');
@@ -358,6 +361,7 @@ test('classic canvas keeps OCR, removal, cancellation and API state isolated per
   })).project;
   expect(projectA.aiTaskRecords.map(record => record.toolId)).toEqual(['text-extract', 'text-extract']);
   expect(projectA.aiTaskRecords.map(record => record.status)).toEqual(['succeeded', 'failed']);
+  expect(projectA.aiTaskRecords[0].sourceLayerId).toBeTruthy();
   expect(projectB.aiTaskRecords.map(record => record.toolId)).toEqual(['text-remove', 'text-remove']);
   expect(JSON.stringify([projectA, projectB])).not.toMatch(/apiKey|authorization|data:image\//i);
   expect(pageErrors).toEqual([]);

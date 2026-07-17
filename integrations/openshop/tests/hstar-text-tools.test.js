@@ -1,10 +1,12 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const toolsPath = resolve(testDir, '..', 'host', 'openshop-text-tools.js');
+const editorHtmlPath = resolve(testDir, '..', 'index.html');
+const hostScriptPath = resolve(testDir, '..', '..', '..', 'static', 'js', 'openshop-host.js');
 
 const context = {
   canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1', projectId:'project-1',
@@ -65,8 +67,31 @@ function createHarness({pollResults={}} = {}) {
   const {editor, sourceImage, sourceLayer, objects} = createEditor();
   let taskSequence = 0;
   const createdTasks = [];
+  const catalog = {
+    primaryProviderId:'vision-api',
+    tools:{
+      'text-extract':{
+        providers:[
+          {id:'vision-api', name:'视觉 API', available:true, models:[
+            {id:'gemini-3.1-pro-high', name:'gemini-3.1-pro-high', available:true},
+          ]},
+          {id:'vision-custom', name:'备用视觉 API', available:true, models:[
+            {id:'vision-model-a', name:'视觉模型 A', available:true},
+            {id:'vision-model-b', name:'视觉模型 B', available:true},
+          ]},
+        ],
+      },
+      'text-remove':{
+        providers:[
+          {id:'image-api', name:'生图 API', available:true, models:[
+            {id:'gemini-3-pro-image', name:'gemini-3-pro-image', available:true},
+          ]},
+        ],
+      },
+    },
+  };
   const aiClient = {
-    loadCatalog:vi.fn(async () => ({})),
+    loadCatalog:vi.fn(async () => catalog),
     subscribe:vi.fn(() => () => {}),
     startSession:vi.fn(),
     stopSession:vi.fn(),
@@ -90,7 +115,7 @@ function createHarness({pollResults={}} = {}) {
     }),
     cancelTask:vi.fn(async (_context, taskId) => ({taskId, status:'cancelled'})),
     discoverModels:vi.fn(async () => ({total:2, all:['model-a', 'model-b']})),
-    getCatalog:vi.fn(() => ({primaryProviderId:'vision-api', tools:{}})),
+    getCatalog:vi.fn(() => catalog),
   };
   const assetApi = {
     upload:vi.fn(async payload => {
@@ -148,7 +173,9 @@ describe('Hstar OpenShop multilingual text tools', () => {
     extractButton.click();
     const panel = document.getElementById('hstar-text-tools-panel');
     expect(panel.dataset.toolId).toBe('text-extract');
-    expect(panel.textContent).toContain('选择 API / 模型');
+    expect(panel.querySelector('[data-text-provider]')).not.toBeNull();
+    expect(panel.querySelector('[data-text-model]')).not.toBeNull();
+    expect(panel.textContent).not.toContain('选择 API / 模型');
     expect(panel.textContent).toContain('执行文字提取');
 
     removeButton.click();
@@ -156,6 +183,65 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(panel.textContent).toContain('整层自动去字');
     expect(panel.textContent).toContain('选区去字');
     expect(panel.textContent).toContain('执行去除文字');
+    controller.destroy();
+  });
+
+  it('cache-busts both the OpenShop editor and text tools runtime', () => {
+    const editorHtml = readFileSync(editorHtmlPath, 'utf8');
+    const hostScript = readFileSync(hostScriptPath, 'utf8');
+    const textToolsVersion = editorHtml.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
+    const editorVersion = hostScript.match(/openshop\/index\.html\?v=([0-9.]+)/)?.[1];
+    expect(textToolsVersion).toBeTruthy();
+    expect(editorVersion).toBe(textToolsVersion);
+  });
+
+  it('stores inline API and model selections without opening a separate dialog', async () => {
+    const {controller, editor} = createHarness();
+    await controller.start();
+    controller.openTool('text-extract');
+
+    const panel = document.getElementById('hstar-text-tools-panel');
+    const provider = panel.querySelector('[data-text-provider]');
+    expect(provider.value).toBe('vision-api');
+    provider.value = 'vision-custom';
+    provider.dispatchEvent(new Event('change', {bubbles:true}));
+
+    const model = panel.querySelector('[data-text-model]');
+    expect(model.value).toBe('vision-model-a');
+    expect([...model.options].map(option => option.value)).toEqual(['vision-model-a', 'vision-model-b']);
+    model.value = 'vision-model-b';
+    model.dispatchEvent(new Event('change', {bubbles:true}));
+
+    expect(editor.__hstarAiToolPreferences['text-extract']).toEqual({
+      toolId:'text-extract', mode:'project', apiConfigId:'vision-custom', modelId:'vision-model-b',
+    });
+    expect(document.getElementById('hstar-api-selector')).toBeNull();
+    controller.destroy();
+  });
+
+  it('extracts from the topmost visible image layer when the active layer is empty', async () => {
+    const blocks = [{
+      id:'ocr-fallback', text:'可识别文字', language:'zh', confidence:0.95, lowConfidence:false,
+      quad:[{x:0.1,y:0.1},{x:0.4,y:0.1},{x:0.4,y:0.2},{x:0.1,y:0.2}],
+      font:{familyCandidates:['Microsoft YaHei UI'], size:40, weight:400, style:'normal'},
+      color:'#111111', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+    }];
+    const {controller, editor, sourceLayer, createdTasks} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
+    });
+    editor.layers.unshift({layerId:'layer-empty', name:'Layer 1', visible:true, opacity:100, blend:'source-over', objects:[]});
+    editor.activeLayerIdx = 0;
+
+    await controller.start();
+    controller.openTool('text-extract');
+    expect(document.querySelector('[data-hstar-action="run-extraction"]').disabled).toBe(false);
+
+    const result = await controller.runTextExtraction();
+    expect(result.blocks).toEqual(blocks);
+    expect(createdTasks[0]).toMatchObject({toolId:'text-extract', sourceAssetId:SOURCE_ASSET_ID});
+    expect(sourceLayer.objects).toHaveLength(1);
+    const extractedLayer = controller.applyTextExtraction();
+    expect(editor.layers.indexOf(extractedLayer)).toBe(editor.layers.indexOf(sourceLayer) + 1);
     controller.destroy();
   });
 

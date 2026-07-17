@@ -334,7 +334,7 @@
         });
         state.sessions.set(scope, session);
         getOverlay().appendChild(frame);
-        frame.src = '/static/openshop/index.html?v=2026.07.15.1784123441';
+        frame.src = '/static/openshop/index.html?v=2026.07.17.1784263000';
         return session;
     }
 
