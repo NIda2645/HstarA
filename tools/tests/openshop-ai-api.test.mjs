@@ -121,6 +121,12 @@ async def run():
             json={"owner":owner, "document":{"width":96, "height":64}},
         )
         assert init.status_code == 200, init.text
+        owner_b = {**owner, "nodeId":"node-b"}
+        init_b = await client.post(
+            "/api/openshop/projects/project-ai/initialize",
+            json={"owner":owner_b, "document":{"width":96, "height":64}},
+        )
+        assert init_b.status_code == 200, init_b.text
         upload = await client.post(
             "/api/openshop/projects/project-ai/assets",
             data={
@@ -445,7 +451,7 @@ async def run():
         wrong_import_owner = await client.post(
             "/api/openshop/projects/project-ai/asset-imports",
             json={
-                "owner":{**owner, "nodeId":"other-node"},
+                "owner":{**owner_b, "canvasType":"smart"},
                 "library_id":"openshop-test-library",
                 "category_id":"reference-images",
                 "item_id":"reference-item-1",
@@ -518,6 +524,18 @@ async def run():
             }, {}
 
         main.generate_ai_image = delete_waiting_generate
+        upload_b = await client.post(
+            "/api/openshop/projects/project-ai/assets",
+            data={
+                "canvas_type":owner_b["canvasType"],
+                "canvas_id":owner_b["canvasId"],
+                "node_id":owner_b["nodeId"],
+                "role":"ai-source",
+            },
+            files={"file":("source-b.png", png_bytes((80, 120, 200, 255)), "image/png")},
+        )
+        assert upload_b.status_code == 200, upload_b.text
+        source_asset_id_b = upload_b.json()["asset"]["assetId"]
         deleting = await client.post(
             "/api/openshop/projects/project-ai/ai-tasks",
             json={
@@ -530,6 +548,18 @@ async def run():
             },
         )
         assert deleting.status_code == 200
+        surviving = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks",
+            json={
+                "owner":owner_b,
+                "tool_id":"text-remove",
+                "source_asset_id":source_asset_id_b,
+                "provider_id":"vision",
+                "model_id":"gemini-3-pro-image",
+                "mode":"layer",
+            },
+        )
+        assert surviving.status_code == 200
         deleted = await client.delete(
             "/api/openshop/projects/project-ai",
             params={
@@ -540,7 +570,20 @@ async def run():
         )
         assert deleted.status_code == 200 and deleted.json()["deleted"] is True
         await asyncio.sleep(0.02)
-        assert main.OPENSHOP_AI_TASKS.active_for_project("project-ai") == 0
+        deleting_task = main.OPENSHOP_AI_TASKS.get(
+            deleting.json()["task_id"], "project-ai", owner
+        )
+        surviving_task = main.OPENSHOP_AI_TASKS.get(
+            surviving.json()["task_id"], "project-ai", owner_b
+        )
+        assert deleting_task["status"] == "cancelled"
+        assert surviving_task["status"] not in {"succeeded", "failed", "cancelled"}
+        assert main.OPENSHOP_AI_TASKS.active_for_project("project-ai") == 1
+        delete_release.set()
+        completed_survivor = await wait_for_terminal(
+            client, "project-ai", surviving.json()["task_id"], owner_b
+        )
+        assert completed_survivor["status"] == "succeeded"
 
     print("OpenShop AI API tests passed")
 

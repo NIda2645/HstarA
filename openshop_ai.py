@@ -1071,17 +1071,25 @@ class OpenShopAiTaskRegistry:
                 future.cancel()
         return public
 
-    def cancel_project(self, project_id: str) -> list[str]:
-        normalized = str(project_id or "").strip()
+    def cancel_project(
+        self,
+        project_id: str,
+        owner: dict[str, Any],
+    ) -> list[str]:
+        normalized = _clean_text(project_id, 96)
+        if not normalized:
+            raise OpenShopAiValidationError("OpenShop AI projectId is invalid")
+        normalized_owner = self._owner(owner)
         with self._lock:
             task_ids = [
                 task_id
                 for task_id, record in self._records.items()
                 if record.get("projectId") == normalized
+                and record.get("owner") == normalized_owner
                 and record.get("status") not in OPENSHOP_AI_TERMINAL_STATES
             ]
         for task_id in task_ids:
-            self.cancel(task_id)
+            self.cancel(task_id, normalized, normalized_owner)
         return task_ids
 
     def active_for_project(self, project_id: str) -> int:

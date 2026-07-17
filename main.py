@@ -3407,7 +3407,7 @@ def normalize_canvas_kind(kind="classic"):
 
 def openshop_project_owners(nodes):
     return {
-        str(node.get("projectId")): str(node.get("id"))
+        (str(node.get("id")), str(node.get("projectId")))
         for node in (nodes or [])
         if isinstance(node, dict)
         and node.get("type") == "openshop-layered"
@@ -3417,7 +3417,7 @@ def openshop_project_owners(nodes):
 
 def remove_openshop_projects(project_owners, canvas_type, canvas_id):
     removed = []
-    for project_id, node_id in (project_owners or {}).items():
+    for node_id, project_id in (project_owners or set()):
         owner = {
             "canvasType": normalize_canvas_kind(canvas_type),
             "canvasId": str(canvas_id),
@@ -3425,7 +3425,7 @@ def remove_openshop_projects(project_owners, canvas_type, canvas_id):
         }
         try:
             if OPENSHOP_STORE.delete(project_id, owner):
-                OPENSHOP_AI_TASKS.cancel_project(project_id)
+                OPENSHOP_AI_TASKS.cancel_project(project_id, owner)
                 removed.append(project_id)
         except OpenShopNotFound:
             continue
@@ -3576,13 +3576,20 @@ def cleanup_expired_canvas_trash():
                     data = json.load(f)
                 deleted_at = int(data.get("deleted_at") or 0)
                 if deleted_at and deleted_at < cutoff:
+                    canvas_type = normalize_canvas_kind(data.get("kind"))
+                    canvas_id = str(data.get("id") or os.path.splitext(filename)[0])
+                    project_owners = openshop_project_owners(data.get("nodes"))
                     removed_ids = OPENSHOP_STORE.delete_canvas_projects(
-                        normalize_canvas_kind(data.get("kind")),
-                        str(data.get("id") or os.path.splitext(filename)[0]),
+                        canvas_type,
+                        canvas_id,
                     )
                     removed_projects = bool(removed_ids) or removed_projects
-                    for project_id in removed_ids:
-                        OPENSHOP_AI_TASKS.cancel_project(project_id)
+                    for node_id, project_id in project_owners:
+                        OPENSHOP_AI_TASKS.cancel_project(project_id, {
+                            "canvasType": canvas_type,
+                            "canvasId": canvas_id,
+                            "nodeId": node_id,
+                        })
                     os.remove(path)
             except Exception:
                 continue
@@ -17081,12 +17088,13 @@ async def delete_openshop_project(
     node_id: str,
 ):
     def delete_and_collect():
+        owner = openshop_owner(canvas_type, canvas_id, node_id)
         deleted = OPENSHOP_STORE.delete(
             project_id,
-            openshop_owner(canvas_type, canvas_id, node_id),
+            owner,
         )
         if deleted:
-            OPENSHOP_AI_TASKS.cancel_project(project_id)
+            OPENSHOP_AI_TASKS.cancel_project(project_id, owner)
             collect_openshop_garbage()
         return deleted
 
@@ -18586,11 +18594,7 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
     canvas["logs"] = payload.logs[-500:]
     canvas["settings"] = payload.settings or {}
     save_canvas(canvas)
-    removed_openshop_projects = {
-        project_id: node_id
-        for project_id, node_id in previous_openshop_projects.items()
-        if project_id not in next_openshop_projects
-    }
+    removed_openshop_projects = previous_openshop_projects - next_openshop_projects
     if removed_openshop_projects:
         await asyncio.to_thread(
             remove_openshop_projects,
@@ -18625,13 +18629,18 @@ async def purge_canvas(canvas_id: str):
     if os.path.exists(path):
         canvas = load_canvas_any(canvas_id)
         def delete_projects_and_collect():
+            canvas_type = normalize_canvas_kind(canvas.get("kind"))
+            project_owners = openshop_project_owners(canvas.get("nodes"))
             removed = OPENSHOP_STORE.delete_canvas_projects(
-                normalize_canvas_kind(canvas.get("kind")),
+                canvas_type,
                 canvas_id,
             )
-            if removed:
-                for project_id in removed:
-                    OPENSHOP_AI_TASKS.cancel_project(project_id)
+            for node_id, project_id in project_owners:
+                OPENSHOP_AI_TASKS.cancel_project(project_id, {
+                    "canvasType": canvas_type,
+                    "canvasId": canvas_id,
+                    "nodeId": node_id,
+                })
             try:
                 os.remove(path)
             except FileNotFoundError:

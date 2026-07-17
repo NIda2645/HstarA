@@ -1153,6 +1153,63 @@ async def api_lifecycle():
             assert removed_output.status_code == 200, removed_output.text
             assert (await client.get(output_asset["url"])).status_code == 404
 
+            shared_project_id = "project-api-shared"
+            shared_owner_a = {
+                "canvasType": "classic",
+                "canvasId": canvas["id"],
+                "nodeId": "node-shared-a",
+            }
+            shared_owner_b = {**shared_owner_a, "nodeId": "node-shared-b"}
+            for shared_owner in (shared_owner_a, shared_owner_b):
+                shared_init = await client.post(
+                    f"/api/openshop/projects/{shared_project_id}/initialize",
+                    json={"owner": shared_owner, "document": {"width": 640, "height": 480}},
+                )
+                assert shared_init.status_code == 200, shared_init.text
+
+            shared_payload = {
+                **canvas_payload,
+                "nodes": [{
+                    "id": shared_owner_a["nodeId"],
+                    "type": "openshop-layered",
+                    "projectId": shared_project_id,
+                }, {
+                    "id": shared_owner_b["nodeId"],
+                    "type": "openshop-layered",
+                    "projectId": shared_project_id,
+                }],
+                "base_updated_at": removed_output.json()["canvas"]["updated_at"],
+            }
+            shared_attached = await client.put(
+                f"/api/canvases/{canvas['id']}", json=shared_payload
+            )
+            assert shared_attached.status_code == 200, shared_attached.text
+
+            shared_payload["nodes"] = [shared_payload["nodes"][1]]
+            shared_payload["base_updated_at"] = shared_attached.json()["canvas"]["updated_at"]
+            shared_removed = await client.put(
+                f"/api/canvases/{canvas['id']}", json=shared_payload
+            )
+            assert shared_removed.status_code == 200, shared_removed.text
+            removed_shared_project = await client.get(
+                f"/api/openshop/projects/{shared_project_id}",
+                params={
+                    "canvas_type": shared_owner_a["canvasType"],
+                    "canvas_id": shared_owner_a["canvasId"],
+                    "node_id": shared_owner_a["nodeId"],
+                },
+            )
+            surviving_shared_project = await client.get(
+                f"/api/openshop/projects/{shared_project_id}",
+                params={
+                    "canvas_type": shared_owner_b["canvasType"],
+                    "canvas_id": shared_owner_b["canvasId"],
+                    "node_id": shared_owner_b["nodeId"],
+                },
+            )
+            assert removed_shared_project.status_code == 404
+            assert surviving_shared_project.status_code == 200
+
             smart_response = await client.post(
                 "/api/canvases",
                 json={"title": "Soft delete canvas", "icon": "sparkles", "kind": "smart"},
