@@ -697,6 +697,52 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     assert not list(Path(data_dir).rglob("*.tmp"))
 
 
+with tempfile.TemporaryDirectory(prefix="hstara-openshop-clone-retry-") as data_dir:
+    canvas_dir = Path(data_dir) / "canvases"
+    store = OpenShopProjectStore(data_dir, canvas_dir=canvas_dir)
+    source_owner = {
+        "canvasType": "classic",
+        "canvasId": "canvas-clone-retry",
+        "nodeId": "node-clone-source",
+    }
+    target_owner = {**source_owner, "nodeId": "node-clone-target"}
+    store.initialize(
+        "project-clone-source", source_owner, {"width": 640, "height": 480}
+    )
+
+    first_clone = store.clone(
+        "project-clone-source",
+        source_owner,
+        "project-clone-target",
+        target_owner,
+    )
+    source_path = (
+        canvas_dir
+        / "canvas-clone-retry.openshop"
+        / "node-clone-source"
+        / "project.json"
+    )
+    target_path = (
+        canvas_dir
+        / "canvas-clone-retry.openshop"
+        / "node-clone-target"
+        / "project.json"
+    )
+    assert store.delete("project-clone-source", source_owner) is True
+    assert not source_path.exists()
+    assert target_path.is_file()
+
+    retried_clone = store.clone(
+        "project-clone-source",
+        source_owner,
+        "project-clone-target",
+        target_owner,
+    )
+    assert retried_clone == first_clone
+    retried_clone["document"]["width"] = 1
+    assert store.load("project-clone-target", target_owner) == first_clone
+
+
 with tempfile.TemporaryDirectory(prefix="hstara-openshop-migration-") as data_dir:
     root = Path(data_dir)
     canvas_dir = root / "canvases"

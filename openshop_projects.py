@@ -162,7 +162,6 @@ class OpenShopProjectStore:
         normalized_target_owner = self._normalize_owner(target_owner)
 
         with self._lock:
-            source = self._read_project(source_project_id, normalized_source_owner)
             target_path = self._project_path(normalized_target_owner)
             if (
                 target_path.exists()
@@ -171,6 +170,7 @@ class OpenShopProjectStore:
                 existing = self._read_project(target_project_id, normalized_target_owner)
                 return copy.deepcopy(existing)
 
+            source = self._read_project(source_project_id, normalized_source_owner)
             clone = copy.deepcopy(source)
             timestamp = self._now()
             clone["projectId"] = target_project_id
