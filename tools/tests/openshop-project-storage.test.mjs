@@ -95,6 +95,38 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
     assert created["aiReferenceRecords"] == []
     assert created["aiPendingResults"] == []
 
+    upload_owner = {
+        **owner_a,
+        "canvasId": "canvas-upload-reference",
+        "nodeId": "node-upload-reference",
+    }
+    upload_project = store.initialize(
+        "project-upload-reference", upload_owner, {"width": 8, "height": 6}
+    )
+    uploaded_source_data = png_bytes((61, 137, 203, 255))
+    uploaded_source = store.store_image(
+        "project-upload-reference", upload_owner, uploaded_source_data,
+        "image/png", "uploaded-source.png", "source",
+    )
+    uploaded_project = store.load("project-upload-reference", upload_owner)
+    assert uploaded_project["autosaveVersion"] == upload_project["autosaveVersion"] == 1
+    assert store.collect_garbage() == []
+    assert uploaded_project["assetRefs"] == [uploaded_source["assetId"]]
+    uploaded_source_path, _ = store.asset_path(uploaded_source["assetId"])
+    assert Path(uploaded_source_path).read_bytes() == uploaded_source_data
+
+    saved_without_upload = store.save(
+        "project-upload-reference", upload_owner, upload_project, base_version=1
+    )
+    assert saved_without_upload["assetRefs"] == []
+    assert saved_without_upload["autosaveVersion"] == 2
+    assert store.collect_garbage() == [uploaded_source["assetId"]]
+    try:
+        store.asset_path(uploaded_source["assetId"])
+        raise AssertionError("asset omitted by a later project save should be removed")
+    except OpenShopNotFound:
+        pass
+
     first_asset = store.store_image(
         "project-a", owner_a, png_bytes((22, 91, 180, 255)), "image/png", "source.png", "source"
     )

@@ -304,14 +304,14 @@ class OpenShopProjectStore:
 
             result_name = self._safe_label(name, "OpenShop image")
             result_role = self._safe_label(role, "asset")
+            asset_refs = project.get("assetRefs", [])
+            if not isinstance(asset_refs, list):
+                raise OpenShopValidationError("assetRefs must be an array")
+            project["assetRefs"] = sorted({
+                *(self._validate_asset_id(value) for value in asset_refs),
+                asset_id,
+            })
             if result_role == "output":
-                asset_refs = project.get("assetRefs", [])
-                if not isinstance(asset_refs, list):
-                    raise OpenShopValidationError("assetRefs must be an array")
-                project["assetRefs"] = sorted({
-                    *(self._validate_asset_id(value) for value in asset_refs),
-                    asset_id,
-                })
                 export_records = project.get("exportRecords", [])
                 if not isinstance(export_records, list):
                     raise OpenShopValidationError("exportRecords must be an array")
@@ -330,7 +330,7 @@ class OpenShopProjectStore:
                     export_record,
                 ][-256:]
                 project["updatedAt"] = export_record["createdAt"]
-                self._atomic_write_json(self._project_path(normalized_owner), project)
+            self._atomic_write_json(self._project_path(normalized_owner), project)
 
             result = copy.deepcopy(metadata)
             result["name"] = result_name
