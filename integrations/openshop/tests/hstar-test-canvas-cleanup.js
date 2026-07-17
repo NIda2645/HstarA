@@ -10,10 +10,15 @@ function exactCanvasId(canvasOrId) {
   return id;
 }
 
-export function createTestCanvasCleanup(baseUrl) {
+export function createTestCanvasCleanup(baseUrl, options = {}) {
   const endpoint = String(baseUrl || '').replace(/\/+$/, '');
   if(!endpoint) throw new TypeError('HSTAR_BASE_URL is required');
   const ids = new Set();
+  const retries = Math.max(0, Number.parseInt(options.retries ?? 3, 10) || 0);
+  const retryDelayMs = Math.max(0, Number(options.retryDelayMs ?? 120) || 0);
+  const sleep = typeof options.sleep === 'function'
+    ? options.sleep
+    : delay => new Promise(resolveSleep => setTimeout(resolveSleep, delay));
 
   return {
     async assertStorageIsolated(request) {
@@ -49,19 +54,28 @@ export function createTestCanvasCleanup(baseUrl) {
     async purgeAll(request) {
       const failures = [];
       for(const id of [...ids]) {
-        try {
-          const result = await request.delete(
-            `${endpoint}/api/canvases/${encodeURIComponent(id)}/purge`
-          );
-          if(result.ok() || result.status() === 404) {
-            ids.delete(id);
-            continue;
+        let failure = '';
+        for(let attempt = 0; attempt <= retries; attempt += 1) {
+          try {
+            const result = await request.delete(
+              `${endpoint}/api/canvases/${encodeURIComponent(id)}/purge`
+            );
+            if(result.ok() || result.status() === 404) {
+              ids.delete(id);
+              failure = '';
+              break;
+            }
+            const detail = await result.text().catch(() => '');
+            failure = `${id}: HTTP ${result.status()}${detail ? ` ${detail}` : ''}`;
+            const transient = result.status() >= 500;
+            if(!transient || attempt === retries) break;
+          } catch(error) {
+            failure = `${id}: ${error instanceof Error ? error.message : String(error)}`;
+            if(attempt === retries) break;
           }
-          const detail = await result.text().catch(() => '');
-          failures.push(`${id}: HTTP ${result.status()}${detail ? ` ${detail}` : ''}`);
-        } catch(error) {
-          failures.push(`${id}: ${error instanceof Error ? error.message : String(error)}`);
+          await sleep(retryDelayMs * (attempt + 1));
         }
+        if(failure) failures.push(failure);
       }
       if(failures.length) {
         throw new Error(`Failed to purge HstarA E2E canvases:\n${failures.join('\n')}`);

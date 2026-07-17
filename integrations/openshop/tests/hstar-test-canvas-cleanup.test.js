@@ -57,8 +57,29 @@ describe('HstarA E2E canvas cleanup', () => {
     expect(cleanup.pendingIds()).toEqual([]);
   });
 
+  it('retries a transient purge failure before leaving test data behind', async () => {
+    const sleep = vi.fn(async () => {});
+    const cleanup = createTestCanvasCleanup('http://127.0.0.1:3000', {
+      retries:2,
+      retryDelayMs:1,
+      sleep,
+    });
+    cleanup.track('busy-canvas');
+    const request = {
+      delete:vi.fn()
+        .mockResolvedValueOnce(response({ok:false, status:500, body:'file busy'}))
+        .mockResolvedValueOnce(response({ok:true, status:200})),
+    };
+
+    await cleanup.purgeAll(request);
+
+    expect(request.delete).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(1);
+    expect(cleanup.pendingIds()).toEqual([]);
+  });
+
   it('reports every failed ID and keeps failures pending', async () => {
-    const cleanup = createTestCanvasCleanup('http://127.0.0.1:3000');
+    const cleanup = createTestCanvasCleanup('http://127.0.0.1:3000', {retries:0});
     cleanup.track('canvas-a');
     cleanup.track('canvas-b');
     const request = {
