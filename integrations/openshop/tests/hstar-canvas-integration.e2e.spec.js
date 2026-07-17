@@ -173,6 +173,30 @@ async function openNode(page, canvasFrame, kind, nodeId, expectedSources = null,
   if(expectedSources !== null){
     await editor.waitForFunction(count => OS.layers.filter(layer => layer.sourceBinding).length >= count, expectedSources);
   }
+  const expectedPersistence = {
+    mode:'embedded-hstara',
+    timerActive:false,
+    dirty:false,
+    recoveryStarted:false,
+    recoveryControlCount:0,
+  };
+  let settledObservations = 0;
+  await expect.poll(async () => {
+    const state = await editor.evaluate(() => ({
+      mode:OS._persistenceMode,
+      timerActive:OS._autoSaveTimer !== null,
+      dirty:Boolean(window.HstarOpenShopRuntime?.getState?.().dirty),
+      recoveryStarted:Boolean(OS._recoveryStartupStarted),
+      recoveryControlCount:document.querySelectorAll('[data-recovery-restore], [data-recovery-discard]').length,
+    }));
+    const matches = Object.entries(expectedPersistence).every(([key, value]) => state[key] === value);
+    settledObservations = matches ? settledObservations + 1 : 0;
+    return settledObservations >= 3 ? state : null;
+  }, {
+    message:`OpenShop recovery state did not settle for node ${nodeId}`,
+    timeout:10000,
+    intervals:[200, 300, 500],
+  }).toEqual(expectedPersistence);
   await expect(editor.locator('[data-recovery-restore]')).toHaveCount(0);
   await expect(editor.locator('[data-recovery-discard]')).toHaveCount(0);
   return editor;
@@ -183,9 +207,17 @@ async function saveEditorMarker(editor, marker){
     OS.addLayer();
     const layer = OS.layers[OS.activeLayerIdx];
     layer.name = value;
-    const text = new fabric.IText(value, {left:48, top:48, fill:'#111827', fontSize:36});
+    const text = new fabric.IText(value, {
+      left:48, top:48, scaleX:1.05, scaleY:0.95, angle:3,
+      fill:'#111827', fontSize:36, name:`${value} marker`,
+    });
+    const stackingProbe = new fabric.Rect({
+      left:112, top:104, width:24, height:16, scaleX:0.75, scaleY:1.25, angle:7,
+      fill:'#2563eb', name:`${value} stacking probe`, selectable:false, evented:false,
+    });
     OS.canvas.add(text);
-    layer.objects.push(text);
+    OS.canvas.add(stackingProbe);
+    layer.objects.push(text, stackingProbe);
     OS.updateLayersPanel();
     OS.canvas.renderAll();
     window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'e2e-marker'}}));
@@ -201,25 +233,56 @@ async function exactLayerSummary(editor){
       const rounded = Math.round(number * 1e6) / 1e6;
       return Object.is(rounded, -0) ? 0 : rounded;
     };
-    return OS.layers.map((layer, index) => ({
+    const summarizeObject = (object, index) => ({
       index,
-      name:String(layer?.name || ''),
-      type:String(layer?.type || 'normal'),
-      visible:layer?.visible !== false,
-      opacity:normalizedNumber(layer?.opacity, 100),
-      blend:String(layer?.blend || 'source-over'),
-      locked:Boolean(layer?.locked),
-      objects:(Array.isArray(layer?.objects) ? layer.objects : []).map(object => ({
-        type:String(object?.type || ''),
-        name:String(object?.name || ''),
-        text:typeof object?.text === 'string' ? object.text : null,
-        left:normalizedNumber(object?.left, 0),
-        top:normalizedNumber(object?.top, 0),
-        scaleX:normalizedNumber(object?.scaleX, 1),
-        scaleY:normalizedNumber(object?.scaleY, 1),
-        angle:normalizedNumber(object?.angle, 0),
-      })),
-    }));
+      type:String(object?.type || ''),
+      name:String(object?.name || ''),
+      text:typeof object?.text === 'string' ? object.text : null,
+      left:normalizedNumber(object?.left, 0),
+      top:normalizedNumber(object?.top, 0),
+      scaleX:normalizedNumber(object?.scaleX, 1),
+      scaleY:normalizedNumber(object?.scaleY, 1),
+      angle:normalizedNumber(object?.angle, 0),
+    });
+    const objectOwners = new Map();
+    const layersById = new Map();
+    const layers = OS.layers.map((layer, index) => {
+      const identity = {
+        index,
+        layerId:String(layer?.layerId || ''),
+        name:String(layer?.name || ''),
+        type:String(layer?.type || 'normal'),
+      };
+      if(identity.layerId) layersById.set(identity.layerId, identity);
+      (Array.isArray(layer?.objects) ? layer.objects : []).forEach(object => objectOwners.set(object, identity));
+      return {
+        index,
+        name:identity.name,
+        type:identity.type,
+        visible:layer?.visible !== false,
+        opacity:normalizedNumber(layer?.opacity, 100),
+        blend:String(layer?.blend || 'source-over'),
+        locked:Boolean(layer?.locked),
+        objects:(Array.isArray(layer?.objects) ? layer.objects : []).map(summarizeObject),
+      };
+    });
+    const canvasObjects = OS.canvas.getObjects().map((object, index) => {
+      const objectLayerId = String(object?.hstarLayerId || '');
+      const owner = objectOwners.get(object) || layersById.get(objectLayerId) || null;
+      return {
+        ...summarizeObject(object, index),
+        owner:owner ? {
+          index:owner.index,
+          layerId:owner.layerId || objectLayerId,
+          name:owner.name,
+          type:owner.type,
+        } : null,
+      };
+    });
+    return {
+      layers,
+      canvasObjects,
+    };
   });
 }
 
