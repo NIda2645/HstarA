@@ -2794,6 +2794,7 @@ class OpenShopProjectSaveRequest(BaseModel):
 
 class OpenShopProjectCloneRequest(BaseModel):
     source_project_id: str
+    source_owner: Dict[str, Any]
     owner: Dict[str, Any]
 
 class OpenShopAiTaskRequest(BaseModel):
@@ -17064,6 +17065,7 @@ async def clone_openshop_project(
         project = await asyncio.to_thread(
             OPENSHOP_STORE.clone,
             payload.source_project_id,
+            payload.source_owner,
             project_id,
             payload.owner,
         )

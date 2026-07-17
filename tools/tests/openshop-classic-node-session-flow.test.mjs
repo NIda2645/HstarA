@@ -89,6 +89,7 @@ assert.match(node.projectId, /^osp_/);
 assert.equal(node.saveState, 'new');
 assert.equal(node.aiStatus, '');
 assert.equal(node.aiTargetCount, 0);
+assert.equal(node.cloneSourceNodeId, '');
 assert.equal(node.x, 100);
 assert.equal(node.y, 120);
 
@@ -119,6 +120,7 @@ assert.deepEqual({...openedSessions[0].context}, {
   projectName:'图文分层项目',
   frameId:'frame-canvas',
   cloneSourceProjectId:'',
+  cloneSourceNodeId:'',
   documentWidth:1920,
   documentHeight:1080,
 });
@@ -180,10 +182,25 @@ const clone = {...node, id:'openshop-copy'};
 adapter.prepareClone(node, clone);
 assert.notEqual(clone.projectId, node.projectId);
 assert.equal(clone.cloneSourceProjectId, node.projectId);
+assert.equal(clone.cloneSourceNodeId, node.id);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
 assert.equal(clone.aiStatus, '');
 assert.equal(clone.aiTargetCount, 0);
+nodes.push(clone);
+assert.equal(adapter.openNode(clone.id), true);
+assert.equal(openedSessions.length, 2);
+assert.equal(openedSessions[1].context.cloneSourceProjectId, node.projectId);
+assert.equal(openedSessions[1].context.cloneSourceNodeId, node.id);
+
+dispatchMessage({
+  type:'hstar-openshop-node-meta',
+  requestId:'clone-meta-1',
+  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:clone.id, projectId:clone.projectId},
+  meta:{autosaveVersion:1, saveState:'saved'},
+});
+assert.equal(clone.cloneSourceProjectId, '');
+assert.equal(clone.cloneSourceNodeId, '');
 
 assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
 assert.equal(adapter.disposeNode(node), true);

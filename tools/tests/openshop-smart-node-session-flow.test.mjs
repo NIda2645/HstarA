@@ -124,6 +124,7 @@ assert.match(projectNode.projectId, /^osp_/);
 assert.equal(projectNode.saveState, 'new');
 assert.equal(projectNode.aiStatus, '');
 assert.equal(projectNode.aiTargetCount, 0);
+assert.equal(projectNode.cloneSourceNodeId, '');
 assert.equal(projectNode.x, 210);
 assert.equal(projectNode.y, 260);
 
@@ -151,6 +152,7 @@ assert.deepEqual({...openedSessions[0].context}, {
   projectName:'图文分层项目',
   frameId:'frame-smart-canvas',
   cloneSourceProjectId:'',
+  cloneSourceNodeId:'',
   documentWidth:1920,
   documentHeight:1080,
 });
@@ -220,10 +222,25 @@ const clone = {...projectNode, id:'smart-openshop-copy'};
 adapter.prepareClone(projectNode, clone);
 assert.notEqual(clone.projectId, projectNode.projectId);
 assert.equal(clone.cloneSourceProjectId, projectNode.projectId);
+assert.equal(clone.cloneSourceNodeId, projectNode.id);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
 assert.equal(clone.aiStatus, '');
 assert.equal(clone.aiTargetCount, 0);
+nodes.push(clone);
+assert.equal(adapter.openNode(clone.id), true);
+assert.equal(openedSessions.length, 2);
+assert.equal(openedSessions[1].context.cloneSourceProjectId, projectNode.projectId);
+assert.equal(openedSessions[1].context.cloneSourceNodeId, projectNode.id);
+
+dispatchMessage({
+  type:'hstar-openshop-node-meta',
+  requestId:'smart-clone-meta-1',
+  context:{canvasType:'smart', canvasId:'smart-canvas-1', nodeId:clone.id, projectId:clone.projectId},
+  meta:{autosaveVersion:1, saveState:'saved'},
+});
+assert.equal(clone.cloneSourceProjectId, '');
+assert.equal(clone.cloneSourceNodeId, '');
 
 assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
 assert.equal(adapter.disposeNode(projectNode), true);

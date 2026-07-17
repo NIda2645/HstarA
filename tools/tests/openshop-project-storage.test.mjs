@@ -732,7 +732,45 @@ async def api_lifecycle():
             )
             assert conflict.status_code == 409
 
-            # Explicit source-owner API wiring is covered by the next implementation unit.
+            clone_owner = {**owner, "nodeId": "node-api-clone"}
+            rejected_clone_owner = {**owner, "nodeId": "node-api-rejected"}
+            rejected_clone_path = (
+                Path(main.CANVAS_DIR)
+                / f"{canvas['id']}.openshop"
+                / "node-api-rejected"
+                / "project.json"
+            )
+            rejected_clone = await client.post(
+                "/api/openshop/projects/project-api-rejected/clone",
+                json={
+                    "source_project_id": "project-api",
+                    "source_owner": {**owner, "canvasType": "smart"},
+                    "owner": rejected_clone_owner,
+                },
+            )
+            assert rejected_clone.status_code == 403, rejected_clone.text
+            assert not rejected_clone_path.exists()
+
+            cloned = await client.post(
+                "/api/openshop/projects/project-api-clone/clone",
+                json={
+                    "source_project_id": "project-api",
+                    "source_owner": owner,
+                    "owner": clone_owner,
+                },
+            )
+            assert cloned.status_code == 200, cloned.text
+            cloned_project = cloned.json()["project"]
+            assert cloned_project["projectId"] == "project-api-clone"
+            assert cloned_project["owner"] == clone_owner
+            assert cloned_project["previewAssetId"] == asset["assetId"]
+            clone_project_path = (
+                Path(main.CANVAS_DIR)
+                / f"{canvas['id']}.openshop"
+                / "node-api-clone"
+                / "project.json"
+            )
+            assert clone_project_path.is_file()
 
             canvas_payload = {
                 "title": canvas["title"],
@@ -741,6 +779,10 @@ async def api_lifecycle():
                     "id": "node-api",
                     "type": "openshop-layered",
                     "projectId": "project-api",
+                }, {
+                    "id": "node-api-clone",
+                    "type": "openshop-layered",
+                    "projectId": "project-api-clone",
                 }, {
                     "id": "output-api",
                     "type": "image",
@@ -756,7 +798,9 @@ async def api_lifecycle():
             }
             attached = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
             assert attached.status_code == 200, attached.text
-            canvas_payload["nodes"] = [canvas_payload["nodes"][1]]
+            canvas_payload["nodes"] = [
+                node for node in canvas_payload["nodes"] if node["id"] == "output-api"
+            ]
             canvas_payload["base_updated_at"] = attached.json()["canvas"]["updated_at"]
             detached = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
             assert detached.status_code == 200, detached.text
@@ -766,6 +810,15 @@ async def api_lifecycle():
                 params={"canvas_type": "classic", "canvas_id": canvas["id"], "node_id": "node-api"},
             )
             assert missing_project.status_code == 404
+            missing_clone = await client.get(
+                "/api/openshop/projects/project-api-clone",
+                params={
+                    "canvas_type": "classic",
+                    "canvas_id": canvas["id"],
+                    "node_id": "node-api-clone",
+                },
+            )
+            assert missing_clone.status_code == 404
             assert (await client.get(asset["url"])).status_code == 404
             assert (await client.get(output_asset["url"])).status_code == 200
 

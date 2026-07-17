@@ -33,6 +33,23 @@ async function flushMutations() {
   await new Promise(resolvePromise => setTimeout(resolvePromise, 0));
 }
 
+function dispatchEditorReady(host, frame) {
+  const activeSession = host.getState().activeSession;
+  const ready = window.HstarOpenShopProtocol.createEnvelope({
+    type:window.HstarOpenShopProtocol.TYPES.READY,
+    sessionId:activeSession.sessionId,
+    requestId:'ready-clone',
+    context:activeSession.context,
+  });
+  const event = new Event('message');
+  Object.defineProperties(event, {
+    origin:{value:window.location.origin},
+    source:{value:frame.contentWindow},
+    data:{value:ready},
+  });
+  window.dispatchEvent(event);
+}
+
 describe('Hstar OpenShop host page visibility', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -96,5 +113,84 @@ describe('Hstar OpenShop host page visibility', () => {
 
     expect(overlay.classList.contains('is-open')).toBe(false);
     expect(overlay.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+describe('Hstar OpenShop host clone ownership', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('posts the exact source and target owners while keeping source ownership out of envelopes', async () => {
+    const project = {
+      projectId:'project-copy',
+      owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-copy'},
+      document:{width:1920, height:1080},
+      layers:[],
+      sourceBindings:[],
+      aiTaskRecords:[],
+      autosaveVersion:1,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok:true,
+      status:200,
+      json:vi.fn().mockResolvedValue({project}),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const host = await mountHost();
+
+    host.openNodeSession({
+      canvasType:'classic',
+      canvasId:'canvas-1',
+      nodeId:'node-copy',
+      projectId:'project-copy',
+      cloneSourceProjectId:'project-source',
+      cloneSourceNodeId:'node-source',
+      frameId:'frame-canvas',
+      documentWidth:1920,
+      documentHeight:1080,
+    });
+
+    expect(host.getState().activeSession.context.cloneSourceNodeId).toBe('node-source');
+    const frame = document.querySelector('iframe.openshop-session-frame');
+    const postMessage = vi.spyOn(frame.contentWindow, 'postMessage');
+    dispatchEditorReady(host, frame);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/openshop/projects/project-copy/clone');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body)).toEqual({
+      source_project_id:'project-source',
+      source_owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-source'},
+      owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-copy'},
+    });
+
+    await vi.waitFor(() => {
+      const loadProject = postMessage.mock.calls
+        .map(([message]) => message)
+        .find(message => message.type === window.HstarOpenShopProtocol.TYPES.LOAD_PROJECT);
+      expect(loadProject.context).toEqual({
+        canvasType:'classic', canvasId:'canvas-1', nodeId:'node-copy', projectId:'project-copy',
+      });
+    });
+  });
+
+  it('rejects a clone source project without a source node before fetching', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const host = await mountHost();
+
+    expect(() => host.openNodeSession({
+      canvasType:'classic',
+      canvasId:'canvas-1',
+      nodeId:'node-copy',
+      projectId:'project-copy',
+      cloneSourceProjectId:'project-source',
+      frameId:'frame-canvas',
+    })).toThrow('OpenShop clone source node context is incomplete');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(host.getState().sessionCount).toBe(0);
   });
 });

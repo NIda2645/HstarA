@@ -57,6 +57,7 @@
             aiCompletedCount:0,
             aiFailedCount:0,
             cloneSourceProjectId:'',
+            cloneSourceNodeId:'',
             created_at:Date.now(),
         };
     }
@@ -190,6 +191,7 @@
             projectName:node.projectName || translate('canvas.openshopProjectName', '图文分层项目'),
             frameId:root.frameElement?.id || 'frame-canvas',
             cloneSourceProjectId:clean(node.cloneSourceProjectId),
+            cloneSourceNodeId:clean(node.cloneSourceNodeId),
             documentWidth:Number(node.documentWidth || 1920),
             documentHeight:Number(node.documentHeight || 1080),
         }, sourcesForNode(node));
@@ -200,6 +202,7 @@
     function prepareClone(source, copy){
         copy.projectId = newProjectId();
         copy.cloneSourceProjectId = clean(source?.projectId);
+        copy.cloneSourceNodeId = clean(source?.id);
         copy.autosaveVersion = 0;
         copy.saveState = 'new';
         copy.saveError = '';
@@ -253,6 +256,7 @@
         node.aiCompletedCount = Math.max(0, Number(meta.aiCompletedCount || 0));
         node.aiFailedCount = Math.max(0, Number(meta.aiFailedCount || 0));
         node.cloneSourceProjectId = '';
+        node.cloneSourceNodeId = '';
         hooks().render?.();
         hooks().scheduleSave?.();
         return true;

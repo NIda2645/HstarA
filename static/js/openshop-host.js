@@ -119,10 +119,16 @@
     function normalizedContext(value){
         const context = Protocol.normalizeContext(value);
         if(!Object.values(context).every(Boolean)) throw new Error('OpenShop 节点上下文不完整');
+        const cloneSourceProjectId = clean(value.cloneSourceProjectId);
+        const cloneSourceNodeId = clean(value.cloneSourceNodeId);
+        if(cloneSourceProjectId && !cloneSourceNodeId){
+            throw new Error('OpenShop clone source node context is incomplete');
+        }
         return {
             ...context,
             frameId:clean(value.frameId) || 'frame-canvas',
-            cloneSourceProjectId:clean(value.cloneSourceProjectId),
+            cloneSourceProjectId,
+            cloneSourceNodeId,
             projectName:clean(value.projectName) || '图文分层',
             documentWidth:Math.max(1, Number(value.documentWidth || value.width || 1920)),
             documentHeight:Math.max(1, Number(value.documentHeight || value.height || 1080)),
@@ -203,7 +209,15 @@
             const cloned = await fetch(`/api/openshop/projects/${encodeURIComponent(projectId)}/clone`, {
                 method:'POST',
                 headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({source_project_id:context.cloneSourceProjectId, owner}),
+                body:JSON.stringify({
+                    source_project_id:context.cloneSourceProjectId,
+                    source_owner:{
+                        canvasType:context.canvasType,
+                        canvasId:context.canvasId,
+                        nodeId:context.cloneSourceNodeId,
+                    },
+                    owner,
+                }),
             });
             return (await responseJson(cloned)).project;
         }
