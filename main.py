@@ -16388,11 +16388,8 @@ async def canvas_llm(payload: CanvasLLMRequest):
             req_body = {"model": model, "messages": upstream_messages}
             if _is_apimart:
                 req_body["stream"] = False   # APIMart 默认流式，强制关闭
-            response = await httpx_request_with_transient_retries(
-                client,
-                "POST",
+            response = await client.post(
                 f"{chat_base}/chat/completions",
-                attempts=2,
                 headers=chat_hdrs,
                 json=req_body,
             )

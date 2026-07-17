@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 
 _TEMP_ROOT = tempfile.TemporaryDirectory(prefix="hstar-canvas-llm-test-")
@@ -44,18 +44,21 @@ class _TransientDisconnectClient:
     async def __aexit__(self, *_args):
         return None
 
-    async def post(self, *_args, **_kwargs):
+    async def _send(self):
         self.attempts += 1
         if self.attempts == 1:
             raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
         return _Response()
 
+    async def post(self, *_args, **_kwargs):
+        return await self._send()
+
     async def request(self, _method, *_args, **_kwargs):
-        return await self.post(*_args, **_kwargs)
+        return await self._send()
 
 
-class CanvasLlmRetryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_retries_a_transient_upstream_disconnect_once(self):
+class CanvasLlmRequestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_does_not_retry_a_transient_upstream_disconnect(self):
         client = _TransientDisconnectClient()
         payload = main.CanvasLLMRequest(
             provider="test-vision",
@@ -72,15 +75,13 @@ class CanvasLlmRetryTests(unittest.IsolatedAsyncioTestCase):
                 return_value=("https://example.invalid/v1", {"Authorization": "Bearer test"}, "vision-model"),
             ),
             patch.object(main.httpx, "AsyncClient", return_value=client),
-            patch.object(main.asyncio, "sleep", new=AsyncMock()),
         ):
-            try:
-                result = await main.canvas_llm(payload)
-            except main.HTTPException:
-                result = None
+            with self.assertRaises(main.HTTPException) as raised:
+                await main.canvas_llm(payload)
 
-        self.assertEqual(client.attempts, 2)
-        self.assertEqual(result["text"], "OK")
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("Server disconnected without sending a response.", raised.exception.detail)
 
 
 if __name__ == "__main__":

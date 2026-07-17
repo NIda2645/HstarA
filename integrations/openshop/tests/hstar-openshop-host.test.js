@@ -38,7 +38,7 @@ describe('Hstar OpenShop host page visibility', () => {
     vi.restoreAllMocks();
   });
 
-  it('temporarily hides an open editor outside the canvas page and restores the same session', async () => {
+  it('hides the editor without interrupting its session or background-task iframe', async () => {
     const host = await mountHost();
     host.openNodeSession({
       canvasType:'classic',
@@ -53,6 +53,7 @@ describe('Hstar OpenShop host page visibility', () => {
 
     const overlay = document.getElementById('openshop-host');
     const editorFrame = overlay.querySelector('iframe.openshop-session-frame');
+    const editorWindow = editorFrame.contentWindow;
     const sessionBefore = host.getState().activeSession;
     expect(overlay.classList.contains('is-open')).toBe(true);
     expect(overlay.hidden).toBe(false);
@@ -64,6 +65,8 @@ describe('Hstar OpenShop host page visibility', () => {
     expect(overlay.classList.contains('is-open')).toBe(true);
     expect(host.getState().activeSession).toEqual(sessionBefore);
     expect(host.getState().sessionCount).toBe(1);
+    expect(editorFrame.isConnected).toBe(true);
+    expect(editorFrame.contentWindow).toBe(editorWindow);
     expect(overlay.querySelector('iframe.openshop-session-frame')).toBe(editorFrame);
 
     window.switchUI(null, 'canvas');
@@ -72,6 +75,8 @@ describe('Hstar OpenShop host page visibility', () => {
     expect(overlay.hidden).toBe(false);
     expect(overlay.classList.contains('is-open')).toBe(true);
     expect(host.getState().activeSession).toEqual(sessionBefore);
+    expect(editorFrame.isConnected).toBe(true);
+    expect(editorFrame.contentWindow).toBe(editorWindow);
     expect(overlay.querySelector('iframe.openshop-session-frame')).toBe(editorFrame);
   });
 
