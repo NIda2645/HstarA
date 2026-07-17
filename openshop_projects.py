@@ -161,7 +161,10 @@ class OpenShopProjectStore:
         with self._lock:
             source = self._read_project(source_project_id, normalized_source_owner)
             target_path = self._project_path(normalized_target_owner)
-            if target_path.exists():
+            if (
+                target_path.exists()
+                or self._legacy_project_path(target_project_id).exists()
+            ):
                 existing = self._read_project(target_project_id, normalized_target_owner)
                 return copy.deepcopy(existing)
 
@@ -197,6 +200,11 @@ class OpenShopProjectStore:
 
             project = self._read_json(path, "project")
             self._validate_project_manifest(project, project_id, normalized_owner)
+            legacy_path = self._legacy_project_path(project_id)
+            if legacy_path.exists():
+                legacy = self._read_json(legacy_path, "legacy project")
+                self._validate_project_manifest(legacy, project_id, normalized_owner)
+                legacy_path.unlink()
             project_directory = self._project_directory(normalized_owner)
             shutil.rmtree(project_directory)
             canvas_sidecar = project_directory.parent

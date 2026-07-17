@@ -480,6 +480,63 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-migration-") as data_di
     assert store.load("project-old", owner)["layers"][0]["name"] == "Legacy Layer"
     assert legacy_path.is_file()
 
+    legacy_target_owner = {**owner, "nodeId": "node-legacy-target"}
+    legacy_target = copy.deepcopy(legacy_project)
+    legacy_target["projectId"] = "project-legacy-target"
+    legacy_target["owner"] = legacy_target_owner
+    legacy_target["layers"][0]["name"] = "Existing Legacy Target"
+    legacy_target["autosaveVersion"] = 9
+    legacy_target_path = legacy_dir / "project-legacy-target.json"
+    legacy_target_path.write_text(
+        json.dumps(legacy_target, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    existing_target = store.clone(
+        "project-old",
+        owner,
+        "project-legacy-target",
+        legacy_target_owner,
+    )
+    legacy_target_sidecar = (
+        canvas_dir
+        / "canvas-migrate.openshop"
+        / "node-legacy-target"
+        / "project.json"
+    )
+    assert existing_target["layers"][0]["name"] == "Existing Legacy Target"
+    assert existing_target["autosaveVersion"] == 9
+    assert legacy_target_sidecar.is_file()
+    assert not legacy_target_path.exists()
+
+    collision_owner = {**owner, "nodeId": "node-legacy-collision"}
+    wrong_collision_owner = {**collision_owner, "canvasType": "smart"}
+    legacy_collision = copy.deepcopy(legacy_project)
+    legacy_collision["projectId"] = "project-legacy-collision"
+    legacy_collision["owner"] = collision_owner
+    legacy_collision_path = legacy_dir / "project-legacy-collision.json"
+    legacy_collision_path.write_text(
+        json.dumps(legacy_collision, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    try:
+        store.clone(
+            "project-old",
+            owner,
+            "project-legacy-collision",
+            wrong_collision_owner,
+        )
+        raise AssertionError("clone must reject a legacy target owned by another owner")
+    except OpenShopOwnershipError:
+        pass
+    collision_sidecar = (
+        canvas_dir
+        / "canvas-migrate.openshop"
+        / "node-legacy-collision"
+        / "project.json"
+    )
+    assert legacy_collision_path.is_file()
+    assert not collision_sidecar.exists()
+
     clone_owner = {**owner, "nodeId": "node-clone"}
     cloned = store.clone("project-old", owner, "project-clone", clone_owner)
     assert cloned["owner"] == clone_owner
@@ -492,6 +549,87 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-migration-") as data_di
     except OpenShopOwnershipError:
         pass
     assert not (canvas_dir / "canvas-migrate.openshop" / "node-forbidden").exists()
+
+    delete_owner = {**owner, "nodeId": "node-delete-coexist"}
+    delete_project = store.initialize(
+        "project-delete-coexist",
+        delete_owner,
+        {"width": 320, "height": 240},
+    )
+    delete_sidecar = (
+        canvas_dir
+        / "canvas-migrate.openshop"
+        / "node-delete-coexist"
+        / "project.json"
+    )
+    delete_legacy_path = legacy_dir / "project-delete-coexist.json"
+    delete_legacy_path.write_text(
+        json.dumps(delete_project, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert store.delete("project-delete-coexist", delete_owner) is True
+    assert not delete_sidecar.exists()
+    assert not delete_legacy_path.exists()
+    try:
+        store.load("project-delete-coexist", delete_owner)
+        raise AssertionError("deleted coexistence state must not resurrect from legacy")
+    except OpenShopNotFound:
+        pass
+
+    wrong_delete_owner = {**owner, "nodeId": "node-delete-wrong-owner"}
+    wrong_delete_project = store.initialize(
+        "project-delete-wrong-owner",
+        wrong_delete_owner,
+        {"width": 320, "height": 240},
+    )
+    wrong_delete_sidecar = (
+        canvas_dir
+        / "canvas-migrate.openshop"
+        / "node-delete-wrong-owner"
+        / "project.json"
+    )
+    wrong_delete_legacy = copy.deepcopy(wrong_delete_project)
+    wrong_delete_legacy["owner"] = {**wrong_delete_owner, "canvasType": "smart"}
+    wrong_delete_legacy_path = legacy_dir / "project-delete-wrong-owner.json"
+    wrong_delete_legacy_path.write_text(
+        json.dumps(wrong_delete_legacy, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    try:
+        store.delete("project-delete-wrong-owner", wrong_delete_owner)
+        raise AssertionError("delete must reject a coexisting legacy owner mismatch")
+    except OpenShopOwnershipError:
+        pass
+    assert wrong_delete_sidecar.is_file()
+    assert wrong_delete_legacy_path.is_file()
+
+    invalid_delete_owner = {**owner, "nodeId": "node-delete-invalid"}
+    invalid_delete_project = store.initialize(
+        "project-delete-invalid",
+        invalid_delete_owner,
+        {"width": 320, "height": 240},
+    )
+    invalid_delete_sidecar = (
+        canvas_dir
+        / "canvas-migrate.openshop"
+        / "node-delete-invalid"
+        / "project.json"
+    )
+    invalid_delete_legacy = copy.deepcopy(invalid_delete_project)
+    invalid_delete_legacy["schemaVersion"] = 999
+    invalid_delete_legacy_path = legacy_dir / "project-delete-invalid.json"
+    invalid_delete_legacy_path.write_text(
+        json.dumps(invalid_delete_legacy, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    try:
+        store.delete("project-delete-invalid", invalid_delete_owner)
+        raise AssertionError("delete must reject an invalid coexisting legacy manifest")
+    except OpenShopValidationError:
+        pass
+    assert invalid_delete_sidecar.is_file()
+    assert invalid_delete_legacy_path.is_file()
+
     assert not list(root.rglob("*.tmp"))
 
 
