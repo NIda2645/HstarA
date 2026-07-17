@@ -182,6 +182,42 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-provisional-") as data_
         pass
 
 
+with tempfile.TemporaryDirectory(prefix="hstara-openshop-preview-promotion-") as data_dir:
+    store = OpenShopProjectStore(data_dir, canvas_dir=Path(data_dir) / "canvases")
+    store.MAX_PENDING_ASSET_REFS = 1
+    store._now = lambda: 1_700_000_000_000
+    owner = {
+        "canvasType": "classic",
+        "canvasId": "canvas-preview-promotion",
+        "nodeId": "node-preview-promotion",
+    }
+    project = store.initialize(
+        "project-preview-promotion", owner, {"width": 8, "height": 6}
+    )
+    preview_asset = store.store_image(
+        "project-preview-promotion", owner, png_bytes((8, 18, 28, 255)),
+        "image/png", "pending-preview.png", "source",
+    )
+    assert store.load("project-preview-promotion", owner)["pendingAssetRefs"][0][
+        "assetId"
+    ] == preview_asset["assetId"]
+
+    project["previewAssetId"] = preview_asset["assetId"]
+    saved_preview = store.save(
+        "project-preview-promotion", owner, project, base_version=1
+    )
+    assert saved_preview["assetRefs"] == []
+    assert saved_preview["previewAssetId"] == preview_asset["assetId"]
+    assert saved_preview["pendingAssetRefs"] == []
+
+    next_asset = store.store_image(
+        "project-preview-promotion", owner, png_bytes((38, 48, 58, 255)),
+        "image/png", "next-source.png", "source",
+    )
+    next_project = store.load("project-preview-promotion", owner)
+    assert next_project["pendingAssetRefs"][0]["assetId"] == next_asset["assetId"]
+
+
 with tempfile.TemporaryDirectory(prefix="hstara-openshop-provisional-limit-") as data_dir:
     store = OpenShopProjectStore(data_dir, canvas_dir=Path(data_dir) / "canvases")
     store.MAX_PENDING_ASSET_REFS = 2

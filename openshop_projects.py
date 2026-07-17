@@ -538,7 +538,12 @@ class OpenShopProjectStore:
                 for value in [*asset_refs, *discovered_asset_refs]
             }
         )
+        preview_asset_id = candidate.get("previewAssetId") or ""
+        if preview_asset_id:
+            preview_asset_id = self._validate_asset_id(preview_asset_id)
         committed_asset_refs = set(normalized_asset_refs)
+        if preview_asset_id:
+            committed_asset_refs.add(preview_asset_id)
         pending_asset_refs = [
             item
             for item in self._unexpired_pending_asset_refs(
@@ -547,9 +552,6 @@ class OpenShopProjectStore:
             )
             if item["assetId"] not in committed_asset_refs
         ]
-        preview_asset_id = candidate.get("previewAssetId") or ""
-        if preview_asset_id:
-            preview_asset_id = self._validate_asset_id(preview_asset_id)
 
         for asset_id in {*normalized_asset_refs, *([preview_asset_id] if preview_asset_id else [])}:
             self.asset_path(asset_id)
