@@ -20,6 +20,7 @@ let saveCount = 0;
 let undoCount = 0;
 let scheduleCount = 0;
 let uidCount = 0;
+let canvasId = 'smart-canvas-source';
 const selected = new Set();
 
 const imageOne = {
@@ -52,7 +53,7 @@ const hooks = {
     uidCount += 1;
     return `${prefix}_${uidCount}`;
   },
-  getCanvasId: () => 'smart-canvas-1',
+  getCanvasId: () => canvasId,
   getNode: id => nodes.find(node => node.id === id) || null,
   getConnections: () => connections,
   inputImagesForNode(node) {
@@ -124,6 +125,8 @@ assert.match(projectNode.projectId, /^osp_/);
 assert.equal(projectNode.saveState, 'new');
 assert.equal(projectNode.aiStatus, '');
 assert.equal(projectNode.aiTargetCount, 0);
+assert.equal(projectNode.cloneSourceCanvasType, '');
+assert.equal(projectNode.cloneSourceCanvasId, '');
 assert.equal(projectNode.cloneSourceNodeId, '');
 assert.equal(projectNode.x, 210);
 assert.equal(projectNode.y, 260);
@@ -146,12 +149,14 @@ assert.equal(adapter.openNode(projectNode.id), true);
 assert.equal(openedSessions.length, 1);
 assert.deepEqual({...openedSessions[0].context}, {
   canvasType:'smart',
-  canvasId:'smart-canvas-1',
+  canvasId:'smart-canvas-source',
   nodeId:projectNode.id,
   projectId:projectNode.projectId,
   projectName:'图文分层项目',
   frameId:'frame-smart-canvas',
   cloneSourceProjectId:'',
+  cloneSourceCanvasType:'',
+  cloneSourceCanvasId:'',
   cloneSourceNodeId:'',
   documentWidth:1920,
   documentHeight:1080,
@@ -166,7 +171,7 @@ function dispatchMessage(data, source = parentRef) {
 dispatchMessage({
   type:'hstar-openshop-node-meta',
   requestId:'smart-meta-1',
-  context:{canvasType:'smart', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId},
+  context:{canvasType:'smart', canvasId:'smart-canvas-source', nodeId:projectNode.id, projectId:projectNode.projectId},
   meta:{
     previewUrl:'/api/openshop/assets/smart-preview', layerCount:7, sourceUpdateCount:2,
     autosaveVersion:5, saveState:'saving', aiStatus:'running',
@@ -185,14 +190,14 @@ assert.match(adapter.renderNode(projectNode), /生成中\s*2\s*\/\s*5/);
 
 dispatchMessage({
   type:'hstar-openshop-node-meta',
-  context:{canvasType:'smart', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId},
+  context:{canvasType:'smart', canvasId:'smart-canvas-source', nodeId:projectNode.id, projectId:projectNode.projectId},
   meta:{layerCount:7, saveState:'saved', aiStatus:'partial', aiTargetCount:5, aiCompletedCount:3, aiFailedCount:2},
 });
 assert.match(adapter.renderNode(projectNode), /已完成\s*3\s*\/\s*5/);
 
 dispatchMessage({
   type:'hstar-openshop-node-meta',
-  context:{canvasType:'classic', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId},
+  context:{canvasType:'classic', canvasId:'smart-canvas-source', nodeId:projectNode.id, projectId:projectNode.projectId},
   meta:{layerCount:99},
 });
 assert.equal(projectNode.layerCount, 7, 'classic canvas messages must not update smart nodes');
@@ -200,7 +205,7 @@ assert.equal(projectNode.layerCount, 7, 'classic canvas messages must not update
 const outputMessage = {
   type:'hstar-openshop-output',
   requestId:'smart-output-1',
-  context:{canvasType:'smart', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId},
+  context:{canvasType:'smart', canvasId:'smart-canvas-source', nodeId:projectNode.id, projectId:projectNode.projectId},
   output:{assetId:'smart-asset-output', url:'/api/openshop/assets/smart-asset-output', name:'智能图文分层输出.png'},
 };
 dispatchMessage(outputMessage);
@@ -222,32 +227,41 @@ const clone = {...projectNode, id:'smart-openshop-copy'};
 adapter.prepareClone(projectNode, clone);
 assert.notEqual(clone.projectId, projectNode.projectId);
 assert.equal(clone.cloneSourceProjectId, projectNode.projectId);
+assert.equal(clone.cloneSourceCanvasType, 'smart');
+assert.equal(clone.cloneSourceCanvasId, 'smart-canvas-source');
 assert.equal(clone.cloneSourceNodeId, projectNode.id);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
 assert.equal(clone.aiStatus, '');
 assert.equal(clone.aiTargetCount, 0);
 nodes.push(clone);
+canvasId = 'smart-canvas-target';
 assert.equal(adapter.openNode(clone.id), true);
 assert.equal(openedSessions.length, 2);
+assert.equal(openedSessions[1].context.canvasId, 'smart-canvas-target');
 assert.equal(openedSessions[1].context.cloneSourceProjectId, projectNode.projectId);
+assert.equal(openedSessions[1].context.cloneSourceCanvasType, 'smart');
+assert.equal(openedSessions[1].context.cloneSourceCanvasId, 'smart-canvas-source');
 assert.equal(openedSessions[1].context.cloneSourceNodeId, projectNode.id);
 
 dispatchMessage({
   type:'hstar-openshop-node-meta',
   requestId:'smart-clone-meta-1',
-  context:{canvasType:'smart', canvasId:'smart-canvas-1', nodeId:clone.id, projectId:clone.projectId},
+  context:{canvasType:'smart', canvasId:'smart-canvas-target', nodeId:clone.id, projectId:clone.projectId},
   meta:{autosaveVersion:1, saveState:'saved'},
 });
 assert.equal(clone.cloneSourceProjectId, '');
+assert.equal(clone.cloneSourceCanvasType, '');
+assert.equal(clone.cloneSourceCanvasId, '');
 assert.equal(clone.cloneSourceNodeId, '');
 
+canvasId = 'smart-canvas-source';
 assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
 assert.equal(adapter.disposeNode(projectNode), true);
 assert.equal(disposedProjects.length, 1);
 assert.equal(disposedProjects[0].projectId, projectNode.projectId);
 assert.deepEqual({...disposedProjects[0].context}, {
-  canvasType:'smart', canvasId:'smart-canvas-1', nodeId:projectNode.id, projectId:projectNode.projectId,
+  canvasType:'smart', canvasId:'smart-canvas-source', nodeId:projectNode.id, projectId:projectNode.projectId,
 });
 
 assert.match(htmlSource, /src=["']\/static\/js\/smart-canvas-openshop\.js(?:\?[^"']*)?["']/);

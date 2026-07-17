@@ -125,7 +125,7 @@ describe('Hstar OpenShop host clone ownership', () => {
   it('posts the exact source and target owners while keeping source ownership out of envelopes', async () => {
     const project = {
       projectId:'project-copy',
-      owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-copy'},
+      owner:{canvasType:'classic', canvasId:'canvas-target', nodeId:'node-copy'},
       document:{width:1920, height:1080},
       layers:[],
       sourceBindings:[],
@@ -142,10 +142,12 @@ describe('Hstar OpenShop host clone ownership', () => {
 
     host.openNodeSession({
       canvasType:'classic',
-      canvasId:'canvas-1',
+      canvasId:'canvas-target',
       nodeId:'node-copy',
       projectId:'project-copy',
       cloneSourceProjectId:'project-source',
+      cloneSourceCanvasType:'classic',
+      cloneSourceCanvasId:'canvas-source',
       cloneSourceNodeId:'node-source',
       frameId:'frame-canvas',
       documentWidth:1920,
@@ -153,6 +155,7 @@ describe('Hstar OpenShop host clone ownership', () => {
     });
 
     expect(host.getState().activeSession.context.cloneSourceNodeId).toBe('node-source');
+    expect(host.getState().activeSession.context.cloneSourceCanvasId).toBe('canvas-source');
     const frame = document.querySelector('iframe.openshop-session-frame');
     const postMessage = vi.spyOn(frame.contentWindow, 'postMessage');
     dispatchEditorReady(host, frame);
@@ -163,8 +166,8 @@ describe('Hstar OpenShop host clone ownership', () => {
     expect(options.method).toBe('POST');
     expect(JSON.parse(options.body)).toEqual({
       source_project_id:'project-source',
-      source_owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-source'},
-      owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-copy'},
+      source_owner:{canvasType:'classic', canvasId:'canvas-source', nodeId:'node-source'},
+      owner:{canvasType:'classic', canvasId:'canvas-target', nodeId:'node-copy'},
     });
 
     await vi.waitFor(() => {
@@ -172,25 +175,115 @@ describe('Hstar OpenShop host clone ownership', () => {
         .map(([message]) => message)
         .find(message => message.type === window.HstarOpenShopProtocol.TYPES.LOAD_PROJECT);
       expect(loadProject.context).toEqual({
-        canvasType:'classic', canvasId:'canvas-1', nodeId:'node-copy', projectId:'project-copy',
+        canvasType:'classic', canvasId:'canvas-target', nodeId:'node-copy', projectId:'project-copy',
       });
     });
   });
 
-  it('rejects a clone source project without a source node before fetching', async () => {
+  it('rejects any incomplete clone source owner before fetching', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const host = await mountHost();
-
-    expect(() => host.openNodeSession({
-      canvasType:'classic',
-      canvasId:'canvas-1',
-      nodeId:'node-copy',
-      projectId:'project-copy',
+    const cloneSource = {
       cloneSourceProjectId:'project-source',
-      frameId:'frame-canvas',
-    })).toThrow('OpenShop clone source node context is incomplete');
+      cloneSourceCanvasType:'classic',
+      cloneSourceCanvasId:'canvas-source',
+      cloneSourceNodeId:'node-source',
+    };
+
+    for(const missingField of Object.keys(cloneSource)) {
+      const incompleteSource = {...cloneSource};
+      delete incompleteSource[missingField];
+      expect(() => host.openNodeSession({
+        canvasType:'classic',
+        canvasId:'canvas-target',
+        nodeId:'node-copy',
+        projectId:'project-copy',
+        ...incompleteSource,
+        frameId:'frame-canvas',
+      }), missingField).toThrow('OpenShop clone source context is incomplete');
+    }
     expect(fetchMock).not.toHaveBeenCalled();
     expect(host.getState().sessionCount).toBe(0);
+  });
+
+  it('consumes successful clone intent before a later bootstrap', async () => {
+    const project = {
+      projectId:'project-copy',
+      owner:{canvasType:'classic', canvasId:'canvas-target', nodeId:'node-copy'},
+      document:{width:1920, height:1080},
+      layers:[], sourceBindings:[], aiTaskRecords:[], autosaveVersion:1,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok:true,
+      status:200,
+      json:vi.fn().mockResolvedValue({project}),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-target', nodeId:'node-copy', projectId:'project-copy',
+      cloneSourceProjectId:'project-source', cloneSourceCanvasType:'classic',
+      cloneSourceCanvasId:'canvas-source', cloneSourceNodeId:'node-source', frameId:'frame-canvas',
+    });
+    const frame = document.querySelector('iframe.openshop-session-frame');
+
+    dispatchEditorReady(host, frame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('saved'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(host.getState().activeSession.context).toMatchObject({
+      cloneSourceProjectId:'', cloneSourceCanvasType:'', cloneSourceCanvasId:'', cloneSourceNodeId:'',
+    });
+
+    dispatchEditorReady(host, frame);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/openshop/projects/project-copy/clone');
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      '/api/openshop/projects/project-copy?canvas_type=classic&canvas_id=canvas-target&node_id=node-copy',
+    );
+    expect(fetchMock.mock.calls[1][1]).toBeUndefined();
+  });
+
+  it('retains failed clone intent so a later bootstrap can retry', async () => {
+    const project = {
+      projectId:'project-copy',
+      owner:{canvasType:'classic', canvasId:'canvas-target', nodeId:'node-copy'},
+      document:{width:1920, height:1080},
+      layers:[], sourceBindings:[], aiTaskRecords:[], autosaveVersion:1,
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok:false,
+        status:503,
+        json:vi.fn().mockResolvedValue({detail:'clone unavailable'}),
+      })
+      .mockResolvedValueOnce({
+        ok:true,
+        status:200,
+        json:vi.fn().mockResolvedValue({project}),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-target', nodeId:'node-copy', projectId:'project-copy',
+      cloneSourceProjectId:'project-source', cloneSourceCanvasType:'classic',
+      cloneSourceCanvasId:'canvas-source', cloneSourceNodeId:'node-source', frameId:'frame-canvas',
+    });
+    const frame = document.querySelector('iframe.openshop-session-frame');
+
+    dispatchEditorReady(host, frame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('error'));
+    expect(host.getState().activeSession.context).toMatchObject({
+      cloneSourceProjectId:'project-source', cloneSourceCanvasType:'classic',
+      cloneSourceCanvasId:'canvas-source', cloneSourceNodeId:'node-source',
+    });
+
+    dispatchEditorReady(host, frame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('saved'));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([url, options]) => [url, options.method])).toEqual([
+      ['/api/openshop/projects/project-copy/clone', 'POST'],
+      ['/api/openshop/projects/project-copy/clone', 'POST'],
+    ]);
   });
 });

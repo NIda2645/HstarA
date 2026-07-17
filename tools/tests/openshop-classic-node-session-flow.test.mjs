@@ -18,6 +18,7 @@ let renderCount = 0;
 let saveCount = 0;
 let undoCount = 0;
 const uidCounts = {};
+let canvasId = 'canvas-source';
 let nodes = [];
 let connections = [];
 const selected = new Set();
@@ -37,7 +38,7 @@ const hooks = {
     uidCounts[prefix] = (uidCounts[prefix] || 0) + 1;
     return `${prefix}_${uidCounts[prefix]}`;
   },
-  getCanvasId: () => 'canvas-1',
+  getCanvasId: () => canvasId,
   getNodes: () => nodes,
   getConnections: () => connections,
   mediaRefsFromNode(node) {
@@ -89,6 +90,8 @@ assert.match(node.projectId, /^osp_/);
 assert.equal(node.saveState, 'new');
 assert.equal(node.aiStatus, '');
 assert.equal(node.aiTargetCount, 0);
+assert.equal(node.cloneSourceCanvasType, '');
+assert.equal(node.cloneSourceCanvasId, '');
 assert.equal(node.cloneSourceNodeId, '');
 assert.equal(node.x, 100);
 assert.equal(node.y, 120);
@@ -114,12 +117,14 @@ assert.equal(adapter.openNode(node.id), true);
 assert.equal(openedSessions.length, 1);
 assert.deepEqual({...openedSessions[0].context}, {
   canvasType:'classic',
-  canvasId:'canvas-1',
+  canvasId:'canvas-source',
   nodeId:node.id,
   projectId:node.projectId,
   projectName:'图文分层项目',
   frameId:'frame-canvas',
   cloneSourceProjectId:'',
+  cloneSourceCanvasType:'',
+  cloneSourceCanvasId:'',
   cloneSourceNodeId:'',
   documentWidth:1920,
   documentHeight:1080,
@@ -135,7 +140,7 @@ function dispatchMessage(data) {
 dispatchMessage({
   type:'hstar-openshop-node-meta',
   requestId:'meta-1',
-  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId},
+  context:{canvasType:'classic', canvasId:'canvas-source', nodeId:node.id, projectId:node.projectId},
   meta:{
     previewUrl:'/api/openshop/assets/preview', layerCount:7, sourceUpdateCount:1,
     autosaveVersion:4, saveState:'saving', aiStatus:'running',
@@ -156,7 +161,7 @@ assert.match(adapter.renderNode(node).innerHTML, /生成中\s*2\s*\/\s*5/);
 dispatchMessage({
   type:'hstar-openshop-node-meta',
   requestId:'meta-partial',
-  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId},
+  context:{canvasType:'classic', canvasId:'canvas-source', nodeId:node.id, projectId:node.projectId},
   meta:{layerCount:7, saveState:'saved', aiStatus:'partial', aiTargetCount:5, aiCompletedCount:3, aiFailedCount:2},
 });
 assert.match(adapter.renderNode(node).innerHTML, /已完成\s*3\s*\/\s*5/);
@@ -164,7 +169,7 @@ assert.match(adapter.renderNode(node).innerHTML, /已完成\s*3\s*\/\s*5/);
 dispatchMessage({
   type:'hstar-openshop-output',
   requestId:'output-1',
-  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId},
+  context:{canvasType:'classic', canvasId:'canvas-source', nodeId:node.id, projectId:node.projectId},
   output:{assetId:'asset-output', url:'/api/openshop/assets/asset-output', name:'图文分层输出.png', width:1920, height:1080},
 });
 await new Promise(resolvePromise => setTimeout(resolvePromise, 0));
@@ -182,32 +187,41 @@ const clone = {...node, id:'openshop-copy'};
 adapter.prepareClone(node, clone);
 assert.notEqual(clone.projectId, node.projectId);
 assert.equal(clone.cloneSourceProjectId, node.projectId);
+assert.equal(clone.cloneSourceCanvasType, 'classic');
+assert.equal(clone.cloneSourceCanvasId, 'canvas-source');
 assert.equal(clone.cloneSourceNodeId, node.id);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
 assert.equal(clone.aiStatus, '');
 assert.equal(clone.aiTargetCount, 0);
 nodes.push(clone);
+canvasId = 'canvas-target';
 assert.equal(adapter.openNode(clone.id), true);
 assert.equal(openedSessions.length, 2);
+assert.equal(openedSessions[1].context.canvasId, 'canvas-target');
 assert.equal(openedSessions[1].context.cloneSourceProjectId, node.projectId);
+assert.equal(openedSessions[1].context.cloneSourceCanvasType, 'classic');
+assert.equal(openedSessions[1].context.cloneSourceCanvasId, 'canvas-source');
 assert.equal(openedSessions[1].context.cloneSourceNodeId, node.id);
 
 dispatchMessage({
   type:'hstar-openshop-node-meta',
   requestId:'clone-meta-1',
-  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:clone.id, projectId:clone.projectId},
+  context:{canvasType:'classic', canvasId:'canvas-target', nodeId:clone.id, projectId:clone.projectId},
   meta:{autosaveVersion:1, saveState:'saved'},
 });
 assert.equal(clone.cloneSourceProjectId, '');
+assert.equal(clone.cloneSourceCanvasType, '');
+assert.equal(clone.cloneSourceCanvasId, '');
 assert.equal(clone.cloneSourceNodeId, '');
 
+canvasId = 'canvas-source';
 assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
 assert.equal(adapter.disposeNode(node), true);
 assert.equal(disposedProjects.length, 1);
 assert.equal(disposedProjects[0].projectId, node.projectId);
 assert.deepEqual({...disposedProjects[0].context}, {
-  canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId,
+  canvasType:'classic', canvasId:'canvas-source', nodeId:node.id, projectId:node.projectId,
 });
 
 assert.match(htmlSource, /src=["']\/static\/js\/canvas-openshop\.js(?:\?[^"']*)?["']/);

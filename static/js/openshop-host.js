@@ -120,14 +120,24 @@
         const context = Protocol.normalizeContext(value);
         if(!Object.values(context).every(Boolean)) throw new Error('OpenShop 节点上下文不完整');
         const cloneSourceProjectId = clean(value.cloneSourceProjectId);
+        const cloneSourceCanvasType = clean(value.cloneSourceCanvasType);
+        const cloneSourceCanvasId = clean(value.cloneSourceCanvasId);
         const cloneSourceNodeId = clean(value.cloneSourceNodeId);
-        if(cloneSourceProjectId && !cloneSourceNodeId){
-            throw new Error('OpenShop clone source node context is incomplete');
+        const cloneSourceContext = [
+            cloneSourceProjectId,
+            cloneSourceCanvasType,
+            cloneSourceCanvasId,
+            cloneSourceNodeId,
+        ];
+        if(cloneSourceContext.some(Boolean) && !cloneSourceContext.every(Boolean)){
+            throw new Error('OpenShop clone source context is incomplete');
         }
         return {
             ...context,
             frameId:clean(value.frameId) || 'frame-canvas',
             cloneSourceProjectId,
+            cloneSourceCanvasType,
+            cloneSourceCanvasId,
             cloneSourceNodeId,
             projectName:clean(value.projectName) || '图文分层',
             documentWidth:Math.max(1, Number(value.documentWidth || value.width || 1920)),
@@ -212,14 +222,19 @@
                 body:JSON.stringify({
                     source_project_id:context.cloneSourceProjectId,
                     source_owner:{
-                        canvasType:context.canvasType,
-                        canvasId:context.canvasId,
+                        canvasType:context.cloneSourceCanvasType,
+                        canvasId:context.cloneSourceCanvasId,
                         nodeId:context.cloneSourceNodeId,
                     },
                     owner,
                 }),
             });
-            return (await responseJson(cloned)).project;
+            const project = (await responseJson(cloned)).project;
+            session.context.cloneSourceProjectId = '';
+            session.context.cloneSourceCanvasType = '';
+            session.context.cloneSourceCanvasId = '';
+            session.context.cloneSourceNodeId = '';
+            return project;
         }
         const loaded = await fetch(projectUrl(projectId, context));
         if(loaded.status !== 404) return (await responseJson(loaded)).project;
