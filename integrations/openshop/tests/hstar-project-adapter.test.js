@@ -945,8 +945,8 @@ describe('Hstar OpenShop project adapter', () => {
     editor.rebuildLayersFromCanvas = vi.fn(() => {
       const objects = editor.canvas.getObjects();
       editor.layers = [
-        {name: 'temporary-a', visible: true, opacity: 100, blend: 'source-over', objects: [objects[1]]},
-        {name: 'temporary-b', visible: true, opacity: 100, blend: 'source-over', objects: [objects[0]]},
+        {type: 'raster', name: 'temporary-a', visible: true, opacity: 100, blend: 'source-over', objects: [objects[1]]},
+        {type: 'image', name: 'temporary-b', visible: true, opacity: 100, blend: 'source-over', objects: [objects[0]]},
       ];
     });
     const project = {
@@ -961,6 +961,7 @@ describe('Hstar OpenShop project adapter', () => {
       layers: [
         {layerId: 'layer-a', name: '图层 A', visible: true, locked: true, opacity: 90, blend: 'source-over'},
         {layerId: 'layer-b', name: '图层 B', visible: false, opacity: 70, blend: 'multiply'},
+        {layerId: 'layer-empty-legacy', name: 'Legacy empty', visible: true, opacity: 100, blend: 'source-over'},
       ],
       previewAssetId: 'asset-a',
       autosaveVersion: 9,
@@ -974,9 +975,10 @@ describe('Hstar OpenShop project adapter', () => {
     });
 
     const byId = Object.fromEntries(editor.layers.map(layer => [layer.layerId, layer]));
-    expect(byId['layer-a']).toMatchObject({name: '图层 A', opacity: 90, visible: true, locked: true});
+    expect(byId['layer-a']).toMatchObject({type: 'raster', name: '图层 A', opacity: 90, visible: true, locked: true});
     expect(byId['layer-a'].objects[0]).toMatchObject({selectable:false, evented:false});
-    expect(byId['layer-b']).toMatchObject({name: '图层 B', opacity: 70, visible: false, blend: 'multiply'});
+    expect(byId['layer-b']).toMatchObject({type: 'image', name: '图层 B', opacity: 70, visible: false, blend: 'multiply'});
+    expect(byId['layer-empty-legacy']).toMatchObject({type: 'normal', name: 'Legacy empty', objects: []});
     expect(editor.__hstarPreviewAssetId).toBe('asset-a');
     expect(editor.__hstarAutosaveVersion).toBe(9);
   });
@@ -996,16 +998,24 @@ describe('Hstar OpenShop project adapter', () => {
     };
     original.layers = [
       {
-        layerId: 'layer-empty-before', name: 'Empty before', visible: false, locked: true,
-        opacity: 37, blend: 'screen', objects: [],
+        layerId: 'layer-empty-before', type: 'empty', name: 'Empty before', visible: false,
+        locked: true, opacity: 37, blend: 'screen', objects: [],
+        sourceBinding: {
+          assetId: 'asset-empty-before', edgeId: 'edge-empty-before', sourceNodeId: 'node-empty-before',
+          assetVersion: 'v3', sequence: 2, state: 'detached', ignoredAssetVersion: 'v4',
+        },
       },
       {
-        layerId: 'layer-content', name: 'Independent content', visible: true, locked: true,
-        opacity: 82, blend: 'multiply', objects: [text, marker],
+        layerId: 'layer-content', type: 'raster', name: 'Independent content', visible: true,
+        locked: true, opacity: 82, blend: 'multiply', objects: [text, marker],
       },
       {
-        layerId: 'layer-empty-after', name: 'Empty after', visible: true, locked: false,
-        opacity: 64, blend: 'overlay', objects: [],
+        layerId: 'layer-empty-after', type: 'generated-placeholder', name: 'Empty after',
+        visible: true, locked: false, opacity: 64, blend: 'overlay', objects: [],
+        hstarAiGeneration: {
+          taskId: 'parent-empty', childTaskId: 'child-empty', toolId: 'local-redraw',
+          sourceLayerId: 'layer-content',
+        },
       },
     ];
     original.canvas.add(text);
@@ -1014,16 +1024,26 @@ describe('Hstar OpenShop project adapter', () => {
     const project = adapter.serializeProject({editor: original, context, now: () => 5000});
     expect(project.layers).toEqual([
       {
-        layerId: 'layer-empty-before', name: 'Empty before', visible: false, locked: true,
-        opacity: 37, blend: 'screen', sourceBinding: null, hstarAiGeneration: null,
+        layerId: 'layer-empty-before', type: 'empty', name: 'Empty before', visible: false,
+        locked: true, opacity: 37, blend: 'screen',
+        sourceBinding: {
+          layerId: 'layer-empty-before', edgeId: 'edge-empty-before', sourceNodeId: 'node-empty-before',
+          assetId: 'asset-empty-before', assetVersion: 'v3', sequence: 2, state: 'detached',
+          pendingAssetId: '', pendingAssetVersion: '', ignoredAssetVersion: 'v4',
+        },
+        hstarAiGeneration: null,
       },
       {
-        layerId: 'layer-content', name: 'Independent content', visible: true, locked: true,
-        opacity: 82, blend: 'multiply', sourceBinding: null, hstarAiGeneration: null,
+        layerId: 'layer-content', type: 'raster', name: 'Independent content', visible: true,
+        locked: true, opacity: 82, blend: 'multiply', sourceBinding: null, hstarAiGeneration: null,
       },
       {
-        layerId: 'layer-empty-after', name: 'Empty after', visible: true, locked: false,
-        opacity: 64, blend: 'overlay', sourceBinding: null, hstarAiGeneration: null,
+        layerId: 'layer-empty-after', type: 'generated-placeholder', name: 'Empty after',
+        visible: true, locked: false, opacity: 64, blend: 'overlay', sourceBinding: null,
+        hstarAiGeneration: {
+          taskId: 'parent-empty', childTaskId: 'child-empty', toolId: 'local-redraw',
+          sourceLayerId: 'layer-content',
+        },
       },
     ]);
 
@@ -1035,8 +1055,8 @@ describe('Hstar OpenShop project adapter', () => {
     restored.rebuildLayersFromCanvas = vi.fn(() => {
       const objects = restored.canvas.getObjects();
       restored.layers = [{
-        layerId: 'layer-content', name: 'temporary content', visible: true, locked: false,
-        opacity: 100, blend: 'source-over', objects: [...objects],
+        layerId: 'layer-content', type: 'image', name: 'temporary content', visible: true,
+        locked: false, opacity: 100, blend: 'source-over', objects: [...objects],
       }];
     });
 
@@ -1044,28 +1064,43 @@ describe('Hstar OpenShop project adapter', () => {
 
     expect(restored.layers.map(layer => ({
       layerId: layer.layerId,
+      type: layer.type,
       name: layer.name,
       visible: layer.visible,
       locked: layer.locked,
       opacity: layer.opacity,
       blend: layer.blend,
+      sourceBinding: layer.sourceBinding,
+      hstarAiGeneration: layer.hstarAiGeneration,
       objectTypes: layer.objects.map(object => object.type),
       objectNames: layer.objects.map(object => object.name),
       objectLayerIds: layer.objects.map(object => object.hstarLayerId),
     }))).toEqual([
       {
-        layerId: 'layer-empty-before', name: 'Empty before', visible: false, locked: true,
-        opacity: 37, blend: 'screen', objectTypes: [], objectNames: [], objectLayerIds: [],
+        layerId: 'layer-empty-before', type: 'empty', name: 'Empty before', visible: false,
+        locked: true, opacity: 37, blend: 'screen',
+        sourceBinding: {
+          layerId: 'layer-empty-before', edgeId: 'edge-empty-before', sourceNodeId: 'node-empty-before',
+          assetId: 'asset-empty-before', assetVersion: 'v3', sequence: 2, state: 'detached',
+          pendingAssetId: '', pendingAssetVersion: '', ignoredAssetVersion: 'v4',
+        },
+        hstarAiGeneration: null, objectTypes: [], objectNames: [], objectLayerIds: [],
       },
       {
-        layerId: 'layer-content', name: 'Independent content', visible: true, locked: true,
-        opacity: 82, blend: 'multiply', objectTypes: ['i-text', 'rect'],
+        layerId: 'layer-content', type: 'raster', name: 'Independent content', visible: true,
+        locked: true, opacity: 82, blend: 'multiply', sourceBinding: null,
+        hstarAiGeneration: null, objectTypes: ['i-text', 'rect'],
         objectNames: ['Independent text', 'Text marker'],
         objectLayerIds: ['layer-content', 'layer-content'],
       },
       {
-        layerId: 'layer-empty-after', name: 'Empty after', visible: true, locked: false,
-        opacity: 64, blend: 'overlay', objectTypes: [], objectNames: [], objectLayerIds: [],
+        layerId: 'layer-empty-after', type: 'generated-placeholder', name: 'Empty after',
+        visible: true, locked: false, opacity: 64, blend: 'overlay', sourceBinding: null,
+        hstarAiGeneration: {
+          taskId: 'parent-empty', childTaskId: 'child-empty', toolId: 'local-redraw',
+          sourceLayerId: 'layer-content',
+        },
+        objectTypes: [], objectNames: [], objectLayerIds: [],
       },
     ]);
     const canvasObjects = restored.canvas.getObjects();
