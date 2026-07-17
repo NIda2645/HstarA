@@ -394,7 +394,11 @@ assert.equal(frameA.isConnected, true, 'opening API settings must not dispose th
 const disposed = await host.disposeProject('project-a', contextA);
 assert.equal(disposed, true);
 assert.equal(frameA.isConnected, false);
-assert.equal(deletedProjects.includes('project-a'), true);
+assert.equal(deletedProjects.includes('project-a'), false);
+assert.equal(projectRecords.has('project-a'), true);
+assert.equal(fetchCalls.some(call => (
+  call.method === 'DELETE' && call.url.includes('/projects/project-a')
+)), false);
 assert.equal(editorMessages(frameA).at(-1).type, protocol.TYPES.CLOSE);
 assert.equal(host.getState().sessionCount, 1);
 
