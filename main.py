@@ -334,7 +334,7 @@ RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_PATHS["runninghub_workflow_store_file"]
 SHARED_FOLDERS_FILE = RUNTIME_PATHS["shared_folders_file"]
 SOFTWARE_SETTINGS_FILE = RUNTIME_PATHS["software_settings_file"]
 GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
-OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR)
+OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR, canvas_dir=CANVAS_DIR)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
 OPENSHOP_FONTS = OpenShopFontCatalog()
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
