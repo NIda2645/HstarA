@@ -2927,8 +2927,7 @@ self.onmessage = function(e) {
             case 'crop': showOption('opt-crop'); this._initCrop(); break;
         }
         this._applyToolInteractionState(tool, {force:forceInteraction});
-        const toolNames = {'marquee-rect':'Rect Marquee','marquee-ellipse':'Ellipse Marquee','magic-wand':'Magic Wand','ai-segment':'AI Segment'};
-        document.getElementById('tool-display').textContent = toolNames[tool] || tool.charAt(0).toUpperCase()+tool.replace(/-/g,' ').slice(1);
+        document.getElementById('tool-display').textContent = this._t(this._toolLabel(tool));
         this._brushCursor?.refresh();
         this._renderAccessibilityTree();
     },
@@ -3304,25 +3303,70 @@ self.onmessage = function(e) {
         }));
     },
     _selectionMask: null, _selectionBounds: null,
+    _magicWandSample(width, height, viewportTransform) {
+        const sampleCanvas=document.createElement('canvas');
+        sampleCanvas.width=width; sampleCanvas.height=height;
+        const ctx=sampleCanvas.getContext('2d',{willReadFrequently:true});
+        if(!ctx) throw new Error('Unable to create magic wand sample');
+        const vpt=Array.isArray(viewportTransform)&&viewportTransform.length>=6
+            ? viewportTransform
+            : [1,0,0,1,0,0];
+        const boundary=this.canvas.getObjects().find(object=>object.name==='__boundary__');
+        const documentWidth=Math.max(0,Number(this.canvasW||boundary?.width||0));
+        const documentHeight=Math.max(0,Number(this.canvasH||boundary?.height||0));
+        const layer=this.layers[this.activeLayerIdx];
+
+        ctx.save();
+        ctx.setTransform(vpt[0],vpt[1],vpt[2],vpt[3],vpt[4],vpt[5]);
+        ctx.beginPath(); ctx.rect(0,0,documentWidth,documentHeight); ctx.clip();
+        if(layer?.visible!==false){
+            layer?.objects
+                ?.filter(object=>object?.name!=='__boundary__'&&object?.visible!==false)
+                .forEach(object=>object.render?.(ctx));
+        }
+        ctx.restore();
+
+        const determinant=vpt[0]*vpt[3]-vpt[1]*vpt[2];
+        const validMask=new Uint8Array(width*height);
+        if(Math.abs(determinant)>Number.EPSILON&&documentWidth>0&&documentHeight>0){
+            for(let y=0;y<height;y+=1){
+                for(let x=0;x<width;x+=1){
+                    const screenX=x+0.5-vpt[4];
+                    const screenY=y+0.5-vpt[5];
+                    const documentX=(vpt[3]*screenX-vpt[2]*screenY)/determinant;
+                    const documentY=(-vpt[1]*screenX+vpt[0]*screenY)/determinant;
+                    if(documentX>=0&&documentY>=0&&documentX<documentWidth&&documentY<documentHeight){
+                        validMask[y*width+x]=1;
+                    }
+                }
+            }
+        }
+        return {data:ctx.getImageData(0,0,width,height).data,validMask};
+    },
     _doMagicWand(ptr, event = {}) {
         const engine = window.HstarOpenShopSelectionEngine;
         if(!engine?.magicWand) return;
         this.canvas.getObjects().filter(object => object._wandOverlay).forEach(object => this.canvas.remove(object));
         this.canvas.renderAll();
-        const vpt=this.canvas.viewportTransform, ctx=this.canvas.getContext('2d');
+        const boundary=this.canvas.getObjects().find(object=>object.name==='__boundary__');
+        const documentWidth=Math.max(0,Number(this.canvasW||boundary?.width||0));
+        const documentHeight=Math.max(0,Number(this.canvasH||boundary?.height||0));
+        if(ptr.x<0||ptr.y<0||ptr.x>=documentWidth||ptr.y>=documentHeight) return;
+        const vpt=this.canvas.viewportTransform;
         const sx=Math.round(ptr.x*vpt[0]+vpt[4]), sy=Math.round(ptr.y*vpt[3]+vpt[5]);
         const cw=this.canvas.width, ch=this.canvas.height;
         if(sx < 0 || sy < 0 || sx >= cw || sy >= ch) return;
         try {
-            const snap=ctx.getImageData(0,0,cw,ch);
+            const sample=this._magicWandSample(cw,ch,vpt);
             const result=engine.magicWand({
-                data:snap.data,
+                data:sample.data,
                 width:cw,
                 height:ch,
                 x:sx,
                 y:sy,
                 tolerance:this.state.wandTolerance,
                 contiguous:this.state.wandContiguous,
+                validMask:sample.validMask,
             });
             const summary=this._applyPixelSelection(
                 result.mask,
@@ -9631,7 +9675,7 @@ self.onmessage = async function(e) {
         const names = {
             'marquee-rect':'Rect Marquee', 'marquee-ellipse':'Ellipse Marquee',
             'magic-wand':'Magic Wand', 'ai-segment':'AI Segment',
-            'clone':'Clone Stamp', 'healing':'Healing Brush'
+            'clone':'Clone Stamp', 'healing':'Healing Brush', 'rect':'Rectangle'
         };
         const value = tool || this.state.tool || 'select';
         return names[value] || value.charAt(0).toUpperCase() + value.replace(/-/g, ' ').slice(1);

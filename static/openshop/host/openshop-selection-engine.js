@@ -118,14 +118,23 @@
     const height = Math.max(1, Math.round(Number(options.height) || 1));
     const data = options.data;
     if(!data || data.length < width * height * 4) throw new Error('Magic wand image data is invalid');
+    const validMask = options.validMask || null;
+    if(validMask && validMask.length !== width * height){
+      throw new Error('Magic wand document mask dimensions do not match');
+    }
     const x = integer(options.x, 0, width - 1);
     const y = integer(options.y, 0, height - 1);
     const tolerance = Math.max(0, Math.min(255, Number(options.tolerance) || 0));
     const seed = y * width + x;
+    if(validMask && !validMask[seed]){
+      const mask = new Uint8Array(width * height);
+      return {mask, width, height, count:0, bounds:null};
+    }
     const offset = seed * 4;
     const target = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
     const mask = new Uint8Array(width * height);
-    const matches = index => colorDistance(data, index, target) <= tolerance;
+    const matches = index => (!validMask || validMask[index])
+      && colorDistance(data, index, target) <= tolerance;
 
     if(options.contiguous !== false){
       const visited = new Uint8Array(width * height);

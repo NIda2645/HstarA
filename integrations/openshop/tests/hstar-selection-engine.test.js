@@ -65,6 +65,44 @@ describe('Hstar OpenShop Photoshop-style selection engine', () => {
     expect(engine.magicWand({...source, x:0, y:0, tolerance:255, contiguous:false}).count).toBe(3);
   });
 
+  it('keeps transparent magic-wand regions inside the supplied document mask', () => {
+    const engine = window.HstarOpenShopSelectionEngine;
+    const width = 5;
+    const height = 3;
+    const data = new Uint8ClampedArray(width * height * 4);
+    const validMask = new Uint8Array([
+      0, 1, 1, 1, 0,
+      0, 1, 1, 1, 0,
+      0, 1, 1, 1, 0,
+    ]);
+
+    const inside = engine.magicWand({
+      data,
+      width,
+      height,
+      x:2,
+      y:1,
+      tolerance:0,
+      contiguous:true,
+      validMask,
+    });
+    const outside = engine.magicWand({
+      data,
+      width,
+      height,
+      x:0,
+      y:1,
+      tolerance:0,
+      contiguous:true,
+      validMask,
+    });
+
+    expect(inside.count).toBe(9);
+    expect(inside.bounds).toEqual({x:1, y:0, w:3, h:3});
+    expect(outside.count).toBe(0);
+    expect(outside.bounds).toBeNull();
+  });
+
   it.each([
     ['new', [0, 1, 1, 0]],
     ['add', [1, 1, 1, 0]],

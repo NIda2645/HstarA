@@ -250,8 +250,18 @@ def _enumerate_windows_registry_faces():
                     except OSError:
                         continue
                     family = REGISTRY_FORMAT_SUFFIX.sub("", str(display_name)).strip()
-                    if family:
-                        faces.append({"family": family, "weight": 400, "italic": False})
+                    families = [family]
+                    if str(_file_value or "").strip().casefold().endswith((".ttc", ".otc")):
+                        collection_families = [
+                            part.strip() for part in re.split(r"\s+&\s+", family) if part.strip()
+                        ]
+                        if len(collection_families) > 1:
+                            families = collection_families
+                    faces.extend(
+                        {"family": item, "weight": 400, "italic": False}
+                        for item in families
+                        if item
+                    )
         except OSError:
             continue
     return faces

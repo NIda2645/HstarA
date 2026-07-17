@@ -62,6 +62,18 @@ describe('OpenShop core object', () => {
     expect(document.getElementById('opt-ai-segment').style.display).toBe('flex');
   });
 
+  it('localizes the visible tool name when switching tools', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.layers = [{name:'Layer 0', locked:false, objects:[]}];
+    quietUiMethods(OS);
+    window.HstarOpenShopI18n.setLocale('zh-CN');
+
+    OS.setTool('rect');
+
+    expect(document.getElementById('tool-display').textContent).toBe('矩形工具');
+  });
+
   it('routes brush and eraser pointers through one raster session instead of Fabric paths', () => {
     const OS = loadOpenShop();
     OS.canvas = createCanvasMock([]);
@@ -475,7 +487,14 @@ describe('OpenShop core object', () => {
     OS.canvas.width = 5;
     OS.canvas.height = 3;
     OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
-    OS.canvas.getContext = vi.fn(() => ({getImageData:vi.fn(() => ({data, width:5, height:3}))}));
+    OS.canvasW = 5;
+    OS.canvasH = 3;
+    OS.layers = [{name:'Active', visible:true, objects:[]}];
+    OS.activeLayerIdx = 0;
+    OS._magicWandSample = vi.fn(() => ({
+      data,
+      validMask:new Uint8Array(15).fill(1),
+    }));
     OS._showMaskOverlay = vi.fn();
     OS._renderAccessibilityTree = vi.fn();
     OS._emitSelectionChanged = vi.fn();
@@ -491,6 +510,96 @@ describe('OpenShop core object', () => {
     expect(OS._selectionBounds).toEqual({x:0, y:0, w:5, h:2});
     expect(OS._showMaskOverlay).toHaveBeenCalledTimes(2);
     expect(OS._emitSelectionChanged).toHaveBeenLastCalledWith('magic-wand');
+  });
+
+  it('samples the active layer without the checker boundary or inactive layers', () => {
+    mountEditorDom();
+    const OS = loadOpenShop();
+    const pixels = new Uint8ClampedArray(5 * 3 * 4);
+    const context = {
+      fillStyle:'#000000',
+      save:vi.fn(),
+      restore:vi.fn(),
+      setTransform:vi.fn(),
+      beginPath:vi.fn(),
+      rect:vi.fn(),
+      clip:vi.fn(),
+      fillRect:vi.fn(function fillRect(x, y, width, height) {
+        const channels = this.fillStyle === '#c81414'
+          ? [200, 20, 20, 255]
+          : this.fillStyle === '#1414c8'
+            ? [20, 20, 200, 255]
+            : [153, 153, 153, 255];
+        for(let py=y;py<y+height;py+=1){
+          for(let px=x;px<x+width;px+=1) pixels.set(channels,(py*5+px)*4);
+        }
+      }),
+      getImageData:vi.fn(() => ({data:pixels, width:5, height:3})),
+    };
+    const sampleCanvas = {width:0, height:0, getContext:vi.fn(() => context)};
+    const createElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation(tagName => (
+      tagName === 'canvas' ? sampleCanvas : createElement(tagName)
+    ));
+    const boundary = {name:'__boundary__', visible:true, render:vi.fn(ctx => {
+      ctx.fillStyle = '#999999';
+      ctx.fillRect(0, 0, 5, 3);
+    })};
+    const active = {name:'Active', visible:true, render:vi.fn(ctx => {
+      ctx.fillStyle = '#c81414';
+      ctx.fillRect(0, 0, 2, 2);
+    })};
+    const inactive = {name:'Inactive', visible:true, render:vi.fn(ctx => {
+      ctx.fillStyle = '#1414c8';
+      ctx.fillRect(3, 0, 2, 2);
+    })};
+    OS.canvas = createCanvasMock([boundary, active, inactive]);
+    OS.canvas.width = 5;
+    OS.canvas.height = 3;
+    OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+    OS.canvasW = 5;
+    OS.canvasH = 3;
+    OS.layers = [
+      {name:'Background', visible:true, objects:[boundary]},
+      {name:'Active', visible:true, objects:[active]},
+      {name:'Inactive', visible:true, objects:[inactive]},
+    ];
+    OS.activeLayerIdx = 1;
+    OS._showMaskOverlay = vi.fn();
+    OS._renderAccessibilityTree = vi.fn();
+    OS._emitSelectionChanged = vi.fn();
+    OS.toast = vi.fn();
+    OS.state.wandTolerance = 0;
+    OS.state.wandContiguous = true;
+
+    OS._doMagicWand({x:0, y:0});
+
+    expect(OS._selectionMask.mask.filter(Boolean)).toHaveLength(4);
+    expect(OS._selectionBounds).toEqual({x:0, y:0, w:2, h:2});
+    expect(active.render).toHaveBeenCalledOnce();
+    expect(boundary.render).not.toHaveBeenCalled();
+    expect(inactive.render).not.toHaveBeenCalled();
+  });
+
+  it('ignores magic-wand clicks outside the document even when they are inside the viewport', () => {
+    mountEditorDom();
+    const OS = loadOpenShop();
+    const getImageData = vi.fn(() => ({data:new Uint8ClampedArray(8 * 3 * 4), width:8, height:3}));
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.width = 8;
+    OS.canvas.height = 3;
+    OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+    OS.canvas.getContext = vi.fn(() => ({getImageData}));
+    OS.canvasW = 5;
+    OS.canvasH = 3;
+    OS.layers = [{name:'Active', visible:true, objects:[]}];
+    OS.activeLayerIdx = 0;
+    OS.toast = vi.fn();
+
+    OS._doMagicWand({x:6, y:1});
+
+    expect(OS._selectionMask).toBeNull();
+    expect(getImageData).not.toHaveBeenCalled();
   });
 
   it('derives local selection snapping from legacy generation layer metadata', async () => {

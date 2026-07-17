@@ -1,4 +1,6 @@
 import unittest
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -156,6 +158,44 @@ class OpenShopFontCatalogTests(unittest.TestCase):
         self.assertEqual(
             [(style["family"], style["label"]) for style in fonts[0]["styles"]],
             [("Cambria", "Default"), ("Cambria Math", "Math")],
+        )
+
+    def test_splits_registry_collection_names_without_splitting_regular_font_names(self):
+        from openshop_fonts import _enumerate_windows_registry_faces
+
+        local_machine = object()
+        current_user = object()
+        entries = [
+            ("Cambria & Cambria Math (TrueType)", "cambria.ttc", 1),
+            ("Rock & Roll (TrueType)", "rock-roll.ttf", 1),
+        ]
+
+        class RegistryKey:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def open_key(hive, _path):
+            if hive is current_user:
+                raise OSError("missing user font key")
+            return RegistryKey()
+
+        fake_winreg = SimpleNamespace(
+            HKEY_LOCAL_MACHINE=local_machine,
+            HKEY_CURRENT_USER=current_user,
+            OpenKey=open_key,
+            QueryInfoKey=lambda _key: (0, len(entries), 0),
+            EnumValue=lambda _key, index: entries[index],
+        )
+
+        with patch.dict(sys.modules, {"winreg": fake_winreg}):
+            faces = _enumerate_windows_registry_faces()
+
+        self.assertEqual(
+            [face["family"] for face in faces],
+            ["Cambria", "Cambria Math", "Rock & Roll"],
         )
 
     def test_response_never_exposes_font_paths_or_binary_metadata(self):
