@@ -136,9 +136,13 @@ function createHarness({pollResults={}} = {}) {
     type:'image', width:960, height:540, src:result.url,
     set(values){ Object.assign(this, values); },
   }));
+  const runtime = {
+    getState:() => ({activeSession:{context}}),
+    requestSave:vi.fn(async () => ({saved:true})),
+  };
   const controller = window.HstarOpenShopTextTools.createController({
     editor,
-    runtime:{getState:() => ({activeSession:{context}})},
+    runtime,
     aiClient,
     assetApi,
     fontManager,
@@ -146,7 +150,7 @@ function createHarness({pollResults={}} = {}) {
     imageLoader,
     maskRenderer:vi.fn(() => 'data:image/png;base64,SELECTION_MASK'),
   });
-  return {controller, editor, sourceImage, sourceLayer, objects, aiClient, assetApi, fontManager, imageLoader, createdTasks};
+  return {controller, editor, sourceImage, sourceLayer, objects, aiClient, assetApi, fontManager, imageLoader, runtime, createdTasks};
 }
 
 describe('Hstar OpenShop multilingual text tools', () => {
@@ -196,7 +200,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
   });
 
   it('stores inline API and model selections without opening a separate dialog', async () => {
-    const {controller, editor} = createHarness();
+    const {controller, editor, runtime} = createHarness();
     await controller.start();
     controller.openTool('text-extract');
 
@@ -205,6 +209,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(provider.value).toBe('vision-api');
     provider.value = 'vision-custom';
     provider.dispatchEvent(new Event('change', {bubbles:true}));
+    expect(runtime.requestSave).toHaveBeenLastCalledWith({reason:'ai-preference'});
 
     const model = panel.querySelector('[data-text-model]');
     expect(model.value).toBe('vision-model-a');
@@ -215,6 +220,8 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(editor.__hstarAiToolPreferences['text-extract']).toEqual({
       toolId:'text-extract', mode:'project', apiConfigId:'vision-custom', modelId:'vision-model-b',
     });
+    expect(runtime.requestSave).toHaveBeenCalledTimes(2);
+    expect(runtime.requestSave).toHaveBeenLastCalledWith({reason:'ai-preference'});
     expect(document.getElementById('hstar-api-selector')).toBeNull();
     controller.destroy();
   });

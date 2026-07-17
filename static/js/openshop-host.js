@@ -64,6 +64,37 @@
         return state.overlay;
     }
 
+    function canvasPageIsActive(){
+        const canvasFrame = document.getElementById('frame-canvas');
+        return !canvasFrame || canvasFrame.classList.contains('active');
+    }
+
+    function syncPageVisibility(){
+        const overlay = state.overlay || document.getElementById('openshop-host');
+        if(!overlay) return;
+        const pageHidden = !canvasPageIsActive();
+        overlay.hidden = pageHidden;
+        overlay.setAttribute('aria-hidden', String(pageHidden || !overlay.classList.contains('is-open')));
+    }
+
+    function hookPageSwitch(){
+        const current = window.switchUI;
+        if(typeof current !== 'function' || current.__hstarOpenShopVisibilityHook){
+            syncPageVisibility();
+            return;
+        }
+        const wrapped = function hstarOpenShopPageSwitch(...args){
+            try {
+                return current.apply(this, args);
+            } finally {
+                syncPageVisibility();
+            }
+        };
+        Object.defineProperty(wrapped, '__hstarOpenShopVisibilityHook', {value:true});
+        window.switchUI = wrapped;
+        syncPageVisibility();
+    }
+
     function ui(selector){
         return getOverlay().querySelector?.(selector) || document.querySelector?.(selector) || null;
     }
@@ -363,7 +394,7 @@
     function showOverlay(){
         const overlay = getOverlay();
         overlay.classList.add('is-open');
-        overlay.setAttribute('aria-hidden', 'false');
+        syncPageVisibility();
     }
 
     function hideOverlay(){
@@ -717,6 +748,7 @@
 
     function bindUi(){
         getOverlay();
+        hookPageSwitch();
         ui('[data-openshop-back]')?.addEventListener?.('click', () => close());
         ui('[data-openshop-save]')?.addEventListener?.('click', () => requestSave());
         ui('[data-openshop-send]')?.addEventListener?.('click', requestSendToCanvas);

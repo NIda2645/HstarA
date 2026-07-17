@@ -16388,8 +16388,11 @@ async def canvas_llm(payload: CanvasLLMRequest):
             req_body = {"model": model, "messages": upstream_messages}
             if _is_apimart:
                 req_body["stream"] = False   # APIMart 默认流式，强制关闭
-            response = await client.post(
+            response = await httpx_request_with_transient_retries(
+                client,
+                "POST",
                 f"{chat_base}/chat/completions",
+                attempts=2,
                 headers=chat_hdrs,
                 json=req_body,
             )
@@ -16402,6 +16405,11 @@ async def canvas_llm(payload: CanvasLLMRequest):
         friendly = friendly_chat_error_detail(body, model, _llm_provider)
         raise HTTPException(status_code=exc.response.status_code, detail=friendly or f"上游接口错误：{body}") from exc
     except httpx.HTTPError as exc:
+        log_net_error(
+            f"画布 LLM 网络/TLS错误 provider={payload.provider} model={model}",
+            exc,
+            f"{chat_base}/chat/completions",
+        )
         raise HTTPException(status_code=502, detail=f"请求上游接口失败：{exc}") from exc
     except HTTPException:
         raise

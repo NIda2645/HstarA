@@ -114,6 +114,10 @@
         modelId:mode === 'project' ? clean(preference.modelId) : '',
       };
       markDirty('OpenShop AI preference');
+      const saveRequest = runtime.requestSave?.({reason:'ai-preference'});
+      if(saveRequest && typeof saveRequest.catch === 'function'){
+        saveRequest.catch(error => root.console?.error?.('[OpenShop] 保存 AI 选择失败', error));
+      }
       renderPanel();
       return editor.__hstarAiToolPreferences[toolId];
     }
