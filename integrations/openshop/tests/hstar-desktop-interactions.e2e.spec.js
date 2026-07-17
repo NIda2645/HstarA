@@ -208,13 +208,15 @@ test('fills only active image pixels with foreground and background shortcuts', 
     OS.layers[1].objects.push(activeImage);
     OS.layers[2].objects.push(inactiveImage);
     OS.canvas.add(activeImage, inactiveImage);
-    OS.activeLayerIdx = 1;
-    OS._resetLayerSelection(OS.layers[1]);
+    OS.activeLayerIdx = 0;
+    OS._resetLayerSelection(OS.layers[0]);
     OS.canvas.setActiveObject(activeImage);
     OS.setFgColor('#ff0000');
     OS.setBgColor('#00ff00');
     OS.updateLayersPanel();
   });
+  expect(await page.evaluate(() => OS.activeLayerIdx)).toBe(1);
+  await expect(layerRow(page, 'A')).toHaveClass(/primary/);
   const layerPixels = layerIndex => page.evaluate(index => {
     const image = OS.layers[index].objects.find(object => object.type === 'image');
     const element = image.getElement();
@@ -289,7 +291,35 @@ test('fills only active image pixels with foreground and background shortcuts', 
     OS._selectionBounds = null;
   });
   await page.keyboard.press('Alt+Delete');
-  await expect(page.locator('#toast-container .toast').last()).toContainText('请先选择图像');
+  await expect.poll(() => page.evaluate(index => {
+    const image = OS.layers[index].objects.find(object => object.type === 'image');
+    if (!image) return null;
+    const element = image.getElement();
+    const canvas = document.createElement('canvas');
+    canvas.width = element.naturalWidth || element.width;
+    canvas.height = element.naturalHeight || element.height;
+    const context = canvas.getContext('2d');
+    context.drawImage(element, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const pixelAt = offset => [...pixels.slice(offset, offset + 4)];
+    return {
+      width:canvas.width,
+      height:canvas.height,
+      first:pixelAt(0),
+      center:pixelAt((Math.floor(canvas.height / 2) * canvas.width + Math.floor(canvas.width / 2)) * 4),
+      last:pixelAt(pixels.length - 4),
+      left:image.left,
+      top:image.top,
+    };
+  }, 3)).toEqual({
+    width:800,
+    height:600,
+    first:[0, 0, 255, 255],
+    center:[0, 0, 255, 255],
+    last:[0, 0, 255, 255],
+    left:0,
+    top:0,
+  });
   expect(await layerPixels(1)).toEqual(beforeEditingFill);
   expect(await layerPixels(2)).toEqual(inactiveBefore);
 });

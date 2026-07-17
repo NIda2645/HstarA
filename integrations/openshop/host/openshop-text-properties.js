@@ -201,7 +201,7 @@
       tab.parentElement?.querySelectorAll('.panel-tab').forEach(item => item.classList.remove('active'));
       tab.classList.add('active');
       const group = panel.parentElement;
-      group?.querySelectorAll('.panel-tab-content[data-group="ptg1"]').forEach(item => item.classList.remove('active'));
+      group?.querySelectorAll('.panel-tab-content[data-group="ptg2"]').forEach(item => item.classList.remove('active'));
       panel.classList.add('active');
     }
 
@@ -293,7 +293,7 @@
         state.panel = documentRef.getElementById('hstar-text-properties-panel');
         return;
       }
-      const group = documentRef.getElementById('ptg1-layers')?.parentElement;
+      const group = documentRef.getElementById('ptg2-color')?.parentElement;
       const tabs = group?.querySelector('.panel-tabs');
       if(!group || !tabs) throw new Error('OpenShop 右侧面板不可用');
       const tab = documentRef.createElement('button');
@@ -306,7 +306,7 @@
       const panel = documentRef.createElement('div');
       panel.className = 'panel-tab-content';
       panel.id = 'hstar-text-properties-panel';
-      panel.dataset.group = 'ptg1';
+      panel.dataset.group = 'ptg2';
       panel.innerHTML = `
         <div class="ptc-inner hstar-text-properties-inner">
           <div class="hstar-text-property-grid">

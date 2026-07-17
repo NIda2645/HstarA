@@ -54,6 +54,11 @@ test('edits mixed-language text with installed fonts and preserves the project s
   });
 
   await expect(frame.locator('[data-hstar-text-properties-tab]')).toHaveClass(/active/);
+  await expect(frame.locator('#ptg1-layers')).toHaveClass(/active/);
+  await expect(frame.locator('#hstar-text-properties-panel')).toHaveAttribute('data-group', 'ptg2');
+  expect(await frame.locator('[data-hstar-text-properties-tab]').evaluate(tab => (
+    tab.parentElement === document.getElementById('ptg2-color')?.parentElement?.querySelector('.panel-tabs')
+  ))).toBe(true);
   const familyTrigger = frame.locator('[data-text-family]');
   await expect(familyTrigger).toHaveJSProperty('tagName', 'BUTTON');
   await familyTrigger.click();

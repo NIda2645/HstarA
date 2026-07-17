@@ -11,6 +11,7 @@ const desktopInputPath = join(__dirname, '..', 'host', 'openshop-desktop-input.j
 const canvasSamplerPath = join(__dirname, '..', 'host', 'openshop-canvas-sampler.js');
 const rasterToolsPath = join(__dirname, '..', 'host', 'openshop-raster-tools.js');
 const brushCursorPath = join(__dirname, '..', 'host', 'openshop-brush-cursor.js');
+const pixelFillPath = join(__dirname, '..', 'host', 'openshop-pixel-fill.js');
 const selectionEnginePath = join(__dirname, '..', 'host', 'openshop-selection-engine.js');
 const updateSchedulerPath = join(__dirname, '..', 'host', 'openshop-update-scheduler.js');
 
@@ -24,6 +25,7 @@ export function loadOpenShop() {
   new Function(readFileSync(canvasSamplerPath, 'utf8'))();
   new Function(readFileSync(rasterToolsPath, 'utf8'))();
   new Function(readFileSync(brushCursorPath, 'utf8'))();
+  new Function(readFileSync(pixelFillPath, 'utf8'))();
   new Function(readFileSync(selectionEnginePath, 'utf8'))();
   new Function(readFileSync(updateSchedulerPath, 'utf8'))();
   window.HstarOpenShopI18n.setLocale('en-US');

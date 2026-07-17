@@ -124,6 +124,14 @@ describe('Hstar OpenShop text properties', () => {
           <div class="panel-tab-content" id="ptg1-props" data-group="ptg1"></div>
           <div class="panel-tab-content" id="ptg1-align" data-group="ptg1"></div>
         </div>
+        <div class="panel-tab-group ptg-flex">
+          <div class="panel-tabs">
+            <button class="panel-tab active">Color</button>
+            <button class="panel-tab">Swatches</button>
+          </div>
+          <div class="panel-tab-content active" id="ptg2-color" data-group="ptg2"></div>
+          <div class="panel-tab-content" id="ptg2-palettes" data-group="ptg2"></div>
+        </div>
       </div>`;
     await import(`${pathToFileURL(controllerPath).href}?test=${Date.now()}-${Math.random()}`);
   });
@@ -137,6 +145,10 @@ describe('Hstar OpenShop text properties', () => {
     expect(document.querySelector('[data-hstar-text-properties-tab]').classList).toContain('active');
     expect(document.getElementById('hstar-text-properties-panel').classList).toContain('active');
     expect(document.querySelector('[data-text-family]').textContent).toContain('Microsoft YaHei UI');
+    expect(document.querySelector('[data-hstar-text-properties-tab]').parentElement)
+      .toBe(document.getElementById('ptg2-color').parentElement.querySelector('.panel-tabs'));
+    expect(document.getElementById('hstar-text-properties-panel').dataset.group).toBe('ptg2');
+    expect(document.getElementById('ptg1-layers').classList).toContain('active');
 
     textObject.isEditing = true;
     canvas.fire('text:editing:entered', {target:textObject});

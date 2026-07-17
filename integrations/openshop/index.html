@@ -1619,7 +1619,14 @@ const OS = {
         this.canvas.on('mouse:down', e => this.onMouseDown(e));
         this.canvas.on('mouse:up', e => this.onMouseUp(e));
         this.canvas.on('object:modified', () => { this.saveHistory('Object Modified'); this.drawRulers(); });
-        this.canvas.on('selection:created', () => this.updateStatus());
+        this.canvas.on('selection:created', event => {
+            this._syncLayerSelectionFromCanvasSelection(event);
+            this.updateStatus();
+        });
+        this.canvas.on('selection:updated', event => {
+            this._syncLayerSelectionFromCanvasSelection(event);
+            this.updateStatus();
+        });
         this.canvas.on('selection:cleared', () => this.updateStatus());
         this.canvas.on('mouse:wheel', opt => this.onMouseWheel(opt));
         this.canvas.on('path:created', e => {
@@ -2344,6 +2351,34 @@ self.onmessage = function(e) {
     _selectedLayerList() {
         this._normalizeLayerSelection();
         return this.layers.filter(layer => this._selectedLayers.has(layer));
+    },
+    _syncLayerSelectionFromCanvasSelection(event = {}) {
+        const candidates = [];
+        const addCandidate = object => {
+            if (!object) return;
+            if (String(object.type || '').toLowerCase() === 'activeselection') {
+                const objects = object.getObjects?.() || object._objects || [];
+                objects.forEach(addCandidate);
+                return;
+            }
+            if (object.name !== '__boundary__' && !candidates.includes(object)) candidates.push(object);
+        };
+        (Array.isArray(event.selected) ? event.selected : []).forEach(addCandidate);
+        if (!candidates.length) addCandidate(event.target || this.canvas.getActiveObject?.());
+        let layerIndex = -1;
+        for (let index = this.layers.length - 1; index >= 0; index -= 1) {
+            if (candidates.some(object => this.layers[index]?.objects?.includes(object))) {
+                layerIndex = index;
+                break;
+            }
+        }
+        if (layerIndex < 0) return false;
+        const layer = this.layers[layerIndex];
+        this.activeLayerIdx = layerIndex;
+        this._resetLayerSelection(layer);
+        this._keyboardContext = 'canvas';
+        this.updateLayersPanel();
+        return true;
     },
     _activeLayerRasterTarget() {
         const layer = this.layers[this.activeLayerIdx];
@@ -5870,12 +5905,42 @@ self.onmessage = async function(e) {
             this.canvas.renderAll(); this.saveHistory(histName); this.updateLayersPanel();
         });
     },
-    _fillActiveImage(color, historyName) {
-        const target = this._activeLayerRasterTarget();
-        if (!target) {
-            this.toast(this._t('Select an image first'), 'info');
-            return false;
-        }
+    _rasterFillLayerObjects(layer) {
+        return (layer?.objects || []).filter(object => object?.name !== '__boundary__');
+    },
+    _supportsRasterFill(layer) {
+        if (!layer || layer.locked || layer.visible === false) return false;
+        return this._rasterFillLayerObjects(layer).every(object => object?.type === 'image');
+    },
+    _createBlankRasterTarget(layer, onReady) {
+        const surface = document.createElement('canvas');
+        surface.width = Math.max(1, Math.round(Number(this.canvasW) || 1));
+        surface.height = Math.max(1, Math.round(Number(this.canvasH) || 1));
+        fabric.Image.fromURL(surface.toDataURL('image/png'), image => {
+            if (!this.layers.includes(layer)) return;
+            image.set({
+                left:0,
+                top:0,
+                scaleX:1,
+                scaleY:1,
+                angle:0,
+                flipX:false,
+                flipY:false,
+                originX:'left',
+                originY:'top',
+                selectable:true,
+                visible:layer.visible !== false,
+                opacity:Math.max(0, Math.min(100, Number(layer.opacity ?? 100))) / 100,
+                globalCompositeOperation:layer.blend || 'source-over',
+                name:layer.name || 'Layer',
+            });
+            layer.objects.push(image);
+            this.canvas.add(image);
+            this.canvas.setActiveObject(image);
+            onReady(image);
+        });
+    },
+    _fillRasterTarget(target, color, historyName) {
         const element = target.getElement();
         const output = document.createElement('canvas');
         output.width = element.naturalWidth || element.width;
@@ -5907,6 +5972,23 @@ self.onmessage = async function(e) {
         context.putImageData(imageData, 0, 0);
         this._replaceActiveImage(target, output.toDataURL('image/png'), historyName);
         this.toast(this._t('Filled {count} px', {count:count.toLocaleString()}), 'success');
+        return true;
+    },
+    _fillActiveImage(color, historyName) {
+        const layer = this.layers[this.activeLayerIdx];
+        if (!this._supportsRasterFill(layer)) {
+            this.toast(this._t('Select an image first'), 'info');
+            return false;
+        }
+        const target = this._activeLayerRasterTarget();
+        if (target) return this._fillRasterTarget(target, color, historyName);
+        if (this._rasterFillLayerObjects(layer).length) {
+            this.toast(this._t('Select an image first'), 'info');
+            return false;
+        }
+        this._createBlankRasterTarget(layer, image => {
+            this._fillRasterTarget(image, color, historyName);
+        });
         return true;
     },
     _floodFillImage(target,ptr){

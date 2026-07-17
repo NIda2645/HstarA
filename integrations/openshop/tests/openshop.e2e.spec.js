@@ -89,7 +89,7 @@ test('applies a one-click pixel filter to an active image layer', async ({ page 
   });
 
   expect(result.historyAction).toBe('Filter: Sharpen');
-  expect(result.activeName).toBe('Filter: Sharpen');
+  expect(result.activeName).toBe('Filter Smoke');
   expect(typeof result.photonDisabled).toBe('boolean');
 });
 

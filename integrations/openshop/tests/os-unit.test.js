@@ -124,6 +124,87 @@ describe('OpenShop core object', () => {
     expect(OS._activeLayerRasterTarget()).toBeNull();
   });
 
+  it('selects the owning layer when a canvas object is selected', () => {
+    const OS = loadOpenShop();
+    const boundary = {type:'rect', name:'__boundary__'};
+    const lowerImage = {type:'image', name:'Lower image'};
+    const upperImage = {type:'image', name:'Upper image'};
+    OS.canvas = createCanvasMock([boundary, lowerImage, upperImage]);
+    quietUiMethods(OS, {keepLayersPanel:true});
+    OS.layers = [
+      {name:'Background', locked:true, visible:true, opacity:100, blend:'source-over', objects:[boundary]},
+      {name:'Lower', locked:false, visible:true, opacity:100, blend:'source-over', objects:[lowerImage]},
+      {name:'Upper', locked:false, visible:true, opacity:100, blend:'source-over', objects:[upperImage]},
+    ];
+    OS._resetLayerSelection(OS.layers[0]);
+    OS.updateLayersPanel();
+
+    const synced = OS._syncLayerSelectionFromCanvasSelection?.({
+      target:lowerImage,
+      selected:[lowerImage],
+    }) ?? false;
+
+    expect(synced).toBe(true);
+    expect(OS.activeLayerIdx).toBe(1);
+    expect(OS._selectedLayerIndices()).toEqual([1]);
+    expect(document.querySelector('.layer-item.primary .layer-name').textContent).toBe('Lower');
+    expect(OS._keyboardContext).toBe('canvas');
+  });
+
+  it('creates a document-sized raster surface when filling an empty normal layer', () => {
+    const OS = loadOpenShop();
+    const canvas = createCanvasMock([]);
+    OS.canvas = canvas;
+    OS.canvasW = 4;
+    OS.canvasH = 3;
+    OS.layers = [{name:'Layer 1', locked:false, visible:true, opacity:100, blend:'source-over', objects:[]}];
+    OS.activeLayerIdx = 0;
+    OS.saveHistory = vi.fn();
+    quietUiMethods(OS);
+    const sourceElement = document.createElement('canvas');
+    sourceElement.width = 4;
+    sourceElement.height = 3;
+    const source = {
+      type:'image',
+      set:vi.fn(function set(values){ Object.assign(this, values); }),
+      getElement:vi.fn(() => sourceElement),
+      calcTransformMatrix:vi.fn(() => [1, 0, 0, 1, 2, 1.5]),
+    };
+    const replacement = {
+      type:'image',
+      set:vi.fn(function set(values){ Object.assign(this, values); }),
+    };
+    fabric.Image = {
+      fromURL:vi.fn()
+        .mockImplementationOnce((_url, callback) => callback(source))
+        .mockImplementationOnce((_url, callback) => callback(replacement)),
+    };
+
+    expect(OS._fillActiveImage('#123456', 'Fill Foreground')).toBe(true);
+    expect(fabric.Image.fromURL).toHaveBeenCalledTimes(2);
+    expect(OS.layers[0].objects).toEqual([replacement]);
+    expect(replacement.left).toBe(0);
+    expect(replacement.top).toBe(0);
+    expect(OS.saveHistory).toHaveBeenCalledWith('Fill Foreground');
+  });
+
+  it.each([
+    ['text', {type:'i-text', text:'Hello'}],
+    ['shape', {type:'rect', width:20, height:10}],
+  ])('does not raster-fill a %s layer', (_name, object) => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([object]);
+    OS.layers = [{name:'Special', locked:false, visible:true, opacity:100, blend:'source-over', objects:[object]}];
+    OS.activeLayerIdx = 0;
+    quietUiMethods(OS);
+    OS.toast = vi.fn();
+    fabric.Image = {fromURL:vi.fn()};
+
+    expect(OS._fillActiveImage('#123456', 'Fill Foreground')).toBe(false);
+    expect(fabric.Image.fromURL).not.toHaveBeenCalled();
+    expect(OS.toast).toHaveBeenCalled();
+  });
+
   it('replaces raster content at its original canvas and layer index', () => {
     const OS = loadOpenShop();
     const before = {type:'rect', name:'Before'};
