@@ -277,3 +277,77 @@ test('edits mixed-language text with installed fonts and preserves the project s
 
   expect(pageErrors).toEqual([]);
 });
+
+test('resizes and independently scrolls the layers and text panel regions', async ({page}) => {
+  await page.setViewportSize({width:1440, height:1000});
+  const frame = await openOpenShopFrame(page);
+  await frame.evaluate(() => {
+    OS.dismissWelcome();
+    document.querySelectorAll('.modal-overlay').forEach(overlay => overlay.remove());
+    OS.createNewDocument(800, 600);
+    for(let index = 0; index < 24; index += 1) {
+      OS.layers.push({
+        name:`测试图层 ${index + 1}`,
+        visible:true,
+        locked:false,
+        opacity:100,
+        blend:'source-over',
+        objects:[],
+      });
+    }
+    const text = new fabric.IText('Panel sizing', {
+      left:80, top:90, fontFamily:'Microsoft YaHei UI', fontSize:48,
+      fill:'#000000', editable:true,
+    });
+    OS.layers.at(-1).objects.push(text);
+    OS.activeLayerIdx = OS.layers.length - 1;
+    OS._resetLayerSelection(OS.layers.at(-1));
+    OS.canvas.add(text);
+    OS.canvas.setActiveObject(text);
+    OS.canvas.fire('selection:created', {selected:[text], target:text});
+    OS.updateLayersPanel();
+  });
+
+  const primary = frame.locator('#ptg1-group');
+  const secondary = frame.locator('#ptg2-group');
+  const splitter = frame.locator('#panel-group-splitter');
+  const textPanel = frame.locator('#hstar-text-properties-panel');
+  const layersList = frame.locator('#layers-list');
+  await expect(primary).toBeVisible();
+  await expect(secondary).toBeVisible();
+  const before = await frame.evaluate(() => ({
+    primary:document.getElementById('ptg1-group').getBoundingClientRect().height,
+    secondary:document.getElementById('ptg2-group').getBoundingClientRect().height,
+    textClient:document.getElementById('hstar-text-properties-panel').clientHeight,
+    textScroll:document.getElementById('hstar-text-properties-panel').scrollHeight,
+    layersClient:document.getElementById('layers-list').clientHeight,
+    layersScroll:document.getElementById('layers-list').scrollHeight,
+  }));
+  expect(before.primary).toBeGreaterThan(before.secondary);
+  expect(before.textScroll).toBeGreaterThan(before.textClient);
+  expect(before.layersScroll).toBeGreaterThan(before.layersClient);
+
+  await textPanel.hover();
+  await page.mouse.wheel(0, 300);
+  await expect.poll(() => textPanel.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await layersList.hover();
+  await page.mouse.wheel(0, 300);
+  await expect.poll(() => layersList.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+
+  const splitterBox = await splitter.boundingBox();
+  await page.mouse.move(splitterBox.x + splitterBox.width / 2, splitterBox.y + splitterBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(splitterBox.x + splitterBox.width / 2, splitterBox.y + splitterBox.height / 2 + 80);
+  await page.mouse.up();
+
+  const after = await frame.evaluate(() => ({
+    primary:document.getElementById('ptg1-group').getBoundingClientRect().height,
+    secondary:document.getElementById('ptg2-group').getBoundingClientRect().height,
+    saved:Number(localStorage.getItem('openshop.panel.secondaryHeight')),
+  }));
+  expect(after.primary).toBeGreaterThan(before.primary + 60);
+  expect(after.secondary).toBeLessThan(before.secondary - 60);
+  expect(after.saved).toBe(Math.round(after.secondary));
+  await expect(splitter).toHaveAttribute('aria-grabbed', 'false');
+  await page.screenshot({path:'test-results/hstar-resizable-panels.png'});
+});

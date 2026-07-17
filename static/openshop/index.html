@@ -95,9 +95,17 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 .opt-group input[type="checkbox"]{accent-color:var(--accent)}
 
 /* === PANELS === */
-#panels{position:absolute;right:0;top:var(--topbar-h);bottom:var(--statusbar-h);width:var(--panel-width);background:var(--bg-depth-1);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50;overflow-y:auto;overflow-x:hidden}
+#panels{position:absolute;right:0;top:var(--topbar-h);bottom:var(--statusbar-h);width:var(--panel-width);background:var(--bg-depth-1);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50;overflow:hidden}
 .panel-tab-group{border-bottom:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
-.panel-tab-group.ptg-flex{flex:1}
+.panel-tab-group.ptg-flex{flex:1 1 auto}
+#ptg1-group{min-height:160px;overflow:hidden}
+#ptg2-group{flex:0 0 220px;min-height:100px;overflow:hidden}
+#ptg3-group{flex:0 0 160px;min-height:110px;overflow:hidden}
+.panel-group-splitter{position:relative;flex:0 0 7px;min-height:7px;background:var(--bg-depth-2);cursor:ns-resize;outline:none;touch-action:none}
+.panel-group-splitter::before{content:"";position:absolute;left:0;right:0;top:3px;height:1px;background:var(--border)}
+.panel-group-splitter:hover::before,.panel-group-splitter:focus::before,.panel-group-splitter[aria-grabbed="true"]::before{height:2px;top:2px;background:var(--accent)}
+body.panel-split-resizing{cursor:ns-resize;user-select:none}
+body.panel-split-resizing *{cursor:ns-resize!important}
 .panel-tabs{display:flex;background:var(--bg-depth-2);border-bottom:1px solid var(--border);flex-shrink:0;min-height:28px}
 .panel-tab{padding:6px 11px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);cursor:pointer;border:none;background:transparent;border-bottom:2px solid transparent;transition:all .15s var(--ease-out);white-space:nowrap;flex-shrink:0}
 .panel-tab:hover{color:var(--text-secondary);background:var(--bg-depth-3)}
@@ -127,7 +135,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 
 /* Layers */
-#layers-list{max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+#ptg1-layers>.ptc-inner{box-sizing:border-box;display:flex;flex:1;min-height:0;flex-direction:column}
+#layers-list{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
 .layer-item{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:6px;cursor:pointer;transition:all .15s var(--ease-out);border:1px solid transparent}
 .layer-item:hover{background:var(--bg-depth-3)}.layer-item.selected{background:var(--accent-dim)}.layer-item.active,.layer-item.primary{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
 .layer-lock{background:none;border:none;padding:2px;cursor:pointer;color:var(--text-muted);opacity:.6;transition:all .15s;flex-shrink:0}
@@ -1160,7 +1169,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <!-- ===== RIGHT PANELS ===== -->
 <div id="panels" role="complementary" aria-label="Editor panels" data-i18n-aria-label="Editor panels">
     <!-- ===== TAB GROUP 1: Layers / Properties / Align ===== -->
-    <div class="panel-tab-group ptg-flex">
+    <div class="panel-tab-group ptg-flex" id="ptg1-group" data-panel-region="primary">
         <div class="panel-tabs">
             <button class="panel-tab active" onclick="OS.switchTab(this,'ptg1','ptg1-layers')" data-i18n="Layers">Layers</button>
             <button class="panel-tab" onclick="OS.switchTab(this,'ptg1','ptg1-props')" data-i18n="Properties">Properties</button>
@@ -1265,8 +1274,10 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         </div>
     </div>
 
+    <div class="panel-group-splitter" id="panel-group-splitter" role="separator" tabindex="0" aria-label="Resize panels" aria-orientation="horizontal" aria-grabbed="false"></div>
+
     <!-- ===== TAB GROUP 2: Color / Palettes ===== -->
-    <div class="panel-tab-group">
+    <div class="panel-tab-group" id="ptg2-group" data-panel-region="secondary">
         <div class="panel-tabs">
             <button class="panel-tab active" onclick="OS.switchTab(this,'ptg2','ptg2-color')" data-i18n="Color">Color</button>
             <button class="panel-tab" onclick="OS.switchTab(this,'ptg2','ptg2-palettes')" data-i18n="Swatches">Swatches</button>
@@ -1316,7 +1327,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     </div>
 
     <!-- ===== TAB GROUP 3: History / Navigator / Info ===== -->
-    <div class="panel-tab-group">
+    <div class="panel-tab-group" id="ptg3-group" data-panel-region="tertiary">
         <div class="panel-tabs">
             <button class="panel-tab active" onclick="OS.switchTab(this,'ptg3','ptg3-history')" data-i18n="History">History</button>
             <button class="panel-tab" onclick="OS.switchTab(this,'ptg3','ptg3-nav')" data-i18n="Navigator">Navigator</button>
@@ -1465,6 +1476,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <script src="./locales/zh-CN.js"></script>
 <script src="./host/openshop-pixel-fill.js"></script>
 <script src="./host/openshop-desktop-input.js"></script>
+<script src="./host/openshop-panel-splitter.js"></script>
 <script>
 // ================================================================
 //  OpenShop v0.19.1 — Core Engine (Phase 10: Pro Toolbar)
@@ -1594,6 +1606,12 @@ const OS = {
     // ====================== INIT ======================
     init() {
         this._initI18n();
+        this._panelSplitter?.destroy?.();
+        this._panelSplitter = window.HstarOpenShopPanelSplitter.createController({
+            documentRef:document,
+            root:window,
+        });
+        this._panelSplitter.start();
         const area = document.getElementById('canvas-area');
         this.canvas = new fabric.Canvas('editor-canvas', {
             width: area.clientWidth, height: area.clientHeight,
