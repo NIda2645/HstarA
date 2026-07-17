@@ -1896,6 +1896,97 @@ describe('OpenShop core object', () => {
     ]);
   });
 
+  it('starts standalone recovery exactly once for a top-level window', () => {
+    const OS = loadOpenShop();
+    OS._initAutoSave = vi.fn();
+    OS._persistenceMode = 'standalone';
+
+    OS._startRecoveryForCurrentMode({topLevel:true});
+    OS._startRecoveryForCurrentMode({topLevel:true});
+
+    expect(OS._persistenceMode).toBe('standalone');
+    expect(OS._initAutoSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start standalone recovery in a frame or in an embedded mode', () => {
+    const OS = loadOpenShop();
+    OS._initAutoSave = vi.fn();
+
+    OS._persistenceMode = 'standalone';
+    OS._startRecoveryForCurrentMode({topLevel:false});
+    OS._persistenceMode = 'embedded-pending';
+    OS._startRecoveryForCurrentMode({topLevel:true});
+    OS._persistenceMode = 'embedded-hstara';
+    OS._startRecoveryForCurrentMode({topLevel:true});
+
+    expect(OS._initAutoSave).not.toHaveBeenCalled();
+  });
+
+  it('disables local recovery state for embedded HstarA without discarding storage', () => {
+    vi.useFakeTimers();
+    try {
+      const OS = loadOpenShop();
+      OS._discardRecovery = vi.fn();
+      OS._clearAutoSave = vi.fn();
+      OS._offerRecovery(JSON.stringify({_openShop:{w:320,h:240}, objects:[]}));
+      const autoSaveTimer = setInterval(() => {}, 30000);
+      const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+      OS._autoSaveTimer = autoSaveTimer;
+      OS._autoSaveDirty = true;
+      const worker = {terminate:vi.fn()};
+      OS._autoSaveWorker = worker;
+
+      OS._setPersistenceMode('embedded-hstara');
+
+      expect(OS._persistenceMode).toBe('embedded-hstara');
+      expect(OS._autoSaveTimer).toBeNull();
+      expect(OS._autoSaveDirty).toBe(false);
+      expect(OS._recoveryData).toBeNull();
+      expect(OS._autoSaveWorker).toBeNull();
+      expect(worker.terminate).toHaveBeenCalledTimes(1);
+      expect(document.querySelector('[data-recovery-restore]')).toBeNull();
+      expect(clearIntervalSpy).toHaveBeenCalledWith(autoSaveTimer);
+      expect(OS._discardRecovery).not.toHaveBeenCalled();
+      expect(OS._clearAutoSave).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps embedded recovery entry points away from OPFS and recovery UI', async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = {
+        getDirectory:vi.fn(),
+        estimate:vi.fn(),
+      };
+      vi.stubGlobal('navigator', {storage});
+      const OS = loadOpenShop();
+      OS._persistenceMode = 'embedded-hstara';
+      OS._getRecoveryInfo = vi.fn().mockResolvedValue({supported:true, exists:false});
+      OS._autoSaveDirty = true;
+      OS.historyIdx = 1;
+      OS.canvas = createCanvasMock();
+      OS.layers = [];
+      const timerCountBefore = vi.getTimerCount();
+
+      await OS._initAutoSave();
+      await OS._autoSave();
+      await OS._clearAutoSave();
+      await OS._discardRecovery();
+      await OS.showRecoveryManager();
+      OS._offerRecovery('{}');
+
+      expect(OS._getRecoveryInfo).not.toHaveBeenCalled();
+      expect(storage.getDirectory).not.toHaveBeenCalled();
+      expect(storage.estimate).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(timerCountBefore);
+      expect(document.querySelector('.modal-overlay')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows recovery storage status and restores sanitized recovery data', async () => {
     const OS = loadOpenShop();
     const canvas = createCanvasMock();

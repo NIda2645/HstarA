@@ -507,6 +507,7 @@
 
     if(envelope.type === state.protocol.TYPES.OPEN_SESSION){
       openSession(envelope);
+      state.editor._setPersistenceMode?.('embedded-hstara');
       return;
     }
     if(!activeEnvelope(envelope)) return;

@@ -61,6 +61,7 @@ describe('Hstar OpenShop editor host runtime', () => {
       resizeCanvas: vi.fn(),
       zoomFit: vi.fn(),
       dismissWelcome: vi.fn(),
+      _setPersistenceMode: vi.fn(),
       canvas: {
         toDataURL: vi.fn(() => 'data:image/png;base64,COMPOSITE_BYTES'),
         discardActiveObject: vi.fn(),
@@ -174,6 +175,24 @@ describe('Hstar OpenShop editor host runtime', () => {
     expect(parentWindow.postMessage).toHaveBeenCalledTimes(1);
     expect(parentWindow.postMessage.mock.calls[0][0].type).toBe(protocol.TYPES.READY);
     expect(parentWindow.postMessage.mock.calls[0][1]).toBe('https://hstar.test');
+  });
+
+  it('sets embedded persistence only after a validated session opens', async () => {
+    const open = envelope(protocol.TYPES.OPEN_SESSION, 'open-persistence');
+
+    dispatch(open, {origin:'https://foreign.test'});
+    dispatch(open, {source:{postMessage:vi.fn()}});
+    await flushMessages();
+
+    expect(editor._setPersistenceMode).not.toHaveBeenCalled();
+
+    dispatch(open);
+    await flushMessages();
+
+    expect(editor._setPersistenceMode).toHaveBeenCalledTimes(1);
+    expect(editor._setPersistenceMode).toHaveBeenCalledWith('embedded-hstara');
+    expect(editor.createNewDocument.mock.invocationCallOrder[0])
+      .toBeLessThan(editor._setPersistenceMode.mock.invocationCallOrder[0]);
   });
 
   it('deduplicates image requests and rejects another project context', async () => {
