@@ -6830,8 +6830,15 @@ function copySelectedNodes(){
     if(!copiedNodes.length) return;
     const idSet = new Set(copiedNodes.map(n => n.id));
     const copiedConnections = (canvas.connections || []).filter(c => idSet.has(c.from) && idSet.has(c.to));
+    const serializedNodes = copiedNodes.map(node => {
+        const copy = JSON.parse(JSON.stringify(node));
+        if(node.type === OPENSHOP_LAYERED_NODE_TYPE){
+            window.HstarSmartOpenShopAdapter?.captureCloneSource?.(node, copy);
+        }
+        return copy;
+    });
     nodeClipboard = {
-        nodes:JSON.parse(JSON.stringify(copiedNodes)),
+        nodes:serializedNodes,
         connections:JSON.parse(JSON.stringify(copiedConnections))
     };
     toast(`已复制 ${copiedNodes.length} 个节点`);
@@ -9300,8 +9307,15 @@ function copySelectedNodes(){
     if(!copiedNodes.length) return;
     const idSet = new Set(copiedNodes.map(n => n.id));
     const copiedConnections = (canvas.connections || []).filter(c => idSet.has(c.from) && idSet.has(c.to));
+    const serializedNodes = copiedNodes.map(node => {
+        const copy = JSON.parse(JSON.stringify(node));
+        if(node.type === OPENSHOP_LAYERED_NODE_TYPE){
+            window.HstarSmartOpenShopAdapter?.captureCloneSource?.(node, copy);
+        }
+        return copy;
+    });
     nodeClipboard = {
-        nodes:JSON.parse(JSON.stringify(copiedNodes)),
+        nodes:serializedNodes,
         connections:JSON.parse(JSON.stringify(copiedConnections))
     };
     toast(`已复制 ${copiedNodes.length} 个节点`);

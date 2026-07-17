@@ -17205,8 +17205,15 @@ function copySelectedNodes(){
     if(!toCopy.length) return;
     const ids = new Set(toCopy.map(n => n.id));
     const pickedConnections = (connections || []).filter(c => ids.has(c.from) && ids.has(c.to)).map(c => ({...c}));
+    const serializedNodes = toCopy.map(node => {
+        const copy = serializableCanvasNode(node);
+        if(node.type === 'openshop-layered'){
+            window.HstarClassicOpenShopAdapter?.captureCloneSource?.(node, copy);
+        }
+        return copy;
+    });
     clipboard = {
-        nodes:JSON.parse(JSON.stringify(serializableCanvasNodes(toCopy))),
+        nodes:JSON.parse(JSON.stringify(serializedNodes)),
         connections:JSON.parse(JSON.stringify(pickedConnections))
     };
 }

@@ -184,12 +184,20 @@
         return true;
     }
 
+    function captureCloneSource(source, clipboardCopy){
+        clipboardCopy.cloneSourceProjectId = clean(source?.projectId);
+        clipboardCopy.cloneSourceCanvasType = 'smart';
+        clipboardCopy.cloneSourceCanvasId = currentCanvasId();
+        clipboardCopy.cloneSourceNodeId = clean(source?.id);
+        return clipboardCopy;
+    }
+
     function prepareClone(source, copy){
         copy.projectId = newProjectId();
-        copy.cloneSourceProjectId = clean(source?.projectId);
-        copy.cloneSourceCanvasType = 'smart';
-        copy.cloneSourceCanvasId = currentCanvasId();
-        copy.cloneSourceNodeId = clean(source?.id);
+        copy.cloneSourceProjectId = clean(source?.cloneSourceProjectId) || clean(source?.projectId);
+        copy.cloneSourceCanvasType = clean(source?.cloneSourceCanvasType) || 'smart';
+        copy.cloneSourceCanvasId = clean(source?.cloneSourceCanvasId) || currentCanvasId();
+        copy.cloneSourceNodeId = clean(source?.cloneSourceNodeId) || clean(source?.id);
         copy.autosaveVersion = 0;
         copy.saveState = 'new';
         copy.saveError = '';
@@ -290,6 +298,7 @@
         canConnect,
         sourcesForNode,
         openNode,
+        captureCloneSource,
         prepareClone,
         disposeNode,
         applyNodeMeta,
