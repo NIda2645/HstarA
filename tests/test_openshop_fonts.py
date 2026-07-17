@@ -77,6 +77,68 @@ class OpenShopFontCatalogTests(unittest.TestCase):
         self.assertFalse(refreshed["cached"])
         self.assertEqual(len(calls), 2)
 
+    def test_preserves_vendor_face_names_inside_one_real_family(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "Alibaba PuHuiTi B", "weight": 400, "italic": False},
+                {"family": "Alibaba PuHuiTi H", "weight": 400, "italic": False},
+                {"family": "阿里巴巴普惠体 2.0 55 Regular", "weight": 400, "italic": False},
+                {"family": "阿里巴巴普惠体 2.0 65 Medium", "weight": 400, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
+
+        self.assertEqual(set(fonts), {"Alibaba PuHuiTi", "阿里巴巴普惠体 2.0"})
+        self.assertEqual(
+            [(style["family"], style["label"]) for style in fonts["Alibaba PuHuiTi"]["styles"]],
+            [("Alibaba PuHuiTi B", "B"), ("Alibaba PuHuiTi H", "H")],
+        )
+        self.assertEqual(
+            [
+                (style["family"], style["weight"], style["label"])
+                for style in fonts["阿里巴巴普惠体 2.0"]["styles"]
+            ],
+            [
+                ("阿里巴巴普惠体 2.0 55 Regular", 400, "55 Regular"),
+                ("阿里巴巴普惠体 2.0 65 Medium", 500, "65 Medium"),
+            ],
+        )
+
+    def test_does_not_strip_an_isolated_style_like_trailing_letter(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "DIN A", "weight": 400, "italic": False},
+                {"family": "DIN Next", "weight": 400, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        families = [item["family"] for item in catalog.get_catalog()["fonts"]]
+
+        self.assertEqual(families, ["DIN A", "DIN Next"])
+
+    def test_keeps_distinct_vendor_weight_names_even_when_numeric_weights_match(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "Alibaba Sans Heavy", "weight": 800, "italic": False},
+                {"family": "Alibaba Sans Black", "weight": 900, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        font = catalog.get_catalog()["fonts"][0]
+
+        self.assertEqual(font["family"], "Alibaba Sans")
+        self.assertEqual([style["label"] for style in font["styles"]], ["Black", "Heavy"])
+
     def test_response_never_exposes_font_paths_or_binary_metadata(self):
         from openshop_fonts import OpenShopFontCatalog
 
