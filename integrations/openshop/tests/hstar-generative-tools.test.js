@@ -308,10 +308,13 @@ describe('Hstar OpenShop inline generative tools', () => {
     controller.destroy();
   });
 
-  it('emits one selection event from every OpenShop selection completion path', () => {
+  it('routes pixel and rectangle selection completion through one selection event contract', () => {
     const source = readFileSync(indexPath, 'utf8');
     expect(source).toContain("_emitSelectionChanged(reason='updated')");
-    for(const reason of ['marquee', 'magic-wand', 'recalculated', 'lasso', 'cleared']) {
+    expect(source).toContain('this._emitSelectionChanged(reason);');
+    expect(source).toContain("'magic-wand'");
+    expect(source).toContain("'lasso'");
+    for(const reason of ['marquee', 'recalculated', 'cleared']) {
       expect(source).toContain(`_emitSelectionChanged('${reason}')`);
     }
   });

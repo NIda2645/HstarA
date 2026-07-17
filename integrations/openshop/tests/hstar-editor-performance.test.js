@@ -212,7 +212,7 @@ describe('OpenShop editor performance paths', () => {
 
     for (let index = 0; index < 10; index += 1) {
       OS.onMouseWheel({
-        e:{preventDefault:vi.fn(), deltaY:1, offsetX:100, offsetY:80},
+        e:{preventDefault:vi.fn(), deltaY:1, offsetX:100, offsetY:80, ctrlKey:true},
       });
     }
 

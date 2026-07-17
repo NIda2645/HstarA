@@ -456,6 +456,7 @@ describe('OpenShop core object', () => {
     expect(OS._selectionMask.mask[2 * 100 + 2]).toBe(0);
     expect(OS._selectionBounds).toEqual({x:10, y:10, w:70, h:70});
     expect(OS._showMaskOverlay).toHaveBeenCalledWith(OS._selectionMask);
+    expect(OS._emitSelectionChanged).toHaveBeenCalledWith('lasso');
     expect(document.getElementById('lasso-overlay').style.display).toBe('none');
   });
 
@@ -489,6 +490,7 @@ describe('OpenShop core object', () => {
     expect(OS._selectionMask.mask.filter(Boolean)).toHaveLength(8);
     expect(OS._selectionBounds).toEqual({x:0, y:0, w:5, h:2});
     expect(OS._showMaskOverlay).toHaveBeenCalledTimes(2);
+    expect(OS._emitSelectionChanged).toHaveBeenLastCalledWith('magic-wand');
   });
 
   it('derives local selection snapping from legacy generation layer metadata', async () => {
