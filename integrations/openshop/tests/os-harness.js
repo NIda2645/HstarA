@@ -11,6 +11,7 @@ const desktopInputPath = join(__dirname, '..', 'host', 'openshop-desktop-input.j
 const canvasSamplerPath = join(__dirname, '..', 'host', 'openshop-canvas-sampler.js');
 const rasterToolsPath = join(__dirname, '..', 'host', 'openshop-raster-tools.js');
 const brushCursorPath = join(__dirname, '..', 'host', 'openshop-brush-cursor.js');
+const selectionEnginePath = join(__dirname, '..', 'host', 'openshop-selection-engine.js');
 const updateSchedulerPath = join(__dirname, '..', 'host', 'openshop-update-scheduler.js');
 
 export function loadOpenShop() {
@@ -23,6 +24,7 @@ export function loadOpenShop() {
   new Function(readFileSync(canvasSamplerPath, 'utf8'))();
   new Function(readFileSync(rasterToolsPath, 'utf8'))();
   new Function(readFileSync(brushCursorPath, 'utf8'))();
+  new Function(readFileSync(selectionEnginePath, 'utf8'))();
   new Function(readFileSync(updateSchedulerPath, 'utf8'))();
   window.HstarOpenShopI18n.setLocale('en-US');
   const html = readFileSync(indexPath, 'utf8');
@@ -188,10 +190,11 @@ export function mountEditorDom() {
     <div id="tool-options">
       ${optionIds.map((id) => `<div class="opt-group" id="${id}" style="display:none"></div>`).join('')}
     </div>
-    <div id="lasso-overlay" style="display:none"><svg><polygon points=""></polygon></svg></div>
+    <div id="lasso-overlay" style="display:none"><svg><polyline points=""></polyline></svg></div>
     <div id="pen-overlay" style="display:none"></div>
     <div id="measure-overlay" style="display:none"></div>
     <div id="selection-overlay" style="display:none"></div>
+    <canvas id="selection-mask-overlay" style="display:none"></canvas>
     <div id="canvas-area" role="application" aria-describedby="canvas-a11y-summary"></div>
     <section id="canvas-a11y-tree">
       <p id="canvas-a11y-summary"></p>

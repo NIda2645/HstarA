@@ -434,6 +434,63 @@ describe('OpenShop core object', () => {
     expect(OS._brushCursor.refresh).toHaveBeenCalledOnce();
   });
 
+  it('creates a real pixel mask from a press-drag-release freehand lasso', () => {
+    mountEditorDom();
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    OS.canvas.width = 100;
+    OS.canvas.height = 100;
+    OS._showMaskOverlay = vi.fn();
+    OS._renderAccessibilityTree = vi.fn();
+    OS._emitSelectionChanged = vi.fn();
+    OS.toast = vi.fn();
+
+    OS._lassoStart({offsetX:10, offsetY:10, shiftKey:false, altKey:false});
+    OS._lassoMove({offsetX:80, offsetY:10});
+    OS._lassoMove({offsetX:80, offsetY:80});
+    OS._lassoMove({offsetX:10, offsetY:80});
+    OS._lassoFinish({offsetX:10, offsetY:10});
+
+    expect(OS._selectionMask).toMatchObject({w:100, h:100});
+    expect(OS._selectionMask.mask[40 * 100 + 40]).toBe(1);
+    expect(OS._selectionMask.mask[2 * 100 + 2]).toBe(0);
+    expect(OS._selectionBounds).toEqual({x:10, y:10, w:70, h:70});
+    expect(OS._showMaskOverlay).toHaveBeenCalledWith(OS._selectionMask);
+    expect(document.getElementById('lasso-overlay').style.display).toBe('none');
+  });
+
+  it('adds a second magic-wand region while Shift is held', () => {
+    mountEditorDom();
+    const OS = loadOpenShop();
+    const red = [200, 20, 20, 255];
+    const blue = [20, 20, 200, 255];
+    const pixels = [
+      red, red, blue, red, red,
+      red, red, blue, red, red,
+      blue, blue, blue, blue, blue,
+    ];
+    const data = new Uint8ClampedArray(pixels.flat());
+    OS.canvas = createCanvasMock();
+    OS.canvas.width = 5;
+    OS.canvas.height = 3;
+    OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+    OS.canvas.getContext = vi.fn(() => ({getImageData:vi.fn(() => ({data, width:5, height:3}))}));
+    OS._showMaskOverlay = vi.fn();
+    OS._renderAccessibilityTree = vi.fn();
+    OS._emitSelectionChanged = vi.fn();
+    OS.toast = vi.fn();
+    OS.state.wandTolerance = 0;
+    OS.state.wandContiguous = true;
+
+    OS._doMagicWand({x:0, y:0}, {shiftKey:false, altKey:false});
+    expect(OS._selectionMask.mask.filter(Boolean)).toHaveLength(4);
+    OS._doMagicWand({x:4, y:0}, {shiftKey:true, altKey:false});
+
+    expect(OS._selectionMask.mask.filter(Boolean)).toHaveLength(8);
+    expect(OS._selectionBounds).toEqual({x:0, y:0, w:5, h:2});
+    expect(OS._showMaskOverlay).toHaveBeenCalledTimes(2);
+  });
+
   it('derives local selection snapping from legacy generation layer metadata', async () => {
     delete window.HstarOpenShopSnapEngine;
     await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);

@@ -48,6 +48,7 @@ const runtimeFiles = [...new Set([
   'host/openshop-canvas-sampler.js',
   'host/openshop-raster-tools.js',
   'host/openshop-brush-cursor.js',
+  'host/openshop-selection-engine.js',
   'host/openshop-color-panel.js',
   'host/openshop-color-panel.css',
   'host/openshop-update-scheduler.js',

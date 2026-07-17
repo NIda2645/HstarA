@@ -224,6 +224,7 @@
     "Flip Horizontal": "水平翻转",
     "Flip Vertical": "垂直翻转",
     "Flow": "流量",
+    "Freehand Lasso": "自由套索",
     "Font": "字体",
     "Forward Warp": "向前变形工具",
     "Free Transform...": "自由变换...",
