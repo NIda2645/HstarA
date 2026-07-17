@@ -613,8 +613,13 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   });
   editor = await openNode(page, frame, 'classic', nodeA.id, 3);
   await expect.poll(() => page.evaluate(() => window.HstarOpenShopHost.getState().sourceUpdateCount)).toBe(1);
+  const sourcePanel = page.locator('[data-openshop-source-panel]');
   await page.locator('[data-openshop-sources]').click();
-  await page.getByRole('button', {name:'作为新图层加入'}).click();
+  await expect(sourcePanel).toHaveClass(/\bis-open\b/);
+  await expect(sourcePanel).toHaveAttribute('aria-hidden', 'false');
+  const addSourceLayer = sourcePanel.locator('button', {hasText:'作为新图层加入'});
+  await expect(addSourceLayer).toBeVisible();
+  await addSourceLayer.click();
   await editor.waitForFunction(() => OS.layers.filter(layer => layer.sourceBinding).length === 4);
   await editor.evaluate(() => window.HstarOpenShopRuntime.requestSave({reason:'e2e-source-update'}));
 
