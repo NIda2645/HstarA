@@ -13,6 +13,13 @@
     return String(value ?? '').trim();
   }
 
+  function normalizeColor(value, fallback = '#000000'){
+    const normalizer = root.HstarOpenShopColorPanel?.normalizeHex;
+    if(typeof normalizer === 'function') return normalizer(value, fallback);
+    const candidate = clean(value).toLowerCase();
+    return /^#[0-9a-f]{6}$/.test(candidate) ? candidate : fallback;
+  }
+
   function clone(value){
     if(typeof structuredClone === 'function') return structuredClone(value);
     return JSON.parse(JSON.stringify(value));
@@ -102,6 +109,22 @@
       control.title = label.textContent;
     }
 
+    function syncTextColorControl(value){
+      const control = documentRef.querySelector('[data-text-color]');
+      if(!control) return;
+      const mixed = value === MIXED;
+      const color = normalizeColor(mixed ? activeTextObject()?.fill : value);
+      control.dataset.mixed = mixed ? 'true' : 'false';
+      control.dataset.value = color;
+      control.setAttribute('aria-label', mixed ? '多种文字颜色' : `文字颜色 ${color.toUpperCase()}`);
+      const swatch = control.querySelector?.('[data-text-color-swatch]');
+      if(swatch) swatch.style.background = mixed
+        ? 'linear-gradient(135deg,#ffffff 0 25%,#777777 25% 50%,#ffffff 50% 75%,#777777 75%)'
+        : color;
+      const label = control.querySelector?.('[data-text-color-value]');
+      if(label) label.textContent = mixed ? '多种颜色' : color.toUpperCase();
+    }
+
     function ensureOption(select, value, label = value){
       if(!select || !value || value === MIXED) return;
       const existing = [...select.options].find(option => option.value === String(value));
@@ -179,7 +202,7 @@
       setControlValue('[data-text-size]', propertyValue(target, 'fontSize'), {points:true});
       setControlValue('[data-text-line-height]', propertyValue(target, 'lineHeight'));
       setControlValue('[data-text-tracking]', propertyValue(target, 'charSpacing'));
-      setControlValue('[data-text-color]', propertyValue(target, 'fill'));
+      syncTextColorControl(propertyValue(target, 'fill'));
       setControlValue('[data-text-align]', propertyValue(target, 'textAlign'));
       setControlValue('[data-text-kerning]', propertyValue(target, 'charSpacing'));
       const kerningMode = target.hstarKerningMode || (Number(target.charSpacing || 0) ? 'numeric' : 'auto');
@@ -229,6 +252,7 @@
         setObject(target, {[property]:normalized});
       }
       editor.canvas.renderAll?.();
+      if(property === 'fill' && normalized !== MIXED) editor.state.textColor = normalizeColor(normalized);
       syncControls();
       if(commit) commitChange(property);
       return true;
@@ -324,7 +348,12 @@
               <select data-text-kerning-mode><option value="auto">自动</option><option value="metrics">度量</option><option value="numeric">数值</option></select>
             </label>
             <label>数值 <input type="number" data-text-kerning min="-1000" max="1000" disabled></label>
-            <label>颜色 <input type="color" data-text-color></label>
+            <label>颜色
+              <button type="button" class="hstar-text-color-select" data-text-color aria-haspopup="dialog">
+                <span class="hstar-text-color-swatch" data-text-color-swatch aria-hidden="true"></span>
+                <span data-text-color-value>#000000</span>
+              </button>
+            </label>
             <label>对齐 <select data-text-align><option value="left">左对齐</option><option value="center">居中对齐</option><option value="right">右对齐</option><option value="justify">两端对齐</option></select></label>
           </div>
           <div class="hstar-text-property-toggles">
@@ -410,7 +439,31 @@
         const value = Number(documentRef.querySelector('[data-text-kerning]')?.value || 0);
         applyKerning(event.target.value, value);
       });
-      documentRef.querySelector('[data-text-color]')?.addEventListener('change', event => applyProperty('fill', event.target.value));
+      addDomListener(documentRef.querySelector('[data-text-color]'), 'click', event => {
+        const target = activeTextObject();
+        const colorPanel = editor._colorPanelController;
+        if(!target || !colorPanel?.open) return;
+        const value = propertyValue(target, 'fill');
+        const original = normalizeColor(value === MIXED ? target.fill : value);
+        let draft = original;
+        colorPanel.open('text', event.currentTarget, {
+          color:original,
+          title:'选择文字颜色',
+          commitOnOutside:true,
+          onPreview:color => {
+            draft = normalizeColor(color, draft);
+            applyProperty('fill', draft, {commit:false});
+          },
+          onCommit:color => {
+            const committed = normalizeColor(color, draft);
+            if(committed !== draft) applyProperty('fill', committed, {commit:false});
+            if(committed !== original) commitChange('颜色');
+          },
+          onCancel:() => {
+            if(draft !== original) applyProperty('fill', original, {commit:false});
+          },
+        });
+      });
       documentRef.querySelector('[data-text-align]')?.addEventListener('change', event => applyProperty('textAlign', event.target.value));
       ['bold', 'italic', 'underline', 'linethrough'].forEach(name => {
         documentRef.querySelector(`[data-text-${name}]`)?.addEventListener('change', event => {

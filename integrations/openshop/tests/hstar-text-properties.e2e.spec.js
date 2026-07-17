@@ -43,10 +43,15 @@ test('edits mixed-language text with installed fonts and preserves the project s
     OS.dismissWelcome();
     document.querySelectorAll('.modal-overlay').forEach(overlay => overlay.remove());
     OS.createNewDocument(800, 600);
+    const sample = new fabric.Rect({
+      left:0, top:0, width:40, height:40, fill:'#7c3aed', selectable:false, evented:false,
+    });
     const text = new fabric.IText('中文 English', {
       left:80, top:90, fontFamily:'Microsoft YaHei UI', fontSize:48,
       fill:'#ffffff', editable:true,
     });
+    OS.canvas.add(sample);
+    OS.layers[OS.activeLayerIdx].objects.push(sample);
     OS.canvas.add(text);
     OS.layers[OS.activeLayerIdx].objects.push(text);
     OS.canvas.setActiveObject(text);
@@ -88,10 +93,48 @@ test('edits mixed-language text with installed fonts and preserves the project s
   await frame.locator('[data-text-kerning]').fill('12');
   await frame.locator('[data-text-kerning]').dispatchEvent('change');
   await frame.locator('[data-text-bold]').click();
-  await frame.locator('[data-text-color]').evaluate(input => {
-    input.value = '#ef4444';
-    input.dispatchEvent(new Event('change', {bubbles:true}));
+  const textColor = frame.locator('[data-text-color]');
+  await expect(textColor).toHaveJSProperty('tagName', 'BUTTON');
+  const colorHistoryBefore = await frame.evaluate(() => OS.history.length);
+  await textColor.click();
+  const colorPanel = frame.locator('[data-hstar-color-panel]');
+  await expect(colorPanel).toBeVisible();
+  await expect(colorPanel.locator('[data-color-title]')).toHaveText('选择文字颜色');
+  await page.screenshot({path:'test-results/hstar-text-color-panel.png'});
+  await colorPanel.locator('[data-color-r]').fill('34');
+  await colorPanel.locator('[data-color-g]').fill('197');
+  await colorPanel.locator('[data-color-b]').fill('94');
+  await expect.poll(() => frame.evaluate(() => OS.canvas.getActiveObject()?.fill)).toBe('#22c55e');
+  expect(await frame.evaluate(() => OS.history.length)).toBe(colorHistoryBefore);
+  await frame.locator('#canvas-area').click({position:{x:700, y:500}});
+  await expect(colorPanel).toBeHidden();
+  expect(await frame.evaluate(() => OS.history.length)).toBe(colorHistoryBefore + 1);
+
+  await frame.evaluate(() => {
+    const text = OS.canvas.getObjects().find(object => object.type === 'i-text');
+    OS.canvas.setActiveObject(text);
+    OS.canvas.fire('selection:created', {selected:[text], target:text});
   });
+  await textColor.click();
+  await colorPanel.locator('[data-color-sample]').click();
+  await frame.evaluate(() => {
+    const rect = OS.canvas.lowerCanvasEl.getBoundingClientRect();
+    const screen = fabric.util.transformPoint({x:10, y:10}, OS.canvas.viewportTransform);
+    const originalGetPointer = OS.canvas.getPointer;
+    OS.canvas.getPointer = () => ({x:10, y:10});
+    OS.onMouseDown({
+      e:{
+        offsetX:screen.x,
+        offsetY:screen.y,
+        clientX:rect.left + screen.x,
+        clientY:rect.top + screen.y,
+      },
+      target:null,
+    });
+    OS.canvas.getPointer = originalGetPointer;
+  });
+  await expect(colorPanel).toBeHidden();
+  await expect.poll(() => frame.evaluate(() => OS.canvas.getActiveObject()?.fill)).toBe('#7c3aed');
   const underline = frame.locator('[data-text-underline]');
   await underline.click();
   const underlineState = await frame.evaluate(() => ({

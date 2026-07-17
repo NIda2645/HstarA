@@ -117,4 +117,74 @@ describe('Hstar OpenShop color panel', () => {
     expect(editor.state.bgColor).toBe('#445566');
     controller.destroy();
   });
+
+  it('previews a custom text color live and commits it when clicking outside', () => {
+    const {controller} = createHarness();
+    const anchor = document.createElement('button');
+    document.body.append(anchor);
+    const preview = vi.fn();
+    const commit = vi.fn();
+    const cancel = vi.fn();
+    controller.start();
+
+    controller.open('text', anchor, {
+      color:'#123456',
+      title:'选择文字颜色',
+      commitOnOutside:true,
+      onPreview:preview,
+      onCommit:commit,
+      onCancel:cancel,
+    });
+    controller.setDraft('#abcdef');
+
+    expect(preview).toHaveBeenCalledWith('#abcdef');
+    expect(document.querySelector('[data-color-title]').textContent).toBe('选择文字颜色');
+    document.body.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+    expect(commit).toHaveBeenCalledWith('#abcdef');
+    expect(cancel).not.toHaveBeenCalled();
+    expect(controller.getState()).toMatchObject({target:null, draft:'#abcdef'});
+    controller.destroy();
+  });
+
+  it('routes canvas sampling back to a custom text target instead of foreground color', () => {
+    const {controller, editor} = createHarness({sampleHex:'#7c3aed'});
+    const preview = vi.fn();
+    const commit = vi.fn();
+    controller.start();
+    controller.open('text', document.createElement('button'), {
+      color:'#123456',
+      title:'选择文字颜色',
+      onPreview:preview,
+      onCommit:commit,
+    });
+    controller.beginSampling();
+
+    expect(controller.handleCanvasSample({event:{}, documentPoint:{x:8, y:9}})).toBe(true);
+    expect(preview).toHaveBeenCalledWith('#7c3aed');
+    expect(commit).toHaveBeenCalledWith('#7c3aed');
+    expect(editor.setFgColor).not.toHaveBeenCalled();
+    expect(controller.getState()).toMatchObject({sampling:false, target:null, draft:'#7c3aed'});
+    controller.destroy();
+  });
+
+  it('restores a custom text color when sampling is cancelled', () => {
+    const {controller} = createHarness();
+    const preview = vi.fn();
+    const cancel = vi.fn();
+    controller.start();
+    controller.open('text', document.createElement('button'), {
+      color:'#123456',
+      onPreview:preview,
+      onCancel:cancel,
+    });
+    controller.setDraft('#abcdef');
+    controller.beginSampling();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+
+    expect(preview).toHaveBeenCalledWith('#abcdef');
+    expect(cancel).toHaveBeenCalledWith('#123456');
+    expect(controller.getState()).toMatchObject({sampling:false, target:null, draft:'#123456'});
+    controller.destroy();
+  });
 });

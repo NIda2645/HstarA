@@ -304,7 +304,9 @@ describe('OpenShop core object', () => {
     OS.setTool('text');
     OS.onMouseDown({e:{}, target:null});
 
+    expect(OS.state.textColor).toBe('#000000');
     expect(OS.canvas.getObjects()).toHaveLength(1);
+    expect(OS.canvas.getObjects()[0].fill).toBe('#000000');
     expect(OS.layers).toHaveLength(2);
     expect(OS.layers[0].objects).toHaveLength(0);
     expect(OS.layers[1]).toMatchObject({name:'Type here', objects:[OS.canvas.getObjects()[0]]});

@@ -372,6 +372,35 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
+  it('uses the shared color panel for live text preview and one committed history entry', async () => {
+    const {controller, canvas, textObject, editor} = createHarness();
+    editor._colorPanelController = {open:vi.fn()};
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    const color = document.querySelector('[data-text-color]');
+    color.click();
+    expect(editor._colorPanelController.open).toHaveBeenCalledOnce();
+    const [target, anchor, binding] = editor._colorPanelController.open.mock.calls[0];
+    expect(target).toBe('text');
+    expect(anchor).toBe(color);
+    expect(binding).toMatchObject({
+      color:'#ffffff',
+      title:'选择文字颜色',
+      commitOnOutside:true,
+    });
+
+    binding.onPreview('#22c55e');
+    expect(textObject.set).toHaveBeenCalledWith({fill:'#22c55e'});
+    expect(editor.state.textColor).toBe('#22c55e');
+    expect(color.dataset.value).toBe('#22c55e');
+    expect(editor.saveHistory).not.toHaveBeenCalled();
+
+    binding.onCommit('#22c55e');
+    expect(editor.saveHistory).toHaveBeenCalledOnce();
+    controller.destroy();
+  });
+
   it('applies top-bar changes back to the active text object', async () => {
     const {controller, canvas, textObject} = createHarness();
     await controller.start();

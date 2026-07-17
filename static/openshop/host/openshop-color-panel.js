@@ -88,6 +88,7 @@
       previousTool:'select',
       panel:null,
       anchor:null,
+      binding:null,
       draggingField:false,
       listeners:[],
     };
@@ -98,6 +99,12 @@
     }
 
     function targetColor(target = state.target){
+      if(state.binding) {
+        const value = typeof state.binding.getColor === 'function'
+          ? state.binding.getColor()
+          : state.binding.color;
+        return normalizeHex(value, '#000000');
+      }
       return target === 'background'
         ? normalizeHex(editor.state?.bgColor)
         : normalizeHex(editor.state?.fgColor, '#ffffff');
@@ -117,7 +124,8 @@
       const hsv = rgbToHsv(rgb);
       state.panel.dataset.target = state.target || '';
       const title = panelElement('[data-color-title]');
-      if(title) title.textContent = state.target === 'background' ? '选择背景色' : '选择前景色';
+      if(title) title.textContent = state.binding?.title
+        || (state.target === 'background' ? '选择背景色' : '选择前景色');
       const field = panelElement('[data-color-field]');
       if(field) field.style.backgroundColor = `hsl(${hsv.h} 100% 50%)`;
       const cursor = panelElement('[data-color-cursor]');
@@ -192,6 +200,7 @@
     function setDraft(value){
       state.draft = normalizeHex(value, state.draft);
       syncPanel();
+      state.binding?.onPreview?.(state.draft);
       return state.draft;
     }
 
@@ -213,10 +222,15 @@
       }));
     }
 
-    function open(target, anchor){
-      const normalizedTarget = target === 'background' ? 'background' : 'foreground';
+    function open(target, anchor, binding = null){
+      const normalizedTarget = target === 'background'
+        ? 'background'
+        : target === 'foreground'
+          ? 'foreground'
+          : String(target || 'foreground');
       if(state.sampling) cancelSampling();
       state.target = normalizedTarget;
+      state.binding = binding && typeof binding === 'object' ? binding : null;
       state.anchor = anchor || documentRef.getElementById(normalizedTarget === 'background' ? 'bg-color' : 'fg-color');
       state.original = targetColor(normalizedTarget);
       state.draft = state.original;
@@ -230,14 +244,17 @@
       hidePanel();
       state.target = null;
       state.anchor = null;
+      state.binding = null;
       if(!keepDraft) state.draft = state.original;
     }
 
     function commit(){
       if(!state.target || state.sampling) return false;
       const target = state.target;
+      const binding = state.binding;
       const color = normalizeHex(state.draft, state.original);
-      if(target === 'background') editor.setBgColor?.(color);
+      if(binding) binding.onCommit?.(color);
+      else if(target === 'background') editor.setBgColor?.(color);
       else editor.setFgColor?.(color);
       state.original = color;
       state.draft = color;
@@ -248,6 +265,7 @@
     function cancel(){
       if(state.sampling) return cancelSampling();
       state.draft = state.original;
+      state.binding?.onCancel?.(state.original);
       close({keepDraft:true});
       return true;
     }
@@ -271,6 +289,7 @@
     function cancelSampling(){
       if(!state.sampling) return false;
       state.draft = state.original;
+      state.binding?.onCancel?.(state.original);
       restoreTool();
       close({keepDraft:true});
       return true;
@@ -289,9 +308,13 @@
         const color = normalizeHex(result?.hex, '');
         if(!result?.hex || !/^#[0-9a-f]{6}$/.test(color)) throw new Error('Canvas color could not be sampled');
         const target = state.target;
+        const binding = state.binding;
         state.draft = color;
         state.original = color;
-        if(target === 'background') editor.setBgColor?.(color);
+        if(binding) {
+          binding.onPreview?.(color);
+          binding.onCommit?.(color);
+        } else if(target === 'background') editor.setBgColor?.(color);
         else editor.setFgColor?.(color);
         restoreTool();
         close({keepDraft:true});
@@ -342,7 +365,8 @@
       addListener(documentRef, 'mousedown', event => {
         if(state.sampling || !state.target || state.panel.hidden) return;
         if(state.panel.contains(event.target) || state.anchor?.contains?.(event.target)) return;
-        cancel();
+        if(state.binding?.commitOnOutside) commit();
+        else cancel();
       });
       addListener(documentRef, 'keydown', event => {
         if(event.key !== 'Escape') return;
@@ -363,6 +387,7 @@
       state.panel = null;
       state.started = false;
       state.target = null;
+      state.binding = null;
     }
 
     const controller = {

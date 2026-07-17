@@ -1008,7 +1008,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
             <option>Verdana</option><option>Times New Roman</option><option>Consolas</option><option>Impact</option>
         </select>
         <label data-i18n="Size">Size</label><input type="number" id="text-size" value="24" min="8" max="200" onchange="OS.state.textSize=+this.value">
-        <label data-i18n="Color">Color</label><input type="color" id="text-color" value="#ffffff" onchange="OS.state.textColor=this.value">
+        <label data-i18n="Color">Color</label><input type="color" id="text-color" value="#000000" onchange="OS.state.textColor=this.value">
         <label><input type="checkbox" id="text-bold" onchange="OS.state.textBold=this.checked"> B</label>
         <label><input type="checkbox" id="text-italic" onchange="OS.state.textItalic=this.checked"> I</label>
     </div>
@@ -1577,7 +1577,7 @@ const OS = {
         tool: 'select', fgColor: '#ffffff', bgColor: '#000000',
         brushSize: 8, brushOpacity: 100, brushHardness: 100, brushPreset: 'round',
         shapeFill: '#6c8cff', shapeStroke: '#ffffff', shapeStrokeWidth: 2, shapeFilled: true,
-        textFont: 'Microsoft YaHei UI', textSize: 24, textColor: '#ffffff', textBold: false, textItalic: false,
+        textFont: 'Microsoft YaHei UI', textSize: 24, textColor: '#000000', textBold: false, textItalic: false,
         gradFrom: '#6c8cff', gradTo: '#000000', gradType: 'linear',
         patternType: 'checkerboard', patternScale: 20, patternColor: '#6c8cff',
         cloneSize: 20, sprayDensity: 30, sprayWidth: 30, healingSize: 15,
