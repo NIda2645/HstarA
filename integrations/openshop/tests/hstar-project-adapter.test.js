@@ -63,6 +63,9 @@ function createEditor() {
            ...(properties.includes('hstarKerningMode')
              ? {hstarKerningMode:object.hstarKerningMode}
              : {}),
+           ...(properties.includes('hstarOcrFontCandidates')
+             ? {hstarOcrFontCandidates:object.hstarOcrFontCandidates}
+             : {}),
         }))
       }))
     },
@@ -474,6 +477,24 @@ describe('Hstar OpenShop project adapter', () => {
     expect(project.editor.objects[0]).toMatchObject({
       type:'i-text',
       hstarKerningMode:'metrics',
+    });
+  });
+
+  it('persists OCR font candidates with the editable text object', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const text = {
+      type:'i-text', text:'经典奶茶',
+      hstarOcrFontCandidates:['Alibaba PuHuiTi', 'Microsoft YaHei UI'],
+    };
+    editor.canvas.add(text);
+    editor.layers[0].objects.push(text);
+
+    const project = adapter.serializeProject({editor, context, now:() => 3000});
+
+    expect(project.editor.objects[0]).toMatchObject({
+      type:'i-text',
+      hstarOcrFontCandidates:['Alibaba PuHuiTi', 'Microsoft YaHei UI'],
     });
   });
 

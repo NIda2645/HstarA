@@ -457,6 +457,9 @@ body.studio-theme-dark .rh-preview-random-btn:not(.active) { background:var(--so
 .rh-preview-switch span { display:block; width:16px; height:16px; border-radius:999px; background:var(--faint); transition:transform .15s ease; }
 .rh-preview-switch.on { background:var(--accent); }
 .rh-preview-switch.on span { background:var(--bg); transform:translateX(16px); }
+
+.api-proxy-toggle { display:flex; align-items:center; gap:9px; min-height:38px; color:var(--text); font-size:12px; font-weight:700; cursor:pointer; }
+.api-proxy-toggle input { width:16px; height:16px; margin:0; accent-color:var(--accent); cursor:pointer; }
 .rh-preview-empty { padding:16px 10px; border:1px dashed var(--line); border-radius:10px; color:var(--faint); text-align:center; font-size:11.5px; font-weight:750; }
 .rh-preview-run { height:36px; border-radius:10px; background:var(--text); color:var(--bg); display:flex; align-items:center; justify-content:center; gap:8px; font-size:12px; font-weight:900; }
 .rh-preview-run:disabled { opacity:.72; cursor:not-allowed; }

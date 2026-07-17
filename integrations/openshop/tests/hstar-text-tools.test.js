@@ -20,6 +20,7 @@ class FakeIText {
     this.type = 'i-text';
     this.text = text;
     this.width = Math.max(1, text.length * Number(options.fontSize || 16) * 0.55);
+    this.height = Math.max(1, Number(options.fontSize || 16) * 1.2);
     Object.assign(this, options);
   }
 
@@ -247,8 +248,9 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(result.blocks).toEqual(blocks);
     expect(createdTasks[0]).toMatchObject({toolId:'text-extract', sourceAssetId:SOURCE_ASSET_ID});
     expect(sourceLayer.objects).toHaveLength(1);
-    const extractedLayer = controller.applyTextExtraction();
-    expect(editor.layers.indexOf(extractedLayer)).toBe(editor.layers.indexOf(sourceLayer) + 1);
+    const extractedLayers = controller.applyTextExtraction();
+    expect(extractedLayers).toHaveLength(1);
+    expect(editor.layers.indexOf(extractedLayers[0])).toBe(editor.layers.indexOf(sourceLayer) + 1);
     controller.destroy();
   });
 
@@ -275,10 +277,11 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(assetApi.upload).toHaveBeenCalledWith(expect.objectContaining({role:'ai-source'}));
     expect(document.getElementById('hstar-text-tools-panel').textContent).toContain('低置信度');
 
-    const layer = controller.applyTextExtraction();
-    expect(layer.name).toBe('提取文字');
-    expect(layer.objects).toHaveLength(1);
-    expect(layer.objects[0]).toMatchObject({
+    const layers = controller.applyTextExtraction();
+    expect(layers).toHaveLength(1);
+    expect(layers[0].name).toBe('中文 English');
+    expect(layers[0].objects).toHaveLength(1);
+    expect(layers[0].objects[0]).toMatchObject({
       type:'i-text', text:'中文 English', left:192, top:216,
       fontFamily:'Microsoft YaHei UI', fontSize:48, fill:'#112233', fontWeight:600,
     });
@@ -286,6 +289,69 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(sourceLayer.objects).toContain(sourceImage);
     expect(editor.saveHistory).toHaveBeenCalledWith('文字提取');
     expect(aiClient.createTask).toHaveBeenCalledTimes(1);
+    controller.destroy();
+  });
+
+  it('creates one precisely fitted editable layer per OCR block in reading order', async () => {
+    const blocks = [
+      {
+        id:'ocr-title', text:'经典奶茶', language:'zh', confidence:0.98, lowConfidence:false,
+        quad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
+        font:{familyCandidates:['Missing Font', 'Microsoft YaHei UI'], size:48, weight:700, style:'normal'},
+        color:'#7b3f12', align:'center', rotation:0, paragraphId:'title', lineIndex:0,
+      },
+      {
+        id:'ocr-subtitle', text:'Bubble Milk Tea', language:'en', confidence:0.94, lowConfidence:false,
+        quad:[{x:0.2,y:0.4},{x:0.7,y:0.42},{x:0.69,y:0.46},{x:0.19,y:0.44}],
+        font:{familyCandidates:['Missing Font', 'Arial'], size:22, weight:400, style:'italic'},
+        color:'#d77721', align:'left', rotation:2, paragraphId:'subtitle', lineIndex:0,
+      },
+    ];
+    const {controller, editor, sourceLayer, sourceImage, objects} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:960, height:540, blocks}}},
+    });
+    const existingTopObject = {type:'rect', name:'existing top object'};
+    const existingTopLayer = {
+      layerId:'layer-existing-top', name:'Existing top layer', visible:true, opacity:100,
+      blend:'source-over', objects:[existingTopObject],
+    };
+    editor.layers.push(existingTopLayer);
+    editor.canvas.add(existingTopObject);
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const layers = controller.applyTextExtraction();
+    expect(layers).toHaveLength(2);
+    expect(editor.layers).toEqual([sourceLayer, ...layers, existingTopLayer]);
+    expect(objects).toEqual([sourceImage, ...layers.map(layer => layer.objects[0]), existingTopObject]);
+    expect(sourceLayer.objects).toEqual([sourceImage]);
+    expect(layers.map(layer => layer.name)).toEqual(['经典奶茶', 'Bubble Milk Tea']);
+    expect(layers.every(layer => layer.objects.length === 1)).toBe(true);
+    expect(new Set(layers.map(layer => layer.layerId)).size).toBe(2);
+
+    const title = layers[0].objects[0];
+    expect(title).toMatchObject({
+      type:'i-text', text:'经典奶茶', left:192, top:216,
+      fontFamily:'Microsoft YaHei UI', fontSize:96, fill:'#7b3f12', fontWeight:700,
+      fontStyle:'normal', textAlign:'center', editable:true,
+      hstarOcrBlockId:'ocr-title', hstarOcrSourceLayerId:'layer-source',
+      hstarOcrFontCandidates:['Missing Font', 'Microsoft YaHei UI'],
+    });
+    expect(title.width * title.scaleX).toBeCloseTo(576, 3);
+    expect(title.height * title.scaleY).toBeCloseTo(108, 3);
+
+    const subtitle = layers[1].objects[0];
+    expect(subtitle).toMatchObject({
+      type:'i-text', text:'Bubble Milk Tea', left:384, top:432,
+      fontFamily:'Arial', fontSize:44, fill:'#d77721', fontWeight:400,
+      fontStyle:'italic', textAlign:'left', editable:true,
+      hstarOcrBlockId:'ocr-subtitle', hstarOcrSourceLayerId:'layer-source',
+      hstarOcrFontCandidates:['Missing Font', 'Arial'],
+    });
+    expect(subtitle.angle).toBeCloseTo(1.289, 2);
+    expect(subtitle.width * subtitle.scaleX).toBeCloseTo(960.243, 2);
+    expect(subtitle.height * subtitle.scaleY).toBeCloseTo(47.275, 2);
+    expect(editor.activeLayerIdx).toBe(2);
     controller.destroy();
   });
 

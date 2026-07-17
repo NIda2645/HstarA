@@ -771,6 +771,11 @@
       'hstarLayerId',
       'hstarSnapAnchor',
       'hstarKerningMode',
+      'hstarOcrBlockId',
+      'hstarOcrSourceLayerId',
+      'hstarOcrConfidence',
+      'hstarOcrLanguage',
+      'hstarOcrFontCandidates',
       'assetRef',
     ]));
     removeBoundaryPatternBytes(editorJson);

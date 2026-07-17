@@ -1369,6 +1369,7 @@ def normalize_provider(item):
         "base_url": base_url,
         "protocol": protocol,
         "protocol_manual": protocol_manual,
+        "use_system_proxy": bool(item.get("use_system_proxy", True)),
         "image_request_mode": image_request_mode,
         "image_generation_endpoint": image_generation_endpoint,
         "image_edit_endpoint": image_edit_endpoint,
@@ -1466,6 +1467,11 @@ def get_api_provider(provider_id="comfly"):
     if not provider.get("enabled", True):
         raise HTTPException(status_code=400, detail=f"API 平台已禁用：{provider.get('name') or target}")
     return provider
+
+def provider_uses_system_proxy(provider, default=True):
+    if not isinstance(provider, dict):
+        return bool(default)
+    return provider.get("use_system_proxy", default) is not False
 
 def get_api_provider_exact(provider_id: str):
     providers = load_api_providers()
@@ -2674,6 +2680,7 @@ class ApiProviderPayload(BaseModel):
     base_url: str = ""
     protocol: str = "openai"
     protocol_manual: bool = False
+    use_system_proxy: bool = True
     image_request_mode: str = "openai"
     image_generation_endpoint: str = ""
     image_edit_endpoint: str = ""
@@ -4546,7 +4553,11 @@ async def generate_linapi_provider_image(prompt, size, model, reference_images=N
     if quality not in {"auto", "low", "medium", "high"}:
         quality = "auto"
     timeout = httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         if image_refs:
             files = []
             opened = []
@@ -9631,7 +9642,10 @@ async def generate_modelscope_provider_image(prompt, size, model, reference_imag
         payload["image_url"] = refs
 
     api_root = modelscope_image_api_root()
-    async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(
+        timeout=AI_REQUEST_TIMEOUT,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         submit_res = await client.post(f"{api_root}/images/generations", headers=headers, json=payload)
         submit_res.raise_for_status()
         raw = submit_res.json()
@@ -9864,7 +9878,11 @@ async def generate_qzz_provider_image(prompt, size, model, reference_images=None
     refs = [ref for ref in (reference_images or []) if ref.get("url")]
     image_refs = image_references(refs)
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=request_timeout,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
         quality = str(quality or "").strip().lower()
         if quality in {"low", "medium", "high"}:
@@ -9888,7 +9906,10 @@ async def generate_baofu_provider_image(prompt, size, model, reference_images=No
     refs = [ref for ref in (reference_images or []) if ref.get("url")]
     image_urls = require_converted_image_refs(refs[:4], [reference_to_data_url(ref, max_size=1536) for ref in refs[:4]], "Baofu 图生图")
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=request_timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=request_timeout,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
         if image_urls:
             body["image_urls"] = image_urls
@@ -9915,7 +9936,11 @@ async def generate_bananarouter_provider_image(prompt, size, model, reference_im
     if quality not in {"low", "medium", "high"}:
         quality = ""
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=request_timeout,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
         if quality:
             body["quality"] = quality
@@ -10106,7 +10131,10 @@ async def generate_moonly_provider_image(prompt, size, model, reference_images=N
     if quality_value in {"low", "medium", "high"}:
         body["quality"] = quality_value
     timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        trust_env=provider_uses_system_proxy(provider, default=False),
+    ) as client:
         response = await client.post(f"{moonly_base_url(provider)}/v1/images/generations", headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
         raw = response.json()
@@ -10146,7 +10174,11 @@ async def generate_toapis_provider_image(prompt, size, model, reference_images=N
     aspect_ratio = toapis_aspect_ratio(size)
     source_refs = [ref for ref in (reference_images or [])[:14] if ref.get("url")]
     refs = require_converted_image_refs(source_refs, [otuapi_reference_url(ref) for ref in source_refs], "ToAPIs 图生图")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         body = {
             "model": model_name,
             "prompt": prompt.strip(),
@@ -10194,7 +10226,11 @@ async def generate_otuapi_provider_image(prompt, size, model, reference_images=N
     base_url = otuapi_base_url(provider)
     source_refs = [ref for ref in (reference_images or [])[:14] if ref.get("url")]
     refs = require_converted_image_refs(source_refs, [otuapi_reference_url(ref) for ref in source_refs], "OtuAPI 图生图")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         if is_otuapi_async_image_model(model_name):
             body = {
                 "model": model_name,
@@ -10317,7 +10353,11 @@ async def generate_grsai_provider_image(prompt, size, model, reference_images=No
     else:
         body["aspectRatio"] = grsai_aspect_ratio(size)
         body["imageSize"] = grsai_resolution_from_size(size)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         response = await client.post(f"{grsai_base_url(provider)}/v1/api/generate", headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
         raw = response.json()
@@ -10363,9 +10403,10 @@ async def generate_gemini_provider_image(prompt, size, model, reference_images=N
                 "imageConfig": gemini_image_config(size),
             },
         }
-    client_kwargs = {"timeout": httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)}
-    if is_linapi_provider(provider):
-        client_kwargs["trust_env"] = False
+    client_kwargs = {
+        "timeout": httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        "trust_env": provider_uses_system_proxy(provider, default=not is_linapi_provider(provider)),
+    }
     async with httpx.AsyncClient(**client_kwargs) as client:
         response = await client.post(endpoint, headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
@@ -10394,7 +10435,10 @@ async def generate_volcengine_provider_image(prompt, size, model, reference_imag
     images = require_converted_image_refs(source_refs, [volcengine_image_payload(ref) for ref in source_refs], "火山引擎图生图")
     if images:
         body["image"] = images
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         response = await client.post(endpoint, headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
         raw = response.json()
@@ -10689,7 +10733,11 @@ def runninghub_registry_model_from_id(model_id, output_type=""):
 async def fetch_runninghub_llm_models(provider=None):
     headers = runninghub_api_headers(provider)
     errors = []
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=20,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         for url in RUNNINGHUB_LLM_MODELS_URLS:
             try:
                 resp = await client.get(url, headers=headers)
@@ -10716,7 +10764,11 @@ async def fetch_runninghub_model_registry(provider=None, include_fallback=True, 
     errors = []
     source = ""
     items = []
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=30,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         for source_name, url in urls:
             try:
                 if source_name == "local":
@@ -11302,7 +11354,10 @@ async def generate_runninghub_entry_image(prompt, size, model, reference_images,
         if height and "height" in names:
             return height
         return None
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         source_refs = [ref for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX] if (ref.get("url") if isinstance(ref, dict) else ref)]
         uploaded = []
         for ref in source_refs:
@@ -11413,7 +11468,10 @@ async def generate_runninghub_provider_image(prompt, size, model, reference_imag
     quality_field = runninghub_schema_field(params, "quality")
     if quality_field:
         body["quality"] = runninghub_schema_value(quality_field, "medium")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0),
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         source_refs = [ref for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX] if ref.get("url")]
         image_urls = []
         for ref in source_refs:
@@ -11574,7 +11632,10 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     image_refs = [ref for ref in refs if ref not in mask_refs]
     image_request_mode = effective_image_request_mode(provider, model)
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0) if (is_gpt2 or is_apimart or image_request_mode in {"openai-json", "openai-video-proxy", "openai-responses"}) else AI_REQUEST_TIMEOUT
-    async with httpx.AsyncClient(timeout=request_timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=request_timeout,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         response = None
         async def post_openai_edits(edit_files=None):
             data = {"model": model, "prompt": prompt, "size": size}
@@ -14309,6 +14370,7 @@ class TestConnectionPayload(BaseModel):
     provider_id: str = ""
     protocol: str = "openai"
     protocol_manual: bool = False
+    use_system_proxy: bool = True
     image_request_mode: str = "openai"
 
 def protocol_from_payload(payload):
@@ -14604,7 +14666,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
         raise HTTPException(status_code=400, detail=f"请先填写或保存 {key_name}")
     url = upstream_models_url(base_url, protocol)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, trust_env=payload.use_system_proxy) as client:
             resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("Location") or resp.headers.get("location") or ""
@@ -14651,7 +14713,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
     except httpx.HTTPError as e:
         if protocol == "volcengine":
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with httpx.AsyncClient(timeout=15, trust_env=payload.use_system_proxy) as client:
                     detected, probe = await probe_volcengine_auto_detect(client, base_url, api_key)
                     if detected:
                         message = f"{probe.get('message') or '方舟任务接口可达'}；但模型列表请求失败。请按实际方舟控制台模型名称手动填写视频模型。"
@@ -14691,7 +14753,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
         raise HTTPException(status_code=400, detail="请先填写或保存 API Key")
     if protocol == "volcengine":
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=15, trust_env=payload.use_system_proxy) as client:
                 task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
                 if task_ok:
                     return {
@@ -14722,7 +14784,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
     tasks_base = base_url if base_url.endswith("/v1") else f"{base_url}/v1"
     probe_url = f"{tasks_base}/tasks/healthcheck_probe_do_not_submit"
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, trust_env=payload.use_system_proxy) as client:
             resp = await client.get(probe_url, headers={"Authorization": bearer_auth_value(api_key), "Accept": "application/json"})
             try:
                 body = resp.json()
@@ -14806,7 +14868,13 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
-async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str = "openai", image_request_mode: str = "openai"):
+async def fetch_models_from_upstream(
+    base_url: str,
+    api_key: str,
+    protocol: str = "openai",
+    image_request_mode: str = "openai",
+    use_system_proxy: bool = True,
+):
     """从上游模型列表端点拉取模型，并按名称做轻量分类。"""
     protocol = protocol if protocol in SUPPORTED_PROVIDER_PROTOCOLS else "openai"
     if protocol == "codex":
@@ -14838,7 +14906,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
         raise HTTPException(status_code=400, detail=f"请先填写或保存 {key_name}")
     url = upstream_models_url(base_url, protocol)
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, trust_env=use_system_proxy) as client:
             resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
             endpoint_label = "/v1beta/models" if protocol == "gemini" else "/api/v3/models" if protocol == "volcengine" else "/openapi/v2/models" if protocol == "runninghub" else "/v1/models"
             if resp.status_code in (301, 302, 303, 307, 308):
@@ -14906,7 +14974,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
     except httpx.HTTPError as e:
         if protocol == "volcengine":
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with httpx.AsyncClient(timeout=15, trust_env=use_system_proxy) as client:
                     detected, probe = await probe_volcengine_auto_detect(client, base_url, api_key)
                     if detected:
                         payload = volcengine_default_model_payload(
@@ -14955,7 +15023,13 @@ async def fetch_upstream_models_from_payload(payload: TestConnectionPayload):
     """按页面当前表单值拉取模型，支持新增平台未保存时直接使用临时 Base URL / Key。"""
     protocol = protocol_from_payload(payload)
     api_key = api_key_from_payload(payload, protocol)
-    return await fetch_models_from_upstream(payload.base_url, api_key, protocol, payload.image_request_mode)
+    return await fetch_models_from_upstream(
+        payload.base_url,
+        api_key,
+        protocol,
+        payload.image_request_mode,
+        payload.use_system_proxy,
+    )
 
 @app.get("/api/providers/{provider_id}/fetch-models")
 async def fetch_upstream_models(provider_id: str):
@@ -14970,7 +15044,13 @@ async def fetch_upstream_models(provider_id: str):
         api_key = provider_env_key_value(provider["id"])
     if not api_key:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider_id} 未配置 API Key")
-    return await fetch_models_from_upstream(provider.get("base_url") or "", api_key, provider_protocol(provider), provider.get("image_request_mode") or "openai")
+    return await fetch_models_from_upstream(
+        provider.get("base_url") or "",
+        api_key,
+        provider_protocol(provider),
+        provider.get("image_request_mode") or "openai",
+        provider.get("use_system_proxy", True),
+    )
 
 async def build_online_image_result(payload: OnlineImageRequest):
     provider = get_api_provider(payload.provider_id)
@@ -16339,7 +16419,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
         return {"text": text, "model": model, "raw_usage": None, "raw": raw}
     chat_base, chat_hdrs, model = resolve_chat_provider(payload.provider, payload.model, payload.ms_model)
     # 判断协议：APIMart 异步 vs 标准 OpenAI
-    _llm_provider = get_api_provider(payload.provider) if payload.provider not in ("modelscope",) else {}
+    _llm_provider = get_api_provider(payload.provider)
     _is_apimart = is_apimart_provider(_llm_provider)
     system_prompt = (payload.system_prompt or "").strip()
     upstream_messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
@@ -16384,7 +16464,10 @@ async def canvas_llm(payload: CanvasLLMRequest):
         upstream_messages.append({"role": "user", "content": payload.message})
     raw = None
     try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+        async with httpx.AsyncClient(
+            timeout=AI_REQUEST_TIMEOUT,
+            trust_env=_llm_provider.get("use_system_proxy", True),
+        ) as client:
             req_body = {"model": model, "messages": upstream_messages}
             if _is_apimart:
                 req_body["stream"] = False   # APIMart 默认流式，强制关闭

@@ -312,6 +312,51 @@
       };
     }
 
+    function quadGeometry(quad, canvasWidth, canvasHeight, fallbackRotation = 0){
+      const points = (Array.isArray(quad) ? quad : []).map(point => ({
+        x:Number(point?.x) * canvasWidth,
+        y:Number(point?.y) * canvasHeight,
+      }));
+      if(points.length !== 4 || points.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))){
+        throw new Error('文字块坐标无效');
+      }
+      const topEdge = {x:points[1].x - points[0].x, y:points[1].y - points[0].y};
+      const sideEdge = {x:points[3].x - points[0].x, y:points[3].y - points[0].y};
+      const width = Math.hypot(topEdge.x, topEdge.y);
+      const height = Math.hypot(sideEdge.x, sideEdge.y);
+      if(width <= 0 || height <= 0) throw new Error('文字块坐标没有有效面积');
+      const quadAngle = Math.atan2(topEdge.y, topEdge.x) * 180 / Math.PI;
+      const requestedAngle = Number(fallbackRotation);
+      return {
+        left:points[0].x,
+        top:points[0].y,
+        width,
+        height,
+        angle:Math.abs(quadAngle) > 0.01
+          ? quadAngle
+          : (Number.isFinite(requestedAngle) ? requestedAngle : 0),
+      };
+    }
+
+    function fontCandidatesForBlock(block){
+      return Array.isArray(block?.font?.familyCandidates)
+        ? [...new Set(block.font.familyCandidates.map(clean).filter(Boolean))]
+        : [];
+    }
+
+    function fontFamilyForBlock(block, candidates = fontCandidatesForBlock(block)){
+      const available = candidates.find(family => fontManager.isAvailable?.(family));
+      const fallback = ['zh', 'mixed'].includes(clean(block?.language).toLowerCase())
+        ? 'Microsoft YaHei UI'
+        : 'Arial';
+      const requested = available || candidates[0] || fallback;
+      return clean(fontManager.resolveFamily?.(requested)) || requested;
+    }
+
+    function textLayerName(text, index){
+      return clean(text).replace(/\s+/g, ' ').slice(0, 32) || `提取文字 ${index + 1}`;
+    }
+
     function insertLayerAboveSource(layer, sourceLayerId = ''){
       const sourceIndex = clean(sourceLayerId)
         ? editor.layers.findIndex(item => clean(item?.layerId) === clean(sourceLayerId))
@@ -321,6 +366,14 @@
       editor.layers.splice(index, 0, layer);
       editor.activeLayerIdx = index;
       return layer;
+    }
+
+    function syncCanvasObjectOrder(){
+      if(typeof editor.canvas?.moveTo !== 'function' || typeof editor.canvas?.getObjects !== 'function') return;
+      const layerObjects = editor.layers.flatMap(layer => Array.isArray(layer?.objects) ? layer.objects : []);
+      const managed = new Set(layerObjects);
+      const unmanaged = editor.canvas.getObjects().filter(object => !managed.has(object));
+      [...unmanaged, ...layerObjects].forEach((object, index) => editor.canvas.moveTo(object, index));
     }
 
     function pendingOcrRecord(){
@@ -347,47 +400,74 @@
 
     function applyTextExtraction(blocks = state.reviewBlocks){
       if(!Array.isArray(blocks) || !blocks.length) throw new Error('没有可确认的文字提取结果');
-      const layerId = createId('hstar-text-layer').replaceAll('-', '_');
-      const layer = {
-        layerId, name:'提取文字', visible:true, opacity:100,
-        blend:'source-over', objects:[],
-      };
       const record = state.reviewTaskRecord
         || [...taskRecords()].reverse().find(item => item.toolId === TOOL_EXTRACT && item.status === 'succeeded' && !item.appliedAt);
+      const canvasWidth = Number(editor.canvasW || record?.result?.width || 1920);
+      const canvasHeight = Number(editor.canvasH || record?.result?.height || 1080);
+      const resultHeight = Number(record?.result?.height || canvasHeight);
+      const fontScale = resultHeight > 0 ? canvasHeight / resultHeight : 1;
+      const sourceLayerId = clean(record?.sourceLayerId);
+      const createdLayers = [];
       blocks.forEach((block, index) => {
         const text = clean(block?.text);
         if(!text) return;
-        const bounds = quadBounds(block.quad);
-        const candidates = Array.isArray(block.font?.familyCandidates) ? block.font.familyCandidates.map(clean).filter(Boolean) : [];
-        const fontFamily = candidates[0] || 'Microsoft YaHei UI';
-        const inferredSize = Math.max(8, bounds.height * Number(editor.canvasH || 1080) * 0.75);
-        const fontSize = Math.max(8, Number(block.font?.size || inferredSize));
+        const geometry = quadGeometry(block.quad, canvasWidth, canvasHeight, block.rotation);
+        const reportedSize = Number(block?.font?.size);
+        const inferredSize = Math.max(1, geometry.height * 0.8);
+        const fontSize = Math.max(1, Number.isFinite(reportedSize) && reportedSize > 0
+          ? reportedSize * fontScale
+          : inferredSize);
+        const fontCandidates = fontCandidatesForBlock(block);
+        const layerId = createId('hstar-text-layer').replaceAll('-', '_');
         const object = new fabricRef.IText(text, {
-          left:Math.round(bounds.left * Number(editor.canvasW || 1920)),
-          top:Math.round(bounds.top * Number(editor.canvasH || 1080)),
-          fontFamily,
+          left:Math.round(geometry.left),
+          top:Math.round(geometry.top),
+          originX:'left',
+          originY:'top',
+          fontFamily:fontFamilyForBlock(block, fontCandidates),
           fontSize,
           fill:clean(block.color) || '#ffffff',
           fontWeight:Number(block.font?.weight || 400),
           fontStyle:block.font?.style === 'italic' ? 'italic' : 'normal',
           textAlign:['left', 'center', 'right', 'justify'].includes(block.align) ? block.align : 'left',
-          angle:Number(block.rotation || 0),
+          angle:geometry.angle,
           editable:true,
           selectable:true,
-          name:`提取文字 ${index + 1}`,
+          name:textLayerName(text, index),
           hstarLayerId:layerId,
+          hstarOcrBlockId:clean(block.id) || `ocr-${index + 1}`,
+          hstarOcrSourceLayerId:sourceLayerId,
           hstarOcrConfidence:Number(block.confidence || 0),
           hstarOcrLanguage:clean(block.language) || 'unknown',
+          hstarOcrFontCandidates:fontCandidates,
         });
-        const targetWidth = bounds.width * Number(editor.canvasW || 1920);
-        if(targetWidth > 0 && Number(object.width) > 0 && object.width > targetWidth){
-          object.scaleX = targetWidth / object.width;
-        }
-        layer.objects.push(object);
+        const naturalWidth = Math.max(1, Number(object.width || geometry.width));
+        const naturalHeight = Math.max(1, Number(object.height || fontSize));
+        const fittedScale = {
+          scaleX:geometry.width / naturalWidth,
+          scaleY:geometry.height / naturalHeight,
+        };
+        if(typeof object.set === 'function') object.set(fittedScale);
+        else Object.assign(object, fittedScale);
+        object.setCoords?.();
+        createdLayers.push({
+          layerId,
+          name:textLayerName(text, index),
+          visible:true,
+          opacity:100,
+          blend:'source-over',
+          objects:[object],
+        });
         editor.canvas.add?.(object);
       });
-      if(!layer.objects.length) throw new Error('校对结果没有可创建的文字');
-      insertLayerAboveSource(layer, record?.sourceLayerId);
+      if(!createdLayers.length) throw new Error('校对结果没有可创建的文字');
+      const sourceIndex = sourceLayerId
+        ? editor.layers.findIndex(item => clean(item?.layerId) === sourceLayerId)
+        : Number(editor.activeLayerIdx || 0);
+      const insertIndex = Math.max(0, Math.min(editor.layers.length, sourceIndex + 1));
+      editor.layers.splice(insertIndex, 0, ...createdLayers);
+      editor.activeLayerIdx = insertIndex + createdLayers.length - 1;
+      syncCanvasObjectOrder();
       editor.canvas.renderAll?.();
       editor.updateLayersPanel?.();
       editor.saveHistory?.('文字提取');
@@ -398,7 +478,7 @@
       state.reviewTaskRecord = null;
       if(!showOcrReview(pendingOcrRecord())) setStatus('applied');
       markDirty('Apply extracted text');
-      return layer;
+      return createdLayers;
     }
 
     async function createRemovedImageLayer(result, taskRecord = null){

@@ -6,6 +6,7 @@ const statusEl = document.getElementById('status');
 const nameInput = document.getElementById('nameInput');
 const idInput = document.getElementById('idInput');
 const baseInput = document.getElementById('baseInput');
+const systemProxyInput = document.getElementById('systemProxyInput');
 const protocolInput = document.getElementById('protocolInput');
 const imageRequestModeInput = document.getElementById('imageRequestModeInput');
 const imageEditRouteInput = document.getElementById('imageEditRouteInput');
@@ -797,6 +798,7 @@ function syncEditor(){
         ? 'volcengine'
         : (protocolInput?.value || 'openai');
     item.base_url = CLI_PROTOCOLS.has(selectedProtocol) ? '' : baseInput.value.trim();
+    if(systemProxyInput) item.use_system_proxy = systemProxyInput.checked;
     // 固定平台不从协议下拉读取
     item.protocol = selectedProtocol;
     item.image_request_mode = normalizeImageRequestMode(
@@ -2492,6 +2494,7 @@ function renderEditor(){
     clearVerifyResult();
     baseInput.placeholder = EXAMPLE_BASE_URL;
     baseInput.value = item.base_url || '';
+    if(systemProxyInput) systemProxyInput.checked = item.use_system_proxy !== false;
     const lockedApi = lockedRecommendedApi(item);
     if(lockedApi) applyLockedRecommendedProtocol(item);
     if(protocolInput){
@@ -2998,6 +3001,7 @@ async function probeAsync(){
                     api_key:apiKey,
                 provider_id:'runninghub',
                 protocol:'runninghub',
+                use_system_proxy:systemProxyInput?.checked !== false,
                 image_request_mode:'openai'
             })
             }).then(r => readApiJsonResponse(r, '请求失败'));
@@ -3014,6 +3018,7 @@ async function probeAsync(){
                 api_key: apiKey,
                 provider_id: item.id,
                 protocol: currentProtocol,
+                use_system_proxy:systemProxyInput?.checked !== false,
                 image_request_mode: imageRequestModeInput?.value || item.image_request_mode || 'openai'
             })
         }).then(r => readApiJsonResponse(r, '请求失败'));
@@ -3077,6 +3082,7 @@ async function testConnection(){
                 api_key: apiKey,
                 provider_id: runninghubContext ? 'runninghub' : item.id,
                 protocol: runninghubContext ? 'runninghub' : (protocolInput?.value || 'openai'),
+                use_system_proxy:systemProxyInput?.checked !== false,
                 image_request_mode: imageRequestModeInput?.value || item.image_request_mode || 'openai'
             })
         }).then(r => readApiJsonResponse(r, tr('api.urlInvalid') || '验证失败'));
@@ -3194,6 +3200,7 @@ async function fetchModels(){
                 api_key:apiKey,
                 provider_id:runninghubContext ? 'runninghub' : item.id,
                 protocol:runninghubContext ? 'runninghub' : (protocolInput?.value || 'openai'),
+                use_system_proxy:systemProxyInput?.checked !== false,
                 image_request_mode:imageRequestModeInput?.value || item.image_request_mode || 'openai'
             })
         }).then(r => readApiJsonResponse(r, tr('api.urlInvalid') || '拉取失败'));
@@ -3580,7 +3587,7 @@ function addProvider(){
     let id = 'custom-api';
     let index = 2;
     while(providers.some(item => item.id === id)) id = `custom-api-${index++}`;
-    providers.push({id, name:'API', base_url:'', protocol:'openai', image_request_mode:'openai', image_edit_route:'general', image_generation_endpoint:'', image_edit_endpoint:'', enabled:true, primary:false, image_models:[], chat_models:[], video_models:[], has_key:false, key_preview:''});
+    providers.push({id, name:'API', base_url:'', protocol:'openai', use_system_proxy:true, image_request_mode:'openai', image_edit_route:'general', image_generation_endpoint:'', image_edit_endpoint:'', enabled:true, primary:false, image_models:[], chat_models:[], video_models:[], has_key:false, key_preview:''});
     selectedId = id;
     renderEditor();
 }
@@ -3833,6 +3840,7 @@ async function saveProviders(){
                 chat_models:item.chat_models || [],
                 video_models:item.video_models || [],
                 protocol_manual:item.protocol_manual === true,
+                use_system_proxy:item.use_system_proxy !== false,
                 model_protocols:(item.model_protocols && typeof item.model_protocols === 'object') ? item.model_protocols : {},
                 ms_loras:item.id === 'modelscope' ? (item.ms_loras || []) : [],
                 ms_defaults_version:item.id === 'modelscope' ? (item.ms_defaults_version || 1) : 0,

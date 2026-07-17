@@ -234,12 +234,15 @@ def build_ocr_prompt(width: int, height: int) -> str:
     height = _positive_dimension(height, "height")
     return (
         f"Read every visible Chinese, English, and mixed-language text block in this {width}x{height} image. "
-        "Return JSON only with a top-level blocks array. Every block must contain text, quad, language, "
-        "confidence, font, color, align, rotation, paragraphId, and lineIndex. quad must contain four "
-        "clockwise points with normalized x and y values from 0 to 1. Preserve punctuation, whitespace, "
-        "line order, and the original 中文/English spelling. font must contain familyCandidates, size, "
-        "weight, and style. Do not return markdown or image descriptions. If reliable text positions "
-        "cannot be determined, return {\"blocks\":[]}."
+        "Return JSON only with a top-level blocks array, in natural reading order. Return one block per "
+        "visually distinct text line or independently styled text run; never merge unrelated labels, titles, "
+        "or paragraphs. Every block must contain text, quad, language, confidence, font, color, align, "
+        "rotation, paragraphId, and lineIndex. quad must contain four clockwise points around the tight visible "
+        "glyph bounds, with normalized x and y values from 0 to 1. Preserve punctuation, whitespace, line "
+        "order, and the original 中文/English spelling. font must contain ordered familyCandidates, font.size "
+        "in source-image pixels, weight, and style. Return the dominant glyph fill as a #RRGGBB color and "
+        "preserve alignment and rotation. Do not return markdown or image descriptions. If reliable text "
+        "positions cannot be determined, return {\"blocks\":[]}."
     )
 
 
