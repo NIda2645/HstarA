@@ -951,6 +951,28 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-migration-") as data_di
     assert not list(root.rglob("*.tmp"))
 
 
+with tempfile.TemporaryDirectory(prefix="hstara-openshop-canvas-delete-records-") as data_dir:
+    canvas_dir = Path(data_dir) / "canvases"
+    store = OpenShopProjectStore(data_dir, canvas_dir=canvas_dir)
+    owner_z = {
+        "canvasType": "classic",
+        "canvasId": "canvas-delete-records",
+        "nodeId": "node-z",
+    }
+    owner_a = {**owner_z, "nodeId": "node-a"}
+    store.initialize("project-shared", owner_z, {"width": 320, "height": 240})
+    store.initialize("project-shared", owner_a, {"width": 320, "height": 240})
+
+    removed_records = store.delete_canvas_projects("classic", "canvas-delete-records")
+    assert removed_records == [{
+        "projectId": "project-shared",
+        "owner": owner_a,
+    }, {
+        "projectId": "project-shared",
+        "owner": owner_z,
+    }]
+
+
 async def api_lifecycle():
     with tempfile.TemporaryDirectory(prefix="hstara-openshop-api-") as app_root:
         settings_dir = Path(app_root) / "data"
@@ -1225,6 +1247,14 @@ async def api_lifecycle():
                 json={"owner": soft_owner, "document": {"width": 1280, "height": 720}},
             )
             assert soft_init.status_code == 200
+            purge_task = main.OPENSHOP_AI_TASKS.create(
+                "project-soft",
+                soft_owner,
+                "text-remove",
+                "vision",
+                "test-model",
+                "a" * 64,
+            )
             soft_sidecar = (
                 Path(main.CANVAS_DIR)
                 / f"{smart_canvas['id']}.openshop"
@@ -1251,6 +1281,42 @@ async def api_lifecycle():
             assert purged_project.status_code == 404
             assert not soft_sidecar.exists()
             assert not soft_sidecar.parent.parent.exists()
+
+            expired_response = await client.post(
+                "/api/canvases",
+                json={"title": "Expired orphan canvas", "icon": "clock", "kind": "classic"},
+            )
+            expired_canvas = expired_response.json()["canvas"]
+            expired_owner = {
+                "canvasType": "classic",
+                "canvasId": expired_canvas["id"],
+                "nodeId": "node-expired-orphan",
+            }
+            expired_init = await client.post(
+                "/api/openshop/projects/project-expired-orphan/initialize",
+                json={"owner": expired_owner, "document": {"width": 640, "height": 480}},
+            )
+            assert expired_init.status_code == 200, expired_init.text
+            expired_task = main.OPENSHOP_AI_TASKS.create(
+                "project-expired-orphan",
+                expired_owner,
+                "text-remove",
+                "vision",
+                "test-model",
+                "b" * 64,
+            )
+            expired_canvas["deleted_at"] = 1
+            main.save_canvas(expired_canvas)
+            await asyncio.to_thread(main.cleanup_expired_canvas_trash)
+            assert not Path(main.canvas_path(expired_canvas["id"])).exists()
+
+            purge_status = main.OPENSHOP_AI_TASKS.get(
+                purge_task["taskId"], "project-soft", soft_owner
+            )["status"]
+            expired_status = main.OPENSHOP_AI_TASKS.get(
+                expired_task["taskId"], "project-expired-orphan", expired_owner
+            )["status"]
+            assert (purge_status, expired_status) == ("cancelled", "cancelled")
             assert not list(Path(app_root).rglob("*.tmp"))
 
 

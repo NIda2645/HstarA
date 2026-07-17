@@ -31,7 +31,7 @@ import html
 from copy import deepcopy
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional, Tuple
-from threading import Lock, Thread
+from threading import Lock, RLock, Thread
 import httpx
 from PIL import Image, ImageOps
 from io import BytesIO
@@ -336,6 +336,7 @@ SOFTWARE_SETTINGS_FILE = RUNTIME_PATHS["software_settings_file"]
 GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
 OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR, canvas_dir=CANVAS_DIR)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
+OPENSHOP_PROJECT_LIFECYCLE_LOCK = RLock()
 OPENSHOP_FONTS = OpenShopFontCatalog()
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 LOCAL_IMAGE_IMPORT_MAX_BYTES = int(os.getenv("LOCAL_IMAGE_IMPORT_MAX_BYTES", str(50 * 1024 * 1024)))
@@ -3417,15 +3418,17 @@ def openshop_project_owners(nodes):
 
 def remove_openshop_projects(project_owners, canvas_type, canvas_id):
     removed = []
-    for node_id, project_id in (project_owners or set()):
+    for node_id, project_id in sorted(project_owners or set()):
         owner = {
             "canvasType": normalize_canvas_kind(canvas_type),
             "canvasId": str(canvas_id),
             "nodeId": str(node_id),
         }
         try:
-            if OPENSHOP_STORE.delete(project_id, owner):
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                deleted = OPENSHOP_STORE.delete(project_id, owner)
                 OPENSHOP_AI_TASKS.cancel_project(project_id, owner)
+            if deleted:
                 removed.append(project_id)
         except OpenShopNotFound:
             continue
@@ -3578,18 +3581,16 @@ def cleanup_expired_canvas_trash():
                 if deleted_at and deleted_at < cutoff:
                     canvas_type = normalize_canvas_kind(data.get("kind"))
                     canvas_id = str(data.get("id") or os.path.splitext(filename)[0])
-                    project_owners = openshop_project_owners(data.get("nodes"))
-                    removed_ids = OPENSHOP_STORE.delete_canvas_projects(
-                        canvas_type,
-                        canvas_id,
-                    )
-                    removed_projects = bool(removed_ids) or removed_projects
-                    for node_id, project_id in project_owners:
-                        OPENSHOP_AI_TASKS.cancel_project(project_id, {
-                            "canvasType": canvas_type,
-                            "canvasId": canvas_id,
-                            "nodeId": node_id,
-                        })
+                    with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                        removed_records = OPENSHOP_STORE.delete_canvas_projects(
+                            canvas_type,
+                            canvas_id,
+                        )
+                        for record in removed_records:
+                            OPENSHOP_AI_TASKS.cancel_project(
+                                record["projectId"], record["owner"]
+                            )
+                    removed_projects = bool(removed_records) or removed_projects
                     os.remove(path)
             except Exception:
                 continue
@@ -17018,13 +17019,16 @@ async def initialize_openshop_project(
     project_id: str,
     payload: OpenShopProjectInitializeRequest,
 ):
+    def initialize_project():
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            return OPENSHOP_STORE.initialize(
+                project_id,
+                payload.owner,
+                payload.document,
+            )
+
     try:
-        project = await asyncio.to_thread(
-            OPENSHOP_STORE.initialize,
-            project_id,
-            payload.owner,
-            payload.document,
-        )
+        project = await asyncio.to_thread(initialize_project)
         return {"project": project}
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
@@ -17068,14 +17072,17 @@ async def clone_openshop_project(
     project_id: str,
     payload: OpenShopProjectCloneRequest,
 ):
+    def clone_project():
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            return OPENSHOP_STORE.clone(
+                payload.source_project_id,
+                payload.source_owner,
+                project_id,
+                payload.owner,
+            )
+
     try:
-        project = await asyncio.to_thread(
-            OPENSHOP_STORE.clone,
-            payload.source_project_id,
-            payload.source_owner,
-            project_id,
-            payload.owner,
-        )
+        project = await asyncio.to_thread(clone_project)
         return {"project": project}
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
@@ -17089,12 +17096,13 @@ async def delete_openshop_project(
 ):
     def delete_and_collect():
         owner = openshop_owner(canvas_type, canvas_id, node_id)
-        deleted = OPENSHOP_STORE.delete(
-            project_id,
-            owner,
-        )
-        if deleted:
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            deleted = OPENSHOP_STORE.delete(
+                project_id,
+                owner,
+            )
             OPENSHOP_AI_TASKS.cancel_project(project_id, owner)
+        if deleted:
             collect_openshop_garbage()
         return deleted
 
@@ -17242,36 +17250,41 @@ async def create_openshop_ai_task(
                 snapshot["primaryReferenceAssetId"],
                 *(item["assetId"] for item in snapshot["references"]),
             }
-            for asset_id in asset_ids:
-                await asyncio.to_thread(OPENSHOP_STORE.asset_path, asset_id)
-            record = create_and_schedule_openshop_generation(
-                project_id,
-                payload.owner,
-                snapshot,
-                payload.provider_id,
-                payload.model_id,
-            )
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                OPENSHOP_STORE.load(project_id, payload.owner)
+                for asset_id in sorted(asset_ids):
+                    OPENSHOP_STORE.asset_path(asset_id)
+                record = create_and_schedule_openshop_generation(
+                    project_id,
+                    payload.owner,
+                    snapshot,
+                    payload.provider_id,
+                    payload.model_id,
+                )
         except OpenShopStoreError as exc:
             raise_openshop_http_error(exc)
         except OpenShopAiValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"task_id": record["taskId"], "status": record["status"], "task": record}
     try:
-        await asyncio.to_thread(OPENSHOP_STORE.asset_path, payload.source_asset_id)
         if payload.mode == "selection":
             if payload.tool_id != "text-remove" or not payload.mask_asset_id:
                 raise HTTPException(status_code=400, detail="选区去字需要有效的选区蒙版")
-            await asyncio.to_thread(OPENSHOP_STORE.asset_path, payload.mask_asset_id)
-        record = OPENSHOP_AI_TASKS.create(
-            project_id=project_id,
-            owner=payload.owner,
-            tool_id=payload.tool_id,
-            provider_id=payload.provider_id,
-            model_id=payload.model_id,
-            source_asset_id=payload.source_asset_id,
-            mask_asset_id=payload.mask_asset_id,
-            mode=payload.mode,
-        )
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            OPENSHOP_STORE.load(project_id, payload.owner)
+            OPENSHOP_STORE.asset_path(payload.source_asset_id)
+            if payload.mode == "selection":
+                OPENSHOP_STORE.asset_path(payload.mask_asset_id)
+            record = OPENSHOP_AI_TASKS.create(
+                project_id=project_id,
+                owner=payload.owner,
+                tool_id=payload.tool_id,
+                provider_id=payload.provider_id,
+                model_id=payload.model_id,
+                source_asset_id=payload.source_asset_id,
+                mask_asset_id=payload.mask_asset_id,
+                mode=payload.mode,
+            )
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
     except OpenShopAiValidationError as exc:
@@ -17318,14 +17331,18 @@ async def retry_openshop_ai_task(
         raise HTTPException(status_code=400, detail="配置不可用：原模型已被删除")
     validate_openshop_generation_capabilities(provider, previous["modelId"], snapshot)
     try:
-        record = create_and_schedule_openshop_generation(
-            project_id,
-            payload.owner,
-            snapshot,
-            previous["apiConfigId"],
-            previous["modelId"],
-            retry_of_task_id=task_id,
-        )
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            OPENSHOP_STORE.load(project_id, payload.owner)
+            record = create_and_schedule_openshop_generation(
+                project_id,
+                payload.owner,
+                snapshot,
+                previous["apiConfigId"],
+                previous["modelId"],
+                retry_of_task_id=task_id,
+            )
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
     except OpenShopAiValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"task_id": record["taskId"], "status": record["status"], "task": record}
@@ -18630,17 +18647,15 @@ async def purge_canvas(canvas_id: str):
         canvas = load_canvas_any(canvas_id)
         def delete_projects_and_collect():
             canvas_type = normalize_canvas_kind(canvas.get("kind"))
-            project_owners = openshop_project_owners(canvas.get("nodes"))
-            removed = OPENSHOP_STORE.delete_canvas_projects(
-                canvas_type,
-                canvas_id,
-            )
-            for node_id, project_id in project_owners:
-                OPENSHOP_AI_TASKS.cancel_project(project_id, {
-                    "canvasType": canvas_type,
-                    "canvasId": canvas_id,
-                    "nodeId": node_id,
-                })
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                removed = OPENSHOP_STORE.delete_canvas_projects(
+                    canvas_type,
+                    canvas_id,
+                )
+                for record in removed:
+                    OPENSHOP_AI_TASKS.cancel_project(
+                        record["projectId"], record["owner"]
+                    )
             try:
                 os.remove(path)
             except FileNotFoundError:

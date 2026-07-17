@@ -81,6 +81,36 @@ async def wait_for_terminal(client, project_id, task_id, owner, timeout=3.0):
 
 async def run():
     import main
+    from openshop_ai import OpenShopAiTaskRegistry
+
+    asyncio.get_running_loop().set_debug(True)
+    threaded_registry = OpenShopAiTaskRegistry()
+    threaded_owner = {
+        "canvasType":"classic",
+        "canvasId":"canvas-threaded-cancel",
+        "nodeId":"node-threaded-cancel",
+    }
+    threaded_record = threaded_registry.create(
+        "project-threaded-cancel",
+        threaded_owner,
+        "text-remove",
+        "vision",
+        "test-model",
+        "c" * 64,
+    )
+    threaded_future = asyncio.get_running_loop().create_future()
+    threaded_future.add_done_callback(lambda _future: None)
+    threaded_registry.bind(threaded_record["taskId"], threaded_future)
+    await asyncio.to_thread(
+        threaded_registry.cancel_project,
+        "project-threaded-cancel",
+        threaded_owner,
+    )
+    await asyncio.sleep(0)
+    assert threaded_future.cancelled()
+    assert threaded_registry.get(
+        threaded_record["taskId"], "project-threaded-cancel", threaded_owner
+    )["status"] == "cancelled"
 
     provider = {
         "id": "vision",
@@ -127,6 +157,34 @@ async def run():
             json={"owner":owner_b, "document":{"width":96, "height":64}},
         )
         assert init_b.status_code == 200, init_b.text
+        retry_owner = {**owner, "nodeId":"node-delete-retry"}
+        retry_init = await client.post(
+            "/api/openshop/projects/project-delete-retry/initialize",
+            json={"owner":retry_owner, "document":{"width":96, "height":64}},
+        )
+        assert retry_init.status_code == 200, retry_init.text
+        orphan_task = main.OPENSHOP_AI_TASKS.create(
+            "project-delete-retry",
+            retry_owner,
+            "text-remove",
+            "vision",
+            "test-model",
+            "d" * 64,
+        )
+        assert main.OPENSHOP_STORE.delete("project-delete-retry", retry_owner) is True
+        retried_delete = await client.delete(
+            "/api/openshop/projects/project-delete-retry",
+            params={
+                "canvas_type":retry_owner["canvasType"],
+                "canvas_id":retry_owner["canvasId"],
+                "node_id":retry_owner["nodeId"],
+            },
+        )
+        assert retried_delete.status_code == 200, retried_delete.text
+        assert retried_delete.json()["deleted"] is False
+        assert main.OPENSHOP_AI_TASKS.get(
+            orphan_task["taskId"], "project-delete-retry", retry_owner
+        )["status"] == "cancelled"
         upload = await client.post(
             "/api/openshop/projects/project-ai/assets",
             data={
@@ -536,18 +594,72 @@ async def run():
         )
         assert upload_b.status_code == 200, upload_b.text
         source_asset_id_b = upload_b.json()["asset"]["assetId"]
-        deleting = await client.post(
+
+        original_ensure_owner = main.ensure_openshop_project_owner
+        ownership_checked = asyncio.Event()
+        resume_creation = asyncio.Event()
+        barrier_used = False
+
+        async def barrier_ensure_owner(project_id, checked_owner):
+            nonlocal barrier_used
+            project = await original_ensure_owner(project_id, checked_owner)
+            if project_id == "project-ai" and checked_owner == owner and not barrier_used:
+                barrier_used = True
+                ownership_checked.set()
+                await resume_creation.wait()
+            return project
+
+        main.ensure_openshop_project_owner = barrier_ensure_owner
+        task_ids_before_race = set(main.OPENSHOP_AI_TASKS._records)
+        raced_creation_call = asyncio.create_task(client.post(
             "/api/openshop/projects/project-ai/ai-tasks",
             json={
                 "owner":owner,
                 "tool_id":"text-remove",
-                "source_asset_id":source_asset_id,
+                "source_asset_id":source_asset_id_b,
+                "provider_id":"vision",
+                "model_id":"gemini-3-pro-image",
+                "mode":"layer",
+            },
+        ))
+        await asyncio.wait_for(ownership_checked.wait(), timeout=1.0)
+        raced_delete = await client.delete(
+            "/api/openshop/projects/project-ai",
+            params={
+                "canvas_type":owner["canvasType"],
+                "canvas_id":owner["canvasId"],
+                "node_id":owner["nodeId"],
+            },
+        )
+        assert raced_delete.status_code == 200 and raced_delete.json()["deleted"] is True
+        resume_creation.set()
+        try:
+            raced_creation = await raced_creation_call
+        finally:
+            main.ensure_openshop_project_owner = original_ensure_owner
+        raced_task_ids = set(main.OPENSHOP_AI_TASKS._records) - task_ids_before_race
+        assert raced_creation.status_code == 404, raced_creation.text
+        assert raced_task_ids == set()
+
+        reinitialized = await client.post(
+            "/api/openshop/projects/project-ai/initialize",
+            json={"owner":owner, "document":{"width":96, "height":64}},
+        )
+        assert reinitialized.status_code == 200, reinitialized.text
+        recreated = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks",
+            json={
+                "owner":owner,
+                "tool_id":"text-remove",
+                "source_asset_id":source_asset_id_b,
                 "provider_id":"vision",
                 "model_id":"gemini-3-pro-image",
                 "mode":"layer",
             },
         )
-        assert deleting.status_code == 200
+        assert recreated.status_code == 200, recreated.text
+
+        deleting = recreated
         surviving = await client.post(
             "/api/openshop/projects/project-ai/ai-tasks",
             json={

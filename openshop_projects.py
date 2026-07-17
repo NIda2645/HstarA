@@ -216,7 +216,7 @@ class OpenShopProjectStore:
                 canvas_sidecar.rmdir()
             return True
 
-    def delete_canvas_projects(self, canvas_type: str, canvas_id: str) -> list[str]:
+    def delete_canvas_projects(self, canvas_type: str, canvas_id: str) -> list[dict]:
         normalized_canvas_type = str(canvas_type or "").strip()
         if normalized_canvas_type not in {"classic", "smart"}:
             raise OpenShopValidationError("canvasType must be classic or smart")
@@ -224,7 +224,7 @@ class OpenShopProjectStore:
         canvas_sidecar = self.canvas_dir / f"{normalized_canvas_id}.openshop"
 
         with self._lock:
-            sidecar_projects = []
+            removed_records = {}
             if canvas_sidecar.is_dir():
                 for path in sorted(canvas_sidecar.glob("*/project.json")):
                     node_id = self._validate_id(path.parent.name, "nodeId")
@@ -236,7 +236,16 @@ class OpenShopProjectStore:
                     project = self._read_json(path, "project")
                     project_id = self._validate_id(project.get("projectId"), "projectId")
                     self._validate_project_manifest(project, project_id, owner)
-                    sidecar_projects.append(project_id)
+                    key = (
+                        owner["canvasType"],
+                        owner["canvasId"],
+                        owner["nodeId"],
+                        project_id,
+                    )
+                    removed_records[key] = {
+                        "projectId": project_id,
+                        "owner": copy.deepcopy(owner),
+                    }
 
             legacy_projects = []
             for path in sorted(self.legacy_projects_dir.glob("*.json")):
@@ -252,13 +261,23 @@ class OpenShopProjectStore:
                     owner["canvasType"] == normalized_canvas_type
                     and owner["canvasId"] == normalized_canvas_id
                 ):
-                    legacy_projects.append((path, project_id))
+                    key = (
+                        owner["canvasType"],
+                        owner["canvasId"],
+                        owner["nodeId"],
+                        project_id,
+                    )
+                    removed_records[key] = {
+                        "projectId": project_id,
+                        "owner": copy.deepcopy(owner),
+                    }
+                    legacy_projects.append(path)
 
             if canvas_sidecar.is_dir():
                 shutil.rmtree(canvas_sidecar)
-            for path, _ in legacy_projects:
+            for path in legacy_projects:
                 path.unlink()
-            return sorted({*sidecar_projects, *(item[1] for item in legacy_projects)})
+            return [removed_records[key] for key in sorted(removed_records)]
 
     def store_image(
         self,

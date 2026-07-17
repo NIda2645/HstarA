@@ -959,6 +959,25 @@ class OpenShopAiTaskRegistry:
                 return
             self._futures[task_id] = future
 
+    @staticmethod
+    def _cancel_future_if_pending(future: Any) -> None:
+        if not future.done():
+            future.cancel()
+
+    @classmethod
+    def _cancel_future(cls, future: Any) -> None:
+        if future.done():
+            return
+        get_loop = getattr(future, "get_loop", None)
+        if callable(get_loop):
+            try:
+                loop = get_loop()
+                loop.call_soon_threadsafe(cls._cancel_future_if_pending, future)
+                return
+            except (AttributeError, RuntimeError):
+                pass
+        future.cancel()
+
     def _assert_scope(
         self,
         record: dict[str, Any],
@@ -1067,8 +1086,7 @@ class OpenShopAiTaskRegistry:
                     futures.append(future)
             public = self._public(record)
         for future in futures:
-            if not future.done():
-                future.cancel()
+            self._cancel_future(future)
         return public
 
     def cancel_project(
