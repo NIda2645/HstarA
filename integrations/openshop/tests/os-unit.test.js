@@ -404,6 +404,36 @@ describe('OpenShop core object', () => {
     expect(object.setCoords).not.toHaveBeenCalled();
   });
 
+  it('zooms around the pointer only while Ctrl or Command is held', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    OS.zoom = 1;
+    OS._scheduleUi = vi.fn();
+    OS._brushCursor = {refresh:vi.fn()};
+    const plain = {
+      e:{deltaY:-120, offsetX:240, offsetY:160, ctrlKey:false, metaKey:false, preventDefault:vi.fn()},
+    };
+
+    OS.onMouseWheel(plain);
+
+    expect(plain.e.preventDefault).not.toHaveBeenCalled();
+    expect(OS.canvas.zoomToPoint).not.toHaveBeenCalled();
+    expect(OS.zoom).toBe(1);
+
+    const modified = {
+      e:{deltaY:-120, offsetX:240, offsetY:160, ctrlKey:true, metaKey:false, preventDefault:vi.fn()},
+    };
+    OS.onMouseWheel(modified);
+
+    expect(modified.e.preventDefault).toHaveBeenCalledOnce();
+    expect(OS.canvas.zoomToPoint).toHaveBeenCalledWith(
+      {x:240, y:160},
+      expect.any(Number),
+    );
+    expect(OS.zoom).toBeGreaterThan(1);
+    expect(OS._brushCursor.refresh).toHaveBeenCalledOnce();
+  });
+
   it('derives local selection snapping from legacy generation layer metadata', async () => {
     delete window.HstarOpenShopSnapEngine;
     await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);

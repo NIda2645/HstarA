@@ -3232,11 +3232,13 @@ self.onmessage = function(e) {
         }
     },
     onMouseWheel(opt) {
+        if(!opt.e.ctrlKey && !opt.e.metaKey) return;
         opt.e.preventDefault(); let z=this.zoom*(0.999**opt.e.deltaY);
         z=Math.min(Math.max(0.05,z),20);
         this.canvas.zoomToPoint({x:opt.e.offsetX,y:opt.e.offsetY},z);
         this.zoom=z;
         document.getElementById('zoom-display').textContent=Math.round(z*100)+'%';
+        this._brushCursor?.refresh();
         this._scheduleUi('viewportUi');
     },
 
