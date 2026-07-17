@@ -241,6 +241,7 @@
     "Guides": "辅助线",
     "Halftone...": "半调...",
     "Hard Light": "强光",
+    "Hardness": "硬度",
     "Healing Brush": "修复画笔工具",
     "Highlights": "高光",
     "Histogram": "直方图",

@@ -17,6 +17,21 @@
     return Number.isFinite(number) && number > 0 ? number : fallback;
   }
 
+  function clamp(value, minimum, maximum){
+    return Math.max(minimum, Math.min(maximum, Number(value) || 0));
+  }
+
+  function rgba(color, alpha){
+    let value = String(color || '#000000').trim();
+    if(/^#[0-9a-f]{3}$/i.test(value)){
+      value = `#${value[1]}${value[1]}${value[2]}${value[2]}${value[3]}${value[3]}`;
+    }
+    if(/^#[0-9a-f]{6}$/i.test(value)){
+      return `rgba(${Number.parseInt(value.slice(1, 3), 16)},${Number.parseInt(value.slice(3, 5), 16)},${Number.parseInt(value.slice(5, 7), 16)},${alpha})`;
+    }
+    return value;
+  }
+
   function imageDimensions(target, element){
     return {
       width:Math.max(1, Math.round(positive(element?.naturalWidth || element?.videoWidth || element?.width, target?.width))),
@@ -118,27 +133,75 @@
       if(state.renderPending) state.frameId = frameId;
     }
 
-    function drawPaintSegment(session, from, to){
+    function brushProfile(session){
+      const preset = String(editor.state?.brushPreset || 'round');
+      const hardness = preset === 'soft'
+        ? clamp(editor.state?.brushHardness ?? 0, 0, 100) / 100
+        : clamp(editor.state?.brushHardness ?? 100, 0, 100) / 100;
+      return {
+        preset,
+        diameter:pixelBrushSize(session, editor.state?.brushSize || 1),
+        hardness,
+        opacity:clamp(editor.state?.brushOpacity ?? 100, 1, 100) / 100,
+      };
+    }
+
+    function drawPaintDab(session, center, profile){
       const context = session.context;
+      const radius = Math.max(0.5, profile.diameter / 2);
+      const erasing = session.tool === 'eraser';
+      const color = erasing ? '#000000' : String(editor.state?.fgColor || '#000000');
       context.save();
       try {
-        context.globalCompositeOperation = session.tool === 'eraser' ? 'destination-out' : 'source-over';
-        context.globalAlpha = session.tool === 'eraser'
-          ? 1
-          : Math.max(0, Math.min(1, Number(editor.state?.brushOpacity ?? 100) / 100));
-        context.strokeStyle = session.tool === 'eraser' ? '#000000' : String(editor.state?.fgColor || '#000000');
-        context.fillStyle = context.strokeStyle;
-        context.lineWidth = pixelBrushSize(session, editor.state?.brushSize || 1);
-        context.lineCap = 'round';
-        context.lineJoin = 'round';
-        context.beginPath();
-        context.moveTo(from.x, from.y);
-        context.lineTo(to.x, to.y);
-        context.stroke();
+        context.globalCompositeOperation = erasing ? 'destination-out' : 'source-over';
+        context.globalAlpha = profile.opacity;
+        if(profile.preset === 'pixel'){
+          context.fillStyle = color;
+          context.fillRect(
+            Math.round(center.x - radius),
+            Math.round(center.y - radius),
+            Math.max(1, Math.round(profile.diameter)),
+            Math.max(1, Math.round(profile.diameter))
+          );
+        } else {
+          if(profile.hardness < 0.999 && typeof context.createRadialGradient === 'function'){
+            const gradient = context.createRadialGradient(
+              center.x, center.y, 0,
+              center.x, center.y, radius
+            );
+            gradient.addColorStop(0, rgba(color, 1));
+            if(profile.hardness > 0) gradient.addColorStop(profile.hardness, rgba(color, 1));
+            gradient.addColorStop(1, rgba(color, 0));
+            context.fillStyle = gradient;
+          } else {
+            context.fillStyle = color;
+          }
+          context.beginPath();
+          context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+          context.fill();
+        }
       } finally {
         context.restore();
       }
       session.changed = true;
+    }
+
+    function drawPaintSegment(session, from, to){
+      const profile = brushProfile(session);
+      const distance = Math.hypot(to.x - from.x, to.y - from.y);
+      if(distance < 0.001){
+        drawPaintDab(session, to, profile);
+        return;
+      }
+      const spacing = Math.max(1, profile.diameter * (profile.preset === 'soft' ? 0.12 : 0.2));
+      const count = Math.max(1, Math.ceil(distance / spacing));
+      for(let index = 1; index <= count; index += 1){
+        const ratio = index / count;
+        drawPaintDab(session, {
+          x:from.x + (to.x - from.x) * ratio,
+          y:from.y + (to.y - from.y) * ratio,
+        }, profile);
+      }
     }
 
     function cloneStamp(session, destinationDocumentPoint){

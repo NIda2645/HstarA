@@ -351,6 +351,11 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 /* === LASSO OVERLAY === */
 .lasso-overlay{position:absolute;inset:0;pointer-events:none;z-index:97}
 .lasso-overlay svg{width:100%;height:100%}
+.hstar-brush-cursor{position:absolute;z-index:99;pointer-events:none;box-sizing:border-box;transform:translate(-50%,-50%);border:1px solid rgba(255,255,255,.95);box-shadow:0 0 0 1px rgba(0,0,0,.9);border-radius:50%}
+.hstar-brush-cursor::after{content:"";position:absolute;left:50%;top:50%;width:2px;height:2px;transform:translate(-50%,-50%);background:#fff;box-shadow:0 0 0 1px #000}
+.hstar-brush-cursor[data-shape="pixel"]{border-radius:0}
+.hstar-brush-cursor[data-shape="flat"]{border-radius:22%;transform:translate(-50%,-50%) rotate(-35deg)}
+.hstar-brush-cursor[hidden]{display:none!important}
 .lasso-path{fill:rgba(108,140,255,.04);stroke:#000;stroke-width:1.5;stroke-dasharray:6 4;animation:lassoDash .4s linear infinite;filter:drop-shadow(0 0 0.5px #fff)}
 @keyframes lassoDash{to{stroke-dashoffset:-10}}
 
@@ -973,6 +978,9 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         <label data-i18n="Size">Size</label>
         <input type="range" id="brush-size" min="1" max="150" value="8" oninput="OS.setBrushSize(this.value)">
         <span class="opt-val" id="brush-size-val">8</span>
+        <label data-i18n="Hardness">Hardness</label>
+        <input type="range" id="brush-hardness" min="0" max="100" value="100" oninput="OS.setBrushHardness(this.value)">
+        <span class="opt-val" id="brush-hardness-val">100</span>
         <label data-i18n="Opacity">Opacity</label>
         <input type="range" id="brush-opacity" min="1" max="100" value="100" oninput="OS.setBrushOpacity(this.value)">
         <span class="opt-val" id="brush-opacity-val">100</span>
@@ -1510,6 +1518,7 @@ const OS = {
     _shapeStart: null, _tempShape: null,
     _marqueeStart: null,
     _rasterTools: null,
+    _brushCursor: null,
     _adjDebounce: null,
     _cropRegion: null,
     plugins: [],
@@ -1561,7 +1570,7 @@ const OS = {
     ],
     state: {
         tool: 'select', fgColor: '#ffffff', bgColor: '#000000',
-        brushSize: 8, brushOpacity: 100, brushPreset: 'round',
+        brushSize: 8, brushOpacity: 100, brushHardness: 100, brushPreset: 'round',
         shapeFill: '#6c8cff', shapeStroke: '#ffffff', shapeStrokeWidth: 2, shapeFilled: true,
         textFont: 'Microsoft YaHei UI', textSize: 24, textColor: '#ffffff', textBold: false, textItalic: false,
         gradFrom: '#6c8cff', gradTo: '#000000', gradType: 'linear',
@@ -1590,6 +1599,11 @@ const OS = {
         this._rasterTools = window.HstarOpenShopRasterTools?.createController({
             editor:this,
             fabricRef:fabric,
+        }) || null;
+        this._brushCursor = window.HstarOpenShopBrushCursor?.createController({
+            documentRef:document,
+            area,
+            getProfile:() => this._brushCursorProfile(),
         }) || null;
         this._initUpdateScheduler();
         this._initToolRuntimeCache();
@@ -2912,7 +2926,26 @@ self.onmessage = function(e) {
         this._applyToolInteractionState(tool, {force:forceInteraction});
         const toolNames = {'marquee-rect':'Rect Marquee','marquee-ellipse':'Ellipse Marquee','magic-wand':'Magic Wand','ai-segment':'AI Segment'};
         document.getElementById('tool-display').textContent = toolNames[tool] || tool.charAt(0).toUpperCase()+tool.replace(/-/g,' ').slice(1);
+        this._brushCursor?.refresh();
         this._renderAccessibilityTree();
+    },
+    _brushCursorProfile() {
+        const tool = this.state.tool;
+        const sizes = {
+            brush:this.state.brushSize, eraser:this.state.brushSize, pencil:this.state.brushSize,
+            clone:this.state.cloneSize, healing:this.state.healingSize,
+            dodge:this.state.dodgeSize, burn:this.state.burnSize,
+            sponge:this.state.spongeSize, smudge:this.state.smudgeSize,
+            spray:this.state.sprayWidth,
+        };
+        const visible = Object.prototype.hasOwnProperty.call(sizes, tool);
+        const preset = ['brush','eraser','pencil'].includes(tool) ? this.state.brushPreset : 'round';
+        return {
+            visible,
+            size:Number(sizes[tool]) || 1,
+            zoom:Math.abs(Number(this.canvas?.viewportTransform?.[0] || this.zoom || 1)),
+            shape:preset === 'pixel' ? 'pixel' : preset === 'flat' ? 'flat' : 'round',
+        };
     },
     setBrushSize(v) {
         this.state.brushSize=+v;
@@ -2920,6 +2953,11 @@ self.onmessage = function(e) {
         if(!['brush','eraser'].includes(this.state.tool) && this.canvas.freeDrawingBrush) {
             this.canvas.freeDrawingBrush.width=+v;
         }
+        this._brushCursor?.refresh();
+    },
+    setBrushHardness(v) {
+        this.state.brushHardness=Math.max(0,Math.min(100,+v||0));
+        document.getElementById('brush-hardness-val').textContent=this.state.brushHardness;
     },
     setBrushOpacity(v) {
         this.state.brushOpacity=+v; document.getElementById('brush-opacity-val').textContent=v;
@@ -2939,6 +2977,13 @@ self.onmessage = function(e) {
     },
     setBrushPreset(preset) {
         this.state.brushPreset = preset;
+        if(preset === 'soft') this.state.brushHardness = 0;
+        else if(['round','flat','pixel'].includes(preset)) this.state.brushHardness = 100;
+        const hardness = document.getElementById('brush-hardness');
+        if(hardness) hardness.value = this.state.brushHardness;
+        const hardnessValue = document.getElementById('brush-hardness-val');
+        if(hardnessValue) hardnessValue.textContent = this.state.brushHardness;
+        this._brushCursor?.refresh();
         const c = this.canvas; if (!c.isDrawingMode) return;
         let brush;
         switch(preset) {
@@ -9584,6 +9629,7 @@ window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
 <script src="./host/openshop-canvas-sampler.js"></script>
 <script src="./host/openshop-raster-tools.js"></script>
+<script src="./host/openshop-brush-cursor.js"></script>
 <script src="./host/openshop-color-panel.js"></script>
 <script src="./host/openshop-update-scheduler.js"></script>
 <script src="./host/openshop-snap-engine.js"></script>

@@ -8,8 +8,12 @@ const runtimePath = resolve(testDir, '..', 'host', 'openshop-raster-tools.js');
 
 function createContext(){
   const assignments = [];
+  const alphaAssignments = [];
+  const gradients = [];
   const context = {
     assignments,
+    alphaAssignments,
+    gradients,
     save:vi.fn(),
     restore:vi.fn(),
     beginPath:vi.fn(),
@@ -19,12 +23,23 @@ function createContext(){
     clip:vi.fn(),
     stroke:vi.fn(),
     fill:vi.fn(),
+    fillRect:vi.fn(),
     drawImage:vi.fn(),
+    createRadialGradient:vi.fn(() => {
+      const gradient = {addColorStop:vi.fn()};
+      gradients.push(gradient);
+      return gradient;
+    }),
   };
   Object.defineProperty(context, 'globalCompositeOperation', {
     configurable:true,
     get(){ return assignments.at(-1) || 'source-over'; },
     set(value){ assignments.push(value); },
+  });
+  Object.defineProperty(context, 'globalAlpha', {
+    configurable:true,
+    get(){ return alphaAssignments.at(-1) ?? 1; },
+    set(value){ alphaAssignments.push(value); },
   });
   return context;
 }
@@ -139,10 +154,36 @@ describe('Hstar OpenShop layer-scoped raster tools', () => {
     controller.end();
 
     expect(documentRef.canvases[0].context.assignments).toContain('destination-out');
+    expect(documentRef.canvases[0].context.alphaAssignments).toContain(0.75);
     expect(active.setElement).toHaveBeenCalledOnce();
     expect(lower.setElement).not.toHaveBeenCalled();
     expect(editor.canvas.getObjects()).toHaveLength(2);
     expect(editor.saveHistory).toHaveBeenCalledWith('Eraser');
+  });
+
+  it('uses a radial falloff for a soft eraser while preserving configured opacity', () => {
+    const documentRef = createDocument();
+    const {editor} = createEditor();
+    editor.state.brushPreset = 'soft';
+    editor.state.brushHardness = 0;
+    editor.state.brushOpacity = 35;
+    const controller = window.HstarOpenShopRasterTools.createController({
+      editor,
+      fabricRef,
+      documentRef,
+      requestFrame:callback => { callback(); return 1; },
+      cancelFrame:vi.fn(),
+    });
+
+    controller.begin('eraser', {x:20, y:20});
+    controller.move({x:60, y:20});
+    controller.end();
+
+    const context = documentRef.canvases[0].context;
+    expect(context.createRadialGradient).toHaveBeenCalled();
+    expect(context.gradients[0].addColorStop).toHaveBeenCalledWith(0, 'rgba(0,0,0,1)');
+    expect(context.gradients[0].addColorStop).toHaveBeenCalledWith(1, 'rgba(0,0,0,0)');
+    expect(context.alphaAssignments).toContain(0.35);
   });
 
   it('runs clone stamp as an in-place pixel session without copy or duplicate commands', () => {
