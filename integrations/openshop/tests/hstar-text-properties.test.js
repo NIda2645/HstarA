@@ -246,6 +246,27 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
+  it('shows Cambria and Cambria Math as default and Math faces of one family', async () => {
+    const {controller, canvas, textObject, fontManager} = createHarness();
+    textObject.fontFamily = 'Cambria';
+    fontManager.resolveFamily = vi.fn(() => 'Cambria');
+    fontManager.stylesFor = vi.fn(() => [
+      {id:'cambria-default', family:'Cambria', label:'Default', weight:400, italic:false, localNames:['Cambria']},
+      {id:'cambria-math', family:'Cambria Math', label:'Math', weight:400, italic:false, localNames:['Cambria Math']},
+    ]);
+    fontManager.styleForFace = vi.fn(() => (
+      {id:'cambria-default', family:'Cambria', label:'Default', weight:400, italic:false}
+    ));
+
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    expect(document.querySelector('[data-text-family-label]').textContent).toBe('Cambria');
+    expect([...document.querySelector('[data-text-style]').options].map(option => option.textContent))
+      .toEqual(['默认', 'Math']);
+    controller.destroy();
+  });
+
   it('applies supported character styles only to the selected range', async () => {
     const {controller, canvas, textObject} = createHarness({editing:true, selectionStart:1, selectionEnd:3});
     await controller.start();

@@ -92,6 +92,9 @@ NUMERIC_STYLE_SUFFIX = re.compile(
     re.IGNORECASE,
 )
 VENDOR_CODE_SUFFIX = re.compile(r"(?:\s+|-)(?P<style>[A-Z])$", re.IGNORECASE)
+SPECIAL_FACE_SUFFIXES = (
+    (re.compile(r"(?:\s+|-)Math$", re.IGNORECASE), "Math"),
+)
 REGISTRY_FORMAT_SUFFIX = re.compile(r"\s*\((?:TrueType|OpenType)\)\s*$", re.IGNORECASE)
 
 
@@ -139,6 +142,12 @@ def _font_family_for_face(family, weight, italic, allow_vendor_code=False):
             if italic:
                 style_label = f"{style_label} Italic"
             return base or family, weight, italic, style_label
+    for pattern, style_label in SPECIAL_FACE_SUFFIXES:
+        candidate = pattern.sub("", base).strip()
+        if candidate != base and candidate:
+            if italic:
+                style_label = f"{style_label} Italic"
+            return candidate, weight, italic, style_label
     if allow_vendor_code:
         code_match = VENDOR_CODE_SUFFIX.search(base)
         if code_match:
@@ -193,22 +202,27 @@ def _normalize_faces(faces):
             "localNames": list(dict.fromkeys([family, group["family"]])),
         })
 
-    return [
-        {
-            "family": value["family"],
-            "label": value["family"],
-            "styles": sorted(
-                value["styles"].values(),
-                key=lambda style: (
-                    style["weight"],
-                    style["italic"],
-                    style["label"].casefold(),
-                    style["family"].casefold(),
-                ),
+    fonts = []
+    for value in sorted(grouped.values(), key=lambda item: item["family"].casefold()):
+        styles = sorted(
+            value["styles"].values(),
+            key=lambda style: (
+                style["weight"],
+                style["italic"],
+                style["label"].casefold(),
+                style["family"].casefold(),
             ),
-        }
-        for value in sorted(grouped.values(), key=lambda item: item["family"].casefold())
-    ]
+        )
+        if any(style["label"] == "Math" for style in styles):
+            for style in styles:
+                if (
+                    style["family"].casefold() == value["family"].casefold()
+                    and style["label"] == "Regular"
+                ):
+                    style["label"] = "Default"
+            styles.sort(key=lambda style: (style["label"] != "Default", style["weight"], style["label"]))
+        fonts.append({"family": value["family"], "label": value["family"], "styles": styles})
+    return fonts
 
 
 def _fallback_faces():

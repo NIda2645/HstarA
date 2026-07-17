@@ -139,6 +139,25 @@ class OpenShopFontCatalogTests(unittest.TestCase):
         self.assertEqual(font["family"], "Alibaba Sans")
         self.assertEqual([style["label"] for style in font["styles"]], ["Black", "Heavy"])
 
+    def test_groups_cambria_math_as_a_real_face_of_cambria(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "Cambria", "weight": 400, "italic": False},
+                {"family": "Cambria Math", "weight": 400, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        fonts = catalog.get_catalog()["fonts"]
+
+        self.assertEqual([font["family"] for font in fonts], ["Cambria"])
+        self.assertEqual(
+            [(style["family"], style["label"]) for style in fonts[0]["styles"]],
+            [("Cambria", "Default"), ("Cambria Math", "Math")],
+        )
+
     def test_response_never_exposes_font_paths_or_binary_metadata(self):
         from openshop_fonts import OpenShopFontCatalog
 
