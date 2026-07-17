@@ -1605,6 +1605,10 @@ const OS = {
 
     // ====================== INIT ======================
     init() {
+        const topLevel = window.self === window.top;
+        if (this._persistenceMode !== 'embedded-hstara') {
+            this._persistenceMode = topLevel ? 'standalone' : 'embedded-pending';
+        }
         this._initI18n();
         this._panelSplitter?.destroy?.();
         this._panelSplitter = window.HstarOpenShopPanelSplitter.createController({
@@ -1697,7 +1701,7 @@ const OS = {
         // PWA manifest
         this.initPWA();
         // Auto-save recovery check
-        this._initAutoSave();
+        this._startRecoveryForCurrentMode({topLevel});
         // Phase 6
         this.initColorWheel();
         this.updateHistogram();
@@ -5213,20 +5217,46 @@ self.onmessage = function(e) {
     },
 
     // ====================== AUTO-SAVE (OPFS) ======================
+    _persistenceMode: 'standalone',
+    _recoveryStartupStarted: false,
     _autoSaveTimer: null,
     _autoSaveDirty: false,
 
+    _startRecoveryForCurrentMode({topLevel} = {}) {
+        if (this._persistenceMode !== 'standalone' || topLevel !== true || this._recoveryStartupStarted) return null;
+        this._recoveryStartupStarted = true;
+        return this._initAutoSave();
+    },
+    _setPersistenceMode(mode) {
+        if (!['standalone', 'embedded-pending', 'embedded-hstara'].includes(mode)) {
+            throw new Error('Unsupported persistence mode');
+        }
+        this._persistenceMode = mode;
+        if (mode !== 'embedded-hstara') return;
+        if (this._autoSaveTimer !== null) clearInterval(this._autoSaveTimer);
+        this._autoSaveTimer = null;
+        this._autoSaveDirty = false;
+        this._recoveryData = null;
+        this._autoSaveWorker?.terminate?.();
+        this._autoSaveWorker = null;
+        document.querySelectorAll('[data-openshop-recovery-modal]').forEach(modal => modal.remove());
+    },
+
     async _initAutoSave() {
+        if (this._persistenceMode !== 'standalone') return;
         if (!navigator.storage || !navigator.storage.getDirectory) return;
         try {
             const info = await this._getRecoveryInfo();
+            if (this._persistenceMode !== 'standalone') return;
             if (info.exists && info.text && info.ageMs < 86400000 && !info.corrupt) {
                 this._offerRecovery(info.text);
             } else if (info.corrupt) {
                 this.toast(this._t("Corrupt recovery data found. Open Recovery Storage to export or discard it."), 'error');
             }
         } catch(e) { console.warn('Auto-save check failed:', e); }
-        this._autoSaveTimer = setInterval(() => this._autoSave(), 30000);
+        if (this._persistenceMode === 'standalone') {
+            this._autoSaveTimer = setInterval(() => this._autoSave(), 30000);
+        }
     },
     _formatBytes(bytes) {
         const n = Number(bytes || 0);
@@ -5245,6 +5275,9 @@ self.onmessage = function(e) {
         return this._t('{days} days ago', { days: Math.round(hours / 24) });
     },
     async _getRecoveryInfo() {
+        if (this._persistenceMode !== 'standalone') {
+            return { supported:false, exists:false, size:0, lastModified:0, ageMs:Infinity, text:'', corrupt:false, usage:0, quota:0 };
+        }
         const estimate = navigator.storage?.estimate ? await navigator.storage.estimate().catch(() => ({})) : {};
         const info = { supported: !!navigator.storage?.getDirectory, exists:false, size:0, lastModified:0, ageMs:Infinity, text:'', corrupt:false, usage:estimate.usage || 0, quota:estimate.quota || 0 };
         if (!info.supported) return info;
@@ -5270,8 +5303,10 @@ self.onmessage = function(e) {
         return info;
     },
     async showRecoveryManager() {
+        if (this._persistenceMode !== 'standalone') return;
         const info = await this._getRecoveryInfo().catch(err => ({ supported:false, exists:false, error:err.message, usage:0, quota:0 }));
         const o = document.createElement('div'); o.className = 'modal-overlay';
+        o.dataset.openshopRecoveryModal = '';
         const modal = document.createElement('div'); modal.className = 'modal'; modal.style.minWidth = '430px';
         const title = document.createElement('h3'); title.dataset.i18n = 'Recovery Storage'; title.textContent = this._t('Recovery Storage');
         const summary = document.createElement('dl');
@@ -5321,7 +5356,9 @@ self.onmessage = function(e) {
     },
 
     _offerRecovery(jsonText) {
+        if (this._persistenceMode !== 'standalone') return;
         const o = document.createElement('div'); o.className = 'modal-overlay';
+        o.dataset.openshopRecoveryModal = '';
         o.innerHTML = `<div class="modal"><h3 data-i18n="Recover Unsaved Work?">Recover Unsaved Work?</h3>
             <p style="font-size:12px;color:var(--text-secondary);margin-bottom:16px" data-i18n="An auto-saved project was found. Would you like to restore it?">An auto-saved project was found. Would you like to restore it?</p>
             <div class="modal-btns">
@@ -5356,6 +5393,7 @@ self.onmessage = function(e) {
 
     async _discardRecovery() {
         this._recoveryData = null;
+        if (this._persistenceMode !== 'standalone') return;
         try {
             const root = await navigator.storage.getDirectory();
             await root.removeEntry('openshop-autosave.json').catch(() => {});
@@ -5364,6 +5402,7 @@ self.onmessage = function(e) {
 
     _autoSaveWorker: null,
     _getAutoSaveWorker() {
+        if (this._persistenceMode !== 'standalone') return null;
         if (this._autoSaveWorker) return this._autoSaveWorker;
         const code = `
 self.onmessage = async function(e) {
@@ -5390,6 +5429,7 @@ self.onmessage = async function(e) {
         return this._autoSaveWorker;
     },
     async _autoSave() {
+        if (this._persistenceMode !== 'standalone') return;
         if (!this._autoSaveDirty) return;
         if (this.historyIdx <= 0) return;
         if (!navigator.storage || !navigator.storage.getDirectory) return;
@@ -5405,13 +5445,14 @@ self.onmessage = async function(e) {
                 await writable.close();
             } catch(e) {
                 const worker = this._getAutoSaveWorker();
-                worker.postMessage({action:'write', data});
+                worker?.postMessage({action:'write', data});
             }
             this._autoSaveDirty = false;
         } catch(e) { console.warn('Auto-save failed:', e); }
     },
 
     async _clearAutoSave() {
+        if (this._persistenceMode !== 'standalone') return;
         try {
             const root = await navigator.storage.getDirectory();
             await root.removeEntry('openshop-autosave.json').catch(() => {});
