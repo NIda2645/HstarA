@@ -980,4 +980,102 @@ describe('Hstar OpenShop project adapter', () => {
     expect(editor.__hstarPreviewAssetId).toBe('asset-a');
     expect(editor.__hstarAutosaveVersion).toBe(9);
   });
+
+  it('restores empty layers around an object-backed layer in exact project order', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const original = createEditor();
+    const text = {
+      type: 'i-text',
+      name: 'Independent text',
+      hstarLayerId: 'layer-content',
+    };
+    const marker = {
+      type: 'rect',
+      name: 'Text marker',
+      hstarLayerId: 'layer-content',
+    };
+    original.layers = [
+      {
+        layerId: 'layer-empty-before', name: 'Empty before', visible: false, locked: true,
+        opacity: 37, blend: 'screen', objects: [],
+      },
+      {
+        layerId: 'layer-content', name: 'Independent content', visible: true, locked: true,
+        opacity: 82, blend: 'multiply', objects: [text, marker],
+      },
+      {
+        layerId: 'layer-empty-after', name: 'Empty after', visible: true, locked: false,
+        opacity: 64, blend: 'overlay', objects: [],
+      },
+    ];
+    original.canvas.add(text);
+    original.canvas.add(marker);
+
+    const project = adapter.serializeProject({editor: original, context, now: () => 5000});
+    expect(project.layers).toEqual([
+      {
+        layerId: 'layer-empty-before', name: 'Empty before', visible: false, locked: true,
+        opacity: 37, blend: 'screen', sourceBinding: null, hstarAiGeneration: null,
+      },
+      {
+        layerId: 'layer-content', name: 'Independent content', visible: true, locked: true,
+        opacity: 82, blend: 'multiply', sourceBinding: null, hstarAiGeneration: null,
+      },
+      {
+        layerId: 'layer-empty-after', name: 'Empty after', visible: true, locked: false,
+        opacity: 64, blend: 'overlay', sourceBinding: null, hstarAiGeneration: null,
+      },
+    ]);
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => restored.canvas.add({...object}));
+      callback();
+    });
+    restored.rebuildLayersFromCanvas = vi.fn(() => {
+      const objects = restored.canvas.getObjects();
+      restored.layers = [{
+        layerId: 'layer-content', name: 'temporary content', visible: true, locked: false,
+        opacity: 100, blend: 'source-over', objects: [...objects],
+      }];
+    });
+
+    await adapter.restoreProject({editor: restored, project});
+
+    expect(restored.layers.map(layer => ({
+      layerId: layer.layerId,
+      name: layer.name,
+      visible: layer.visible,
+      locked: layer.locked,
+      opacity: layer.opacity,
+      blend: layer.blend,
+      objectTypes: layer.objects.map(object => object.type),
+      objectNames: layer.objects.map(object => object.name),
+      objectLayerIds: layer.objects.map(object => object.hstarLayerId),
+    }))).toEqual([
+      {
+        layerId: 'layer-empty-before', name: 'Empty before', visible: false, locked: true,
+        opacity: 37, blend: 'screen', objectTypes: [], objectNames: [], objectLayerIds: [],
+      },
+      {
+        layerId: 'layer-content', name: 'Independent content', visible: true, locked: true,
+        opacity: 82, blend: 'multiply', objectTypes: ['i-text', 'rect'],
+        objectNames: ['Independent text', 'Text marker'],
+        objectLayerIds: ['layer-content', 'layer-content'],
+      },
+      {
+        layerId: 'layer-empty-after', name: 'Empty after', visible: true, locked: false,
+        opacity: 64, blend: 'overlay', objectTypes: [], objectNames: [], objectLayerIds: [],
+      },
+    ]);
+    const canvasObjects = restored.canvas.getObjects();
+    expect(canvasObjects).toHaveLength(2);
+    expect(canvasObjects.map(object => object.name)).toEqual(['Independent text', 'Text marker']);
+    expect(restored.layers[1].objects[0]).toBe(canvasObjects[0]);
+    expect(restored.layers[1].objects[1]).toBe(canvasObjects[1]);
+    expect(canvasObjects).toEqual([
+      expect.objectContaining({selectable: false, evented: false}),
+      expect.objectContaining({selectable: false, evented: false}),
+    ]);
+  });
 });

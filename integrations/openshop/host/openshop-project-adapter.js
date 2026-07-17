@@ -889,6 +889,86 @@
     await Promise.all(Object.values(value).map(child => hydrateAssets(child, assetResolver)));
   }
 
+  function applyLayerMetadata(layer, metadata, index){
+    const metadataLayerId = clean(metadata?.layerId);
+    if(metadataLayerId) layer.layerId = metadataLayerId;
+    ensureLayerId(layer);
+    layer.name = safeName(metadata?.name, `Layer ${index}`);
+    layer.visible = metadata?.visible !== false;
+    layer.locked = Boolean(metadata?.locked);
+    if(layer.locked){
+      layer.objects.forEach(object => {
+        if(!object || object.name === '__boundary__') return;
+        object.selectable = false;
+        object.evented = false;
+      });
+    }
+    layer.opacity = Number(metadata?.opacity ?? 100);
+    layer.blend = clean(metadata?.blend) || 'source-over';
+    layer.sourceBinding = metadata?.sourceBinding ? clone(metadata.sourceBinding) : null;
+    layer.hstarAiGeneration = metadata?.hstarAiGeneration ? clone(metadata.hstarAiGeneration) : null;
+    return layer;
+  }
+
+  function restoreProjectLayers(editor, metadataLayers){
+    if(!Array.isArray(metadataLayers) || metadataLayers.length === 0){
+      ensureEditorLayerIds(editor);
+      return;
+    }
+
+    const runtimeLayers = [...editor.layers];
+    const identifiedRuntimeLayers = new Set(runtimeLayers.filter(layer => clean(layer?.layerId)));
+    runtimeLayers.forEach(layer => {
+      layer.objects = Array.isArray(layer.objects) ? layer.objects : [];
+      ensureLayerId(layer);
+    });
+
+    const runtimeLayersById = new Map();
+    runtimeLayers.forEach(layer => {
+      const layerId = clean(layer.layerId);
+      const candidates = runtimeLayersById.get(layerId) || [];
+      candidates.push(layer);
+      runtimeLayersById.set(layerId, candidates);
+    });
+    const matchedRuntimeLayers = new Set();
+    const orderedLayers = new Array(metadataLayers.length);
+
+    metadataLayers.forEach((metadata, index) => {
+      const layerId = clean(metadata?.layerId);
+      if(!layerId) return;
+      const layer = runtimeLayersById.get(layerId)?.find(candidate => !matchedRuntimeLayers.has(candidate));
+      if(!layer) return;
+      matchedRuntimeLayers.add(layer);
+      orderedLayers[index] = layer;
+    });
+
+    metadataLayers.forEach((metadata, index) => {
+      if(orderedLayers[index]) return;
+      const layerId = clean(metadata?.layerId);
+      let layer = null;
+      if(!layerId){
+        const indexedLayer = runtimeLayers[index];
+        layer = indexedLayer && !matchedRuntimeLayers.has(indexedLayer)
+          ? indexedLayer
+          : runtimeLayers.find(candidate => (
+            candidate.objects.length && !matchedRuntimeLayers.has(candidate)
+          ));
+      }
+      if(layer) matchedRuntimeLayers.add(layer);
+      orderedLayers[index] = layer || {objects:[]};
+    });
+
+    orderedLayers.forEach((layer, index) => {
+      applyLayerMetadata(layer, metadataLayers[index], index);
+    });
+    const unmatchedRuntimeLayers = runtimeLayers.filter(layer => (
+      !matchedRuntimeLayers.has(layer)
+      && (layer.objects.length > 0 || identifiedRuntimeLayers.has(layer))
+    ));
+    editor.layers = [...orderedLayers, ...unmatchedRuntimeLayers];
+    ensureEditorLayerIds(editor);
+  }
+
   async function restoreProject({
     editor,
     project:projectValue,
@@ -935,31 +1015,7 @@
     });
     restoreBoundaryPattern(editor);
     editor.rebuildLayersFromCanvas?.();
-    ensureEditorLayerIds(editor);
-    if(Array.isArray(project.layers)){
-      const layersById = new Map(editor.layers.map(layer => [clean(layer.layerId), layer]));
-      project.layers.forEach((metadata, index) => {
-        const metadataLayerId = clean(metadata.layerId);
-        const layer = layersById.get(metadataLayerId) || editor.layers?.[index];
-        if(!layer) return;
-        if(metadataLayerId) layer.layerId = metadataLayerId;
-        ensureLayerId(layer);
-        layer.name = safeName(metadata.name, `Layer ${index}`);
-        layer.visible = metadata.visible !== false;
-        layer.locked = Boolean(metadata.locked);
-        if(layer.locked){
-          layer.objects.forEach(object => {
-            if(!object || object.name === '__boundary__') return;
-            object.selectable = false;
-            object.evented = false;
-          });
-        }
-        layer.opacity = Number(metadata.opacity ?? 100);
-        layer.blend = clean(metadata.blend) || 'source-over';
-        layer.sourceBinding = metadata.sourceBinding ? clone(metadata.sourceBinding) : null;
-        layer.hstarAiGeneration = metadata.hstarAiGeneration ? clone(metadata.hstarAiGeneration) : null;
-      });
-    }
+    restoreProjectLayers(editor, project.layers);
     repairSourceOnlyDocumentSize(editor);
     editor.canvas.renderAll?.();
     editor.updateLayersPanel?.();
