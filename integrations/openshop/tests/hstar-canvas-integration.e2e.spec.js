@@ -526,6 +526,16 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   editor = await openNode(page, frame, 'classic', 'openshop-c', 0);
   expect((await editorSnapshot(editor)).texts).toContain('A 独立文字');
   await saveEditorMarker(editor, 'C 克隆文字');
+  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
+  await expect.poll(() => frame.evaluate(() => {
+    return window.HstarClassicOpenShopHooks.getNodes()
+      .filter(node => node.openshopSourceNodeId === 'openshop-c').length;
+  })).toBe(1);
+  const cloneOutput = await frame.evaluate(() => {
+    const node = window.HstarClassicOpenShopHooks.getNodes()
+      .find(candidate => candidate.openshopSourceNodeId === 'openshop-c');
+    return {id:node.id, url:node.url, assetId:node.openshopAssetId};
+  });
   editor = await openNode(page, frame, 'classic', nodeA.id, 2);
   expect((await editorSnapshot(editor)).texts).not.toContain('C 克隆文字');
 
@@ -554,7 +564,10 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
     const hooks = window.HstarClassicOpenShopHooks;
     const nodes = hooks.getNodes();
     const index = nodes.findIndex(node => node.projectId === projectId);
-    if(index >= 0) nodes.splice(index, 1);
+    if(index >= 0){
+      window.HstarClassicOpenShopAdapter.disposeNode(nodes[index]);
+      nodes.splice(index, 1);
+    }
     const connections = hooks.getConnections();
     for(let cursor = connections.length - 1; cursor >= 0; cursor -= 1){
       if(connections[cursor].from === 'openshop-c' || connections[cursor].to === 'openshop-c') connections.splice(cursor, 1);
@@ -570,6 +583,14 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   const projectB = await projectRecord(request, {canvasType:'classic', canvasId:classic.id, nodeId:nodeB.id, projectId:nodeB.projectId});
   expect(projectA.response.status()).toBe(200);
   expect(projectB.response.status()).toBe(200);
+  const afterCloneDeletion = await canvasRecord(request, classic.id);
+  expect(afterCloneDeletion.nodes.some(node => node.id === 'openshop-c')).toBe(false);
+  expect(afterCloneDeletion.nodes.find(node => node.id === cloneOutput.id)).toMatchObject({
+    url:cloneOutput.url,
+    openshopAssetId:cloneOutput.assetId,
+    openshopSourceNodeId:'openshop-c',
+  });
+  expect((await request.get(`${baseUrl}${cloneOutput.url}`)).status()).toBe(200);
   expect(projectA.body.project.sourceBindings.some(binding => binding.state === 'detached')).toBe(true);
   expect(JSON.stringify(await canvasRecord(request, classic.id))).not.toMatch(/data:image\//);
   expect(JSON.stringify(projectA.body.project)).not.toMatch(/data:image\//);

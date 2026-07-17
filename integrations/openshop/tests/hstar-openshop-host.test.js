@@ -116,6 +116,60 @@ describe('Hstar OpenShop host page visibility', () => {
   });
 });
 
+describe('Hstar OpenShop host project disposal', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('releases only the exact local session without deleting the remote project', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ok:true, status:200});
+    vi.stubGlobal('fetch', fetchMock);
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-1', nodeId:'node-other', projectId:'project-other',
+      projectName:'Other project', frameId:'frame-canvas',
+    });
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-1', nodeId:'node-target', projectId:'project-target',
+      projectName:'Target project', frameId:'frame-canvas',
+    });
+    const overlay = document.getElementById('openshop-host');
+    const targetFrame = overlay.querySelector('[data-project-id="project-target"]');
+    const otherFrame = overlay.querySelector('[data-project-id="project-other"]');
+
+    const disposed = await host.disposeProject(' project-target ', {
+      canvasType:' classic ', canvasId:' canvas-1 ', nodeId:' node-target ',
+      projectId:' ignored-project-id ',
+    });
+
+    expect(disposed).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(targetFrame.isConnected).toBe(false);
+    expect(otherFrame.isConnected).toBe(true);
+    expect(host.getState().sessionCount).toBe(1);
+    expect(host.getState().sessions).toEqual([
+      expect.objectContaining({projectId:'project-other'}),
+    ]);
+    expect(host.getState().activeSession).toBeNull();
+    expect(overlay.classList.contains('is-open')).toBe(false);
+  });
+
+  it('returns false without a remote mutation when no exact session exists', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const host = await mountHost();
+
+    const disposed = await host.disposeProject('project-missing', {
+      canvasType:'classic', canvasId:'canvas-1', nodeId:'node-missing',
+    });
+
+    expect(disposed).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(host.getState().sessionCount).toBe(0);
+  });
+});
+
 describe('Hstar OpenShop host clone ownership', () => {
   beforeEach(() => {
     vi.restoreAllMocks();

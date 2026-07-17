@@ -798,6 +798,8 @@ async def api_lifecycle():
             }
             attached = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
             assert attached.status_code == 200, attached.text
+            assert api_project_path.is_file()
+            assert clone_project_path.is_file()
             canvas_payload["nodes"] = [
                 node for node in canvas_payload["nodes"] if node["id"] == "output-api"
             ]
@@ -819,6 +821,11 @@ async def api_lifecycle():
                 },
             )
             assert missing_clone.status_code == 404
+            assert not api_project_path.exists()
+            assert not clone_project_path.exists()
+            surviving_canvas = await client.get(f"/api/canvases/{canvas['id']}")
+            assert surviving_canvas.status_code == 200
+            assert surviving_canvas.json()["canvas"]["nodes"] == canvas_payload["nodes"]
             assert (await client.get(asset["url"])).status_code == 404
             assert (await client.get(output_asset["url"])).status_code == 200
 
@@ -867,6 +874,7 @@ async def api_lifecycle():
                 params={"canvas_type": "smart", "canvas_id": smart_canvas["id"], "node_id": "node-soft"},
             )
             assert purged_project.status_code == 404
+            assert not soft_sidecar.exists()
             assert not soft_sidecar.parent.parent.exists()
             assert not list(Path(app_root).rglob("*.tmp"))
 

@@ -746,7 +746,6 @@
         const scope = Protocol.createProjectScope(context);
         const session = state.sessions.get(scope);
         if(!session) return false;
-        await fetch(projectUrl(context.projectId, context), {method:'DELETE'}).catch(() => null);
         const wasActive = state.activeScope === scope;
         releaseSession(session, 'project-deleted');
         if(wasActive) hideOverlay();
