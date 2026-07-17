@@ -4894,31 +4894,63 @@ self.onmessage = function(e) {
             0.0001,
             Math.abs(Number(this.canvas?.viewportTransform?.[0] || this.zoom || 1))
         );
+        const scaleTolerance = Math.max(0.25, 1 / zoom);
         const result = engine.resolveScale({
             objectRect,
             documentRect:{left:0, top:0, width:this.canvasW, height:this.canvasH},
             corner:transform?.corner,
-            tolerance:Math.max(1, Number(this._prefs.snapTolerance) || 5) / zoom,
+            tolerance:scaleTolerance,
         });
         if (!result || (result.sourceX === 'none' && result.sourceY === 'none')) return;
+        const corner = String(transform?.corner || '').toLowerCase();
+        const uniformCorner = /[lr]/.test(corner) && /[tb]/.test(corner)
+            && !transform?.shiftKey && !transform?.e?.shiftKey
+            && transform?.uniform !== false;
+        const factorX = result.sourceX !== 'none' && objectRect.width > 0
+            ? result.width / objectRect.width
+            : null;
+        const factorY = result.sourceY !== 'none' && objectRect.height > 0
+            ? result.height / objectRect.height
+            : null;
+        let applyX = factorX !== null;
+        let applyY = factorY !== null;
         const values = {};
-        if (result.sourceX !== 'none' && objectRect.width > 0) {
-            values.scaleX = Number(object.scaleX) * result.width / objectRect.width;
-        }
-        if (result.sourceY !== 'none' && objectRect.height > 0) {
-            values.scaleY = Number(object.scaleY) * result.height / objectRect.height;
+        if (uniformCorner && (factorX !== null || factorY !== null)) {
+            const factors = [factorX, factorY].filter(value => value !== null);
+            const factor = factors.sort((left, right) => Math.abs(left - 1) - Math.abs(right - 1))[0];
+            const factorTolerance = Math.max(
+                1e-8,
+                scaleTolerance / Math.max(objectRect.width, objectRect.height)
+            );
+            applyX = factorX !== null && Math.abs(factorX - factor) <= factorTolerance;
+            applyY = factorY !== null && Math.abs(factorY - factor) <= factorTolerance;
+            values.scaleX = Number(object.scaleX) * factor;
+            values.scaleY = Number(object.scaleY) * factor;
+        } else {
+            if (factorX !== null) values.scaleX = Number(object.scaleX) * factorX;
+            if (factorY !== null) values.scaleY = Number(object.scaleY) * factorY;
         }
         if (Object.values(values).some(value => !Number.isFinite(value) || value === 0)) return;
         object.set(values);
         object.setCoords?.();
         const scaledRect = this._objectSnapRect(object);
         if (!scaledRect) return;
-        const position = {};
-        if (result.sourceX !== 'none') {
-            position.left = Number(object.left) + result.left - scaledRect.left;
+        const originalRight = objectRect.left + objectRect.width;
+        const originalBottom = objectRect.top + objectRect.height;
+        let desiredLeft = objectRect.left;
+        let desiredTop = objectRect.top;
+        if (corner.includes('l')) {
+            desiredLeft = applyX ? result.left : originalRight - scaledRect.width;
         }
-        if (result.sourceY !== 'none') {
-            position.top = Number(object.top) + result.top - scaledRect.top;
+        if (corner.includes('t')) {
+            desiredTop = applyY ? result.top : originalBottom - scaledRect.height;
+        }
+        const position = {};
+        if (factorX !== null || uniformCorner) {
+            position.left = Number(object.left) + desiredLeft - scaledRect.left;
+        }
+        if (factorY !== null || uniformCorner) {
+            position.top = Number(object.top) + desiredTop - scaledRect.top;
         }
         if (Object.keys(position).length) object.set(position);
         object.setCoords?.();

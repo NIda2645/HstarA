@@ -301,8 +301,8 @@ describe('OpenShop core object', () => {
       top:200,
       width:900,
       height:600,
-      scaleX:0.997,
-      scaleY:0.995,
+      scaleX:0.9995,
+      scaleY:0.9995,
       angle:0,
       skewX:0,
       skewY:0,
@@ -332,6 +332,76 @@ describe('OpenShop core object', () => {
     expect(object.getBoundingRect().left + object.getBoundingRect().width).toBeCloseTo(1000, 6);
     expect(object.getBoundingRect().top + object.getBoundingRect().height).toBeCloseTo(800, 6);
     expect(object.setCoords).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves image proportions when a corner snaps on only one document axis', async () => {
+    delete window.HstarOpenShopSnapEngine;
+    await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
+    const OS = loadOpenShop();
+    const object = {
+      left:100,
+      top:200,
+      width:400,
+      height:200,
+      scaleX:2.2475,
+      scaleY:2.2475,
+      angle:0,
+      skewX:0,
+      skewY:0,
+      selectable:true,
+      set(values) { Object.assign(this, values); },
+      setCoords:vi.fn(),
+      getBoundingRect() {
+        return {
+          left:this.left,
+          top:this.top,
+          width:this.width * this.scaleX,
+          height:this.height * this.scaleY,
+        };
+      },
+    };
+    OS.canvas = createCanvasMock([object]);
+    OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+    OS.canvasW = 1000;
+    OS.canvasH = 800;
+    OS.layers = [{name:'Image', locked:false, objects:[object]}];
+    OS._prefs.snapTolerance = 10;
+
+    OS._applyObjectScaleSnapping(object, {corner:'br'});
+
+    expect(object.scaleX).toBeCloseTo(2.25, 6);
+    expect(object.scaleY).toBeCloseTo(2.25, 6);
+    expect(object.scaleX / object.scaleY).toBeCloseTo(1, 8);
+    expect(object.left + object.width * object.scaleX).toBeCloseTo(1000, 6);
+    expect(object.top).toBeCloseTo(200, 6);
+  });
+
+  it('uses a one-screen-pixel scale snap range instead of a sticky preference range', async () => {
+    delete window.HstarOpenShopSnapEngine;
+    await import(`${pathToFileURL(snapEnginePath).href}?test=${Date.now()}-${Math.random()}`);
+    const OS = loadOpenShop();
+    const object = {
+      left:100, top:100, width:400, height:200,
+      scaleX:2.245, scaleY:2.245,
+      angle:0, skewX:0, skewY:0, selectable:true,
+      set(values) { Object.assign(this, values); },
+      setCoords:vi.fn(),
+      getBoundingRect() {
+        return {left:this.left, top:this.top, width:this.width*this.scaleX, height:this.height*this.scaleY};
+      },
+    };
+    OS.canvas = createCanvasMock([object]);
+    OS.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+    OS.canvasW = 1000;
+    OS.canvasH = 800;
+    OS.layers = [{name:'Image', locked:false, objects:[object]}];
+    OS._prefs.snapTolerance = 10;
+
+    OS._applyObjectScaleSnapping(object, {corner:'br'});
+
+    expect(object.scaleX).toBeCloseTo(2.245, 8);
+    expect(object.scaleY).toBeCloseTo(2.245, 8);
+    expect(object.setCoords).not.toHaveBeenCalled();
   });
 
   it('derives local selection snapping from legacy generation layer metadata', async () => {
