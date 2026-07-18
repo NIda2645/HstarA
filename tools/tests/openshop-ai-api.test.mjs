@@ -145,7 +145,8 @@ async def run():
 
     transport = httpx.ASGITransport(app=main.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        owner = {"canvasType":"classic", "canvasId":"canvas-ai", "nodeId":"node-a"}
+        canvas = main.new_canvas("OpenShop AI API test", "layers", "classic")
+        owner = {"canvasType":"classic", "canvasId":canvas["id"], "nodeId":"node-a"}
         init = await client.post(
             "/api/openshop/projects/project-ai/initialize",
             json={"owner":owner, "document":{"width":96, "height":64}},
@@ -267,7 +268,7 @@ async def run():
 
         wrong_owner = await client.get(
             f"/api/openshop/projects/project-ai/ai-tasks/{created.json()['task_id']}",
-            params={"canvas_type":"classic", "canvas_id":"canvas-ai", "node_id":"node-b"},
+            params={"canvas_type":"classic", "canvas_id":owner["canvasId"], "node_id":"node-b"},
         )
         assert wrong_owner.status_code == 403
 

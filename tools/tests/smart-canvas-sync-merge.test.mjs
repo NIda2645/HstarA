@@ -91,8 +91,79 @@ assert.deepEqual(
   'dirty conflict should not classify a new unsaved OpenShop node as remotely deleted',
 );
 
-assert.match(js, /async function\s+loadCanvas\([\s\S]*rememberSyncedSmartOpenShopNodes\(/, 'smart canvas load should capture the synced OpenShop baseline');
-assert.match(js, /async function\s+saveCanvas\([\s\S]*rememberSyncedSmartOpenShopNodes\(/, 'smart canvas successful save should refresh the synced OpenShop baseline');
-assert.match(js, /function\s+applyMergedServerCanvas\([\s\S]*smartRemoteDeletedOpenShopNodeIds\(/, 'smart conflict merge should consult the synced OpenShop baseline');
+const applyStart = js.indexOf('function applyMergedServerCanvas');
+const applyEnd = js.indexOf('async function mergeReloadCanvasNow', applyStart);
+assert.ok(applyStart >= 0 && applyEnd > applyStart, 'smart server merge function should be present');
+
+let applySaveCount = 0;
+const applyContext = {
+  canvas:{title:'Canvas', updated_at:10, connections:[]},
+  nodes:[
+    {id:'openshop-remote-deleted', type:'openshop-layered', projectId:'project-deleted'},
+    {id:'openshop-local-unsaved', type:'openshop-layered', projectId:'project-local'},
+    {id:'openshop-remote-kept', type:'openshop-layered', projectId:'project-kept'},
+  ],
+  lastSyncedSmartOpenShopNodeIds:new Set(['openshop-remote-deleted', 'openshop-remote-kept']),
+  permanentlyDeletedOpenShopNodeIds:new Set(),
+  smartDeletedNodeIds:new Set(),
+  normalizeLegacySmartNode:node => node,
+  smartRemoteDeletedOpenShopNodeIds:context.smartRemoteDeletedOpenShopNodeIds,
+  mergeSmartNodeLists:context.mergeSmartNodeLists,
+  mergeSmartConnections:() => [],
+  filterPermanentlyDeletedOpenShopHistoryState:state => state,
+  clearCompletedNodeBusyStates:() => false,
+  recoverStuckLoopOutputsFromLogs:() => false,
+  render() {},
+  scheduleConnectionLayerRefresh() {},
+  scheduleSave() { applySaveCount += 1; },
+  resumeSmartPendingTasks() {},
+  resumeJimengPendingNodes() {},
+  document:{getElementById:() => null},
+};
+applyContext.rememberSyncedSmartOpenShopNodes = items => {
+  applyContext.lastSyncedSmartOpenShopNodeIds = new Set(
+    (items || []).filter(node => node?.type === 'openshop-layered').map(node => String(node.id)),
+  );
+};
+vm.createContext(applyContext);
+vm.runInContext(
+  `${js.slice(applyStart, applyEnd)}\nglobalThis.applyMergedServerCanvas = applyMergedServerCanvas;`,
+  applyContext,
+);
+
+assert.equal(applyContext.applyMergedServerCanvas({
+  title:'Canvas',
+  updated_at:20,
+  nodes:[{id:'openshop-remote-kept', type:'openshop-layered', projectId:'project-kept'}],
+  connections:[],
+}, {preserveLocalChanges:true}), true);
+assert.deepEqual(
+  Array.from(applyContext.nodes, node => node.id),
+  ['openshop-local-unsaved', 'openshop-remote-kept'],
+  'dirty 409 merge should remove remotely deleted OpenShop nodes and preserve local unsaved nodes',
+);
+assert.deepEqual(
+  Array.from(applyContext.permanentlyDeletedOpenShopNodeIds),
+  ['openshop-remote-deleted'],
+  'dirty 409 merge should permanently block the remotely deleted OpenShop node',
+);
+assert.deepEqual(
+  Array.from(applyContext.lastSyncedSmartOpenShopNodeIds),
+  ['openshop-remote-kept'],
+  'applying a server snapshot should refresh the confirmed OpenShop baseline',
+);
+assert.equal(applySaveCount, 1, 'blocking a remotely deleted OpenShop node should persist the merged state');
+
+const loadStart = js.indexOf('async function loadCanvas');
+const saveStart = js.indexOf('async function saveCanvas', loadStart);
+const saveEnd = js.indexOf('const CONTROLLER_TABS', saveStart);
+const loadSnippet = js.slice(loadStart, saveStart);
+const saveSnippet = js.slice(saveStart, saveEnd);
+assert.match(loadSnippet, /rememberSyncedSmartOpenShopNodes\(nodes\)/, 'smart canvas load should capture the synced OpenShop baseline');
+assert.match(
+  saveSnippet,
+  /if\(res\.ok\)\{[\s\S]*rememberSyncedSmartOpenShopNodes\(data\.canvas\.nodes\)/,
+  'smart canvas successful save should refresh the server-confirmed OpenShop baseline',
+);
 
 console.log('smart canvas sync merge tests passed');
