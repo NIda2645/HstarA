@@ -30,6 +30,7 @@ test('closes and sorts the font list while editing existing text in place', asyn
   await page.evaluate(async () => {
     OS.createNewDocument(800, 600);
     const fontManager = window.HstarOpenShopFontCatalog.createManager();
+    window.__hstarE2EFontManager = fontManager;
     window.HstarOpenShopTextPropertiesController?.destroy?.();
     window.HstarOpenShopTextPropertiesController = window.HstarOpenShopTextProperties.createController({
       editor:OS,
@@ -56,20 +57,21 @@ test('closes and sorts the font list while editing existing text in place', asyn
   await trigger.click();
   await expect(list).toBeVisible();
   const ordering = await page.evaluate(() => {
-    const options = [...document.querySelectorAll('[data-text-font-list] [data-family]')].map(option => ({
-      family:option.dataset.family || '',
-      label:option.textContent || '',
-    }));
+    const options = window.__hstarE2EFontManager.catalogRows()
+      .filter(row => row.kind === 'font')
+      .map(row => ({family:row.family || '', label:row.font?.label || ''}));
     const isChinese = option => /[\u3400-\u9fff]/u.test(`${option.family} ${option.label}`);
     const flags = options.map(isChinese);
     const firstOther = flags.indexOf(false);
     return {
       count:options.length,
+      mounted:document.querySelectorAll('[data-text-font-list] [data-family]').length,
       firstOther,
       chineseAfterOther:firstOther >= 0 && flags.slice(firstOther).some(Boolean),
     };
   });
   expect(ordering.count).toBeGreaterThan(20);
+  expect(ordering.mounted).toBeLessThanOrEqual(Math.ceil(210 / 30) + (4 * 2));
   expect(ordering.firstOther).toBeGreaterThan(0);
   expect(ordering.chineseAfterOther).toBe(false);
 
@@ -79,17 +81,24 @@ test('closes and sorts the font list while editing existing text in place', asyn
     .toEqual({hidden:true, display:'none'});
 
   await trigger.click();
-  const dengXian = list.locator('[data-family="等线"]');
+  await list.evaluate(element => {
+    const rows = window.__hstarE2EFontManager.catalogRows();
+    const index = rows.findIndex(row => row.kind === 'font' && row.family === '\u7b49\u7ebf');
+    if(index < 0) throw new Error('Expected DengXian family in catalog rows');
+    element.scrollTop = index * 30;
+    element.dispatchEvent(new Event('scroll'));
+  });
+  const dengXian = list.locator('[data-family="\u7b49\u7ebf"]');
   await expect(dengXian).toHaveCount(1);
-  await expect(list.locator('[data-family="等线 Light"]')).toHaveCount(0);
+  await expect(list.locator('[data-family="\u7b49\u7ebf Light"]')).toHaveCount(0);
   await dengXian.click();
-  await expect(page.locator('[data-text-family-label]')).toHaveText('等线');
+  await expect(page.locator('[data-text-family-label]')).toHaveText('\u7b49\u7ebf');
   const styleLabels = await page.locator('[data-text-style] option').allTextContents();
   expect(styleLabels).toEqual(expect.arrayContaining(['Regular', 'Light']));
   await page.locator('[data-text-style]').selectOption({label:'Light'});
   expect(await page.evaluate(() => (
     OS.canvas.getObjects().find(object => object.type === 'i-text')?.fontFamily
-  ))).toBe('等线 Light');
+  ))).toBe('\u7b49\u7ebf Light');
 
   const textResult = await page.evaluate(() => {
     const text = OS.canvas.getObjects().find(object => object.type === 'i-text');
@@ -141,6 +150,101 @@ test('closes and sorts the font list while editing existing text in place', asyn
   expect(shapeResult).toEqual({
     layersBefore:3, layersAfter:4, layerName:'Rectangle', objectCount:1, objectType:'rect',
   });
+  expect(pageErrors).toEqual([]);
+});
+
+test('virtualizes a deterministic 2500-font catalog without moving the parent panel', async ({page}) => {
+  test.setTimeout(120000);
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.stack || error.message));
+  const fonts = Array.from({length:2500}, (_, index) => {
+    const family = `Perf Font ${String(index).padStart(4, '0')}`;
+    return {family, label:family, languageGroup:'en', styles:[]};
+  });
+  await page.route('**/api/openshop/fonts*', route => route.fulfill({
+    status:200,
+    contentType:'application/json',
+    body:JSON.stringify({platform:'e2e', cached:false, fonts}),
+  }));
+  await openStandaloneEditor(page);
+
+  await page.evaluate(async () => {
+    OS.createNewDocument(800, 600);
+    const fontManager = window.HstarOpenShopFontCatalog.createManager();
+    window.__hstarVirtualFontManager = fontManager;
+    window.HstarOpenShopTextPropertiesController?.destroy?.();
+    window.HstarOpenShopTextPropertiesController = window.HstarOpenShopTextProperties.createController({
+      editor:OS,
+      fontManager,
+      documentRef:document,
+    });
+    await window.HstarOpenShopTextPropertiesController.start();
+    const text = new fabric.IText('Virtual font test', {
+      left:80,
+      top:90,
+      fontFamily:'Perf Font 1250',
+      fontSize:48,
+      fill:'#ffffff',
+      editable:true,
+    });
+    OS.canvas.add(text);
+    OS.layers[OS.activeLayerIdx].objects.push(text);
+    OS.canvas.setActiveObject(text);
+    OS.canvas.fire('selection:created', {selected:[text], target:text});
+  });
+
+  const trigger = page.locator('[data-text-family]');
+  const list = page.locator('[data-text-font-list]');
+  const openMetrics = await page.evaluate(() => {
+    const panel = document.getElementById('hstar-text-properties-panel');
+    const triggerElement = document.querySelector('[data-text-family]');
+    const listElement = document.querySelector('[data-text-font-list]');
+    const beforeRect = panel.getBoundingClientRect();
+    const beforeScrollTop = panel.scrollTop;
+    const startedAt = performance.now();
+    triggerElement.click();
+    const duration = performance.now() - startedAt;
+    const afterRect = panel.getBoundingClientRect();
+    return {
+      duration,
+      beforeScrollTop,
+      afterScrollTop:panel.scrollTop,
+      beforeRect:{top:beforeRect.top, left:beforeRect.left, width:beforeRect.width, height:beforeRect.height},
+      afterRect:{top:afterRect.top, left:afterRect.left, width:afterRect.width, height:afterRect.height},
+      mounted:listElement.querySelectorAll('[role="option"]').length,
+      spacerHeight:listElement.querySelector('[data-font-spacer]')?.style.height,
+      rowCount:window.__hstarVirtualFontManager.catalogRows().length,
+    };
+  });
+  expect(openMetrics.duration).toBeLessThan(250);
+  expect(openMetrics.mounted).toBeGreaterThan(0);
+  expect(openMetrics.mounted).toBeLessThanOrEqual(Math.ceil(210 / 30) + (4 * 2));
+  expect(openMetrics.afterScrollTop).toBe(openMetrics.beforeScrollTop);
+  expect(openMetrics.afterRect).toEqual(openMetrics.beforeRect);
+  expect(openMetrics.spacerHeight).toBe(`${openMetrics.rowCount * 30}px`);
+  await expect(list).toBeVisible();
+
+  const targetFamily = 'Perf Font 2000';
+  await list.evaluate((element, family) => {
+    const rows = window.__hstarVirtualFontManager.catalogRows();
+    const index = rows.findIndex(row => row.kind === 'font' && row.family === family);
+    if(index < 0) throw new Error(`Missing deterministic font row: ${family}`);
+    element.scrollTop = index * 30;
+    element.dispatchEvent(new Event('scroll'));
+  }, targetFamily);
+  const target = list.locator(`[data-family="${targetFamily}"]`);
+  await expect(target).toHaveCount(1);
+  await target.click();
+  await expect(list).toBeHidden();
+  await expect(page.locator('[data-text-family-label]')).toHaveText(targetFamily);
+  expect(await page.evaluate(() => (
+    OS.canvas.getObjects().find(object => object.type === 'i-text')?.fontFamily
+  ))).toBe(targetFamily);
+
+  await trigger.click();
+  await expect(list).toBeVisible();
+  await page.locator('#statusbar').dispatchEvent('mousedown');
+  await expect(list).toBeHidden();
   expect(pageErrors).toEqual([]);
 });
 

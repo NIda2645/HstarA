@@ -4,6 +4,9 @@
   ]);
   const OBJECT_PROPERTIES = new Set(['textAlign', 'lineHeight', 'charSpacing']);
   const MIXED = '__mixed__';
+  const FONT_ROW_HEIGHT = 30;
+  const FONT_VIEWPORT_HEIGHT = 210;
+  const FONT_OVERSCAN = 4;
 
   const pointsToPixels = value => Number(value) * 96 / 72;
   const pixelsToPoints = value => Number(value) * 72 / 96;
@@ -43,6 +46,12 @@
       panel:null,
       tab:null,
     };
+    let fontRows = [];
+    let fontTrigger = null;
+    let fontList = null;
+    let fontSpacer = null;
+    let fontRowsLayer = null;
+    let fontRenderFrame = null;
 
     function addListener(target, event, listener){
       target?.on?.(event, listener);
@@ -310,6 +319,103 @@
       syncControls();
     }
 
+    function cancelFontRender(){
+      if(fontRenderFrame === null) return;
+      root.cancelAnimationFrame?.(fontRenderFrame);
+      fontRenderFrame = null;
+    }
+
+    function closeFontList(){
+      cancelFontRender();
+      if(fontList) fontList.hidden = true;
+      fontTrigger?.setAttribute('aria-expanded', 'false');
+    }
+
+    function createFontRow(row){
+      if(row.kind !== 'font') {
+        const heading = documentRef.createElement('div');
+        heading.className = `hstar-font-heading hstar-font-${row.kind}`;
+        heading.setAttribute('role', 'presentation');
+        const label = documentRef.createElement('span');
+        label.className = 'hstar-font-row-label';
+        label.textContent = clean(row.label);
+        heading.append(label);
+        return heading;
+      }
+
+      const font = row.font || row;
+      const family = clean(row.family || font.family);
+      const option = documentRef.createElement('button');
+      option.type = 'button';
+      option.className = 'hstar-font-option';
+      option.dataset.family = family;
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', family.toLowerCase() === state.familyValue.toLowerCase() ? 'true' : 'false');
+      option.style.fontFamily = family;
+      const label = documentRef.createElement('span');
+      label.className = 'hstar-font-row-label';
+      label.dataset.fontLabel = 'true';
+      label.textContent = clean(font.label) || family;
+      option.append(label);
+      if(font.status === 'missing') {
+        const badge = documentRef.createElement('span');
+        badge.className = 'hstar-font-missing-badge';
+        badge.dataset.fontMissingBadge = 'true';
+        badge.textContent = '缺失字体';
+        option.append(badge);
+      }
+      return option;
+    }
+
+    function renderFontRows(){
+      if(!fontList || !fontRowsLayer) return;
+      const firstVisible = Math.floor(fontList.scrollTop / FONT_ROW_HEIGHT);
+      const first = Math.max(0, firstVisible - FONT_OVERSCAN);
+      const visibleEnd = Math.ceil((fontList.scrollTop + FONT_VIEWPORT_HEIGHT) / FONT_ROW_HEIGHT);
+      const end = Math.min(fontRows.length, visibleEnd + FONT_OVERSCAN);
+      const fragment = documentRef.createDocumentFragment();
+      for(let index = first; index < end; index += 1) {
+        fragment.append(createFontRow(fontRows[index]));
+      }
+      fontRowsLayer.style.transform = `translateY(${first * FONT_ROW_HEIGHT}px)`;
+      fontRowsLayer.replaceChildren(fragment);
+    }
+
+    function scheduleFontRender(){
+      if(fontRenderFrame !== null) return;
+      if(typeof root.requestAnimationFrame !== 'function') {
+        renderFontRows();
+        return;
+      }
+      fontRenderFrame = root.requestAnimationFrame(() => {
+        fontRenderFrame = null;
+        if(!fontList?.hidden) renderFontRows();
+      });
+    }
+
+    function updateFontRows(){
+      fontRows = fontManager.catalogRows?.() || [];
+      if(fontSpacer) fontSpacer.style.height = `${fontRows.length * FONT_ROW_HEIGHT}px`;
+      if(fontRowsLayer) {
+        fontRowsLayer.style.transform = 'translateY(0px)';
+        fontRowsLayer.replaceChildren();
+      }
+      if(fontList) fontList.scrollTop = 0;
+    }
+
+    function openFontList(){
+      if(!fontList || !fontTrigger || !fontSpacer || !fontRowsLayer) return;
+      cancelFontRender();
+      fontList.hidden = false;
+      fontTrigger.setAttribute('aria-expanded', 'true');
+      const selectedFamily = state.familyValue.toLowerCase();
+      const selectedIndex = fontRows.findIndex(row => (
+        row.kind === 'font' && clean(row.family).toLowerCase() === selectedFamily
+      ));
+      fontList.scrollTop = Math.max(0, selectedIndex) * FONT_ROW_HEIGHT;
+      renderFontRows();
+    }
+
     function createPanel(){
       const existing = documentRef.querySelector('[data-hstar-text-properties-tab]');
       if(existing) {
@@ -325,7 +431,7 @@
       tab.className = 'panel-tab';
       tab.dataset.hstarTextPropertiesTab = 'true';
       tab.textContent = '文字';
-      tab.addEventListener('click', activateTextTab);
+      addDomListener(tab, 'click', activateTextTab);
       tabs.append(tab);
       const panel = documentRef.createElement('div');
       panel.className = 'panel-tab-content';
@@ -372,56 +478,47 @@
     }
 
     function bindPanelControls(){
-      const family = documentRef.querySelector('[data-text-family]');
-      const list = documentRef.querySelector('[data-text-font-list]');
-      const closeFontList = () => {
-        if(list) list.hidden = true;
-        family?.setAttribute('aria-expanded', 'false');
-      };
-      const renderFontList = () => {
-        if(!list || !family) return;
-        list.innerHTML = '';
-        let selectedOption = null;
-        (fontManager.searchFonts?.('') || []).forEach(font => {
-          const option = documentRef.createElement('button');
-          option.type = 'button';
-          option.className = 'hstar-font-option';
-          option.dataset.family = font.family;
-          option.setAttribute('role', 'option');
-          const selected = clean(font.family).toLowerCase() === state.familyValue.toLowerCase();
-          option.setAttribute('aria-selected', selected ? 'true' : 'false');
-          if(selected) selectedOption = option;
-          option.textContent = font.status === 'missing' ? `${font.label}（缺失字体）` : font.label;
-          option.style.fontFamily = `'${font.family.replaceAll("'", '')}'`;
-          option.addEventListener('mousedown', event => event.preventDefault());
-          option.addEventListener('click', () => {
-            closeFontList();
-            const style = fontManager.defaultStyleFor?.(font.family);
-            if(!applyFontStyle(style)) applyProperty('fontFamily', font.family);
-          });
-          list.append(option);
-        });
-        list.hidden = false;
-        family.setAttribute('aria-expanded', 'true');
-        selectedOption?.scrollIntoView?.({block:'nearest'});
-      };
-      addDomListener(family, 'click', () => {
-        if(list?.hidden) renderFontList();
+      fontTrigger = documentRef.querySelector('[data-text-family]');
+      fontList = documentRef.querySelector('[data-text-font-list]');
+      fontSpacer = documentRef.createElement('div');
+      fontSpacer.className = 'hstar-font-spacer';
+      fontSpacer.dataset.fontSpacer = 'true';
+      fontSpacer.setAttribute('aria-hidden', 'true');
+      fontRowsLayer = documentRef.createElement('div');
+      fontRowsLayer.className = 'hstar-font-rows';
+      fontRowsLayer.dataset.fontRows = 'true';
+      fontList?.replaceChildren(fontSpacer, fontRowsLayer);
+
+      addDomListener(fontTrigger, 'click', () => {
+        if(fontList?.hidden) openFontList();
         else closeFontList();
       });
-      addDomListener(family, 'keydown', event => {
-        if(event.key === 'Escape') {
+      addDomListener(fontList, 'scroll', scheduleFontRender);
+      addDomListener(fontList, 'mousedown', event => {
+        const option = event.target.closest?.('[data-family]');
+        if(option && fontList.contains(option)) event.preventDefault();
+      });
+      addDomListener(fontList, 'click', event => {
+        const option = event.target.closest?.('[data-family]');
+        if(!option || !fontList.contains(option)) return;
+        const family = clean(option.dataset.family);
+        closeFontList();
+        const style = fontManager.defaultStyleFor?.(family);
+        if(!applyFontStyle(style)) applyProperty('fontFamily', family);
+      });
+      addDomListener(documentRef, 'keydown', event => {
+        if(event.key === 'Escape' && !fontList?.hidden) {
           closeFontList();
           event.preventDefault();
         }
       });
       addDomListener(documentRef, 'mousedown', event => {
-        if(list && !list.contains(event.target) && !family?.contains(event.target)) {
+        if(fontList && !fontList.contains(event.target) && !fontTrigger?.contains(event.target)) {
           closeFontList();
         }
       });
 
-      documentRef.querySelector('[data-text-style]')?.addEventListener('change', event => {
+      addDomListener(documentRef.querySelector('[data-text-style]'), 'change', event => {
         const option = event.target.selectedOptions?.[0];
         if(!option) return;
         applyFontStyle({
@@ -435,7 +532,7 @@
       bindCommitControl('[data-text-line-height]', value => applyProperty('lineHeight', Number(value), {commit:false}), '行距');
       bindCommitControl('[data-text-tracking]', value => applyProperty('charSpacing', Number(value), {commit:false}), '字距');
       bindCommitControl('[data-text-kerning]', value => applyKerning('numeric', Number(value), {commit:false}), '字偶距');
-      documentRef.querySelector('[data-text-kerning-mode]')?.addEventListener('change', event => {
+      addDomListener(documentRef.querySelector('[data-text-kerning-mode]'), 'change', event => {
         const value = Number(documentRef.querySelector('[data-text-kerning]')?.value || 0);
         applyKerning(event.target.value, value);
       });
@@ -464,15 +561,16 @@
           },
         });
       });
-      documentRef.querySelector('[data-text-align]')?.addEventListener('change', event => applyProperty('textAlign', event.target.value));
+      addDomListener(documentRef.querySelector('[data-text-align]'), 'change', event => applyProperty('textAlign', event.target.value));
       ['bold', 'italic', 'underline', 'linethrough'].forEach(name => {
-        documentRef.querySelector(`[data-text-${name}]`)?.addEventListener('change', event => {
+        addDomListener(documentRef.querySelector(`[data-text-${name}]`), 'change', event => {
           if(name === 'bold') applyProperty('fontWeight', event.target.checked ? 700 : 400);
           else if(name === 'italic') applyProperty('fontStyle', event.target.checked ? 'italic' : 'normal');
           else applyProperty(name, event.target.checked);
         });
       });
-      documentRef.querySelector('[data-font-refresh]')?.addEventListener('click', async () => {
+      addDomListener(documentRef.querySelector('[data-font-refresh]'), 'click', async () => {
+        closeFontList();
         await fontManager.refreshSystemFonts?.();
         documentRef.querySelector('[data-font-status]').textContent = '本机字体已刷新';
         syncControls();
@@ -497,8 +595,8 @@
     function bindCommitControl(selector, apply, property){
       const control = documentRef.querySelector(selector);
       if(!control) return;
-      control.addEventListener('input', event => apply(event.target.value));
-      control.addEventListener('change', event => {
+      addDomListener(control, 'input', event => apply(event.target.value));
+      addDomListener(control, 'change', event => {
         const target = activeTextObject();
         if(!target) return;
         apply(event.target.value);
@@ -518,7 +616,11 @@
       addListener(editor.canvas, 'text:selection:changed', onTextSelectionChanged);
       addListener(editor.canvas, 'text:changed', onTextChanged);
       addListener(editor.canvas, 'text:editing:exited', onTextSelectionChanged);
-      state.unsubscribeFonts = fontManager.subscribe?.(() => syncControls());
+      state.unsubscribeFonts = fontManager.subscribe?.(() => {
+        closeFontList();
+        updateFontRows();
+        syncControls();
+      });
       await fontManager.loadSystemFonts?.();
       fontManager.scanEditor?.(editor);
       syncControls();
@@ -528,10 +630,16 @@
     function destroy(){
       if(state.destroyed) return;
       state.destroyed = true;
+      closeFontList();
       state.listeners.splice(0).forEach(remove => remove());
       state.unsubscribeFonts?.();
       state.tab?.remove();
       state.panel?.remove();
+      fontRows = [];
+      fontTrigger = null;
+      fontList = null;
+      fontSpacer = null;
+      fontRowsLayer = null;
     }
 
     const controller = {

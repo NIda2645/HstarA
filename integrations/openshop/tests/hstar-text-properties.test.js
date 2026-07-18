@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -6,6 +6,30 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const controllerPath = resolve(testDir, '..', 'host', 'openshop-text-properties.js');
 const controllerCssPath = resolve(testDir, '..', 'host', 'openshop-text-properties.css');
+const FONT_ROW_HEIGHT = 30;
+const FONT_VIEWPORT_HEIGHT = 210;
+const FONT_OVERSCAN = 4;
+
+let animationFrames;
+let nextAnimationFrame;
+
+function flushAnimationFrames() {
+  const callbacks = [...animationFrames.values()];
+  animationFrames.clear();
+  callbacks.forEach(callback => callback(performance.now()));
+}
+
+function createCatalogRows(count = 2500) {
+  return Array.from({length:count}, (_, index) => {
+    const family = `Virtual Font ${String(index).padStart(4, '0')}`;
+    return {
+      kind:'font',
+      key:`font:${family}`,
+      family,
+      font:{family, label:family, status:index === 7 ? 'missing' : 'available', styles:[]},
+    };
+  });
+}
 
 class FakeCanvas {
   constructor() {
@@ -80,6 +104,31 @@ function createHarness(options = {}) {
     __hstarFontRefs:[],
   };
   canvas.activeObject = textObject;
+  let fontSubscriber = null;
+  const catalogRows = options.catalogRows || [
+    {kind:'section', key:'section-zh', label:'Chinese fonts'},
+    {kind:'group', key:'group-zh-unprefixed', label:'Common Chinese'},
+    {
+      kind:'font',
+      key:'font:Microsoft YaHei UI',
+      family:'Microsoft YaHei UI',
+      font:{family:'Microsoft YaHei UI', label:'Microsoft YaHei UI', status:'available', styles:[]},
+    },
+    {
+      kind:'font',
+      key:'font:Missing Project Font',
+      family:'Missing Project Font',
+      font:{family:'Missing Project Font', label:'Missing Project Font', status:'missing', styles:[]},
+    },
+    {kind:'section', key:'section-en', label:'English fonts'},
+    {kind:'group', key:'group-en-unprefixed', label:'Other English'},
+    {
+      kind:'font',
+      key:'font:Century Gothic',
+      family:'Century Gothic',
+      font:{family:'Century Gothic', label:'Century Gothic', status:'available', styles:[]},
+    },
+  ];
   const fontManager = {
     loadSystemFonts:vi.fn(async () => [
       {family:'Microsoft YaHei UI', label:'微软雅黑 UI', status:'available', styles:[
@@ -91,17 +140,40 @@ function createHarness(options = {}) {
       ]},
     ]),
     refreshSystemFonts:vi.fn(async () => []),
-    searchFonts:vi.fn(query => query ? [{family:'Microsoft YaHei UI', label:'微软雅黑 UI', status:'available', styles:[]}]:[]),
+    searchFonts:vi.fn(() => catalogRows.filter(row => row.kind === 'font').map(row => row.font)),
+    catalogRows:vi.fn(() => catalogRows),
     stylesFor:vi.fn(() => [{id:'yahei-400-normal', label:'常规', weight:400, italic:false, localNames:['Microsoft YaHei UI']}]),
-    subscribe:vi.fn(() => () => {}),
+    defaultStyleFor:vi.fn(() => null),
+    subscribe:vi.fn(listener => {
+      fontSubscriber = listener;
+      listener({});
+      return vi.fn(() => {
+        if(fontSubscriber === listener) fontSubscriber = null;
+      });
+    }),
     scanEditor:vi.fn(() => []),
   };
   const controller = window.HstarOpenShopTextProperties.createController({editor, fontManager, documentRef:document});
-  return {controller, editor, canvas, textObject, fontManager};
+  return {
+    controller,
+    editor,
+    canvas,
+    textObject,
+    fontManager,
+    notifyFonts:() => fontSubscriber?.({}),
+  };
 }
 
 describe('Hstar OpenShop text properties', () => {
   beforeEach(async () => {
+    animationFrames = new Map();
+    nextAnimationFrame = 1;
+    vi.stubGlobal('requestAnimationFrame', vi.fn(callback => {
+      const id = nextAnimationFrame++;
+      animationFrames.set(id, callback);
+      return id;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn(id => animationFrames.delete(id)));
     expect(existsSync(controllerPath), `${controllerPath} should exist`).toBe(true);
     vi.resetModules();
     delete window.HstarOpenShopTextProperties;
@@ -136,6 +208,10 @@ describe('Hstar OpenShop text properties', () => {
     await import(`${pathToFileURL(controllerPath).href}?test=${Date.now()}-${Math.random()}`);
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('opens the text tab when a text object is selected or edited', async () => {
     const {controller, canvas, textObject} = createHarness();
     await controller.start();
@@ -156,60 +232,237 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
-  it('uses a read-only dropdown for the complete font catalog', async () => {
-    const {controller, fontManager, textObject} = createHarness();
-    const fonts = [
-      {family:'Microsoft YaHei UI', label:'微软雅黑 UI', status:'available', styles:[]},
-      {family:'Century Gothic', label:'Century Gothic', status:'available', styles:[]},
-      ...Array.from({length:94}, (_, index) => ({
-        family:`Test Font ${String(index + 1).padStart(2, '0')}`,
-        label:`Test Font ${String(index + 1).padStart(2, '0')}`,
-        status:'available',
-        styles:[],
-      })),
-    ];
-    fontManager.searchFonts.mockReturnValue(fonts);
-    const previousScrollIntoView = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = vi.fn();
+  it('uses catalogRows once per subscription update and never calls scrollIntoView on open', async () => {
+    const rows = createCatalogRows();
+    const {controller, fontManager, textObject} = createHarness({catalogRows:rows});
+    textObject.fontFamily = rows[1250].family;
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {configurable:true, value:scrollIntoView});
 
     await controller.start();
     const trigger = document.querySelector('[data-text-family]');
-    const list = document.querySelector('[data-text-font-list]');
 
     expect(trigger.tagName).toBe('BUTTON');
     expect(trigger.getAttribute('aria-haspopup')).toBe('listbox');
     expect(trigger.querySelector('input')).toBeNull();
     trigger.click();
-    expect(list.hidden).toBe(false);
-    expect(list.querySelectorAll('[data-family]')).toHaveLength(96);
-    expect(list.querySelector('[data-family="Microsoft YaHei UI"]').getAttribute('aria-selected')).toBe('true');
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({block:'nearest'});
+    trigger.click();
+    trigger.click();
+
+    expect(fontManager.catalogRows).toHaveBeenCalledTimes(1);
+    expect(fontManager.searchFonts).not.toHaveBeenCalled();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    controller.destroy();
+    delete Element.prototype.scrollIntoView;
+  });
+
+  it('preserves catalog headings, listbox semantics, missing badges, and DOM font previews', async () => {
+    const {controller} = createHarness();
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
 
     trigger.click();
+    const selected = list.querySelector('[data-family="Microsoft YaHei UI"]');
+    const missing = list.querySelector('[data-family="Missing Project Font"]');
+
+    expect(list.getAttribute('role')).toBe('listbox');
+    expect(list.querySelectorAll('.hstar-font-heading')).toHaveLength(4);
+    expect(selected.getAttribute('role')).toBe('option');
+    expect(selected.getAttribute('aria-selected')).toBe('true');
+    expect(missing.querySelector('[data-font-missing-badge]')).not.toBeNull();
+    expect(missing.style.fontFamily).toContain('Missing Project Font');
+    controller.destroy();
+  });
+
+  it('bounds mounted options to the viewport plus overscan for 2500 rows', async () => {
+    const rows = createCatalogRows();
+    const {controller, textObject} = createHarness({catalogRows:rows});
+    textObject.fontFamily = rows[1250].family;
+    await controller.start();
+
+    document.querySelector('[data-text-family]').click();
+    const mounted = document.querySelectorAll('[data-text-font-list] [role="option"]');
+    const maximumMounted = Math.ceil(FONT_VIEWPORT_HEIGHT / FONT_ROW_HEIGHT) + (FONT_OVERSCAN * 2);
+
+    expect(mounted.length).toBeGreaterThan(0);
+    expect(mounted.length).toBeLessThanOrEqual(maximumMounted);
+    controller.destroy();
+  });
+
+  it('opens at the selected family without moving the parent panel', async () => {
+    const rows = createCatalogRows();
+    const {controller, textObject} = createHarness({catalogRows:rows});
+    textObject.fontFamily = rows[1250].family.toUpperCase();
+    await controller.start();
+    const panel = document.getElementById('hstar-text-properties-panel');
+    const list = document.querySelector('[data-text-font-list]');
+    panel.scrollTop = 73;
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable:true,
+      value:vi.fn(() => { panel.scrollTop = 0; }),
+    });
+
+    document.querySelector('[data-text-family]').click();
+
+    expect(list.scrollTop).toBe(1250 * FONT_ROW_HEIGHT);
+    expect(panel.scrollTop).toBe(73);
+    controller.destroy();
+    delete Element.prototype.scrollIntoView;
+  });
+
+  it('mounts a persistent spacer for the complete 2500-row catalog', async () => {
+    const rows = createCatalogRows();
+    const {controller} = createHarness({catalogRows:rows});
+    await controller.start();
+
+    const list = document.querySelector('[data-text-font-list]');
+    const spacer = list.querySelector('[data-font-spacer]');
+    const rowsLayer = list.querySelector('[data-font-rows]');
+
+    expect(spacer.style.height).toBe(`${rows.length * FONT_ROW_HEIGHT}px`);
+    expect(rowsLayer).not.toBeNull();
+    document.querySelector('[data-text-family]').click();
+    expect(list.firstElementChild).toBe(spacer);
+    expect(list.querySelector('[data-font-spacer]')).toBe(spacer);
+    controller.destroy();
+  });
+
+  it('renders new visible families after its own scroll frame', async () => {
+    const rows = createCatalogRows();
+    const {controller, textObject} = createHarness({catalogRows:rows});
+    textObject.fontFamily = rows[0].family;
+    await controller.start();
+    const list = document.querySelector('[data-text-font-list]');
+    document.querySelector('[data-text-family]').click();
+    const targetFamily = rows[2000].family;
+
+    expect(list.querySelector(`[data-family="${targetFamily}"]`)).toBeNull();
+    list.scrollTop = 2000 * FONT_ROW_HEIGHT;
+    list.dispatchEvent(new Event('scroll'));
+    expect(list.querySelector(`[data-family="${targetFamily}"]`)).toBeNull();
+    flushAnimationFrames();
+
+    expect(list.querySelector(`[data-family="${targetFamily}"]`)).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('delegates selection without ending Fabric text editing or moving focus', async () => {
+    const rows = createCatalogRows();
+    const {controller, textObject} = createHarness({
+      catalogRows:rows,
+      editing:true,
+      selectionStart:0,
+      selectionEnd:3,
+    });
+    textObject.fontFamily = rows[0].family;
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    trigger.focus();
+    trigger.click();
+    const targetFamily = rows[5].family;
+    const label = list.querySelector(`[data-family="${targetFamily}"] [data-font-label]`);
+    const mouseDown = new MouseEvent('mousedown', {bubbles:true, cancelable:true});
+
+    expect(label.dispatchEvent(mouseDown)).toBe(false);
+    expect(mouseDown.defaultPrevented).toBe(true);
+    label.click();
+
+    expect(textObject.setSelectionStyles).toHaveBeenCalledWith({fontFamily:targetFamily}, 0, 3);
+    expect(textObject.isEditing).toBe(true);
+    expect(document.activeElement).toBe(trigger);
     expect(list.hidden).toBe(true);
+    controller.destroy();
+  });
+
+  it('closes the virtualized list on Escape and outside mousedown', async () => {
+    const {controller} = createHarness({catalogRows:createCatalogRows()});
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+
     trigger.click();
     trigger.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
     expect(list.hidden).toBe(true);
-
-    trigger.click();
-    list.querySelector('[data-family="Century Gothic"]').click();
-    expect(list.hidden).toBe(true);
-    expect(textObject.set).toHaveBeenCalledWith({fontFamily:'Century Gothic'});
-
     trigger.click();
     document.body.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
     expect(list.hidden).toBe(true);
-
     controller.destroy();
-    Element.prototype.scrollIntoView = previousScrollIntoView;
+  });
+
+  it('closes, swaps rows, and cancels stale rendering on a catalog subscription update', async () => {
+    const rows = createCatalogRows();
+    const replacementRows = createCatalogRows(12).map(row => {
+      const family = row.family.replace('Virtual', 'Replacement');
+      return {...row, key:`font:${family}`, family, font:{...row.font, family, label:family}};
+    });
+    const {controller, fontManager, notifyFonts} = createHarness({catalogRows:rows});
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    trigger.click();
+    list.scrollTop = 9000;
+    list.dispatchEvent(new Event('scroll'));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    fontManager.catalogRows.mockReturnValue(replacementRows);
+
+    notifyFonts();
+
+    expect(list.hidden).toBe(true);
+    expect(cancelAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(list.querySelector('[data-family]')).toBeNull();
+    trigger.click();
+    expect(list.querySelector(`[data-family="${replacementRows[0].family}"]`)).not.toBeNull();
+    expect(list.querySelector(`[data-family="${rows[0].family}"]`)).toBeNull();
+    controller.destroy();
+  });
+
+  it('destroy cancels pending rendering and removes dropdown listeners', async () => {
+    const {controller, textObject} = createHarness({catalogRows:createCatalogRows()});
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    const align = document.querySelector('[data-text-align]');
+    trigger.click();
+    list.scrollTop = 12000;
+    list.dispatchEvent(new Event('scroll'));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+
+    textObject.set.mockClear();
+    controller.destroy();
+    const requestedFrames = requestAnimationFrame.mock.calls.length;
+    expect(cancelAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(list.hidden).toBe(true);
+    trigger.click();
+    list.dispatchEvent(new Event('scroll'));
+    align.value = 'right';
+    align.dispatchEvent(new Event('change', {bubbles:true}));
+    flushAnimationFrames();
+
+    expect(list.hidden).toBe(true);
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(requestedFrames);
+    expect(textObject.set).not.toHaveBeenCalledWith({textAlign:'right'});
   });
 
   it('keeps a closed font list visually hidden from the layout', () => {
     const css = readFileSync(controllerCssPath, 'utf8');
+    const listRule = css.match(/\.hstar-font-list\{([^}]*)\}/)?.[1] || '';
 
     expect(css).toMatch(
       /\.hstar-font-list\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*\}/
     );
+    expect(listRule).toContain('box-sizing:border-box');
+    expect(listRule).toContain('height:210px');
+    expect(listRule).toContain('max-height:210px');
+    expect(listRule).toContain('overflow-y:auto');
+    expect(listRule).toContain('overflow-x:hidden');
+    expect(listRule).toContain('padding:0');
+    expect(listRule).toContain('contain:layout paint');
+    expect(listRule).toContain('overscroll-behavior:contain');
+    expect(listRule).toContain('scrollbar-gutter:stable');
+    expect(css).toMatch(/\.hstar-font-option,.hstar-font-heading\{[^}]*height:30px/);
+    expect(css).toMatch(/\.hstar-font-row-label\{[^}]*text-overflow:ellipsis/);
   });
 
   it('applies styles to the whole object outside editing and syncs the top bar', async () => {
