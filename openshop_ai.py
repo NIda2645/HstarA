@@ -264,8 +264,10 @@ def build_ocr_prompt(width: int, height: int) -> str:
         "order, and the original 中文/English spelling. font must contain artistic, ordered familyCandidates, "
         "size, weight, style, styleDescription, letterSpacing, lineHeight, strokeColor, strokeWidth, and shadow. "
         "shadow must contain color, blur, offsetX, and offsetY. Define letterSpacing as thousandths of an em and "
-        "lineHeight as a ratio. Define size, strokeWidth, shadow blur, offsetX, and offsetY in source-image pixels. "
-        "Return fill/color, strokeColor, and shadow color as #RRGGBB or #RRGGBBAA values, and preserve alignment "
+        "lineHeight as a ratio. Report font.size in source-image pixels and glyph fill as a #RRGGBB color, or "
+        "#RRGGBBAA when alpha is present. Define strokeWidth, shadow blur, offsetX, and offsetY in source-image "
+        "pixels. Return fill/color, strokeColor, and shadow color as normalized #RRGGBB or #RRGGBBAA values, "
+        "and preserve alignment "
         "and rotation. Do not return markdown or image descriptions. If reliable text "
         "positions cannot be determined, return {\"blocks\":[]}."
     )
