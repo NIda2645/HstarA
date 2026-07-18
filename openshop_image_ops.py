@@ -18,16 +18,20 @@ MAX_IMAGE_DIMENSION = 16384
 MAX_CROP_RATIO_ERROR = 0.10
 
 MAX_ART_FONT_COMPRESSED_BYTES = 16 * 1024 * 1024
-MAX_ART_FONT_WIDTH = 8192
-MAX_ART_FONT_HEIGHT = 8192
-MAX_ART_FONT_PIXELS = 32 * 1024 * 1024
-MAX_ART_FONT_CANVAS_WIDTH = 8192
-MAX_ART_FONT_CANVAS_HEIGHT = 8192
-MAX_ART_FONT_CANVAS_PIXELS = 40 * 1024 * 1024
+MAX_ART_FONT_SOURCE_WIDTH = 8192
+MAX_ART_FONT_SOURCE_HEIGHT = 8192
+MAX_ART_FONT_SOURCE_PIXELS = 32 * 1024 * 1024
+MAX_ART_FONT_WIDTH = 4096
+MAX_ART_FONT_HEIGHT = 4096
+MAX_ART_FONT_PIXELS = 8 * 1024 * 1024
+MAX_ART_FONT_CANVAS_WIDTH = 4096
+MAX_ART_FONT_CANVAS_HEIGHT = 4096
+MAX_ART_FONT_CANVAS_PIXELS = 12 * 1024 * 1024
 
 _TRANSPARENT_ALPHA_MAX = 16
 _MATTE_DISTANCE = 24
 _MATTE_EDGE_MIN_COVERAGE = 0.02
+_MATTE_EDGE_MAX_COVERAGE = 0.90
 
 
 def _decode_image(data: bytes, mode: str, label: str) -> Image.Image:
@@ -59,13 +63,21 @@ def _decode_image(data: bytes, mode: str, label: str) -> Image.Image:
         raise OpenShopImageNormalizationError(f"OpenShop {label} could not be decoded") from exc
 
 
-def _validate_art_dimensions(width: int, height: int, label: str) -> None:
+def _validate_art_dimensions(
+    width: int,
+    height: int,
+    label: str,
+    generated_output: bool,
+) -> None:
+    max_width = MAX_ART_FONT_WIDTH if generated_output else MAX_ART_FONT_SOURCE_WIDTH
+    max_height = MAX_ART_FONT_HEIGHT if generated_output else MAX_ART_FONT_SOURCE_HEIGHT
+    max_pixels = MAX_ART_FONT_PIXELS if generated_output else MAX_ART_FONT_SOURCE_PIXELS
     if (
         width < 1
         or height < 1
-        or width > MAX_ART_FONT_WIDTH
-        or height > MAX_ART_FONT_HEIGHT
-        or width * height > MAX_ART_FONT_PIXELS
+        or width > max_width
+        or height > max_height
+        or width * height > max_pixels
     ):
         raise OpenShopImageNormalizationError(f"OpenShop {label} dimensions are unsafe")
 
@@ -76,6 +88,7 @@ def _decode_art_image(
     label: str,
     *,
     exif_transpose: bool = False,
+    generated_output: bool = False,
 ) -> Image.Image:
     if (
         not isinstance(data, bytes)
@@ -87,10 +100,18 @@ def _decode_art_image(
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(io.BytesIO(data)) as image:
-                _validate_art_dimensions(*image.size, label)
+                _validate_art_dimensions(
+                    *image.size,
+                    label,
+                    generated_output,
+                )
                 image.load()
                 decoded = ImageOps.exif_transpose(image) if exif_transpose else image.copy()
-                _validate_art_dimensions(*decoded.size, label)
+                _validate_art_dimensions(
+                    *decoded.size,
+                    label,
+                    generated_output,
+                )
                 return decoded.convert(mode)
     except OpenShopImageNormalizationError:
         raise
@@ -265,13 +286,45 @@ def _uniform_boundary_matte(image: Image.Image) -> tuple[tuple[int, int, int], b
     return matte, rgb_data
 
 
+def _matte_coverage(
+    rgb_data: bytes,
+    index: int,
+    matte: tuple[int, int, int],
+) -> float:
+    rgb_offset = index * 3
+    coverages = []
+    for channel in range(3):
+        value = rgb_data[rgb_offset + channel]
+        background = matte[channel]
+        denominator = background if value < background else 255 - background
+        coverages.append(
+            abs(value - background) / denominator if denominator else 0.0
+        )
+    return max(coverages)
+
+
+def _decontaminate_rgb(
+    rgba_data: bytearray,
+    rgb_data: bytes,
+    index: int,
+    matte: tuple[int, int, int],
+    coverage: float,
+) -> None:
+    rgba_offset = index * 4
+    rgba_data[rgba_offset + 3] = max(1, min(254, round(coverage * 255)))
+    rgb_offset = index * 3
+    for channel in range(3):
+        observed = rgb_data[rgb_offset + channel]
+        foreground = (observed - matte[channel] * (1.0 - coverage)) / coverage
+        rgba_data[rgba_offset + channel] = max(0, min(255, round(foreground)))
+
+
 def _remove_boundary_matte(image: Image.Image) -> Image.Image:
     width, height = image.size
     total = width * height
     matte, rgb_data = _uniform_boundary_matte(image)
     rgba_data = bytearray(image.tobytes())
     visited = bytearray(total)
-    removed = bytearray(total)
     queue: deque[int] = deque()
     for index in _boundary_indexes(width, height):
         if not visited[index]:
@@ -279,10 +332,24 @@ def _remove_boundary_matte(image: Image.Image) -> Image.Image:
             queue.append(index)
     while queue:
         index = queue.popleft()
-        if _rgb_distance_squared(rgb_data, index, matte) > _MATTE_DISTANCE**2:
-            continue
-        removed[index] = 1
-        rgba_data[index * 4 + 3] = 0
+        distance = _rgb_distance_squared(rgb_data, index, matte)
+        if distance <= _MATTE_DISTANCE**2:
+            rgba_data[index * 4 + 3] = 0
+        else:
+            coverage = _matte_coverage(rgb_data, index, matte)
+            if not (
+                _MATTE_EDGE_MIN_COVERAGE
+                < coverage
+                < _MATTE_EDGE_MAX_COVERAGE
+            ):
+                continue
+            _decontaminate_rgb(
+                rgba_data,
+                rgb_data,
+                index,
+                matte,
+                coverage,
+            )
         x = index % width
         for neighbor in (
             index - 1 if x else -1,
@@ -293,37 +360,86 @@ def _remove_boundary_matte(image: Image.Image) -> Image.Image:
             if neighbor >= 0 and not visited[neighbor]:
                 visited[neighbor] = 1
                 queue.append(neighbor)
+    return Image.frombytes("RGBA", image.size, bytes(rgba_data))
 
-    for index in range(total):
-        if removed[index]:
+
+def _transparent_boundary_matte(image: Image.Image) -> tuple[int, int, int] | None:
+    rgba_data = image.tobytes()
+    colors = []
+    for index in _boundary_indexes(*image.size):
+        offset = index * 4
+        if rgba_data[offset + 3] <= _TRANSPARENT_ALPHA_MAX:
+            colors.append(tuple(rgba_data[offset : offset + 3]))
+    if not colors:
+        return None
+    bins = Counter(tuple(channel // 8 for channel in color) for color in colors)
+    dominant_bin, dominant_count = bins.most_common(1)[0]
+    if dominant_count / len(colors) < 0.90:
+        return None
+    dominant_colors = [
+        color
+        for color in colors
+        if tuple(channel // 8 for channel in color) == dominant_bin
+    ]
+    matte = tuple(
+        round(sum(color[channel] for color in dominant_colors) / len(dominant_colors))
+        for channel in range(3)
+    )
+    if max(matte) <= _TRANSPARENT_ALPHA_MAX:
+        return None
+    return matte
+
+
+def _decontaminate_transparent_matte(image: Image.Image) -> Image.Image:
+    matte = _transparent_boundary_matte(image)
+    if matte is None:
+        return image
+    width, height = image.size
+    total = width * height
+    rgba_data = bytearray(image.tobytes())
+    visited = bytearray(total)
+    queue: deque[int] = deque()
+    for index in _boundary_indexes(width, height):
+        if rgba_data[index * 4 + 3] <= _TRANSPARENT_ALPHA_MAX and not visited[index]:
+            visited[index] = 1
+            queue.append(index)
+    while queue:
+        index = queue.popleft()
+        offset = index * 4
+        alpha = rgba_data[offset + 3]
+        if _TRANSPARENT_ALPHA_MAX < alpha < 255:
+            coverage = alpha / 255.0
+            candidates = []
+            for channel in range(3):
+                observed = rgba_data[offset + channel]
+                foreground = (
+                    observed - matte[channel] * (1.0 - coverage)
+                ) / coverage
+                candidates.append(max(0, min(255, round(foreground))))
+            recomposed = [
+                round(
+                    candidates[channel] * coverage
+                    + matte[channel] * (1.0 - coverage)
+                )
+                for channel in range(3)
+            ]
+            if all(
+                abs(recomposed[channel] - rgba_data[offset + channel]) <= 2
+                for channel in range(3)
+            ):
+                rgba_data[offset : offset + 3] = bytes(candidates)
+        if alpha >= 255:
             continue
         x = index % width
-        neighbors = (
+        for neighbor in (
             index - 1 if x else -1,
             index + 1 if x + 1 < width else -1,
             index - width if index >= width else -1,
             index + width if index + width < total else -1,
-        )
-        if not any(neighbor >= 0 and removed[neighbor] for neighbor in neighbors):
-            continue
-        rgb_offset = index * 3
-        coverages = []
-        for channel in range(3):
-            value = rgb_data[rgb_offset + channel]
-            background = matte[channel]
-            denominator = background if value < background else 255 - background
-            coverages.append(
-                abs(value - background) / denominator if denominator else 0.0
-            )
-        coverage = max(coverages)
-        if coverage <= _MATTE_EDGE_MIN_COVERAGE or coverage >= 0.999:
-            continue
-        rgba_offset = index * 4
-        rgba_data[rgba_offset + 3] = max(1, min(254, round(coverage * 255)))
-        for channel in range(3):
-            observed = rgb_data[rgb_offset + channel]
-            foreground = (observed - matte[channel] * (1.0 - coverage)) / coverage
-            rgba_data[rgba_offset + channel] = max(0, min(255, round(foreground)))
+        ):
+            if neighbor >= 0 and not visited[neighbor]:
+                visited[neighbor] = 1
+                queue.append(neighbor)
     return Image.frombytes("RGBA", image.size, bytes(rgba_data))
 
 
@@ -340,38 +456,42 @@ def _validate_art_font_no_scene(image: Image.Image) -> None:
     alpha = image.getchannel("A").tobytes()
     rgb = image.convert("RGB").tobytes()
     image_width = image.width
-    visible = []
-    color_bins = set()
+    visible_count = 0
+    color_bins = bytearray(512)
+    color_bin_count = 0
+    compared = 0
+    high_contrast = 0
     for y in range(top, bottom):
         for x in range(left, right):
             index = y * image_width + x
             if alpha[index] <= _TRANSPARENT_ALPHA_MAX:
                 continue
-            visible.append(index)
+            visible_count += 1
             offset = index * 3
-            color_bins.add(tuple(rgb[offset + channel] // 32 for channel in range(3)))
-    if len(visible) / area < 0.92 or len(color_bins) < 4:
-        return
-    compared = 0
-    high_contrast = 0
-    for index in visible:
-        x = index % image_width
-        y = index // image_width
-        for neighbor in (
-            index + 1 if x + 1 < right else -1,
-            index + image_width if y + 1 < bottom else -1,
-        ):
-            if neighbor < 0 or alpha[neighbor] <= _TRANSPARENT_ALPHA_MAX:
-                continue
-            compared += 1
-            left_offset = index * 3
-            right_offset = neighbor * 3
-            distance = sum(
-                (rgb[left_offset + channel] - rgb[right_offset + channel]) ** 2
-                for channel in range(3)
+            color_bin = (
+                (rgb[offset] // 32) * 64
+                + (rgb[offset + 1] // 32) * 8
+                + rgb[offset + 2] // 32
             )
-            if distance >= 48**2:
-                high_contrast += 1
+            if not color_bins[color_bin]:
+                color_bins[color_bin] = 1
+                color_bin_count += 1
+            for neighbor in (
+                index + 1 if x + 1 < right else -1,
+                index + image_width if y + 1 < bottom else -1,
+            ):
+                if neighbor < 0 or alpha[neighbor] <= _TRANSPARENT_ALPHA_MAX:
+                    continue
+                compared += 1
+                neighbor_offset = neighbor * 3
+                distance = sum(
+                    (rgb[offset + channel] - rgb[neighbor_offset + channel]) ** 2
+                    for channel in range(3)
+                )
+                if distance >= 48**2:
+                    high_contrast += 1
+    if visible_count / area < 0.92 or color_bin_count < 4:
+        return
     if compared and high_contrast / compared >= 0.30:
         raise OpenShopImageNormalizationError(
             "OpenShop art font output contains a scene-like rectangular foreground panel"
@@ -382,7 +502,12 @@ def normalize_art_font_output(
     generated_bytes: bytes,
     target_aspect: Any,
 ) -> tuple[bytes, dict[str, Any]]:
-    image = _decode_art_image(generated_bytes, "RGBA", "art font output")
+    image = _decode_art_image(
+        generated_bytes,
+        "RGBA",
+        "art font output",
+        generated_output=True,
+    )
     try:
         aspect = float(target_aspect)
     except (TypeError, ValueError) as exc:
@@ -396,6 +521,7 @@ def normalize_art_font_output(
             raise OpenShopImageNormalizationError(
                 "OpenShop art font output has no safe transparent background"
             )
+        image = _decontaminate_transparent_matte(image)
     else:
         image = _remove_boundary_matte(image)
 

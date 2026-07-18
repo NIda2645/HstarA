@@ -31,8 +31,11 @@ import asyncio
 import base64
 import io
 import json
+import math
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -518,7 +521,7 @@ async def run():
         pinned_targets = []
         pinned_requests = []
 
-        def fake_pinned_open(url, target_ip):
+        def fake_pinned_open(url, target_ip, _deadline=None):
             pinned_targets.append(target_ip)
             parsed = main.urllib.parse.urlsplit(url)
             target = parsed.path or "/"
@@ -541,9 +544,135 @@ async def run():
         original_pinned_open = main._open_openshop_art_font_pinned_connection
         original_getaddrinfo = main.socket.getaddrinfo
         original_materialize_limit = main.OPENSHOP_ART_FONT_MAX_BYTES
+        original_dns_timeout = getattr(
+            main, "OPENSHOP_ART_FONT_DNS_TIMEOUT_SECONDS", None
+        )
+        original_remote_timeout = getattr(
+            main, "OPENSHOP_ART_FONT_REMOTE_TIMEOUT_SECONDS", None
+        )
+        original_address_attempts = getattr(
+            main, "OPENSHOP_ART_FONT_MAX_ADDRESS_ATTEMPTS", None
+        )
         try:
             main._open_openshop_art_font_pinned_connection = fake_pinned_open
             resolution_calls = 0
+
+            main.OPENSHOP_ART_FONT_DNS_TIMEOUT_SECONDS = 0.02
+
+            def slow_resolver(*_args, **_kwargs):
+                time.sleep(0.10)
+                return [
+                    (main.socket.AF_INET, main.socket.SOCK_STREAM, 6, "", (
+                        "93.184.216.34", 443,
+                    )),
+                ]
+
+            main.socket.getaddrinfo = slow_resolver
+            dns_started = time.monotonic()
+            try:
+                await main._validate_openshop_art_font_remote_url(
+                    "https://public.example/slow-dns.png"
+                )
+                raise AssertionError("slow DNS must fail within its bounded deadline")
+            except HTTPException as exc:
+                assert exc.status_code == 504
+            assert time.monotonic() - dns_started < 0.08
+
+            queued_dns_semaphore = main.OPENSHOP_ART_FONT_DNS_SEMAPHORE
+            main.OPENSHOP_ART_FONT_DNS_SEMAPHORE = asyncio.Semaphore(0)
+            main.socket.getaddrinfo = lambda *_args, **_kwargs: []
+            queued_dns_started = time.monotonic()
+            try:
+                try:
+                    await asyncio.wait_for(
+                        main._validate_openshop_art_font_remote_url(
+                            "https://public.example/queued-dns.png"
+                        ),
+                        timeout=0.08,
+                    )
+                    raise AssertionError("queued DNS must fail within its budget")
+                except HTTPException as exc:
+                    assert exc.status_code == 504
+                except asyncio.TimeoutError as exc:
+                    raise AssertionError(
+                        "DNS semaphore wait escaped the configured deadline"
+                    ) from exc
+            finally:
+                main.OPENSHOP_ART_FONT_DNS_SEMAPHORE = queued_dns_semaphore
+            assert time.monotonic() - queued_dns_started < 0.08
+
+            main.OPENSHOP_ART_FONT_MAX_ADDRESS_ATTEMPTS = 2
+            main.socket.getaddrinfo = lambda *_args, **_kwargs: [
+                (main.socket.AF_INET, main.socket.SOCK_STREAM, 6, "", (
+                    f"93.184.216.{value}", 443,
+                ))
+                for value in range(30, 35)
+            ]
+            attempted_addresses = []
+
+            def failing_pinned_open(_url, target_ip, _deadline=None):
+                attempted_addresses.append(target_ip)
+                raise OSError("deterministic connect failure")
+
+            main._open_openshop_art_font_pinned_connection = failing_pinned_open
+            try:
+                await main._download_openshop_art_font_remote(
+                    "https://public.example/address-cap.png"
+                )
+                raise AssertionError("all capped address attempts should fail")
+            except HTTPException as exc:
+                assert exc.status_code == 502
+            assert attempted_addresses == ["93.184.216.30", "93.184.216.31"]
+
+            main._open_openshop_art_font_pinned_connection = fake_pinned_open
+            main.OPENSHOP_ART_FONT_REMOTE_TIMEOUT_SECONDS = 0.04
+            main.socket.getaddrinfo = lambda *_args, **_kwargs: [
+                (main.socket.AF_INET, main.socket.SOCK_STREAM, 6, "", (
+                    "93.184.216.34", 443,
+                )),
+            ]
+
+            queued_worker_semaphore = main.OPENSHOP_ART_FONT_WORKER_SEMAPHORE
+            main.OPENSHOP_ART_FONT_WORKER_SEMAPHORE = asyncio.Semaphore(0)
+            queued_worker_started = time.monotonic()
+            try:
+                try:
+                    await asyncio.wait_for(
+                        main._download_openshop_art_font_remote(
+                            "https://public.example/queued-worker.png"
+                        ),
+                        timeout=0.08,
+                    )
+                    raise AssertionError("queued materialization must fail by deadline")
+                except HTTPException as exc:
+                    assert exc.status_code == 504
+                except asyncio.TimeoutError as exc:
+                    raise AssertionError(
+                        "worker semaphore wait escaped the absolute deadline"
+                    ) from exc
+            finally:
+                main.OPENSHOP_ART_FONT_WORKER_SEMAPHORE = queued_worker_semaphore
+            assert time.monotonic() - queued_worker_started < 0.08
+
+            class SlowDripResponse(FakePinnedResponse):
+                def read(self, amount=-1):
+                    time.sleep(0.025)
+                    return super().read(amount)
+
+            pinned_responses[:] = [
+                SlowDripResponse(200, {}, (b"a", b"b", b"c", b"d")),
+            ]
+            drip_started = time.monotonic()
+            try:
+                await materialize_without_temp({
+                    "type":"url", "value":"https://public.example/slow-drip.png",
+                })
+                raise AssertionError("slow-drip response must fail by absolute deadline")
+            except HTTPException as exc:
+                assert exc.status_code == 504
+            assert time.monotonic() - drip_started < 0.10
+            pinned_targets.clear()
+            pinned_requests.clear()
 
             def rebinding_resolver(*_args, **_kwargs):
                 nonlocal resolution_calls
@@ -616,8 +745,57 @@ async def run():
             main.OPENSHOP_ART_FONT_MAX_BYTES = original_materialize_limit
             main._open_openshop_art_font_pinned_connection = original_pinned_open
             main.socket.getaddrinfo = original_getaddrinfo
+            for name, value in (
+                ("OPENSHOP_ART_FONT_DNS_TIMEOUT_SECONDS", original_dns_timeout),
+                ("OPENSHOP_ART_FONT_REMOTE_TIMEOUT_SECONDS", original_remote_timeout),
+                ("OPENSHOP_ART_FONT_MAX_ADDRESS_ATTEMPTS", original_address_attempts),
+            ):
+                if value is None:
+                    if hasattr(main, name):
+                        delattr(main, name)
+                else:
+                    setattr(main, name, value)
             for name, factory in original_temp_factories.items():
                 setattr(main.tempfile, name, factory)
+
+        assert isinstance(main.OPENSHOP_ART_FONT_PIPELINE_SEMAPHORE, asyncio.Semaphore)
+        original_worker_semaphore = main.OPENSHOP_ART_FONT_WORKER_SEMAPHORE
+        main.OPENSHOP_ART_FONT_WORKER_SEMAPHORE = asyncio.Semaphore(1)
+        first_worker_started = threading.Event()
+        second_worker_started = threading.Event()
+        release_first_worker = threading.Event()
+
+        def retained_worker(label):
+            if label == "first":
+                first_worker_started.set()
+                release_first_worker.wait(timeout=1.0)
+            else:
+                second_worker_started.set()
+            return label
+
+        first_worker = asyncio.create_task(
+            main._run_openshop_art_font_worker(retained_worker, "first")
+        )
+        try:
+            assert await asyncio.to_thread(first_worker_started.wait, 0.5)
+            first_worker.cancel()
+            try:
+                await first_worker
+            except asyncio.CancelledError:
+                pass
+            second_worker = asyncio.create_task(
+                main._run_openshop_art_font_worker(retained_worker, "second")
+            )
+            await asyncio.sleep(0.03)
+            assert not second_worker_started.is_set(), (
+                "cancellation must not release a worker slot while its thread is retained"
+            )
+            release_first_worker.set()
+            assert await asyncio.to_thread(second_worker_started.wait, 0.5)
+            assert await second_worker == "second"
+        finally:
+            release_first_worker.set()
+            main.OPENSHOP_ART_FONT_WORKER_SEMAPHORE = original_worker_semaphore
 
         owner_b_source_upload = await client.post(
             "/api/openshop/projects/project-ai/assets",
@@ -672,6 +850,50 @@ async def run():
             "source_layer_id":"source-layer-1",
             "options":{"artFont":art_snapshot},
         }
+
+        def ordered_text_quad(angle_degrees, baseline=0.6, cross=0.2):
+            angle = math.radians(angle_degrees)
+            baseline_unit = (math.cos(angle), math.sin(angle))
+            cross_unit = (-math.sin(angle), math.cos(angle))
+            center = (0.5, 0.5)
+
+            def point(baseline_sign, cross_sign):
+                return {
+                    "x":center[0]
+                    + baseline_sign * baseline_unit[0] * baseline / 2
+                    + cross_sign * cross_unit[0] * cross / 2,
+                    "y":center[1]
+                    + baseline_sign * baseline_unit[1] * baseline / 2
+                    + cross_sign * cross_unit[1] * cross / 2,
+                }
+
+            clockwise = [
+                point(-1, -1), point(1, -1),
+                point(1, 1), point(-1, 1),
+            ]
+            counterclockwise = [
+                clockwise[0], clockwise[3], clockwise[2], clockwise[1],
+            ]
+            return clockwise, counterclockwise
+
+        for baseline_angle in (0, 30, 90):
+            clockwise, counterclockwise = ordered_text_quad(baseline_angle)
+            aspect_profile = {
+                **art_snapshot["visualProfile"],
+                "rotation":baseline_angle,
+            }
+            clockwise_aspect = main._art_font_quad_aspect(
+                clockwise,
+                {"width":1000, "height":1000},
+                aspect_profile,
+            )
+            counterclockwise_aspect = main._art_font_quad_aspect(
+                counterclockwise,
+                {"width":1000, "height":1000},
+                aspect_profile,
+            )
+            assert abs(clockwise_aspect - 3.0) < 1e-6
+            assert abs(counterclockwise_aspect - clockwise_aspect) < 1e-6
 
         no_image_model = await client.post(
             "/api/openshop/projects/project-ai/ai-tasks",
@@ -825,11 +1047,13 @@ async def run():
         assert pre_store_calls == 0
         assert main.OPENSHOP_AI_TASKS.get(pre_store_id, "project-ai", owner)["status"] == "cancelled"
 
-        # If cancellation wins after storage, the provisional project ref and
-        # just-created asset must be removed conservatively.
+        # Content-addressed outputs can be shared before either client saves the
+        # project. Cancelling the task that created the pending ref must not
+        # invalidate a concurrent survivor that stored identical PNG bytes.
         stored_during_race = asyncio.Event()
         release_stored_race = asyncio.Event()
         race_asset_id = ""
+        race_store_calls = 0
 
         distinct_race_output = art_model_output.copy()
         distinct_race_output.putpixel((3, 2), (220, 15, 45, 255))
@@ -844,24 +1068,37 @@ async def run():
                 "mime_type":"image/png",
             }, {}
 
-        async def held_art_store(*args, **kwargs):
-            nonlocal race_asset_id
+        async def concurrent_art_store(*args, **kwargs):
+            nonlocal race_asset_id, race_store_calls
             asset = await original_art_store(*args, **kwargs)
+            race_store_calls += 1
             race_asset_id = asset["assetId"]
-            stored_during_race.set()
-            try:
-                await release_stored_race.wait()
-            except asyncio.CancelledError:
-                await release_stored_race.wait()
+            if race_store_calls == 1:
+                stored_during_race.set()
+                try:
+                    await release_stored_race.wait()
+                except asyncio.CancelledError:
+                    await release_stored_race.wait()
             return asset
 
         main.generate_ai_image = immediate_art_generate
-        main.store_openshop_ai_png = held_art_store
+        main.store_openshop_ai_png = concurrent_art_store
         race_created = await client.post(
             "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
         )
         race_id = race_created.json()["task_id"]
         await asyncio.wait_for(stored_during_race.wait(), timeout=1.0)
+        survivor_created = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
+        )
+        survivor_task = await wait_for_terminal(
+            client,
+            "project-ai",
+            survivor_created.json()["task_id"],
+            owner,
+        )
+        assert survivor_task["status"] == "succeeded", survivor_task
+        assert survivor_task["result"]["assetId"] == race_asset_id
         race_cancel = await client.delete(
             f"/api/openshop/projects/project-ai/ai-tasks/{race_id}",
             params={
@@ -876,11 +1113,11 @@ async def run():
         assert main.OPENSHOP_AI_TASKS.get(race_id, "project-ai", owner)["status"] == "cancelled"
         race_project = main.OPENSHOP_STORE.load("project-ai", owner)
         assert race_asset_id not in race_project["assetRefs"]
-        assert race_asset_id not in {item["assetId"] for item in race_project["pendingAssetRefs"]}
-        assert not any(
-            path.name.startswith(race_asset_id)
-            for path in Path(main.OPENSHOP_STORE.assets_dir).iterdir()
-        )
+        assert race_asset_id in {
+            item["assetId"] for item in race_project["pendingAssetRefs"]
+        }
+        survivor_result = await client.get(survivor_task["result"]["url"])
+        assert survivor_result.status_code == 200
 
         # A canceled task may hash to an already referenced successful output.
         # It must not release or collect that shared pre-existing asset.
@@ -894,6 +1131,17 @@ async def run():
                 "value":base64.b64encode(art_model_bytes).decode("ascii"),
                 "mime_type":"image/png",
             }, {}
+
+        async def held_art_store(*args, **kwargs):
+            nonlocal race_asset_id
+            asset = await original_art_store(*args, **kwargs)
+            race_asset_id = asset["assetId"]
+            stored_during_race.set()
+            try:
+                await release_stored_race.wait()
+            except asyncio.CancelledError:
+                await release_stored_race.wait()
+            return asset
 
         main.generate_ai_image = duplicate_art_generate
         main.store_openshop_ai_png = held_art_store

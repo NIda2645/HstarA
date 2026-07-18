@@ -36,6 +36,7 @@ const harness = String.raw`
 from io import BytesIO
 import os
 import sys
+import tracemalloc
 
 from PIL import Image
 
@@ -224,6 +225,24 @@ assert len(visible_multicolor) >= 4
 assert multicolor_geometry["contentBox"]["width"] == 10
 assert sum(pixel[3] == 0 for pixel in multicolor_result.getdata()) > 0
 
+# Dense foreground validation uses streaming counters and a fixed histogram,
+# not one Python integer object per visible pixel.
+memory_probe = Image.new("RGBA", (1024, 1024), (210, 30, 45, 255))
+tracemalloc.start()
+try:
+    image_ops._validate_art_font_no_scene(memory_probe)
+    _current_memory, peak_memory = tracemalloc.get_traced_memory()
+finally:
+    tracemalloc.stop()
+assert peak_memory < 16 * 1024 * 1024, peak_memory
+
+assert image_ops.MAX_ART_FONT_WIDTH <= 4096
+assert image_ops.MAX_ART_FONT_HEIGHT <= 4096
+assert image_ops.MAX_ART_FONT_PIXELS <= 8 * 1024 * 1024
+assert image_ops.MAX_ART_FONT_CANVAS_WIDTH <= 4096
+assert image_ops.MAX_ART_FONT_CANVAS_HEIGHT <= 4096
+assert image_ops.MAX_ART_FONT_CANVAS_PIXELS <= 12 * 1024 * 1024
+
 # Matte-colored antialiasing is decontaminated into a dark translucent edge,
 # rather than leaving an opaque gray/white halo.
 antialias = Image.new("RGB", (7, 5), (255, 255, 255))
@@ -237,6 +256,56 @@ edge = decontaminated.getpixel((0, 1))
 assert 120 <= edge[3] <= 135, edge
 assert max(edge[:3]) <= 3, edge
 assert decontaminated_geometry["contentBox"]["width"] == 4
+
+# Opaque matte cleanup follows the complete boundary-connected soft component,
+# not only the first antialias ring adjacent to the removed background.
+two_ring_matte = Image.new("RGB", (9, 9), (255, 255, 255))
+for y in range(1, 8):
+    for x in range(1, 8):
+        two_ring_matte.putpixel((x, y), (224, 224, 224))
+for y in range(2, 7):
+    for x in range(2, 7):
+        two_ring_matte.putpixel((x, y), (128, 128, 128))
+for y in range(3, 6):
+    for x in range(3, 6):
+        two_ring_matte.putpixel((x, y), (0, 0, 0))
+two_ring_png, _two_ring_geometry = normalize_art_font_output(
+    png(two_ring_matte), 1,
+)
+two_ring_result = Image.open(BytesIO(two_ring_png)).convert("RGBA")
+outer_soft = two_ring_result.getpixel((0, 0))
+inner_soft = two_ring_result.getpixel((1, 1))
+assert 25 <= outer_soft[3] <= 35 and max(outer_soft[:3]) <= 3, outer_soft
+assert 120 <= inner_soft[3] <= 135 and max(inner_soft[:3]) <= 3, inner_soft
+assert two_ring_result.getpixel((3, 3)) == (0, 0, 0, 255)
+
+# A true-alpha PNG can still carry a matte color in transparent boundary RGB
+# and contaminated straight-alpha edge RGB. Remove that matte through every
+# connected translucent ring while preserving alpha and opaque interiors.
+alpha_halo = Image.new("RGBA", (9, 9), (255, 255, 255, 0))
+for y in range(1, 8):
+    for x in range(1, 8):
+        alpha_halo.putpixel((x, y), (223, 223, 223, 32))
+for y in range(2, 7):
+    for x in range(2, 7):
+        alpha_halo.putpixel((x, y), (127, 127, 127, 128))
+for y in range(3, 6):
+    for x in range(3, 6):
+        alpha_halo.putpixel((x, y), (0, 0, 0, 255))
+alpha_halo_png, _alpha_halo_geometry = normalize_art_font_output(
+    png(alpha_halo), 1,
+)
+alpha_halo_result = Image.open(BytesIO(alpha_halo_png)).convert("RGBA")
+assert alpha_halo_result.getpixel((0, 0))[3] == 32
+assert max(alpha_halo_result.getpixel((0, 0))[:3]) <= 3
+assert alpha_halo_result.getpixel((1, 1))[3] == 128
+assert max(alpha_halo_result.getpixel((1, 1))[:3]) <= 3
+assert alpha_halo_result.getpixel((3, 3)) == (0, 0, 0, 255)
+composite = Image.alpha_composite(
+    Image.new("RGBA", alpha_halo_result.size, (20, 180, 40, 255)),
+    alpha_halo_result,
+)
+assert composite.getpixel((1, 1))[:3] == (10, 90, 20)
 
 expect_art_failure(png(Image.new("RGBA", (6, 4), (0, 0, 0, 0))))
 expect_art_failure(png(Image.new("RGB", (6, 4), (255, 255, 255))))

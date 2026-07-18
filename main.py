@@ -32,6 +32,7 @@ import math
 import shlex
 import functools
 import html
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional, Tuple
@@ -16783,6 +16784,119 @@ def openshop_ai_asset(asset_id: str, max_size: int = 0) -> Tuple[str, Dict[str, 
 
 OPENSHOP_ART_FONT_MAX_BYTES = MAX_ART_FONT_COMPRESSED_BYTES
 OPENSHOP_ART_FONT_MAX_REDIRECTS = 3
+OPENSHOP_ART_FONT_MAX_ADDRESS_ATTEMPTS = 2
+OPENSHOP_ART_FONT_DNS_TIMEOUT_SECONDS = 3.0
+OPENSHOP_ART_FONT_REMOTE_TIMEOUT_SECONDS = 30.0
+OPENSHOP_ART_FONT_WORKER_LIMIT = 2
+OPENSHOP_ART_FONT_PIPELINE_SEMAPHORE = asyncio.Semaphore(
+    OPENSHOP_ART_FONT_WORKER_LIMIT
+)
+OPENSHOP_ART_FONT_WORKER_SEMAPHORE = asyncio.Semaphore(
+    OPENSHOP_ART_FONT_WORKER_LIMIT
+)
+OPENSHOP_ART_FONT_DNS_SEMAPHORE = asyncio.Semaphore(
+    OPENSHOP_ART_FONT_WORKER_LIMIT
+)
+_OPENSHOP_ART_FONT_WORK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=OPENSHOP_ART_FONT_WORKER_LIMIT,
+    thread_name_prefix="openshop-art",
+)
+_OPENSHOP_ART_FONT_DNS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=OPENSHOP_ART_FONT_WORKER_LIMIT,
+    thread_name_prefix="openshop-art-dns",
+)
+
+
+async def _run_openshop_art_font_executor(
+    executor: ThreadPoolExecutor,
+    semaphore: asyncio.Semaphore,
+    function,
+    *args,
+    timeout: Optional[float] = None,
+):
+    retained_semaphore = semaphore
+    started_at = time.monotonic()
+    try:
+        if timeout is None:
+            await retained_semaphore.acquire()
+        else:
+            await asyncio.wait_for(
+                retained_semaphore.acquire(),
+                timeout=timeout,
+            )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="艺术字体远程图片请求超时",
+        ) from exc
+    remaining_timeout = None
+    if timeout is not None:
+        remaining_timeout = timeout - (time.monotonic() - started_at)
+        if remaining_timeout <= 0:
+            retained_semaphore.release()
+            raise HTTPException(
+                status_code=504,
+                detail="艺术字体远程图片请求超时",
+            )
+    loop = asyncio.get_running_loop()
+    try:
+        future = loop.run_in_executor(executor, functools.partial(function, *args))
+    except Exception:
+        retained_semaphore.release()
+        raise
+
+    def release_retained_slot(done_future):
+        try:
+            done_future.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
+        retained_semaphore.release()
+
+    future.add_done_callback(release_retained_slot)
+    shielded = asyncio.shield(future)
+    if remaining_timeout is None:
+        return await shielded
+    try:
+        return await asyncio.wait_for(shielded, timeout=remaining_timeout)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="艺术字体远程图片请求超时",
+        ) from exc
+
+
+async def _run_openshop_art_font_worker(
+    function,
+    *args,
+    timeout: Optional[float] = None,
+):
+    return await _run_openshop_art_font_executor(
+        _OPENSHOP_ART_FONT_WORK_EXECUTOR,
+        OPENSHOP_ART_FONT_WORKER_SEMAPHORE,
+        function,
+        *args,
+        timeout=timeout,
+    )
+
+
+def _openshop_art_font_deadline_remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise HTTPException(
+            status_code=504,
+            detail="艺术字体远程图片请求超时",
+        )
+    return remaining
+
+
+def _set_openshop_art_font_connection_deadline(
+    connection: http.client.HTTPConnection,
+    deadline: float,
+) -> None:
+    remaining = _openshop_art_font_deadline_remaining(deadline)
+    connection_socket = getattr(connection, "sock", None)
+    if connection_socket is not None and hasattr(connection_socket, "settimeout"):
+        connection_socket.settimeout(remaining)
 
 
 def _decode_openshop_art_font_base64(value: Any) -> bytes:
@@ -16822,7 +16936,10 @@ def _bounded_openshop_art_font_file(path: str) -> bytes:
     return content
 
 
-async def _validate_openshop_art_font_remote_url(value: str) -> tuple[str, list[str]]:
+async def _validate_openshop_art_font_remote_url(
+    value: str,
+    deadline: Optional[float] = None,
+) -> tuple[str, list[str]]:
     try:
         parsed = urllib.parse.urlsplit(value)
         port = parsed.port
@@ -16842,11 +16959,23 @@ async def _validate_openshop_art_font_remote_url(value: str) -> tuple[str, list[
         addresses.append(ipaddress.ip_address(hostname.split("%", 1)[0]))
     except ValueError:
         try:
-            infos = await asyncio.to_thread(
+            dns_timeout = OPENSHOP_ART_FONT_DNS_TIMEOUT_SECONDS
+            if deadline is not None:
+                dns_timeout = min(
+                    dns_timeout,
+                    _openshop_art_font_deadline_remaining(deadline),
+                )
+            infos = await _run_openshop_art_font_executor(
+                _OPENSHOP_ART_FONT_DNS_EXECUTOR,
+                OPENSHOP_ART_FONT_DNS_SEMAPHORE,
                 socket.getaddrinfo,
                 hostname,
                 port or (443 if parsed.scheme.lower() == "https" else 80),
-                type=socket.SOCK_STREAM,
+                0,
+                socket.SOCK_STREAM,
+                0,
+                0,
+                timeout=dns_timeout,
             )
         except OSError as exc:
             raise HTTPException(status_code=502, detail="艺术字体远程图片域名无法解析") from exc
@@ -16857,12 +16986,17 @@ async def _validate_openshop_art_font_remote_url(value: str) -> tuple[str, list[
                 continue
     if not addresses or any(not address.is_global for address in addresses):
         raise HTTPException(status_code=403, detail="艺术字体远程图片地址不安全")
-    return urllib.parse.urlunsplit(parsed), [str(address) for address in addresses]
+    unique_addresses = list(dict.fromkeys(str(address) for address in addresses))
+    return (
+        urllib.parse.urlunsplit(parsed),
+        unique_addresses[:OPENSHOP_ART_FONT_MAX_ADDRESS_ATTEMPTS],
+    )
 
 
 def _open_openshop_art_font_pinned_connection(
     value: str,
     target_ip: str,
+    deadline: Optional[float] = None,
 ) -> tuple[http.client.HTTPConnection, str, str]:
     parsed = urllib.parse.urlsplit(value)
     hostname = parsed.hostname
@@ -16871,14 +17005,31 @@ def _open_openshop_art_font_pinned_connection(
     scheme = parsed.scheme.lower()
     default_port = 443 if scheme == "https" else 80
     port = parsed.port or default_port
-    raw_socket = socket.create_connection((target_ip, port), timeout=20.0)
+    connect_timeout = 20.0
+    if deadline is not None:
+        connect_timeout = min(
+            connect_timeout,
+            _openshop_art_font_deadline_remaining(deadline),
+        )
+    raw_socket = socket.create_connection((target_ip, port), timeout=connect_timeout)
     try:
         if scheme == "https":
             raw_socket = ssl.create_default_context().wrap_socket(
                 raw_socket,
                 server_hostname=hostname,
             )
-        connection = http.client.HTTPConnection(hostname, port, timeout=120.0)
+        connection_timeout = 120.0
+        if deadline is not None:
+            connection_timeout = min(
+                connection_timeout,
+                _openshop_art_font_deadline_remaining(deadline),
+            )
+            raw_socket.settimeout(connection_timeout)
+        connection = http.client.HTTPConnection(
+            hostname,
+            port,
+            timeout=connection_timeout,
+        )
         connection.sock = raw_socket
     except Exception:
         raw_socket.close()
@@ -16894,12 +17045,15 @@ def _open_openshop_art_font_pinned_connection(
 def _fetch_openshop_art_font_pinned_hop(
     value: str,
     target_ip: str,
+    deadline: float,
 ) -> tuple[int, dict[str, str], bytes]:
     connection, target, host_header = _open_openshop_art_font_pinned_connection(
         value,
         target_ip,
+        deadline,
     )
     try:
+        _set_openshop_art_font_connection_deadline(connection, deadline)
         connection.request(
             "GET",
             target,
@@ -16909,7 +17063,9 @@ def _fetch_openshop_art_font_pinned_hop(
                 "Connection": "close",
             },
         )
+        _set_openshop_art_font_connection_deadline(connection, deadline)
         response = connection.getresponse()
+        _openshop_art_font_deadline_remaining(deadline)
         headers = {key.lower(): item for key, item in response.getheaders()}
         status = int(response.status)
         if status in {301, 302, 303, 307, 308}:
@@ -16938,9 +17094,11 @@ def _fetch_openshop_art_font_pinned_hop(
         chunks = []
         total = 0
         while True:
+            _set_openshop_art_font_connection_deadline(connection, deadline)
             chunk = response.read(
                 min(64 * 1024, OPENSHOP_ART_FONT_MAX_BYTES + 1 - total)
             )
+            _openshop_art_font_deadline_remaining(deadline)
             if not chunk:
                 break
             total += len(chunk)
@@ -16960,18 +17118,22 @@ def _fetch_openshop_art_font_pinned_hop(
 
 async def _download_openshop_art_font_remote(value: str) -> bytes:
     current_url = rewrite_runninghub_file_url(value)
+    deadline = time.monotonic() + OPENSHOP_ART_FONT_REMOTE_TIMEOUT_SECONDS
     for redirect_count in range(OPENSHOP_ART_FONT_MAX_REDIRECTS + 1):
         current_url, addresses = await _validate_openshop_art_font_remote_url(
-            current_url
+            current_url,
+            deadline,
         )
         last_error = None
         response = None
         for address in addresses:
             try:
-                response = await asyncio.to_thread(
+                response = await _run_openshop_art_font_worker(
                     _fetch_openshop_art_font_pinned_hop,
                     current_url,
                     address,
+                    deadline,
+                    timeout=_openshop_art_font_deadline_remaining(deadline),
                 )
                 break
             except HTTPException:
@@ -16979,6 +17141,7 @@ async def _download_openshop_art_font_remote(value: str) -> bytes:
             except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
                 last_error = exc
         if response is None:
+            _openshop_art_font_deadline_remaining(deadline)
             raise HTTPException(
                 status_code=502,
                 detail="艺术字体远程图片下载失败",
@@ -17023,7 +17186,10 @@ async def materialize_openshop_ai_image(image_data: Any) -> bytes:
         return _decode_openshop_art_font_base64(encoded)
     local_path = output_file_from_url(value)
     if local_path:
-        return await asyncio.to_thread(_bounded_openshop_art_font_file, local_path)
+        return await _run_openshop_art_font_worker(
+            _bounded_openshop_art_font_file,
+            local_path,
+        )
     return await _download_openshop_art_font_remote(value)
 
 def openshop_text_remove_prompt(mode: str, extra: str = "") -> str:
@@ -17043,6 +17209,7 @@ def openshop_text_remove_prompt(mode: str, extra: str = "") -> str:
 def _art_font_quad_aspect(
     quad: List[Dict[str, Any]],
     document: Dict[str, Any],
+    visual_profile: Optional[Dict[str, Any]] = None,
 ) -> float:
     width = int(document["width"])
     height = int(document["height"])
@@ -17050,17 +17217,52 @@ def _art_font_quad_aspect(
         (float(point["x"]) * width, float(point["y"]) * height)
         for point in quad
     ]
-    horizontal = (
-        math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1])
-        + math.hypot(points[2][0] - points[3][0], points[2][1] - points[3][1])
-    ) / 2.0
-    vertical = (
-        math.hypot(points[3][0] - points[0][0], points[3][1] - points[0][1])
-        + math.hypot(points[2][0] - points[1][0], points[2][1] - points[1][1])
-    ) / 2.0
-    if horizontal < 1.0 or vertical < 1.0:
+    candidates = []
+    for first_edge, opposite_edge in (
+        ((0, 1), (3, 2)),
+        ((0, 3), (1, 2)),
+    ):
+        vectors = [
+            (
+                points[end][0] - points[start][0],
+                points[end][1] - points[start][1],
+            )
+            for start, end in (first_edge, opposite_edge)
+        ]
+        lengths = [math.hypot(x, y) for x, y in vectors]
+        average_length = sum(lengths) / 2.0
+        direction = math.degrees(
+            math.atan2(
+                vectors[0][1] + vectors[1][1],
+                vectors[0][0] + vectors[1][0],
+            )
+        )
+        candidates.append((average_length, direction))
+    if any(length < 1.0 for length, _direction in candidates):
         raise OpenShopAiValidationError("Art font quad has no usable adjacent edges")
-    return horizontal / vertical
+
+    rotation = None
+    if isinstance(visual_profile, dict):
+        try:
+            candidate_rotation = float(visual_profile.get("rotation"))
+        except (TypeError, ValueError):
+            candidate_rotation = math.nan
+        if math.isfinite(candidate_rotation):
+            rotation = candidate_rotation
+
+    if rotation is None:
+        baseline_index = max(range(2), key=lambda index: candidates[index][0])
+    else:
+        def direction_distance(direction: float) -> float:
+            return abs((direction - rotation + 90.0) % 180.0 - 90.0)
+
+        distances = [direction_distance(direction) for _length, direction in candidates]
+        if abs(distances[0] - distances[1]) <= 1.0:
+            baseline_index = max(range(2), key=lambda index: candidates[index][0])
+        else:
+            baseline_index = min(range(2), key=lambda index: distances[index])
+    cross_index = 1 - baseline_index
+    return candidates[baseline_index][0] / candidates[cross_index][0]
 
 
 def build_art_font_prompt(snapshot: Dict[str, Any]) -> str:
@@ -17100,27 +17302,10 @@ async def store_openshop_ai_png(
         "image/png",
         f"{project_id}-art-font.png",
         role,
-        track_pending_ownership=True,
     )
     asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
     return asset
 
-
-async def _discard_cancelled_openshop_art_asset(
-    project_id: str,
-    owner: Dict[str, Any],
-    asset_id: str,
-) -> None:
-    try:
-        await asyncio.to_thread(
-            OPENSHOP_STORE.release_pending_asset,
-            project_id,
-            owner,
-            asset_id,
-        )
-    except OpenShopStoreError:
-        pass
-    await asyncio.to_thread(collect_openshop_garbage)
 
 async def store_openshop_ai_output(
     project_id: str,
@@ -17348,27 +17533,32 @@ async def run_openshop_ai_task(
     if not OPENSHOP_AI_TASKS.mark_running(task_id):
         return
     owner = payload.owner
-    art_asset = None
-    art_succeeded = False
+    art_pipeline_semaphore = None
+    art_pipeline_acquired = False
     try:
         if payload.tool_id == "art-font-restore":
+            art_pipeline_semaphore = OPENSHOP_ART_FONT_PIPELINE_SEMAPHORE
+            await art_pipeline_semaphore.acquire()
+            art_pipeline_acquired = True
             task = OPENSHOP_AI_TASKS.get(task_id, project_id, owner)
             snapshot = task["snapshot"]
             source_path, _source_metadata = await asyncio.to_thread(
                 OPENSHOP_STORE.asset_path,
                 task["sourceAssetId"],
             )
-            source_bytes = await asyncio.to_thread(
+            source_bytes = await _run_openshop_art_font_worker(
                 _read_openshop_art_font_source,
                 source_path,
             )
-            reference_png = await asyncio.to_thread(
+            reference_png = await _run_openshop_art_font_worker(
                 crop_art_font_reference,
                 source_bytes,
                 snapshot["quad"],
             )
             target_aspect = _art_font_quad_aspect(
-                snapshot["quad"], snapshot["document"]
+                snapshot["quad"],
+                snapshot["document"],
+                snapshot["visualProfile"],
             )
             reference_url = (
                 "data:image/png;base64,"
@@ -17389,7 +17579,7 @@ async def run_openshop_ai_task(
                 task["apiConfigId"],
             )
             generated_bytes = await materialize_openshop_ai_image(image_data)
-            normalized_png, geometry = await asyncio.to_thread(
+            normalized_png, geometry = await _run_openshop_art_font_worker(
                 normalize_art_font_output,
                 generated_bytes,
                 target_aspect,
@@ -17416,7 +17606,7 @@ async def run_openshop_ai_task(
                 "mime": "image/png",
                 **geometry,
             }
-            art_succeeded = OPENSHOP_AI_TASKS.succeed(task_id, result)
+            OPENSHOP_AI_TASKS.succeed(task_id, result)
             return
 
         source_path, source_metadata, source_url = await asyncio.to_thread(
@@ -17490,16 +17680,8 @@ async def run_openshop_ai_task(
         detail = getattr(exc, "detail", None) or str(exc)
         OPENSHOP_AI_TASKS.fail(task_id, detail)
     finally:
-        if (
-            art_asset
-            and not art_succeeded
-            and art_asset.get("_createdPendingAssetRef")
-        ):
-            await _discard_cancelled_openshop_art_asset(
-                project_id,
-                owner,
-                art_asset["assetId"],
-            )
+        if art_pipeline_semaphore is not None and art_pipeline_acquired:
+            art_pipeline_semaphore.release()
 
 def raise_openshop_ai_task_error(exc: Exception):
     if isinstance(exc, OpenShopAiTaskOwnershipError):
