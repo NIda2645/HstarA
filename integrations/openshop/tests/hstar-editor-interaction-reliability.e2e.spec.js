@@ -57,23 +57,33 @@ test('closes and sorts the font list while editing existing text in place', asyn
   await trigger.click();
   await expect(list).toBeVisible();
   const ordering = await page.evaluate(() => {
-    const options = window.__hstarE2EFontManager.catalogRows()
-      .filter(row => row.kind === 'font')
-      .map(row => ({family:row.family || '', label:row.font?.label || ''}));
-    const isChinese = option => /[\u3400-\u9fff]/u.test(`${option.family} ${option.label}`);
-    const flags = options.map(isChinese);
-    const firstOther = flags.indexOf(false);
+    const rows = window.__hstarE2EFontManager.catalogRows();
+    const chineseSectionIndex = rows.findIndex(row => row.key === 'section-zh');
+    const englishSectionIndex = rows.findIndex(row => row.key === 'section-en');
+    const fontIndexes = rows
+      .map((row, index) => row.kind === 'font' ? index : -1)
+      .filter(index => index >= 0);
     return {
-      count:options.length,
+      count:fontIndexes.length,
       mounted:document.querySelectorAll('[data-text-font-list] [data-family]').length,
-      firstOther,
-      chineseAfterOther:firstOther >= 0 && flags.slice(firstOther).some(Boolean),
+      sectionKeys:rows.filter(row => row.kind === 'section').map(row => row.key),
+      chineseSectionIndex,
+      englishSectionIndex,
+      fontsBeforeChinese:fontIndexes.filter(index => index < chineseSectionIndex).length,
+      chineseSectionFonts:fontIndexes.filter(index => index > chineseSectionIndex && index < englishSectionIndex).length,
+      englishSectionFonts:fontIndexes.filter(index => index > englishSectionIndex).length,
+      englishCommercialGroupIndex:rows.findIndex(row => row.key === 'group-03'),
     };
   });
   expect(ordering.count).toBeGreaterThan(20);
   expect(ordering.mounted).toBeLessThanOrEqual(Math.ceil(210 / 30) + (4 * 2));
-  expect(ordering.firstOther).toBeGreaterThan(0);
-  expect(ordering.chineseAfterOther).toBe(false);
+  expect(ordering.sectionKeys).toEqual(['section-zh', 'section-en']);
+  expect(ordering.chineseSectionIndex).toBeGreaterThanOrEqual(0);
+  expect(ordering.englishSectionIndex).toBeGreaterThan(ordering.chineseSectionIndex);
+  expect(ordering.fontsBeforeChinese).toBe(0);
+  expect(ordering.chineseSectionFonts).toBeGreaterThan(0);
+  expect(ordering.englishSectionFonts).toBeGreaterThan(0);
+  expect(ordering.englishCommercialGroupIndex).toBeGreaterThan(ordering.englishSectionIndex);
 
   await page.locator('#statusbar').click({position:{x:4, y:4}});
   await expect(list).toBeHidden();
