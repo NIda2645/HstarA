@@ -479,6 +479,81 @@ describe('Hstar OpenShop font catalog', () => {
     })).toMatchObject({family:'03免Beta Sans', fallback:false});
   });
 
+  it('prefers the raw exact A-B alias over a lossy AB collision', async () => {
+    const {manager} = await loadCatalog([
+      {family:'03免AB', languageGroup:'en', freeCommercialCategory:'03', sortName:'A First'},
+      {family:'03免A-B', languageGroup:'en', freeCommercialCategory:'03', sortName:'Z Last'},
+      fallbackFont(),
+    ]);
+
+    expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['A-B']}})).toMatchObject({
+      family:'03免A-B',
+      fallback:false,
+    });
+  });
+
+  it('prefers the raw exact AB alias over a lossy A-B collision', async () => {
+    const {manager} = await loadCatalog([
+      {family:'03免A-B', languageGroup:'en', freeCommercialCategory:'03', sortName:'A First'},
+      {family:'03免AB', languageGroup:'en', freeCommercialCategory:'03', sortName:'Z Last'},
+      fallbackFont(),
+    ]);
+
+    expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['AB']}})).toMatchObject({
+      family:'03免AB',
+      fallback:false,
+    });
+  });
+
+  it('invalidates installed alias pools when the system catalog refreshes', async () => {
+    const catalogs = [
+      [
+        {family:'03免Refresh A', languageGroup:'en', freeCommercialCategory:'03', sortName:'Refresh A'},
+        fallbackFont(),
+      ],
+      [
+        {family:'03免Refresh B', languageGroup:'en', freeCommercialCategory:'03', sortName:'Refresh B'},
+        fallbackFont(),
+      ],
+    ];
+    const fetchImpl = vi.fn(async () => ({
+      ok:true,
+      json:async () => ({fonts:catalogs.shift()}),
+    }));
+    const manager = window.HstarOpenShopFontCatalog.createManager({fetchImpl, fontProbe:() => true});
+
+    await manager.loadSystemFonts();
+    expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Refresh A']}}).family).toBe('03免Refresh A');
+
+    await manager.refreshSystemFonts();
+    expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Refresh B']}}).family).toBe('03免Refresh B');
+    expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Refresh A']}})).toMatchObject({
+      family:fallbackFamily,
+      fallback:true,
+    });
+  });
+
+  it('matches repeatedly against a 2,500-font installed catalog within a practical bound', async () => {
+    const fonts = Array.from({length:2498}, (_, index) => ({
+      family:`03免Scale Font ${index}`,
+      languageGroup:'en',
+      freeCommercialCategory:'03',
+      sortName:`Scale Font ${index}`,
+    }));
+    fonts.push(
+      {family:'03免Needle-Font', languageGroup:'en', freeCommercialCategory:'03', sortName:'Needle-Font'},
+      fallbackFont(),
+    );
+    const {manager} = await loadCatalog(fonts);
+    const block = {script:'en', font:{familyCandidates:['Needle-Font'], weight:400}};
+
+    const startedAt = performance.now();
+    for(let index = 0; index < 100; index += 1){
+      expect(manager.matchOcrFont(block).family).toBe('03免Needle-Font');
+    }
+    expect(performance.now() - startedAt).toBeLessThan(5000);
+  }, 15000);
+
   it('routes artistic OCR directly to the exact installed Alibaba 3.0 nearest face', async () => {
     const {manager} = await loadCatalog([
       {family:'01免Poster Sans', languageGroup:'zh-hans', freeCommercialCategory:'01', sortName:'Poster Sans'},

@@ -8,6 +8,7 @@
   const SCRIPT_CATEGORY = Object.freeze({'zh-hans':'01', 'zh-hant':'02', en:'03'});
   // Below this normalized family-name score, a visually unrelated font is less safe than the fallback.
   const OCR_MATCH_THRESHOLD = 0.72;
+  const OCR_MATCH_TIER = Object.freeze({none:0, partial:1, normalized:2, raw:3});
   const COMMON_FONTS = [
     {family:'Microsoft YaHei UI', label:'微软雅黑 UI', language:'zh'},
     {family:'Microsoft YaHei', label:'微软雅黑', language:'zh'},
@@ -187,6 +188,13 @@
     return row.kind === 'font' ? {...row, font:cloneFont(row.font)} : {...row};
   }
 
+  function rawMatchName(value){
+    return cleanFamily(value)
+      .replace(/^(?:01|02|03)免/u, '')
+      .trim()
+      .toLocaleLowerCase('zh-CN');
+  }
+
   function normalizedMatchName(value){
     let normalized = cleanFamily(value)
       .replace(/^(?:01|02|03)免\s*/u, '')
@@ -206,16 +214,35 @@
       .toLocaleLowerCase('zh-CN');
   }
 
-  function nameScore(candidate, font){
-    const expected = normalizedMatchName(candidate);
-    if(!expected) return 0;
-    const aliases = new Set([
+  function fontAliases(font){
+    return [
       font.family,
       font.label,
       font.sortName,
       ...font.styles.flatMap(style => [style.family, ...(style.localNames || [])]),
-    ].map(normalizedMatchName).filter(Boolean));
-    if(aliases.has(expected)) return 1;
+    ];
+  }
+
+  function buildSystemFontMatchIndex(fonts){
+    const pools = {'01':[], '02':[], '03':[]};
+    let fallbackFont = null;
+    fonts.forEach(font => {
+      if(font.family === FALLBACK_FAMILY) fallbackFont = font;
+      const pool = pools[font.freeCommercialCategory];
+      if(!pool) return;
+      const aliases = fontAliases(font);
+      pool.push({
+        font,
+        rawAliases:new Set(aliases.map(rawMatchName).filter(Boolean)),
+        normalizedAliases:new Set(aliases.map(normalizedMatchName).filter(Boolean)),
+        descriptorHaystack:`${font.family} ${font.label} ${font.sortName}`.toLocaleLowerCase('en-US'),
+      });
+    });
+    return {pools, fallbackFont};
+  }
+
+  function partialNameScore(expected, aliases){
+    if(!expected) return 0;
     let score = 0;
     aliases.forEach(alias => {
       if(alias.includes(expected) || expected.includes(alias)){
@@ -225,11 +252,52 @@
     return score;
   }
 
-  function descriptorScore(description, font){
-    const words = cleanFamily(description).toLocaleLowerCase('en-US').match(/[\p{L}\p{N}]+/gu) || [];
+  function descriptorWords(description){
+    return cleanFamily(description).toLocaleLowerCase('en-US').match(/[\p{L}\p{N}]+/gu) || [];
+  }
+
+  function descriptorScore(words, entry){
     if(!words.length) return 0;
-    const haystack = `${font.family} ${font.label} ${font.sortName}`.toLocaleLowerCase('en-US');
-    return words.filter(word => word.length > 2 && haystack.includes(word)).length / words.length;
+    return words.filter(word => word.length > 2 && entry.descriptorHaystack.includes(word)).length / words.length;
+  }
+
+  function bestNameMatch(candidates, entry){
+    let best = {tier:OCR_MATCH_TIER.none, score:0, candidateIndex:Number.MAX_SAFE_INTEGER};
+    candidates.forEach(candidate => {
+      let tier = OCR_MATCH_TIER.none;
+      let score = 0;
+      if(candidate.raw && entry.rawAliases.has(candidate.raw)){
+        tier = OCR_MATCH_TIER.raw;
+        score = 1;
+      } else if(candidate.normalized && entry.normalizedAliases.has(candidate.normalized)){
+        tier = OCR_MATCH_TIER.normalized;
+        score = 1;
+      } else {
+        score = partialNameScore(candidate.normalized, entry.normalizedAliases);
+        if(score > 0) tier = OCR_MATCH_TIER.partial;
+      }
+      if(
+        tier > best.tier
+        || (tier === best.tier && score > best.score)
+        || (tier === best.tier && score === best.score && candidate.index < best.candidateIndex)
+      ){
+        best = {tier, score, candidateIndex:candidate.index};
+      }
+    });
+    return best;
+  }
+
+  function betterFontMatch(candidate, current){
+    if(!current) return true;
+    if(candidate.tier !== current.tier) return candidate.tier > current.tier;
+    if(candidate.score !== current.score) return candidate.score > current.score;
+    if(candidate.candidateIndex !== current.candidateIndex){
+      return candidate.candidateIndex < current.candidateIndex;
+    }
+    if(candidate.descriptionScore !== current.descriptionScore){
+      return candidate.descriptionScore > current.descriptionScore;
+    }
+    return compareSubgroupFonts(candidate.entry.font, current.entry.font) < 0;
   }
 
   function nearestStyle(styles, weight, italic){
@@ -283,6 +351,8 @@
       projectRefs:[],
       catalogRows:[],
       catalogSignature:'',
+      matchPools:{'01':[], '02':[], '03':[]},
+      fallbackSystemFont:null,
       loaded:false,
       loading:false,
       error:'',
@@ -392,6 +462,9 @@
           state.systemFonts = (Array.isArray(payload?.fonts) ? payload.fonts : [])
             .map(value => normalizeFont(value, 'available'))
             .filter(Boolean);
+          const matchIndex = buildSystemFontMatchIndex(state.systemFonts);
+          state.matchPools = matchIndex.pools;
+          state.fallbackSystemFont = matchIndex.fallbackFont;
           state.platform = cleanFamily(payload?.platform);
           state.cached = Boolean(payload?.cached);
           state.loaded = true;
@@ -469,35 +542,36 @@
       const profile = block.font && typeof block.font === 'object' ? block.font : {};
       const requestedStyle = cleanFamily(profile.style).toLowerCase();
       const italic = profile.italic === true || ['italic', 'oblique'].includes(requestedStyle);
-      const fallbackFont = state.systemFonts.find(font => font.family === FALLBACK_FAMILY) || null;
+      const fallbackFont = state.fallbackSystemFont;
       let selected = null;
       let fallback = Boolean(profile.artistic);
 
       if(!profile.artistic){
         const category = categoryForBlock(block);
-        const pool = category
-          ? state.systemFonts.filter(font => font.freeCommercialCategory === category)
-          : [];
+        const pool = state.matchPools[category] || [];
         const candidates = Array.isArray(profile.familyCandidates)
-          ? profile.familyCandidates.map(cleanFamily).filter(Boolean)
+          ? profile.familyCandidates.map((value, index) => {
+            const cleaned = cleanFamily(value);
+            return {index, raw:rawMatchName(cleaned), normalized:normalizedMatchName(cleaned)};
+          }).filter(candidate => candidate.raw || candidate.normalized)
           : [];
-        const ranked = pool.map(font => {
-          const candidateScores = candidates.map((candidate, index) => ({index, score:nameScore(candidate, font)}));
-          const best = candidateScores.sort((left, right) => right.score - left.score || left.index - right.index)[0]
-            || {index:Number.MAX_SAFE_INTEGER, score:0};
-          return {
-            font,
-            nameScore:best.score,
-            candidateIndex:best.index,
-            descriptionScore:descriptorScore(profile.styleDescription, font),
+        const words = descriptorWords(profile.styleDescription);
+        let best = null;
+        pool.forEach(entry => {
+          const nameMatch = bestNameMatch(candidates, entry);
+          const candidate = {
+            entry,
+            ...nameMatch,
+            descriptionScore:descriptorScore(words, entry),
           };
-        }).sort((left, right) => (
-          right.nameScore - left.nameScore
-          || left.candidateIndex - right.candidateIndex
-          || right.descriptionScore - left.descriptionScore
-          || compareSubgroupFonts(left.font, right.font)
-        ));
-        if(ranked[0]?.nameScore >= OCR_MATCH_THRESHOLD) selected = ranked[0].font;
+          if(betterFontMatch(candidate, best)) best = candidate;
+        });
+        if(best && (
+          best.tier >= OCR_MATCH_TIER.normalized
+          || (best.tier === OCR_MATCH_TIER.partial && best.score >= OCR_MATCH_THRESHOLD)
+        )){
+          selected = best.entry.font;
+        }
         else fallback = true;
       }
 
