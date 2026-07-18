@@ -120,7 +120,7 @@ async def run():
         "has_key": True,
         "protocol": "openai",
         "chat_models": ["gemini-3.1-pro-high"],
-        "image_models": ["gemini-3-pro-image"],
+        "image_models": ["gemini-3-pro-image", "no-image-input-model"],
         "image_model_capabilities": {
             "gemini-3-pro-image": {
                 "supportsMask": True,
@@ -129,7 +129,16 @@ async def run():
                 "maxOutputs": 6,
                 "sizes": ["auto", "96x64"],
                 "qualities": ["auto", "high"],
-            }
+            },
+            "no-image-input-model": {
+                "supportsImageInput": False,
+                "supportsMask": False,
+                "supportsMultiReference": False,
+                "maxReferenceImages": 1,
+                "maxOutputs": 1,
+                "sizes": ["auto"],
+                "qualities": ["auto", "high"],
+            },
         },
     }
     main.public_api_providers = lambda: [dict(provider)]
@@ -322,6 +331,491 @@ async def run():
         assert remove_task["result"]["assetId"]
         output = await client.get(remove_task["result"]["url"])
         assert output.status_code == 200 and output.content == generated_bytes
+
+        # Art-font materialization validates encoded data before and after
+        # decode, preserves local model files, and applies bounded SSRF-safe
+        # redirect/stream handling without writing temporary output files.
+        assert await main.materialize_openshop_ai_image({
+            "type":"b64",
+            "value":base64.b64encode(generated_bytes).decode("ascii"),
+            "mime_type":"image/png",
+        }) == generated_bytes
+        assert await main.materialize_openshop_ai_image({
+            "type":"url",
+            "value":"data:image/png;base64," + base64.b64encode(generated_bytes).decode("ascii"),
+        }) == generated_bytes
+        try:
+            await main.materialize_openshop_ai_image({"type":"b64", "value":"not base64!"})
+            raise AssertionError("invalid base64 should fail")
+        except HTTPException as exc:
+            assert exc.status_code in {400, 413, 502}
+
+        original_materialize_limit = main.OPENSHOP_ART_FONT_MAX_BYTES
+        original_fullmatch = main.re.fullmatch
+        data_url_fullmatch_calls = 0
+        try:
+            main.OPENSHOP_ART_FONT_MAX_BYTES = 8
+            try:
+                await main.materialize_openshop_ai_image({
+                    "type":"b64", "value":base64.b64encode(b"123456789").decode("ascii"),
+                })
+                raise AssertionError("oversized base64 should fail")
+            except HTTPException as exc:
+                assert exc.status_code == 413
+
+            def counting_fullmatch(*args, **kwargs):
+                nonlocal data_url_fullmatch_calls
+                if len(args) > 1 and "," in str(args[1]):
+                    data_url_fullmatch_calls += 1
+                return original_fullmatch(*args, **kwargs)
+
+            main.re.fullmatch = counting_fullmatch
+            try:
+                await main.materialize_openshop_ai_image({
+                    "type":"url",
+                    "value":"data:image/png;base64," + base64.b64encode(b"123456789").decode("ascii"),
+                })
+                raise AssertionError("oversized data URL should fail")
+            except HTTPException as exc:
+                assert exc.status_code == 413
+            assert data_url_fullmatch_calls == 0, "oversized data URL must be bounded before regex parsing"
+        finally:
+            main.re.fullmatch = original_fullmatch
+            main.OPENSHOP_ART_FONT_MAX_BYTES = original_materialize_limit
+
+        local_fixture = Path(main.OUTPUT_OUTPUT_DIR) / "art-font-local-fixture.png"
+        local_fixture.write_bytes(generated_bytes)
+        try:
+            local_url = main.output_url_for(local_fixture.name)
+            assert await main.materialize_openshop_ai_image({
+                "type":"url", "value":local_url,
+            }) == generated_bytes
+            assert local_fixture.is_file(), "materialization must not delete provider-owned local output"
+        finally:
+            local_fixture.unlink(missing_ok=True)
+
+        try:
+            await main.materialize_openshop_ai_image({
+                "type":"url", "value":"http://127.0.0.1/private.png",
+            })
+            raise AssertionError("private remote destination should fail")
+        except HTTPException as exc:
+            assert exc.status_code in {400, 403, 502}
+
+        class FakeRemoteResponse:
+            def __init__(self, status_code=200, headers=None, chunks=()):
+                self.status_code = status_code
+                self.headers = headers or {}
+                self._chunks = list(chunks)
+
+            @property
+            def is_redirect(self):
+                return self.status_code in {301, 302, 303, 307, 308}
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    request = httpx.Request("GET", "https://public.example/image.png")
+                    response = httpx.Response(self.status_code, request=request)
+                    raise httpx.HTTPStatusError("remote failure", request=request, response=response)
+
+            async def aiter_bytes(self):
+                for chunk in self._chunks:
+                    yield chunk
+
+        class FakeRemoteStream:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class FakeRemoteClient:
+            responses = []
+            urls = []
+
+            def __init__(self, *args, **kwargs):
+                assert kwargs.get("follow_redirects") is False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, method, url, **_kwargs):
+                assert method == "GET"
+                self.urls.append(url)
+                return FakeRemoteStream(self.responses.pop(0))
+
+        original_async_client = main.httpx.AsyncClient
+        original_getaddrinfo = main.socket.getaddrinfo
+        original_materialize_limit = main.OPENSHOP_ART_FONT_MAX_BYTES
+        try:
+            main.httpx.AsyncClient = FakeRemoteClient
+            main.socket.getaddrinfo = lambda *_args, **_kwargs: [
+                (main.socket.AF_INET, main.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            ]
+            FakeRemoteClient.urls = []
+            FakeRemoteClient.responses = [
+                FakeRemoteResponse(302, {"location":"https://public.example/final.png"}),
+                FakeRemoteResponse(200, {"content-length":"6"}, (b"abc", b"def")),
+            ]
+            assert await main.materialize_openshop_ai_image({
+                "type":"url", "value":"https://public.example/start.png",
+            }) == b"abcdef"
+            assert FakeRemoteClient.urls == [
+                "https://public.example/start.png", "https://public.example/final.png",
+            ]
+
+            main.OPENSHOP_ART_FONT_MAX_BYTES = 5
+            FakeRemoteClient.responses = [
+                FakeRemoteResponse(200, {"content-length":"6"}, (b"abcdef",)),
+            ]
+            try:
+                await main.materialize_openshop_ai_image({
+                    "type":"url", "value":"https://public.example/large.png",
+                })
+                raise AssertionError("oversized Content-Length should fail")
+            except HTTPException as exc:
+                assert exc.status_code == 413
+
+            FakeRemoteClient.responses = [
+                FakeRemoteResponse(200, {}, (b"abc", b"def")),
+            ]
+            try:
+                await main.materialize_openshop_ai_image({
+                    "type":"url", "value":"https://public.example/stream.png",
+                })
+                raise AssertionError("oversized streamed body should fail")
+            except HTTPException as exc:
+                assert exc.status_code == 413
+
+            main.OPENSHOP_ART_FONT_MAX_BYTES = original_materialize_limit
+            FakeRemoteClient.responses = [
+                FakeRemoteResponse(302, {"location":"http://127.0.0.1/private.png"}),
+            ]
+            try:
+                await main.materialize_openshop_ai_image({
+                    "type":"url", "value":"https://public.example/redirect.png",
+                })
+                raise AssertionError("redirect to private destination should fail")
+            except HTTPException as exc:
+                assert exc.status_code in {400, 403, 502}
+        finally:
+            main.OPENSHOP_ART_FONT_MAX_BYTES = original_materialize_limit
+            main.httpx.AsyncClient = original_async_client
+            main.socket.getaddrinfo = original_getaddrinfo
+
+        owner_b_source_upload = await client.post(
+            "/api/openshop/projects/project-ai/assets",
+            data={
+                "canvas_type":owner_b["canvasType"],
+                "canvas_id":owner_b["canvasId"],
+                "node_id":owner_b["nodeId"],
+                "role":"ai-source",
+            },
+            files={"file":("other-source.png", png_bytes((15, 35, 55, 255)), "image/png")},
+        )
+        assert owner_b_source_upload.status_code == 200, owner_b_source_upload.text
+        owner_b_source_id = owner_b_source_upload.json()["asset"]["assetId"]
+
+        current_art_text = "  夏日新品\n第二行  "
+        art_snapshot = {
+            "textLayerId":"hstar_text_layer_1",
+            "ocrBlockId":"ocr-title",
+            "originalText":"夏季限定",
+            "currentText":current_art_text,
+            "requestGeneration":3,
+            "document":{"width":96,"height":64},
+            "quad":[
+                {"x":0.25,"y":0.25}, {"x":0.75,"y":0.25},
+                {"x":0.75,"y":0.5}, {"x":0.25,"y":0.5},
+            ],
+            "visualProfile":{
+                "script":"mixed",
+                "dominantScript":"zh-hans",
+                "fill":"#7b3f12",
+                "alignment":"center",
+                "rotation":8,
+                "familyCandidates":["Poster Sans"],
+                "size":24,
+                "weight":760,
+                "style":"italic",
+                "artistic":True,
+                "styleDescription":"inflated hand-painted lettering",
+                "letterSpacing":20,
+                "lineHeight":1.1,
+                "strokeColor":"#ffffff",
+                "strokeWidth":2,
+                "shadow":{"color":"#00000080","blur":4,"offsetX":2,"offsetY":3},
+            },
+        }
+        art_request = {
+            "owner":owner,
+            "tool_id":"art-font-restore",
+            "source_asset_id":source_asset_id,
+            "provider_id":"vision",
+            "model_id":"gemini-3-pro-image",
+            "source_layer_id":"source-layer-1",
+            "options":{"artFont":art_snapshot},
+        }
+
+        no_image_model = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks",
+            json={**art_request, "model_id":"no-image-input-model"},
+        )
+        assert no_image_model.status_code == 400, no_image_model.text
+        assert "图" in no_image_model.text or "image" in no_image_model.text.lower()
+
+        cross_project = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks",
+            json={**art_request, "source_asset_id":owner_b_source_id},
+        )
+        assert cross_project.status_code in {403, 404}, cross_project.text
+
+        art_model_output = Image.new("RGBA", (8, 6), (0, 0, 0, 0))
+        for y in range(2, 4):
+            for x in range(3, 5):
+                art_model_output.putpixel((x, y), (30 + x, 80 + y, 190, 255))
+        art_buffer = io.BytesIO()
+        art_model_output.save(art_buffer, format="PNG")
+        art_model_bytes = art_buffer.getvalue()
+        art_generation_calls = 0
+
+        async def successful_art_generate(prompt, size, quality, model, reference_images=None, provider_id=""):
+            nonlocal art_generation_calls
+            art_generation_calls += 1
+            assert provider_id == "vision" and model == "gemini-3-pro-image"
+            assert size == "auto" and quality == "high"
+            exact_quote = json.dumps(current_art_text, ensure_ascii=False)
+            assert prompt.count(exact_quote) == 1
+            assert "夏季限定" not in prompt
+            for phrase in (
+                "exactly", "once", "transparent", "size", "weight", "color",
+                "angle", "stroke", "shadow", "artistic structure", "natural proportions",
+            ):
+                assert phrase in prompt, phrase
+            assert len(reference_images) == 1
+            reference = reference_images[0]
+            assert reference["role"] == "style-reference"
+            assert reference["mime"] == "image/png"
+            encoded_reference = reference["url"].split(",", 1)[1]
+            style_crop = Image.open(io.BytesIO(base64.b64decode(encoded_reference)))
+            assert style_crop.size == (64, 32)
+            return {
+                "type":"b64",
+                "value":base64.b64encode(art_model_bytes).decode("ascii"),
+                "mime_type":"image/png",
+            }, {"id":"art-font-request"}
+
+        main.generate_ai_image = successful_art_generate
+        art_created = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
+        )
+        assert art_created.status_code == 200, art_created.text
+        art_task = await wait_for_terminal(
+            client, "project-ai", art_created.json()["task_id"], owner,
+        )
+        assert art_task["status"] == "succeeded", art_task
+        assert art_generation_calls == 1
+        assert art_task["sourceLayerId"] == "source-layer-1"
+        assert art_task["snapshot"]["currentText"] == current_art_text
+        assert art_task["result"]["mime"] == "image/png"
+        assert art_task["result"]["width"] == 6
+        assert art_task["result"]["height"] == 2
+        assert art_task["result"]["contentBox"] == {"x":2,"y":0,"width":2,"height":2}
+        art_result_response = await client.get(art_task["result"]["url"])
+        assert art_result_response.status_code == 200
+        art_result_image = Image.open(io.BytesIO(art_result_response.content)).convert("RGBA")
+        assert art_result_image.size == (6, 2)
+        assert art_result_image.getpixel((0, 0))[3] == 0
+
+        unsafe_output = Image.new("RGB", (8, 6), (255, 255, 255))
+        for x in range(8):
+            unsafe_output.putpixel((x, 0), (255, 0, 0) if x % 2 else (0, 0, 255))
+            unsafe_output.putpixel((x, 5), (0, 255, 0) if x % 2 else (255, 255, 0))
+        for y in range(1, 5):
+            unsafe_output.putpixel((0, y), (255, 0, 255))
+            unsafe_output.putpixel((7, y), (0, 255, 255))
+        unsafe_buffer = io.BytesIO()
+        unsafe_output.save(unsafe_buffer, format="PNG")
+        unsafe_bytes = unsafe_buffer.getvalue()
+        unsafe_calls = 0
+
+        async def unsafe_art_generate(*_args, **_kwargs):
+            nonlocal unsafe_calls
+            unsafe_calls += 1
+            return {
+                "type":"b64",
+                "value":base64.b64encode(unsafe_bytes).decode("ascii"),
+                "mime_type":"image/png",
+            }, {"id":"unsafe-art-font-request"}
+
+        assets_before_unsafe = {path.name for path in Path(main.OPENSHOP_STORE.assets_dir).iterdir()}
+        project_before_unsafe = main.OPENSHOP_STORE.load("project-ai", owner)
+        temp_before_unsafe = {
+            path.name for path in Path(main.OUTPUT_OUTPUT_DIR).glob("openshop_art_font_*")
+        }
+        main.generate_ai_image = unsafe_art_generate
+        unsafe_created = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
+        )
+        assert unsafe_created.status_code == 200, unsafe_created.text
+        unsafe_task = await wait_for_terminal(
+            client, "project-ai", unsafe_created.json()["task_id"], owner,
+        )
+        assert unsafe_task["status"] == "failed", unsafe_task
+        assert not unsafe_task.get("result")
+        assert unsafe_calls == 1
+        assert {path.name for path in Path(main.OPENSHOP_STORE.assets_dir).iterdir()} == assets_before_unsafe
+        project_after_unsafe = main.OPENSHOP_STORE.load("project-ai", owner)
+        assert project_after_unsafe["assetRefs"] == project_before_unsafe["assetRefs"]
+        assert project_after_unsafe["pendingAssetRefs"] == project_before_unsafe["pendingAssetRefs"]
+        assert {
+            path.name for path in Path(main.OUTPUT_OUTPUT_DIR).glob("openshop_art_font_*")
+        } == temp_before_unsafe
+
+        # Cancellation after generation but before storage must trip the final
+        # can-complete check and never call the storage function.
+        pre_store_release = asyncio.Event()
+        pre_store_calls = 0
+        original_art_store = main.store_openshop_ai_png
+
+        async def cancellation_resistant_art_generate(*_args, **_kwargs):
+            try:
+                await pre_store_release.wait()
+            except asyncio.CancelledError:
+                await pre_store_release.wait()
+            return {
+                "type":"b64",
+                "value":base64.b64encode(art_model_bytes).decode("ascii"),
+                "mime_type":"image/png",
+            }, {}
+
+        async def counting_art_store(*args, **kwargs):
+            nonlocal pre_store_calls
+            pre_store_calls += 1
+            return await original_art_store(*args, **kwargs)
+
+        main.generate_ai_image = cancellation_resistant_art_generate
+        main.store_openshop_ai_png = counting_art_store
+        pre_store_created = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
+        )
+        pre_store_id = pre_store_created.json()["task_id"]
+        await asyncio.sleep(0.02)
+        pre_store_cancel = await client.delete(
+            f"/api/openshop/projects/project-ai/ai-tasks/{pre_store_id}",
+            params={
+                "canvas_type":owner["canvasType"], "canvas_id":owner["canvasId"],
+                "node_id":owner["nodeId"],
+            },
+        )
+        assert pre_store_cancel.status_code == 200
+        pre_store_release.set()
+        await asyncio.sleep(0.05)
+        main.store_openshop_ai_png = original_art_store
+        assert pre_store_calls == 0
+        assert main.OPENSHOP_AI_TASKS.get(pre_store_id, "project-ai", owner)["status"] == "cancelled"
+
+        # If cancellation wins after storage, the provisional project ref and
+        # just-created asset must be removed conservatively.
+        stored_during_race = asyncio.Event()
+        release_stored_race = asyncio.Event()
+        race_asset_id = ""
+
+        distinct_race_output = art_model_output.copy()
+        distinct_race_output.putpixel((3, 2), (220, 15, 45, 255))
+        distinct_race_buffer = io.BytesIO()
+        distinct_race_output.save(distinct_race_buffer, format="PNG")
+        distinct_race_bytes = distinct_race_buffer.getvalue()
+
+        async def immediate_art_generate(*_args, **_kwargs):
+            return {
+                "type":"b64",
+                "value":base64.b64encode(distinct_race_bytes).decode("ascii"),
+                "mime_type":"image/png",
+            }, {}
+
+        async def held_art_store(*args, **kwargs):
+            nonlocal race_asset_id
+            asset = await original_art_store(*args, **kwargs)
+            race_asset_id = asset["assetId"]
+            stored_during_race.set()
+            try:
+                await release_stored_race.wait()
+            except asyncio.CancelledError:
+                await release_stored_race.wait()
+            return asset
+
+        main.generate_ai_image = immediate_art_generate
+        main.store_openshop_ai_png = held_art_store
+        race_created = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
+        )
+        race_id = race_created.json()["task_id"]
+        await asyncio.wait_for(stored_during_race.wait(), timeout=1.0)
+        race_cancel = await client.delete(
+            f"/api/openshop/projects/project-ai/ai-tasks/{race_id}",
+            params={
+                "canvas_type":owner["canvasType"], "canvas_id":owner["canvasId"],
+                "node_id":owner["nodeId"],
+            },
+        )
+        assert race_cancel.status_code == 200
+        release_stored_race.set()
+        await asyncio.sleep(0.1)
+        main.store_openshop_ai_png = original_art_store
+        assert main.OPENSHOP_AI_TASKS.get(race_id, "project-ai", owner)["status"] == "cancelled"
+        race_project = main.OPENSHOP_STORE.load("project-ai", owner)
+        assert race_asset_id not in race_project["assetRefs"]
+        assert race_asset_id not in {item["assetId"] for item in race_project["pendingAssetRefs"]}
+        assert not any(
+            path.name.startswith(race_asset_id)
+            for path in Path(main.OPENSHOP_STORE.assets_dir).iterdir()
+        )
+
+        # A canceled task may hash to an already referenced successful output.
+        # It must not release or collect that shared pre-existing asset.
+        stored_during_race = asyncio.Event()
+        release_stored_race = asyncio.Event()
+        race_asset_id = ""
+
+        async def duplicate_art_generate(*_args, **_kwargs):
+            return {
+                "type":"b64",
+                "value":base64.b64encode(art_model_bytes).decode("ascii"),
+                "mime_type":"image/png",
+            }, {}
+
+        main.generate_ai_image = duplicate_art_generate
+        main.store_openshop_ai_png = held_art_store
+        duplicate_created = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
+        )
+        duplicate_id = duplicate_created.json()["task_id"]
+        await asyncio.wait_for(stored_during_race.wait(), timeout=1.0)
+        assert race_asset_id == art_task["result"]["assetId"]
+        duplicate_cancel = await client.delete(
+            f"/api/openshop/projects/project-ai/ai-tasks/{duplicate_id}",
+            params={
+                "canvas_type":owner["canvasType"], "canvas_id":owner["canvasId"],
+                "node_id":owner["nodeId"],
+            },
+        )
+        assert duplicate_cancel.status_code == 200
+        release_stored_race.set()
+        await asyncio.sleep(0.1)
+        main.store_openshop_ai_png = original_art_store
+        preserved_result = await client.get(art_task["result"]["url"])
+        assert preserved_result.status_code == 200
+        duplicate_project = main.OPENSHOP_STORE.load("project-ai", owner)
+        assert art_task["result"]["assetId"] in {
+            item["assetId"] for item in duplicate_project["pendingAssetRefs"]
+        }
 
         mask_upload = await client.post(
             "/api/openshop/projects/project-ai/assets",

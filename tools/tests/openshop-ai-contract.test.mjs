@@ -36,11 +36,14 @@ import sys
 sys.path.insert(0, os.getcwd())
 
 from openshop_ai import (
+    OPENSHOP_AI_TOOL_IDS,
+    OPENSHOP_GENERATIVE_TOOL_IDS,
     OpenShopAiTaskRegistry,
     OpenShopAiValidationError,
     build_capability_catalog,
     build_ocr_prompt,
     normalize_ai_task_record,
+    normalize_art_font_snapshot,
     normalize_generation_snapshot,
     normalize_ocr_layout,
     normalize_reference_record,
@@ -100,6 +103,13 @@ assert [item["id"] for item in extract_providers] == ["vision", "antigravity"]
 assert [item["id"] for item in remove_providers] == ["vision", "antigravity"]
 assert [item["id"] for item in extract_providers[0]["models"]] == ["gemini-3.1-pro-high"]
 assert [item["id"] for item in remove_providers[0]["models"]] == ["gemini-3-pro-image"]
+assert "art-font-restore" in OPENSHOP_AI_TOOL_IDS
+assert "art-font-restore" not in OPENSHOP_GENERATIVE_TOOL_IDS
+art_tool = catalog["tools"]["art-font-restore"]
+assert art_tool["capability"] == "reference-image-generation-transparent"
+assert art_tool["providers"] == remove_providers
+assert art_tool["providers"] is not remove_providers
+assert art_tool["providers"][0] is not remove_providers[0]
 for tool_id in ("generative-fill", "local-redraw"):
     model = catalog["tools"][tool_id]["providers"][0]["models"][0]
     capabilities = model["capabilities"]
@@ -417,6 +427,97 @@ assert snapshot["requestedIndexes"] == [0, 1, 2]
 assert snapshot["references"][1]["mention"] == "@选区1"
 assert "seed" not in json.dumps(snapshot).lower()
 
+art_snapshot_input = {
+    "textLayerId": "hstar_text_layer_1",
+    "ocrBlockId": "ocr-title",
+    "originalText": "夏季限定",
+    "currentText": "  夏日新品\n第二行  ",
+    "requestGeneration": 3,
+    "document": {"width": 1920, "height": 1080},
+    "quad": [
+        {"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.2},
+        {"x": 0.4, "y": 0.3}, {"x": 0.1, "y": 0.3},
+    ],
+    "visualProfile": {
+        "script": "mixed",
+        "dominantScript": "zh-hant",
+        "fill": "#7B3F12cc",
+        "alignment": "center",
+        "rotation": 12.25,
+        "familyCandidates": ["Poster Sans"],
+        "size": 72,
+        "weight": 760,
+        "style": "italic",
+        "artistic": True,
+        "styleDescription": "inflated hand-painted lettering",
+        "letterSpacing": 20,
+        "lineHeight": 1.0,
+        "strokeColor": "#FFFFFF",
+        "strokeWidth": 4,
+        "shadow": {"color": "#00000080", "blur": 8, "offsetX": 3, "offsetY": 5},
+    },
+}
+art_snapshot = normalize_art_font_snapshot(art_snapshot_input)
+assert art_snapshot["currentText"] == "  夏日新品\n第二行  "
+assert art_snapshot["originalText"] == "夏季限定"
+assert art_snapshot["requestGeneration"] == 3
+assert art_snapshot["quad"] == art_snapshot_input["quad"]
+assert art_snapshot["visualProfile"] == {
+    "script": "mixed",
+    "dominantScript": "zh-hant",
+    "fill": "#7b3f12cc",
+    "alignment": "center",
+    "rotation": 12.25,
+    "artistic": True,
+    "familyCandidates": ["Poster Sans"],
+    "size": 72.0,
+    "weight": 800,
+    "style": "italic",
+    "styleDescription": "inflated hand-painted lettering",
+    "letterSpacing": 20.0,
+    "lineHeight": 1.0,
+    "strokeColor": "#ffffff",
+    "strokeWidth": 4.0,
+    "shadow": {"color": "#00000080", "blur": 8.0, "offsetX": 3.0, "offsetY": 5.0},
+}
+assert normalize_art_font_snapshot({
+    **art_snapshot_input,
+    "visualProfile": {**art_snapshot_input["visualProfile"], "artistic": False},
+})["visualProfile"]["artistic"] is False
+
+for invalid_art_snapshot in (
+    {**art_snapshot_input, "textLayerId": ""},
+    {**art_snapshot_input, "ocrBlockId": "bad id"},
+    {**art_snapshot_input, "originalText": None},
+    {**art_snapshot_input, "currentText": " \n\t "},
+    {**art_snapshot_input, "requestGeneration": True},
+    {**art_snapshot_input, "requestGeneration": 1.5},
+    {**art_snapshot_input, "requestGeneration": "3"},
+    {**art_snapshot_input, "requestGeneration": 0},
+    {**art_snapshot_input, "document": {"width": 0, "height": 1080}},
+    {**art_snapshot_input, "quad": [
+        {"x": 0.1, "y": 0.2}, {"x": float("nan"), "y": 0.2},
+        {"x": 0.4, "y": 0.3}, {"x": 0.1, "y": 0.3},
+    ]},
+    {**art_snapshot_input, "quad": [
+        {"x": 10, "y": 20}, {"x": 40, "y": 20},
+        {"x": 40, "y": 30}, {"x": 10, "y": 30},
+    ]},
+    {**art_snapshot_input, "quad": [
+        {"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.3},
+        {"x": 0.4, "y": 0.2}, {"x": 0.1, "y": 0.3},
+    ]},
+    {**art_snapshot_input, "quad": [
+        {"x": 0.1, "y": 0.2}, {"x": 0.1, "y": 0.2},
+        {"x": 0.4, "y": 0.3}, {"x": 0.1, "y": 0.3},
+    ]},
+):
+    try:
+        normalize_art_font_snapshot(invalid_art_snapshot)
+        raise AssertionError("invalid art font snapshot should fail")
+    except OpenShopAiValidationError:
+        pass
+
 fill_snapshot = normalize_generation_snapshot({
     **snapshot,
     "toolId": "generative-fill",
@@ -440,6 +541,46 @@ for invalid_snapshot in (
 
 owner_a = {"canvasType": "classic", "canvasId": "canvas-a", "nodeId": "node-a"}
 registry = OpenShopAiTaskRegistry()
+art_task = registry.create(
+    "project-a", owner_a, "art-font-restore", "vision", "gemini-3-pro-image",
+    "d" * 64, source_layer_id="source-layer-1", snapshot=art_snapshot_input,
+)
+art_snapshot_input["currentText"] = "mutated after create"
+art_snapshot_input["visualProfile"]["weight"] = 100
+stored_art_task = registry.get(art_task["taskId"], "project-a", owner_a)
+assert stored_art_task["sourceLayerId"] == "source-layer-1"
+assert stored_art_task["snapshot"] == art_snapshot
+assert registry.mark_running(art_task["taskId"]) is True
+assert registry.succeed(art_task["taskId"], {
+    "assetId": "9" * 64,
+    "url": "/api/openshop/assets/" + "9" * 64,
+    "name": "art-font.png",
+    "mime": "image/png",
+    "width": 360,
+    "height": 120,
+    "contentBox": {"x": 10, "y": 5, "width": 340, "height": 110},
+}) is True
+normalized_art_task = normalize_ai_task_record(
+    registry.get(art_task["taskId"], "project-a", owner_a)
+)
+assert normalized_art_task["snapshot"] == art_snapshot
+assert normalized_art_task["sourceLayerId"] == "source-layer-1"
+assert normalized_art_task["outputAssetId"] == "9" * 64
+assert normalized_art_task["result"] == {
+    "assetId": "9" * 64,
+    "url": "/api/openshop/assets/" + "9" * 64,
+    "name": "art-font.png",
+    "mime": "image/png",
+    "width": 360,
+    "height": 120,
+    "contentBox": {"x": 10, "y": 5, "width": 340, "height": 110},
+}
+
+# Existing single-task records retain their original public shape.
+legacy_single = registry.create(
+    "project-a", owner_a, "text-remove", "vision", "gemini-3-pro-image", "c" * 64,
+)
+assert "snapshot" not in legacy_single and "sourceLayerId" not in legacy_single
 parent = registry.create_parent("project-a", owner_a, snapshot, "vision", "gemini-3-pro-image")
 children = [registry.create_child(parent["taskId"], index) for index in snapshot["requestedIndexes"]]
 assert registry.mark_child_running(parent["taskId"], children[0]["childTaskId"]) is True

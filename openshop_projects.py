@@ -124,6 +124,56 @@ class OpenShopProjectStore:
         with self._lock:
             return copy.deepcopy(self._read_project(project_id, normalized_owner))
 
+    def project_references_asset(
+        self,
+        project_id: str,
+        owner: dict,
+        asset_id: str,
+    ) -> bool:
+        normalized_project_id = self._validate_id(project_id, "projectId")
+        normalized_owner = self._normalize_owner(owner)
+        normalized_asset_id = self._validate_asset_id(asset_id)
+        with self._lock:
+            project = self._read_project(normalized_project_id, normalized_owner)
+            asset_refs = project.get("assetRefs", [])
+            if not isinstance(asset_refs, list):
+                raise OpenShopValidationError("assetRefs must be an array")
+            permanent = {self._validate_asset_id(value) for value in asset_refs}
+            pending = self._unexpired_pending_asset_refs(
+                project.get("pendingAssetRefs", []), self._now()
+            )
+            preview_asset_id = project.get("previewAssetId") or ""
+            if preview_asset_id:
+                preview_asset_id = self._validate_asset_id(preview_asset_id)
+            return (
+                normalized_asset_id in permanent
+                or normalized_asset_id in {item["assetId"] for item in pending}
+                or normalized_asset_id == preview_asset_id
+            )
+
+    def release_pending_asset(
+        self,
+        project_id: str,
+        owner: dict,
+        asset_id: str,
+    ) -> bool:
+        normalized_project_id = self._validate_id(project_id, "projectId")
+        normalized_owner = self._normalize_owner(owner)
+        normalized_asset_id = self._validate_asset_id(asset_id)
+        with self._lock:
+            project = self._read_project(normalized_project_id, normalized_owner)
+            pending = self._unexpired_pending_asset_refs(
+                project.get("pendingAssetRefs", []), self._now()
+            )
+            retained = [
+                item for item in pending if item["assetId"] != normalized_asset_id
+            ]
+            if len(retained) == len(pending):
+                return False
+            project["pendingAssetRefs"] = retained
+            self._atomic_write_json(self._project_path(normalized_owner), project)
+            return True
+
     def save(
         self,
         project_id: str,
@@ -368,6 +418,7 @@ class OpenShopProjectStore:
         mime: str,
         name: str,
         role: str,
+        track_pending_ownership: bool = False,
     ) -> dict:
         project_id = self._validate_id(project_id, "projectId")
         normalized_owner = self._normalize_owner(owner)
@@ -407,6 +458,9 @@ class OpenShopProjectStore:
                 result_role != "output"
                 and asset_id not in permanent_asset_refs
                 and asset_id != preview_asset_id
+            )
+            created_pending_ref = (
+                needs_provisional_ref and asset_id not in pending_asset_ids
             )
             if (
                 needs_provisional_ref
@@ -482,6 +536,8 @@ class OpenShopProjectStore:
             result = copy.deepcopy(metadata)
             result["name"] = result_name
             result["role"] = result_role
+            if track_pending_ownership:
+                result["_createdPendingAssetRef"] = created_pending_ref
             return result
 
     def asset_path(self, asset_id: str) -> tuple[str, dict]:

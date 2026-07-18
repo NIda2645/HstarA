@@ -1,7 +1,9 @@
 import json
 import ipaddress
+import socket
 import uuid
 import base64
+import binascii
 import hashlib
 import hmac
 import datetime
@@ -61,7 +63,12 @@ from openshop_ai import (
     normalize_generation_snapshot,
     normalize_ocr_layout,
 )
-from openshop_image_ops import normalize_local_generation
+from openshop_image_ops import (
+    MAX_ART_FONT_COMPRESSED_BYTES,
+    crop_art_font_reference,
+    normalize_art_font_output,
+    normalize_local_generation,
+)
 from openshop_fonts import OpenShopFontCatalog
 from native_file_picker import (
     NativeFilePickerError,
@@ -16771,6 +16778,179 @@ def openshop_ai_asset(asset_id: str, max_size: int = 0) -> Tuple[str, Dict[str, 
         raise_openshop_http_error(exc)
     return path, metadata, image_path_to_data_url(path, max_size=max_size)
 
+
+OPENSHOP_ART_FONT_MAX_BYTES = MAX_ART_FONT_COMPRESSED_BYTES
+OPENSHOP_ART_FONT_MAX_REDIRECTS = 3
+
+
+def _decode_openshop_art_font_base64(value: Any) -> bytes:
+    if not isinstance(value, str) or not value:
+        raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+    encoded_limit = 4 * ((OPENSHOP_ART_FONT_MAX_BYTES + 2) // 3)
+    if len(value) > encoded_limit:
+        raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+    try:
+        content = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="艺术字体模型返回了无效 Base64 图片") from exc
+    if not content:
+        raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+    if len(content) > OPENSHOP_ART_FONT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+    return content
+
+
+def _bounded_openshop_art_font_file(path: str) -> bytes:
+    resolved = os.path.realpath(path)
+    allowed_roots = (os.path.realpath(ASSETS_DIR), os.path.realpath(OUTPUT_DIR))
+    try:
+        contained = any(
+            os.path.commonpath([resolved, root]) == root for root in allowed_roots
+        )
+    except ValueError:
+        contained = False
+    if not contained or not os.path.isfile(resolved):
+        raise HTTPException(status_code=403, detail="艺术字体本地输出路径不安全")
+    with open(resolved, "rb") as handle:
+        content = handle.read(OPENSHOP_ART_FONT_MAX_BYTES + 1)
+    if len(content) > OPENSHOP_ART_FONT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+    if not content:
+        raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+    return content
+
+
+async def _validate_openshop_art_font_remote_url(value: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="艺术字体远程图片 URL 无效") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise HTTPException(status_code=400, detail="艺术字体远程图片 URL 无效")
+    hostname = parsed.hostname.rstrip(".").lower()
+    addresses = []
+    try:
+        addresses.append(ipaddress.ip_address(hostname.split("%", 1)[0]))
+    except ValueError:
+        try:
+            infos = await asyncio.to_thread(
+                socket.getaddrinfo,
+                hostname,
+                port or (443 if parsed.scheme.lower() == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+        except OSError as exc:
+            raise HTTPException(status_code=502, detail="艺术字体远程图片域名无法解析") from exc
+        for info in infos:
+            try:
+                addresses.append(ipaddress.ip_address(info[4][0].split("%", 1)[0]))
+            except (IndexError, ValueError):
+                continue
+    if not addresses or any(not address.is_global for address in addresses):
+        raise HTTPException(status_code=403, detail="艺术字体远程图片地址不安全")
+    return urllib.parse.urlunsplit(parsed)
+
+
+async def _download_openshop_art_font_remote(value: str) -> bytes:
+    current_url = rewrite_runninghub_file_url(value)
+    timeout = httpx.Timeout(connect=20.0, read=120.0, write=30.0, pool=20.0)
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
+            headers={"User-Agent": "HstarA-OpenShop-Art-Font/1.0"},
+        ) as client:
+            for redirect_count in range(OPENSHOP_ART_FONT_MAX_REDIRECTS + 1):
+                current_url = await _validate_openshop_art_font_remote_url(current_url)
+                async with client.stream("GET", current_url) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location or redirect_count >= OPENSHOP_ART_FONT_MAX_REDIRECTS:
+                            raise HTTPException(
+                                status_code=502,
+                                detail="艺术字体远程图片重定向过多或无效",
+                            )
+                        current_url = urllib.parse.urljoin(current_url, location)
+                        continue
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            declared_length = int(content_length)
+                        except (TypeError, ValueError) as exc:
+                            raise HTTPException(
+                                status_code=502,
+                                detail="艺术字体远程图片 Content-Length 无效",
+                            ) from exc
+                        if declared_length < 0:
+                            raise HTTPException(
+                                status_code=502,
+                                detail="艺术字体远程图片 Content-Length 无效",
+                            )
+                        if declared_length > OPENSHOP_ART_FONT_MAX_BYTES:
+                            raise HTTPException(
+                                status_code=413,
+                                detail="艺术字体模型图片超过压缩字节限制",
+                            )
+                    chunks = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > OPENSHOP_ART_FONT_MAX_BYTES:
+                            raise HTTPException(
+                                status_code=413,
+                                detail="艺术字体模型图片超过压缩字节限制",
+                            )
+                        chunks.append(chunk)
+                    content = b"".join(chunks)
+                    if not content:
+                        raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+                    return content
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="艺术字体远程图片下载失败") from exc
+    raise HTTPException(status_code=502, detail="艺术字体远程图片重定向失败")
+
+
+async def materialize_openshop_ai_image(image_data: Any) -> bytes:
+    if not isinstance(image_data, dict):
+        raise HTTPException(status_code=502, detail="艺术字体模型没有返回图片")
+    image_type = str(image_data.get("type") or "url").strip().lower()
+    value = image_data.get("value")
+    if image_type == "b64":
+        return _decode_openshop_art_font_base64(value)
+    if image_type != "url" or not isinstance(value, str) or not value:
+        raise HTTPException(status_code=502, detail="艺术字体模型没有返回图片")
+    if value.startswith("data:"):
+        encoded_limit = 4 * ((OPENSHOP_ART_FONT_MAX_BYTES + 2) // 3)
+        if len(value) > encoded_limit + 128:
+            raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+        header, separator, encoded = value.partition(",")
+        if (
+            not separator
+            or len(header) > 128
+            or not re.fullmatch(r"data:image/[A-Za-z0-9.+-]+;base64", header)
+        ):
+            raise HTTPException(status_code=502, detail="艺术字体模型返回了无效 Data URL")
+        if len(encoded) > encoded_limit:
+            raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+        return _decode_openshop_art_font_base64(encoded)
+    local_path = output_file_from_url(value)
+    if local_path:
+        return await asyncio.to_thread(_bounded_openshop_art_font_file, local_path)
+    return await _download_openshop_art_font_remote(value)
+
 def openshop_text_remove_prompt(mode: str, extra: str = "") -> str:
     scope = (
         "Remove visible text only inside the supplied mask. Preserve every pixel outside the selected area exactly."
@@ -16783,6 +16963,89 @@ def openshop_text_remove_prompt(mode: str, extra: str = "") -> str:
     )
     extra = re.sub(r"[\x00-\x1f\x7f]", " ", str(extra or "")).strip()[:2000]
     return f"{prompt}\nAdditional requirement: {extra}" if extra else prompt
+
+
+def _art_font_quad_aspect(
+    quad: List[Dict[str, Any]],
+    document: Dict[str, Any],
+) -> float:
+    width = int(document["width"])
+    height = int(document["height"])
+    points = [
+        (float(point["x"]) * width, float(point["y"]) * height)
+        for point in quad
+    ]
+    horizontal = (
+        math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1])
+        + math.hypot(points[2][0] - points[3][0], points[2][1] - points[3][1])
+    ) / 2.0
+    vertical = (
+        math.hypot(points[3][0] - points[0][0], points[3][1] - points[0][1])
+        + math.hypot(points[2][0] - points[1][0], points[2][1] - points[1][1])
+    ) / 2.0
+    if horizontal < 1.0 or vertical < 1.0:
+        raise OpenShopAiValidationError("Art font quad has no usable adjacent edges")
+    return horizontal / vertical
+
+
+def build_art_font_prompt(snapshot: Dict[str, Any]) -> str:
+    profile = snapshot["visualProfile"]
+    exact_text = json.dumps(snapshot["currentText"], ensure_ascii=False)
+    return (
+        f"Render exactly this edited text once: {exact_text}. Produce one lettering rendering only. "
+        "Use the supplied original lettering crop only as the style reference. Preserve the reference's "
+        f"apparent size, weight {profile['weight']}, color {profile['fill']}, angle {profile['rotation']}, "
+        "spacing, stroke, shadow, and artistic structure. Return only the lettering on a fully transparent "
+        "background. Do not add symbols, duplicate words, logos, scenery, texture panels, a scene, or any "
+        "background reconstruction. Keep glyphs at natural proportions with no compression or stretch."
+    )
+
+
+def _read_openshop_art_font_source(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        content = handle.read(OPENSHOP_ART_FONT_MAX_BYTES + 1)
+    if len(content) > OPENSHOP_ART_FONT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="艺术字体原图超过压缩字节限制")
+    if not content:
+        raise HTTPException(status_code=502, detail="艺术字体原图为空")
+    return content
+
+
+async def store_openshop_ai_png(
+    project_id: str,
+    owner: Dict[str, Any],
+    content: bytes,
+    role: str = "art-font-output",
+) -> Dict[str, Any]:
+    asset = await asyncio.to_thread(
+        OPENSHOP_STORE.store_image,
+        project_id,
+        owner,
+        content,
+        "image/png",
+        f"{project_id}-art-font.png",
+        role,
+        track_pending_ownership=True,
+    )
+    asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
+    return asset
+
+
+async def _discard_cancelled_openshop_art_asset(
+    project_id: str,
+    owner: Dict[str, Any],
+    asset_id: str,
+) -> None:
+    try:
+        await asyncio.to_thread(
+            OPENSHOP_STORE.release_pending_asset,
+            project_id,
+            owner,
+            asset_id,
+        )
+    except OpenShopStoreError:
+        pass
+    await asyncio.to_thread(collect_openshop_garbage)
 
 async def store_openshop_ai_output(
     project_id: str,
@@ -17010,7 +17273,77 @@ async def run_openshop_ai_task(
     if not OPENSHOP_AI_TASKS.mark_running(task_id):
         return
     owner = payload.owner
+    art_asset = None
+    art_succeeded = False
     try:
+        if payload.tool_id == "art-font-restore":
+            task = OPENSHOP_AI_TASKS.get(task_id, project_id, owner)
+            snapshot = task["snapshot"]
+            source_path, _source_metadata = await asyncio.to_thread(
+                OPENSHOP_STORE.asset_path,
+                task["sourceAssetId"],
+            )
+            source_bytes = await asyncio.to_thread(
+                _read_openshop_art_font_source,
+                source_path,
+            )
+            reference_png = await asyncio.to_thread(
+                crop_art_font_reference,
+                source_bytes,
+                snapshot["quad"],
+            )
+            target_aspect = _art_font_quad_aspect(
+                snapshot["quad"], snapshot["document"]
+            )
+            reference_url = (
+                "data:image/png;base64,"
+                + base64.b64encode(reference_png).decode("ascii")
+            )
+            image_data, _raw = await generate_ai_image(
+                build_art_font_prompt(snapshot),
+                "auto",
+                "high",
+                task["modelId"],
+                [{
+                    "url": reference_url,
+                    "name": "original-lettering.png",
+                    "role": "style-reference",
+                    "kind": "image",
+                    "mime": "image/png",
+                }],
+                task["apiConfigId"],
+            )
+            generated_bytes = await materialize_openshop_ai_image(image_data)
+            normalized_png, geometry = await asyncio.to_thread(
+                normalize_art_font_output,
+                generated_bytes,
+                target_aspect,
+            )
+            if not OPENSHOP_AI_TASKS.can_complete(task_id):
+                return
+            storage_task = asyncio.create_task(
+                store_openshop_ai_png(
+                    project_id,
+                    owner,
+                    normalized_png,
+                    "art-font-output",
+                )
+            )
+            try:
+                art_asset = await asyncio.shield(storage_task)
+            except asyncio.CancelledError:
+                art_asset = await storage_task
+                raise
+            result = {
+                "assetId": art_asset["assetId"],
+                "url": art_asset["url"],
+                "name": art_asset["name"],
+                "mime": "image/png",
+                **geometry,
+            }
+            art_succeeded = OPENSHOP_AI_TASKS.succeed(task_id, result)
+            return
+
         source_path, source_metadata, source_url = await asyncio.to_thread(
             openshop_ai_asset,
             payload.source_asset_id,
@@ -17081,6 +17414,17 @@ async def run_openshop_ai_task(
     except Exception as exc:
         detail = getattr(exc, "detail", None) or str(exc)
         OPENSHOP_AI_TASKS.fail(task_id, detail)
+    finally:
+        if (
+            art_asset
+            and not art_succeeded
+            and art_asset.get("_createdPendingAssetRef")
+        ):
+            await _discard_cancelled_openshop_art_asset(
+                project_id,
+                owner,
+                art_asset["assetId"],
+            )
 
 def raise_openshop_ai_task_error(exc: Exception):
     if isinstance(exc, OpenShopAiTaskOwnershipError):
@@ -17319,9 +17663,53 @@ async def create_openshop_ai_task(
     payload: OpenShopAiTaskRequest,
 ):
     await ensure_openshop_project_owner(project_id, payload.owner)
-    if payload.tool_id not in {"text-extract", "text-remove", *OPENSHOP_GENERATIVE_TOOL_IDS}:
+    if payload.tool_id not in {
+        "text-extract",
+        "text-remove",
+        "art-font-restore",
+        *OPENSHOP_GENERATIVE_TOOL_IDS,
+    }:
         raise HTTPException(status_code=400, detail="OpenShop AI 功能不存在")
     provider = openshop_ai_provider(payload)
+    if payload.tool_id == "art-font-restore":
+        model = openshop_generation_model(
+            provider,
+            payload.tool_id,
+            payload.model_id,
+        )
+        if not (model.get("capabilities") or {}).get("supportsImageInput"):
+            raise HTTPException(status_code=400, detail="当前模型不支持参考图片输入")
+        try:
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                OPENSHOP_STORE.load(project_id, payload.owner)
+                OPENSHOP_STORE.asset_path(payload.source_asset_id)
+                if not OPENSHOP_STORE.project_references_asset(
+                    project_id,
+                    payload.owner,
+                    payload.source_asset_id,
+                ):
+                    raise OpenShopNotFound(
+                        "OpenShop artistic-font source asset does not belong to this project"
+                    )
+                record = OPENSHOP_AI_TASKS.create(
+                    project_id=project_id,
+                    owner=payload.owner,
+                    tool_id=payload.tool_id,
+                    provider_id=payload.provider_id,
+                    model_id=payload.model_id,
+                    source_asset_id=payload.source_asset_id,
+                    source_layer_id=payload.source_layer_id,
+                    snapshot=payload.options.get("artFont"),
+                )
+        except OpenShopStoreError as exc:
+            raise_openshop_http_error(exc)
+        except OpenShopAiValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        future = asyncio.create_task(
+            run_openshop_ai_task(record["taskId"], project_id, payload)
+        )
+        OPENSHOP_AI_TASKS.bind(record["taskId"], future)
+        return {"task_id": record["taskId"], "status": record["status"], "task": record}
     if payload.tool_id in OPENSHOP_GENERATIVE_TOOL_IDS:
         snapshot = openshop_generation_snapshot(payload)
         validate_openshop_generation_capabilities(provider, payload.model_id, snapshot)

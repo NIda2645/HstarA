@@ -15,7 +15,12 @@ class OpenShopAiValidationError(ValueError):
 
 
 OPENSHOP_GENERATIVE_TOOL_IDS = ("generative-fill", "local-redraw")
-OPENSHOP_AI_TOOL_IDS = ("text-extract", "text-remove", *OPENSHOP_GENERATIVE_TOOL_IDS)
+OPENSHOP_AI_TOOL_IDS = (
+    "text-extract",
+    "text-remove",
+    "art-font-restore",
+    *OPENSHOP_GENERATIVE_TOOL_IDS,
+)
 OPENSHOP_AI_TASK_STATES = (
     "queued",
     "running",
@@ -233,6 +238,12 @@ def build_capability_catalog(
                 "label": "去除文字",
                 "capability": "image-edit",
                 "providers": remove_providers,
+            },
+            "art-font-restore": {
+                "id": "art-font-restore",
+                "label": "艺术字体处理",
+                "capability": "reference-image-generation-transparent",
+                "providers": deepcopy(remove_providers),
             },
             "generative-fill": {
                 "id": "generative-fill",
@@ -547,6 +558,195 @@ def _positive_int(value: Any, label: str, maximum: int = 16384) -> int:
     return number
 
 
+def _art_font_text(value: Any, label: str, require_visible: bool = False) -> str:
+    if not isinstance(value, str) or len(value) > 4000:
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    if any(ord(char) < 32 and char not in "\t\r\n" for char in value) or "\x7f" in value:
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    if require_visible and not value.strip():
+        raise OpenShopAiValidationError("Art font currentText is empty")
+    return value
+
+
+def _art_font_quad(
+    value: Any,
+    width: int,
+    height: int,
+) -> list[dict[str, float]]:
+    if not isinstance(value, list) or len(value) != 4:
+        raise OpenShopAiValidationError("Art font quad must contain four normalized points")
+    points: list[tuple[float, float]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise OpenShopAiValidationError("Art font quad point is invalid")
+        x = _finite_number(item.get("x"), "art font quad x")
+        y = _finite_number(item.get("y"), "art font quad y")
+        if not 0.0 <= x <= 1.0 or not 0.0 <= y <= 1.0:
+            raise OpenShopAiValidationError("Art font quad must use normalized coordinates")
+        points.append((x, y))
+
+    source_points = [(x * width, y * height) for x, y in points]
+    for index, point in enumerate(source_points):
+        following = source_points[(index + 1) % 4]
+        if math.hypot(following[0] - point[0], following[1] - point[1]) < 1.0:
+            raise OpenShopAiValidationError("Art font quad has an unusable edge")
+
+    def orientation(
+        first: tuple[float, float],
+        second: tuple[float, float],
+        third: tuple[float, float],
+    ) -> float:
+        return (
+            (second[0] - first[0]) * (third[1] - first[1])
+            - (second[1] - first[1]) * (third[0] - first[0])
+        )
+
+    def on_segment(
+        first: tuple[float, float],
+        second: tuple[float, float],
+        point: tuple[float, float],
+    ) -> bool:
+        epsilon = 1e-9
+        return (
+            min(first[0], second[0]) - epsilon <= point[0] <= max(first[0], second[0]) + epsilon
+            and min(first[1], second[1]) - epsilon
+            <= point[1]
+            <= max(first[1], second[1]) + epsilon
+        )
+
+    def segments_intersect(
+        first: tuple[float, float],
+        second: tuple[float, float],
+        third: tuple[float, float],
+        fourth: tuple[float, float],
+    ) -> bool:
+        epsilon = 1e-9
+        values = (
+            orientation(first, second, third),
+            orientation(first, second, fourth),
+            orientation(third, fourth, first),
+            orientation(third, fourth, second),
+        )
+        if values[0] * values[1] < -epsilon and values[2] * values[3] < -epsilon:
+            return True
+        return (
+            (abs(values[0]) <= epsilon and on_segment(first, second, third))
+            or (abs(values[1]) <= epsilon and on_segment(first, second, fourth))
+            or (abs(values[2]) <= epsilon and on_segment(third, fourth, first))
+            or (abs(values[3]) <= epsilon and on_segment(third, fourth, second))
+        )
+
+    if segments_intersect(*source_points[0:2], *source_points[2:4]) or segments_intersect(
+        source_points[1], source_points[2], source_points[3], source_points[0]
+    ):
+        raise OpenShopAiValidationError("Art font quad is self-intersecting")
+    doubled_area = abs(
+        sum(
+            point[0] * source_points[(index + 1) % 4][1]
+            - source_points[(index + 1) % 4][0] * point[1]
+            for index, point in enumerate(source_points)
+        )
+    )
+    if doubled_area < 2.0:
+        raise OpenShopAiValidationError("Art font quad has no usable area")
+    return [{"x": round(x, 6), "y": round(y, 6)} for x, y in points]
+
+
+def _normalize_art_font_profile(value: Any, current_text: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("Art font visualProfile must be an object")
+    script = _normalize_script(value.get("script"), current_text, value.get("language"))
+    dominant_script = _script_alias(value.get("dominantScript"))
+    alignment = str(value.get("alignment", value.get("align", "left"))).strip().lower()
+    if alignment not in {"left", "center", "right", "justify"}:
+        alignment = "left"
+    profile = {
+        "script": script,
+        "fill": _normalize_color(value.get("fill", value.get("color")), "#ffffff"),
+        "alignment": alignment,
+        "rotation": max(
+            -360.0,
+            min(360.0, round(_finite_number(value.get("rotation", 0), "art font rotation"), 3)),
+        ),
+        **_normalize_font(value),
+    }
+    if script == "mixed" and dominant_script in {"zh-hans", "zh-hant", "en"}:
+        profile["dominantScript"] = dominant_script
+        return {
+            "script": profile.pop("script"),
+            "dominantScript": profile.pop("dominantScript"),
+            **profile,
+        }
+    return profile
+
+
+def normalize_art_font_snapshot(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("Art font snapshot must be an object")
+    document_value = value.get("document")
+    if not isinstance(document_value, dict):
+        raise OpenShopAiValidationError("Art font document must be an object")
+    width = _positive_dimension(document_value.get("width"), "art font document width")
+    height = _positive_dimension(document_value.get("height"), "art font document height")
+    if type(value.get("requestGeneration")) is not int:
+        raise OpenShopAiValidationError("Invalid OpenShop AI requestGeneration")
+    generation = _positive_int(
+        value.get("requestGeneration"), "requestGeneration", 2147483647
+    )
+    current_text = _art_font_text(
+        value.get("currentText"), "currentText", require_visible=True
+    )
+    original_text = _art_font_text(value.get("originalText"), "originalText")
+    return {
+        "textLayerId": _task_safe_id(value.get("textLayerId"), "textLayerId"),
+        "ocrBlockId": _task_safe_id(value.get("ocrBlockId"), "ocrBlockId"),
+        "originalText": original_text,
+        "currentText": current_text,
+        "requestGeneration": generation,
+        "document": {"width": width, "height": height},
+        "quad": _art_font_quad(value.get("quad"), width, height),
+        "visualProfile": _normalize_art_font_profile(
+            value.get("visualProfile"), current_text
+        ),
+    }
+
+
+def normalize_art_font_result(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("Art font result must be an object")
+    width = _positive_dimension(value.get("width"), "art font result width")
+    height = _positive_dimension(value.get("height"), "art font result height")
+    raw_box = value.get("contentBox")
+    if not isinstance(raw_box, dict):
+        raise OpenShopAiValidationError("Art font contentBox is invalid")
+    try:
+        box = {key: int(raw_box.get(key)) for key in ("x", "y", "width", "height")}
+    except (TypeError, ValueError) as exc:
+        raise OpenShopAiValidationError("Art font contentBox is invalid") from exc
+    if (
+        box["x"] < 0
+        or box["y"] < 0
+        or box["width"] < 1
+        or box["height"] < 1
+        or box["x"] + box["width"] > width
+        or box["y"] + box["height"] > height
+    ):
+        raise OpenShopAiValidationError("Art font contentBox is outside the image")
+    asset_id = _task_asset_id(value.get("assetId"), "art font result assetId")
+    mime = _clean_text(value.get("mime"), 80).lower()
+    if not asset_id or mime != "image/png":
+        raise OpenShopAiValidationError("Art font result must reference a PNG asset")
+    return {
+        "assetId": asset_id,
+        "url": _clean_text(value.get("url"), 500),
+        "name": _clean_text(value.get("name"), 240, "art-font.png"),
+        "mime": mime,
+        "width": width,
+        "height": height,
+        "contentBox": box,
+    }
+
+
 def _reject_seed_keys(value: Any) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -783,7 +983,14 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
         "error": _clean_text(value.get("error"), 500),
     }
     result = value.get("result")
-    if isinstance(result, dict) and isinstance(result.get("blocks"), list):
+    if tool_id == "art-font-restore":
+        record["sourceLayerId"] = _task_safe_id(
+            value.get("sourceLayerId"), "sourceLayerId"
+        )
+        record["snapshot"] = normalize_art_font_snapshot(value.get("snapshot"))
+        if isinstance(result, dict):
+            record["result"] = normalize_art_font_result(result)
+    elif isinstance(result, dict) and isinstance(result.get("blocks"), list):
         width = _positive_dimension(result.get("width"), "result width")
         height = _positive_dimension(result.get("height"), "result height")
         record["result"] = normalize_ocr_layout(json.dumps(result), width, height)
@@ -867,6 +1074,8 @@ class OpenShopAiTaskRegistry:
         source_asset_id: str,
         mask_asset_id: str = "",
         mode: str = "layer",
+        source_layer_id: str = "",
+        snapshot: Any = None,
     ) -> dict[str, Any]:
         self.cleanup()
         normalized_project_id = _clean_text(project_id, 96)
@@ -895,6 +1104,11 @@ class OpenShopAiTaskRegistry:
             "updatedAt": timestamp,
             "completedAt": 0,
         }
+        if tool_id == "art-font-restore":
+            record["sourceLayerId"] = _task_safe_id(
+                source_layer_id, "sourceLayerId"
+            )
+            record["snapshot"] = normalize_art_font_snapshot(snapshot)
         with self._lock:
             self._records[task_id] = record
         return self._public(record)
