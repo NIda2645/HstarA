@@ -219,7 +219,10 @@ class OpenShopProjectStore:
             shutil.rmtree(project_directory)
             canvas_sidecar = project_directory.parent
             if canvas_sidecar.is_dir() and not any(canvas_sidecar.iterdir()):
-                canvas_sidecar.rmdir()
+                try:
+                    canvas_sidecar.rmdir()
+                except OSError:
+                    pass
             return True
 
     def reconcile_canvas_projects(

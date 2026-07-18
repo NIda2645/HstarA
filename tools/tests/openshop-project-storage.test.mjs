@@ -1018,6 +1018,47 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-canvas-reconcile-") as 
     assert not legacy_path.exists()
 
 
+with tempfile.TemporaryDirectory(prefix="hstara-openshop-reconcile-parent-cleanup-") as data_dir:
+    root = Path(data_dir)
+    canvas_dir = root / "canvases"
+    store = OpenShopProjectStore(data_dir, canvas_dir=canvas_dir)
+    owner = {
+        "canvasType": "classic",
+        "canvasId": "canvas-parent-cleanup",
+        "nodeId": "node-parent-cleanup",
+    }
+    store.initialize(
+        "project-parent-cleanup",
+        owner,
+        {"width": 320, "height": 240},
+    )
+    canvas_sidecar = canvas_dir / "canvas-parent-cleanup.openshop"
+    original_path_rmdir = Path.rmdir
+
+    def fail_canvas_sidecar_cleanup(path):
+        if path == canvas_sidecar:
+            raise OSError("injected empty parent cleanup failure")
+        return original_path_rmdir(path)
+
+    Path.rmdir = fail_canvas_sidecar_cleanup
+    try:
+        cleanup_records = store.reconcile_canvas_projects(
+            "classic",
+            "canvas-parent-cleanup",
+            set(),
+        )
+    finally:
+        Path.rmdir = original_path_rmdir
+
+    assert cleanup_records == [{
+        "projectId": "project-parent-cleanup",
+        "owner": owner,
+    }]
+    assert not (
+        canvas_sidecar / owner["nodeId"] / "project.json"
+    ).exists()
+
+
 async def api_lifecycle():
     with tempfile.TemporaryDirectory(prefix="hstara-openshop-api-") as app_root:
         settings_dir = Path(app_root) / "data"
