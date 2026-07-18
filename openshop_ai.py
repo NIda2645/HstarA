@@ -636,6 +636,18 @@ def _art_font_quad(
             or (abs(values[3]) <= epsilon and on_segment(third, fourth, second))
         )
 
+    turns = [
+        orientation(
+            source_points[index],
+            source_points[(index + 1) % 4],
+            source_points[(index + 2) % 4],
+        )
+        for index in range(4)
+    ]
+    if any(abs(turn) <= 1e-9 for turn in turns) or not (
+        all(turn > 0 for turn in turns) or all(turn < 0 for turn in turns)
+    ):
+        raise OpenShopAiValidationError("Art font quad must be strictly convex")
     if segments_intersect(*source_points[0:2], *source_points[2:4]) or segments_intersect(
         source_points[1], source_points[2], source_points[3], source_points[0]
     ):
@@ -714,15 +726,18 @@ def normalize_art_font_snapshot(value: Any) -> dict[str, Any]:
 def normalize_art_font_result(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OpenShopAiValidationError("Art font result must be an object")
-    width = _positive_dimension(value.get("width"), "art font result width")
-    height = _positive_dimension(value.get("height"), "art font result height")
+    width = value.get("width")
+    height = value.get("height")
+    if type(width) is not int or width < 1 or width > 16384:
+        raise OpenShopAiValidationError("Invalid art font result width")
+    if type(height) is not int or height < 1 or height > 16384:
+        raise OpenShopAiValidationError("Invalid art font result height")
     raw_box = value.get("contentBox")
     if not isinstance(raw_box, dict):
         raise OpenShopAiValidationError("Art font contentBox is invalid")
-    try:
-        box = {key: int(raw_box.get(key)) for key in ("x", "y", "width", "height")}
-    except (TypeError, ValueError) as exc:
-        raise OpenShopAiValidationError("Art font contentBox is invalid") from exc
+    if any(type(raw_box.get(key)) is not int for key in ("x", "y", "width", "height")):
+        raise OpenShopAiValidationError("Art font contentBox is invalid")
+    box = {key: raw_box[key] for key in ("x", "y", "width", "height")}
     if (
         box["x"] < 0
         or box["y"] < 0

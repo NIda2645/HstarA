@@ -335,17 +335,51 @@ async def run():
         # Art-font materialization validates encoded data before and after
         # decode, preserves local model files, and applies bounded SSRF-safe
         # redirect/stream handling without writing temporary output files.
-        assert await main.materialize_openshop_ai_image({
+        assert "creates no temporary files" in (
+            main.materialize_openshop_ai_image.__doc__ or ""
+        )
+        def materializer_files():
+            roots = (Path(main.OUTPUT_DIR), Path(main.OPENSHOP_STORE.root))
+            return {
+                (str(path.resolve()), path.stat().st_size)
+                for root in roots
+                for path in root.rglob("*")
+                if path.is_file()
+            }
+
+        temp_factory_calls = []
+        original_temp_factories = {
+            name:getattr(main.tempfile, name)
+            for name in ("mkstemp", "mkdtemp", "NamedTemporaryFile")
+        }
+
+        def forbidden_temp_factory(*_args, **_kwargs):
+            temp_factory_calls.append(True)
+            raise AssertionError("art-font materialization must remain fully in-memory")
+
+        for name in original_temp_factories:
+            setattr(main.tempfile, name, forbidden_temp_factory)
+
+        async def materialize_without_temp(image_data):
+            files_before = materializer_files()
+            calls_before = len(temp_factory_calls)
+            try:
+                return await main.materialize_openshop_ai_image(image_data)
+            finally:
+                assert materializer_files() == files_before
+                assert len(temp_factory_calls) == calls_before
+
+        assert await materialize_without_temp({
             "type":"b64",
             "value":base64.b64encode(generated_bytes).decode("ascii"),
             "mime_type":"image/png",
         }) == generated_bytes
-        assert await main.materialize_openshop_ai_image({
+        assert await materialize_without_temp({
             "type":"url",
             "value":"data:image/png;base64," + base64.b64encode(generated_bytes).decode("ascii"),
         }) == generated_bytes
         try:
-            await main.materialize_openshop_ai_image({"type":"b64", "value":"not base64!"})
+            await materialize_without_temp({"type":"b64", "value":"not base64!"})
             raise AssertionError("invalid base64 should fail")
         except HTTPException as exc:
             assert exc.status_code in {400, 413, 502}
@@ -356,7 +390,7 @@ async def run():
         try:
             main.OPENSHOP_ART_FONT_MAX_BYTES = 8
             try:
-                await main.materialize_openshop_ai_image({
+                await materialize_without_temp({
                     "type":"b64", "value":base64.b64encode(b"123456789").decode("ascii"),
                 })
                 raise AssertionError("oversized base64 should fail")
@@ -371,7 +405,7 @@ async def run():
 
             main.re.fullmatch = counting_fullmatch
             try:
-                await main.materialize_openshop_ai_image({
+                await materialize_without_temp({
                     "type":"url",
                     "value":"data:image/png;base64," + base64.b64encode(b"123456789").decode("ascii"),
                 })
@@ -387,106 +421,180 @@ async def run():
         local_fixture.write_bytes(generated_bytes)
         try:
             local_url = main.output_url_for(local_fixture.name)
-            assert await main.materialize_openshop_ai_image({
+            assert await materialize_without_temp({
                 "type":"url", "value":local_url,
             }) == generated_bytes
             assert local_fixture.is_file(), "materialization must not delete provider-owned local output"
+            original_materialize_limit = main.OPENSHOP_ART_FONT_MAX_BYTES
+            try:
+                main.OPENSHOP_ART_FONT_MAX_BYTES = 8
+                local_fixture.write_bytes(b"123456789")
+                try:
+                    await materialize_without_temp({"type":"url", "value":local_url})
+                    raise AssertionError("oversized local output should fail")
+                except HTTPException as exc:
+                    assert exc.status_code == 413
+                assert local_fixture.read_bytes() == b"123456789"
+            finally:
+                main.OPENSHOP_ART_FONT_MAX_BYTES = original_materialize_limit
         finally:
             local_fixture.unlink(missing_ok=True)
 
         try:
-            await main.materialize_openshop_ai_image({
+            await materialize_without_temp({
                 "type":"url", "value":"http://127.0.0.1/private.png",
             })
             raise AssertionError("private remote destination should fail")
         except HTTPException as exc:
             assert exc.status_code in {400, 403, 502}
 
-        class FakeRemoteResponse:
-            def __init__(self, status_code=200, headers=None, chunks=()):
-                self.status_code = status_code
-                self.headers = headers or {}
+        class FakeSocket:
+            def close(self):
+                pass
+
+        socket_targets = []
+        tls_names = []
+        original_create_connection = main.socket.create_connection
+        original_ssl_context = main.ssl.create_default_context
+        main.socket.create_connection = lambda target, **_kwargs: (
+            socket_targets.append(target) or FakeSocket()
+        )
+
+        class FakeTlsContext:
+            def wrap_socket(self, sock, server_hostname=None):
+                tls_names.append(server_hostname)
+                return sock
+
+        main.ssl.create_default_context = lambda: FakeTlsContext()
+        try:
+            pinned_connection, pinned_target, pinned_host = (
+                main._open_openshop_art_font_pinned_connection(
+                    "https://public.example:8443/path/image.png?x=1",
+                    "93.184.216.34",
+                )
+            )
+            assert socket_targets == [("93.184.216.34", 8443)]
+            assert tls_names == ["public.example"]
+            assert pinned_target == "/path/image.png?x=1"
+            assert pinned_host == "public.example:8443"
+            pinned_connection.close()
+        finally:
+            main.socket.create_connection = original_create_connection
+            main.ssl.create_default_context = original_ssl_context
+
+        class FakePinnedResponse:
+            def __init__(self, status=200, headers=None, chunks=()):
+                self.status = status
+                self._headers = list((headers or {}).items())
                 self._chunks = list(chunks)
 
-            @property
-            def is_redirect(self):
-                return self.status_code in {301, 302, 303, 307, 308}
+            def getheaders(self):
+                return self._headers
 
-            def raise_for_status(self):
-                if self.status_code >= 400:
-                    request = httpx.Request("GET", "https://public.example/image.png")
-                    response = httpx.Response(self.status_code, request=request)
-                    raise httpx.HTTPStatusError("remote failure", request=request, response=response)
+            def read(self, amount=-1):
+                if not self._chunks:
+                    return b""
+                chunk = self._chunks.pop(0)
+                if amount >= 0 and len(chunk) > amount:
+                    self._chunks.insert(0, chunk[amount:])
+                    return chunk[:amount]
+                return chunk
 
-            async def aiter_bytes(self):
-                for chunk in self._chunks:
-                    yield chunk
-
-        class FakeRemoteStream:
+        class FakePinnedConnection:
             def __init__(self, response):
                 self.response = response
+                self.request_record = None
 
-            async def __aenter__(self):
+            def request(self, method, target, headers=None):
+                self.request_record = (method, target, dict(headers or {}))
+
+            def getresponse(self):
                 return self.response
 
-            async def __aexit__(self, *_args):
-                return False
+            def close(self):
+                pass
 
-        class FakeRemoteClient:
-            responses = []
-            urls = []
+        pinned_responses = []
+        pinned_targets = []
+        pinned_requests = []
 
-            def __init__(self, *args, **kwargs):
-                assert kwargs.get("follow_redirects") is False
+        def fake_pinned_open(url, target_ip):
+            pinned_targets.append(target_ip)
+            parsed = main.urllib.parse.urlsplit(url)
+            target = parsed.path or "/"
+            if parsed.query:
+                target += "?" + parsed.query
+            default_port = 443 if parsed.scheme == "https" else 80
+            host = parsed.hostname
+            if parsed.port not in {None, default_port}:
+                host += f":{parsed.port}"
+            connection = FakePinnedConnection(pinned_responses.pop(0))
+            original_request = connection.request
 
-            async def __aenter__(self):
-                return self
+            def record_request(method, request_target, headers=None):
+                original_request(method, request_target, headers)
+                pinned_requests.append(connection.request_record)
 
-            async def __aexit__(self, *_args):
-                return False
+            connection.request = record_request
+            return connection, target, host
 
-            def stream(self, method, url, **_kwargs):
-                assert method == "GET"
-                self.urls.append(url)
-                return FakeRemoteStream(self.responses.pop(0))
-
-        original_async_client = main.httpx.AsyncClient
+        original_pinned_open = main._open_openshop_art_font_pinned_connection
         original_getaddrinfo = main.socket.getaddrinfo
         original_materialize_limit = main.OPENSHOP_ART_FONT_MAX_BYTES
         try:
-            main.httpx.AsyncClient = FakeRemoteClient
+            main._open_openshop_art_font_pinned_connection = fake_pinned_open
+            resolution_calls = 0
+
+            def rebinding_resolver(*_args, **_kwargs):
+                nonlocal resolution_calls
+                resolution_calls += 1
+                address = "93.184.216.34" if resolution_calls == 1 else "127.0.0.1"
+                return [(main.socket.AF_INET, main.socket.SOCK_STREAM, 6, "", (address, 443))]
+
+            main.socket.getaddrinfo = rebinding_resolver
+            pinned_responses[:] = [
+                FakePinnedResponse(200, {"content-length":"6"}, (b"abc", b"def")),
+            ]
+            assert await materialize_without_temp({
+                "type":"url", "value":"https://public.example/rebinding.png",
+            }) == b"abcdef"
+            assert resolution_calls == 1
+            assert pinned_targets == ["93.184.216.34"]
+            assert pinned_requests[-1] == (
+                "GET", "/rebinding.png", {
+                    "Host":"public.example", "Accept":"image/*", "Connection":"close",
+                },
+            )
+
             main.socket.getaddrinfo = lambda *_args, **_kwargs: [
                 (main.socket.AF_INET, main.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
             ]
-            FakeRemoteClient.urls = []
-            FakeRemoteClient.responses = [
-                FakeRemoteResponse(302, {"location":"https://public.example/final.png"}),
-                FakeRemoteResponse(200, {"content-length":"6"}, (b"abc", b"def")),
+            pinned_responses[:] = [
+                FakePinnedResponse(302, {"location":"https://public.example/final.png"}),
+                FakePinnedResponse(200, {"content-length":"6"}, (b"abc", b"def")),
             ]
-            assert await main.materialize_openshop_ai_image({
+            assert await materialize_without_temp({
                 "type":"url", "value":"https://public.example/start.png",
             }) == b"abcdef"
-            assert FakeRemoteClient.urls == [
-                "https://public.example/start.png", "https://public.example/final.png",
-            ]
+            assert pinned_targets[-2:] == ["93.184.216.34", "93.184.216.34"]
 
             main.OPENSHOP_ART_FONT_MAX_BYTES = 5
-            FakeRemoteClient.responses = [
-                FakeRemoteResponse(200, {"content-length":"6"}, (b"abcdef",)),
+            pinned_responses[:] = [
+                FakePinnedResponse(200, {"content-length":"6"}, (b"abcdef",)),
             ]
             try:
-                await main.materialize_openshop_ai_image({
+                await materialize_without_temp({
                     "type":"url", "value":"https://public.example/large.png",
                 })
                 raise AssertionError("oversized Content-Length should fail")
             except HTTPException as exc:
                 assert exc.status_code == 413
 
-            FakeRemoteClient.responses = [
-                FakeRemoteResponse(200, {}, (b"abc", b"def")),
+            pinned_responses[:] = [
+                FakePinnedResponse(200, {}, (b"abc", b"def")),
             ]
             try:
-                await main.materialize_openshop_ai_image({
+                await materialize_without_temp({
                     "type":"url", "value":"https://public.example/stream.png",
                 })
                 raise AssertionError("oversized streamed body should fail")
@@ -494,11 +602,11 @@ async def run():
                 assert exc.status_code == 413
 
             main.OPENSHOP_ART_FONT_MAX_BYTES = original_materialize_limit
-            FakeRemoteClient.responses = [
-                FakeRemoteResponse(302, {"location":"http://127.0.0.1/private.png"}),
+            pinned_responses[:] = [
+                FakePinnedResponse(302, {"location":"http://127.0.0.1/private.png"}),
             ]
             try:
-                await main.materialize_openshop_ai_image({
+                await materialize_without_temp({
                     "type":"url", "value":"https://public.example/redirect.png",
                 })
                 raise AssertionError("redirect to private destination should fail")
@@ -506,8 +614,10 @@ async def run():
                 assert exc.status_code in {400, 403, 502}
         finally:
             main.OPENSHOP_ART_FONT_MAX_BYTES = original_materialize_limit
-            main.httpx.AsyncClient = original_async_client
+            main._open_openshop_art_font_pinned_connection = original_pinned_open
             main.socket.getaddrinfo = original_getaddrinfo
+            for name, factory in original_temp_factories.items():
+                setattr(main.tempfile, name, factory)
 
         owner_b_source_upload = await client.post(
             "/api/openshop/projects/project-ai/assets",
@@ -656,9 +766,6 @@ async def run():
 
         assets_before_unsafe = {path.name for path in Path(main.OPENSHOP_STORE.assets_dir).iterdir()}
         project_before_unsafe = main.OPENSHOP_STORE.load("project-ai", owner)
-        temp_before_unsafe = {
-            path.name for path in Path(main.OUTPUT_OUTPUT_DIR).glob("openshop_art_font_*")
-        }
         main.generate_ai_image = unsafe_art_generate
         unsafe_created = await client.post(
             "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
@@ -674,9 +781,6 @@ async def run():
         project_after_unsafe = main.OPENSHOP_STORE.load("project-ai", owner)
         assert project_after_unsafe["assetRefs"] == project_before_unsafe["assetRefs"]
         assert project_after_unsafe["pendingAssetRefs"] == project_before_unsafe["pendingAssetRefs"]
-        assert {
-            path.name for path in Path(main.OUTPUT_OUTPUT_DIR).glob("openshop_art_font_*")
-        } == temp_before_unsafe
 
         # Cancellation after generation but before storage must trip the final
         # can-complete check and never call the storage function.

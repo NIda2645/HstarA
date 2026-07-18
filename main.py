@@ -1,6 +1,8 @@
 import json
 import ipaddress
 import socket
+import ssl
+import http.client
 import uuid
 import base64
 import binascii
@@ -16820,7 +16822,7 @@ def _bounded_openshop_art_font_file(path: str) -> bytes:
     return content
 
 
-async def _validate_openshop_art_font_remote_url(value: str) -> str:
+async def _validate_openshop_art_font_remote_url(value: str) -> tuple[str, list[str]]:
     try:
         parsed = urllib.parse.urlsplit(value)
         port = parsed.port
@@ -16855,75 +16857,148 @@ async def _validate_openshop_art_font_remote_url(value: str) -> str:
                 continue
     if not addresses or any(not address.is_global for address in addresses):
         raise HTTPException(status_code=403, detail="艺术字体远程图片地址不安全")
-    return urllib.parse.urlunsplit(parsed)
+    return urllib.parse.urlunsplit(parsed), [str(address) for address in addresses]
+
+
+def _open_openshop_art_font_pinned_connection(
+    value: str,
+    target_ip: str,
+) -> tuple[http.client.HTTPConnection, str, str]:
+    parsed = urllib.parse.urlsplit(value)
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="艺术字体远程图片 URL 无效")
+    scheme = parsed.scheme.lower()
+    default_port = 443 if scheme == "https" else 80
+    port = parsed.port or default_port
+    raw_socket = socket.create_connection((target_ip, port), timeout=20.0)
+    try:
+        if scheme == "https":
+            raw_socket = ssl.create_default_context().wrap_socket(
+                raw_socket,
+                server_hostname=hostname,
+            )
+        connection = http.client.HTTPConnection(hostname, port, timeout=120.0)
+        connection.sock = raw_socket
+    except Exception:
+        raw_socket.close()
+        raise
+    target = parsed.path or "/"
+    if parsed.query:
+        target = f"{target}?{parsed.query}"
+    host_name = f"[{hostname}]" if ":" in hostname else hostname
+    host_header = host_name if port == default_port else f"{host_name}:{port}"
+    return connection, target, host_header
+
+
+def _fetch_openshop_art_font_pinned_hop(
+    value: str,
+    target_ip: str,
+) -> tuple[int, dict[str, str], bytes]:
+    connection, target, host_header = _open_openshop_art_font_pinned_connection(
+        value,
+        target_ip,
+    )
+    try:
+        connection.request(
+            "GET",
+            target,
+            headers={
+                "Host": host_header,
+                "Accept": "image/*",
+                "Connection": "close",
+            },
+        )
+        response = connection.getresponse()
+        headers = {key.lower(): item for key, item in response.getheaders()}
+        status = int(response.status)
+        if status in {301, 302, 303, 307, 308}:
+            return status, headers, b""
+        if status < 200 or status >= 300:
+            raise HTTPException(status_code=502, detail="艺术字体远程图片下载失败")
+        content_length = headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail="艺术字体远程图片 Content-Length 无效",
+                ) from exc
+            if declared_length < 0:
+                raise HTTPException(
+                    status_code=502,
+                    detail="艺术字体远程图片 Content-Length 无效",
+                )
+            if declared_length > OPENSHOP_ART_FONT_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="艺术字体模型图片超过压缩字节限制",
+                )
+        chunks = []
+        total = 0
+        while True:
+            chunk = response.read(
+                min(64 * 1024, OPENSHOP_ART_FONT_MAX_BYTES + 1 - total)
+            )
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > OPENSHOP_ART_FONT_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="艺术字体模型图片超过压缩字节限制",
+                )
+            chunks.append(chunk)
+        content = b"".join(chunks)
+        if not content:
+            raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+        return status, headers, content
+    finally:
+        connection.close()
 
 
 async def _download_openshop_art_font_remote(value: str) -> bytes:
     current_url = rewrite_runninghub_file_url(value)
-    timeout = httpx.Timeout(connect=20.0, read=120.0, write=30.0, pool=20.0)
-    try:
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=False,
-            trust_env=False,
-            headers={"User-Agent": "HstarA-OpenShop-Art-Font/1.0"},
-        ) as client:
-            for redirect_count in range(OPENSHOP_ART_FONT_MAX_REDIRECTS + 1):
-                current_url = await _validate_openshop_art_font_remote_url(current_url)
-                async with client.stream("GET", current_url) as response:
-                    if response.is_redirect:
-                        location = response.headers.get("location")
-                        if not location or redirect_count >= OPENSHOP_ART_FONT_MAX_REDIRECTS:
-                            raise HTTPException(
-                                status_code=502,
-                                detail="艺术字体远程图片重定向过多或无效",
-                            )
-                        current_url = urllib.parse.urljoin(current_url, location)
-                        continue
-                    response.raise_for_status()
-                    content_length = response.headers.get("content-length")
-                    if content_length is not None:
-                        try:
-                            declared_length = int(content_length)
-                        except (TypeError, ValueError) as exc:
-                            raise HTTPException(
-                                status_code=502,
-                                detail="艺术字体远程图片 Content-Length 无效",
-                            ) from exc
-                        if declared_length < 0:
-                            raise HTTPException(
-                                status_code=502,
-                                detail="艺术字体远程图片 Content-Length 无效",
-                            )
-                        if declared_length > OPENSHOP_ART_FONT_MAX_BYTES:
-                            raise HTTPException(
-                                status_code=413,
-                                detail="艺术字体模型图片超过压缩字节限制",
-                            )
-                    chunks = []
-                    total = 0
-                    async for chunk in response.aiter_bytes():
-                        if not chunk:
-                            continue
-                        total += len(chunk)
-                        if total > OPENSHOP_ART_FONT_MAX_BYTES:
-                            raise HTTPException(
-                                status_code=413,
-                                detail="艺术字体模型图片超过压缩字节限制",
-                            )
-                        chunks.append(chunk)
-                    content = b"".join(chunks)
-                    if not content:
-                        raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
-                    return content
-    except HTTPException:
-        raise
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="艺术字体远程图片下载失败") from exc
+    for redirect_count in range(OPENSHOP_ART_FONT_MAX_REDIRECTS + 1):
+        current_url, addresses = await _validate_openshop_art_font_remote_url(
+            current_url
+        )
+        last_error = None
+        response = None
+        for address in addresses:
+            try:
+                response = await asyncio.to_thread(
+                    _fetch_openshop_art_font_pinned_hop,
+                    current_url,
+                    address,
+                )
+                break
+            except HTTPException:
+                raise
+            except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+                last_error = exc
+        if response is None:
+            raise HTTPException(
+                status_code=502,
+                detail="艺术字体远程图片下载失败",
+            ) from last_error
+        status, headers, content = response
+        if status in {301, 302, 303, 307, 308}:
+            location = headers.get("location")
+            if not location or redirect_count >= OPENSHOP_ART_FONT_MAX_REDIRECTS:
+                raise HTTPException(
+                    status_code=502,
+                    detail="艺术字体远程图片重定向过多或无效",
+                )
+            current_url = urllib.parse.urljoin(current_url, location)
+            continue
+        return content
     raise HTTPException(status_code=502, detail="艺术字体远程图片重定向失败")
 
 
 async def materialize_openshop_ai_image(image_data: Any) -> bytes:
+    """Materialization uses bounded memory and creates no temporary files; local files stay provider-owned."""
     if not isinstance(image_data, dict):
         raise HTTPException(status_code=502, detail="艺术字体模型没有返回图片")
     image_type = str(image_data.get("type") or "url").strip().lower()

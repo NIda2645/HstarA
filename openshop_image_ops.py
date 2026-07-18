@@ -327,6 +327,57 @@ def _remove_boundary_matte(image: Image.Image) -> Image.Image:
     return Image.frombytes("RGBA", image.size, bytes(rgba_data))
 
 
+def _validate_art_font_no_scene(image: Image.Image) -> None:
+    content_box = image.getchannel("A").getbbox()
+    if not content_box:
+        return
+    left, top, right, bottom = content_box
+    width = right - left
+    height = bottom - top
+    area = width * height
+    if width < 6 or height < 4 or area < 32:
+        return
+    alpha = image.getchannel("A").tobytes()
+    rgb = image.convert("RGB").tobytes()
+    image_width = image.width
+    visible = []
+    color_bins = set()
+    for y in range(top, bottom):
+        for x in range(left, right):
+            index = y * image_width + x
+            if alpha[index] <= _TRANSPARENT_ALPHA_MAX:
+                continue
+            visible.append(index)
+            offset = index * 3
+            color_bins.add(tuple(rgb[offset + channel] // 32 for channel in range(3)))
+    if len(visible) / area < 0.92 or len(color_bins) < 4:
+        return
+    compared = 0
+    high_contrast = 0
+    for index in visible:
+        x = index % image_width
+        y = index // image_width
+        for neighbor in (
+            index + 1 if x + 1 < right else -1,
+            index + image_width if y + 1 < bottom else -1,
+        ):
+            if neighbor < 0 or alpha[neighbor] <= _TRANSPARENT_ALPHA_MAX:
+                continue
+            compared += 1
+            left_offset = index * 3
+            right_offset = neighbor * 3
+            distance = sum(
+                (rgb[left_offset + channel] - rgb[right_offset + channel]) ** 2
+                for channel in range(3)
+            )
+            if distance >= 48**2:
+                high_contrast += 1
+    if compared and high_contrast / compared >= 0.30:
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font output contains a scene-like rectangular foreground panel"
+        )
+
+
 def normalize_art_font_output(
     generated_bytes: bytes,
     target_aspect: Any,
@@ -348,6 +399,7 @@ def normalize_art_font_output(
     else:
         image = _remove_boundary_matte(image)
 
+    _validate_art_font_no_scene(image)
     content_box = image.getchannel("A").getbbox()
     if not content_box:
         raise OpenShopImageNormalizationError(

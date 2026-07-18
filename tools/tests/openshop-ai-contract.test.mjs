@@ -43,6 +43,7 @@ from openshop_ai import (
     build_capability_catalog,
     build_ocr_prompt,
     normalize_ai_task_record,
+    normalize_art_font_result,
     normalize_art_font_snapshot,
     normalize_generation_snapshot,
     normalize_ocr_layout,
@@ -511,6 +512,14 @@ for invalid_art_snapshot in (
         {"x": 0.1, "y": 0.2}, {"x": 0.1, "y": 0.2},
         {"x": 0.4, "y": 0.3}, {"x": 0.1, "y": 0.3},
     ]},
+    {**art_snapshot_input, "quad": [
+        {"x": 0.1, "y": 0.2}, {"x": 0.25, "y": 0.2},
+        {"x": 0.4, "y": 0.2}, {"x": 0.1, "y": 0.3},
+    ]},
+    {**art_snapshot_input, "quad": [
+        {"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.2},
+        {"x": 0.2, "y": 0.25}, {"x": 0.1, "y": 0.3},
+    ]},
 ):
     try:
         normalize_art_font_snapshot(invalid_art_snapshot)
@@ -575,6 +584,32 @@ assert normalized_art_task["result"] == {
     "height": 120,
     "contentBox": {"x": 10, "y": 5, "width": 340, "height": 110},
 }
+
+strict_art_result = normalized_art_task["result"]
+for dimension in ("width", "height"):
+    for invalid_number in (True, str(strict_art_result[dimension]), float(strict_art_result[dimension])):
+        try:
+            normalize_art_font_result({**strict_art_result, dimension: invalid_number})
+            raise AssertionError(f"art result {dimension} must require a true integer")
+        except OpenShopAiValidationError:
+            pass
+for box_field in ("x", "y", "width", "height"):
+    for invalid_number in (
+        True,
+        str(strict_art_result["contentBox"][box_field]),
+        float(strict_art_result["contentBox"][box_field]),
+    ):
+        try:
+            normalize_art_font_result({
+                **strict_art_result,
+                "contentBox": {
+                    **strict_art_result["contentBox"],
+                    box_field: invalid_number,
+                },
+            })
+            raise AssertionError(f"art result contentBox {box_field} must require a true integer")
+        except OpenShopAiValidationError:
+            pass
 
 # Existing single-task records retain their original public shape.
 legacy_single = registry.create(

@@ -189,6 +189,41 @@ for y in range(1, 5):
 multicolor_edge.putpixel((3, 3), (0, 0, 0))
 expect_art_failure(png(multicolor_edge))
 
+# A uniform removable matte does not make a dense interior scene safe. A
+# high-complexity checkerboard panel fills its rectangular content box and
+# must be rejected as background/scene reconstruction.
+checkerboard_panel = Image.new("RGB", (12, 10), (250, 250, 250))
+panel_colors = ((220, 30, 40), (20, 170, 220), (240, 190, 20), (60, 180, 70))
+for y in range(2, 8):
+    for x in range(2, 10):
+        checkerboard_panel.putpixel((x, y), panel_colors[(x + y) % 4])
+expect_art_failure(png(checkerboard_panel), 4 / 3)
+
+# Palette size is not itself unsafe. Multicolor letter strokes with clear
+# counters, gaps, and non-rectangular geometry remain valid.
+multicolor_glyphs = Image.new("RGB", (14, 10), (250, 250, 250))
+glyph_colors = ((230, 20, 80), (20, 120, 230), (245, 160, 20), (40, 190, 100))
+glyph_points = set()
+for y in range(2, 8):
+    glyph_points.update(((2, y), (5, y), (8, y), (11, y)))
+for x in range(2, 6):
+    glyph_points.add((x, 4))
+for x in range(8, 12):
+    glyph_points.add((x, 2))
+    glyph_points.add((x, 5))
+for index, (x, y) in enumerate(sorted(glyph_points)):
+    multicolor_glyphs.putpixel((x, y), glyph_colors[index % len(glyph_colors)])
+multicolor_png, multicolor_geometry = normalize_art_font_output(
+    png(multicolor_glyphs), 5 / 3,
+)
+multicolor_result = Image.open(BytesIO(multicolor_png)).convert("RGBA")
+visible_multicolor = {
+    pixel[:3] for pixel in multicolor_result.getdata() if pixel[3] > 0
+}
+assert len(visible_multicolor) >= 4
+assert multicolor_geometry["contentBox"]["width"] == 10
+assert sum(pixel[3] == 0 for pixel in multicolor_result.getdata()) > 0
+
 # Matte-colored antialiasing is decontaminated into a dark translucent edge,
 # rather than leaving an opaque gray/white halo.
 antialias = Image.new("RGB", (7, 5), (255, 255, 255))
