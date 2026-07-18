@@ -1592,6 +1592,127 @@ async def api_lifecycle():
                 except OpenShopNotFound:
                     pass
 
+            version_response = await client.post(
+                "/api/canvases",
+                json={"title": "Monotonic version", "icon": "clock", "kind": "classic"},
+            )
+            version_canvas = version_response.json()["canvas"]
+            version_owner = {
+                "canvasType": "classic",
+                "canvasId": version_canvas["id"],
+                "nodeId": "node-monotonic-version",
+            }
+            version_project_id = "project-monotonic-version"
+            version_init = await client.post(
+                f"/api/openshop/projects/{version_project_id}/initialize",
+                json={"owner": version_owner, "document": {"width": 640, "height": 480}},
+            )
+            assert version_init.status_code == 200, version_init.text
+            version_payload = {
+                "title": version_canvas["title"],
+                "icon": version_canvas["icon"],
+                "nodes": [{
+                    "id": version_owner["nodeId"],
+                    "type": "openshop-layered",
+                    "projectId": version_project_id,
+                }],
+                "connections": [],
+                "viewport": {},
+                "logs": [],
+                "settings": {},
+                "base_updated_at": version_canvas["updated_at"],
+            }
+            version_attached = await client.put(
+                f"/api/canvases/{version_canvas['id']}",
+                json=version_payload,
+            )
+            assert version_attached.status_code == 200, version_attached.text
+            version_base = version_attached.json()["canvas"]["updated_at"]
+            version_payload["base_updated_at"] = version_base
+            original_now_ms = main.now_ms
+            main.now_ms = lambda: version_base
+            try:
+                version_detached = await client.put(
+                    f"/api/canvases/{version_canvas['id']}",
+                    json={**version_payload, "nodes": []},
+                )
+                stale_version_attach = await client.put(
+                    f"/api/canvases/{version_canvas['id']}",
+                    json=version_payload,
+                )
+            finally:
+                main.now_ms = original_now_ms
+            assert version_detached.status_code == 200, version_detached.text
+            assert stale_version_attach.status_code == 409, stale_version_attach.text
+            assert main.load_canvas(version_canvas["id"])["nodes"] == []
+            try:
+                main.OPENSHOP_STORE.load(version_project_id, version_owner)
+                raise AssertionError("stale same-millisecond save must not resurrect a project")
+            except OpenShopNotFound:
+                pass
+
+            purge_response = await client.post(
+                "/api/canvases",
+                json={"title": "Purge race", "icon": "trash-2", "kind": "classic"},
+            )
+            purge_canvas = purge_response.json()["canvas"]
+            purge_owner = {
+                "canvasType": "classic",
+                "canvasId": purge_canvas["id"],
+                "nodeId": "node-purge-race",
+            }
+            purge_project_id = "project-purge-race"
+            purge_init = await client.post(
+                f"/api/openshop/projects/{purge_project_id}/initialize",
+                json={"owner": purge_owner, "document": {"width": 640, "height": 480}},
+            )
+            assert purge_init.status_code == 200, purge_init.text
+            purge_path = Path(main.canvas_path(purge_canvas["id"]))
+            remove_entered = threading.Event()
+            allow_remove = threading.Event()
+            original_os_remove = main.os.remove
+
+            def pause_canvas_remove(path):
+                if Path(path) == purge_path:
+                    remove_entered.set()
+                    assert allow_remove.wait(timeout=5)
+                return original_os_remove(path)
+
+            def run_purge_request():
+                async def request_once():
+                    transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=True)
+                    async with httpx.AsyncClient(transport=transport, base_url="http://test") as thread_client:
+                        return await thread_client.delete(
+                            f"/api/canvases/{purge_canvas['id']}/purge"
+                        )
+                return asyncio.run(request_once())
+
+            main.os.remove = pause_canvas_remove
+            purge_task = asyncio.create_task(asyncio.to_thread(run_purge_request))
+            try:
+                assert await asyncio.to_thread(remove_entered.wait, 5)
+                raced_initialize = asyncio.create_task(client.post(
+                    f"/api/openshop/projects/{purge_project_id}/initialize",
+                    json={"owner": purge_owner, "document": {"width": 640, "height": 480}},
+                ))
+                await asyncio.wait({raced_initialize}, timeout=0.2)
+                allow_remove.set()
+                purge_result, raced_initialize_result = await asyncio.gather(
+                    purge_task,
+                    raced_initialize,
+                )
+            finally:
+                allow_remove.set()
+                main.os.remove = original_os_remove
+            assert purge_result.status_code == 200, purge_result.text
+            assert raced_initialize_result.status_code == 404, raced_initialize_result.text
+            assert not purge_path.exists()
+            try:
+                main.OPENSHOP_STORE.load(purge_project_id, purge_owner)
+                raise AssertionError("purged canvas must not retain a raced project")
+            except OpenShopNotFound:
+                pass
+
             startup_response = await client.post(
                 "/api/canvases",
                 json={"title": "Startup reconciliation", "icon": "refresh-cw", "kind": "classic"},

@@ -3369,7 +3369,8 @@ def canvas_path(canvas_id):
     return os.path.join(CANVAS_DIR, f"{cleaned}.json")
 
 def save_canvas(canvas):
-    canvas["updated_at"] = now_ms()
+    previous_updated_at = int(canvas.get("updated_at") or 0)
+    canvas["updated_at"] = max(now_ms(), previous_updated_at + 1)
     with CANVAS_LOCK:
         with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
             json.dump(canvas, f, ensure_ascii=False, indent=2)
@@ -16619,6 +16620,14 @@ def openshop_owner(canvas_type: str, canvas_id: str, node_id: str) -> Dict[str, 
         "nodeId": str(node_id or "").strip(),
     }
 
+def require_openshop_owner_canvas(owner):
+    canvas_id = str((owner or {}).get("canvasId") or "").strip()
+    canvas_type = str((owner or {}).get("canvasType") or "").strip()
+    canvas = load_canvas(canvas_id)
+    if normalize_canvas_kind(canvas.get("kind")) != canvas_type:
+        raise OpenShopOwnershipError("OpenShop canvas type does not match owner")
+    return canvas
+
 def raise_openshop_http_error(exc: OpenShopStoreError):
     if isinstance(exc, OpenShopNotFound):
         status_code = 404
@@ -17088,12 +17097,14 @@ async def initialize_openshop_project(
     payload: OpenShopProjectInitializeRequest,
 ):
     def initialize_project():
-        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
-            return OPENSHOP_STORE.initialize(
-                project_id,
-                payload.owner,
-                payload.document,
-            )
+        with CANVAS_LOCK:
+            require_openshop_owner_canvas(payload.owner)
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                return OPENSHOP_STORE.initialize(
+                    project_id,
+                    payload.owner,
+                    payload.document,
+                )
 
     try:
         project = await asyncio.to_thread(initialize_project)
@@ -17141,13 +17152,16 @@ async def clone_openshop_project(
     payload: OpenShopProjectCloneRequest,
 ):
     def clone_project():
-        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
-            return OPENSHOP_STORE.clone(
-                payload.source_project_id,
-                payload.source_owner,
-                project_id,
-                payload.owner,
-            )
+        with CANVAS_LOCK:
+            require_openshop_owner_canvas(payload.source_owner)
+            require_openshop_owner_canvas(payload.owner)
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                return OPENSHOP_STORE.clone(
+                    payload.source_project_id,
+                    payload.source_owner,
+                    project_id,
+                    payload.owner,
+                )
 
     try:
         project = await asyncio.to_thread(clone_project)
@@ -18760,11 +18774,11 @@ async def purge_canvas(canvas_id: str):
                     OPENSHOP_AI_TASKS.cancel_project(
                         record["projectId"], record["owner"]
                     )
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            collect_openshop_garbage()
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                collect_openshop_garbage()
             return removed
     await asyncio.to_thread(delete_canvas_and_projects)
     return {"ok": True}
