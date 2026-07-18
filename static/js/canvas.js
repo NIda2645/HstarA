@@ -540,6 +540,7 @@ let hoveredConnectionId = '';
 let lastMouseBoard = {x: 0, y: 0};
 let undoStack = [];
 let redoStack = [];
+const permanentlyDeletedOpenShopNodeIds = new Set();
 const UNDO_MAX = 10;
 const cascadeRunningIds = new Set();
 const cascadeStopIds = new Set();
@@ -2224,6 +2225,7 @@ async function openCanvas(id){
         if(!res.ok) throw new Error(tr('canvas.openFailed'));
         const data = await res.json();
         resetCascadeRuntimeState();
+        resetCanvasHistory();
         canvas = data.canvas;
         rememberCanvasListProject(canvas.project || 'default');
         const touched = await touchCanvasOpened(canvas.id, {renderList:false});
@@ -15186,6 +15188,7 @@ function deleteNode(id, event){
     event?.stopPropagation();
     pushUndo();
     const node = nodes.find(n => n.id === id);
+    trackPermanentlyDeletedOpenShopNodes([node]);
     window.HstarClassicOpenShopAdapter?.disposeNode?.(node);
     removeDirectorSceneStorageForNode(node);
     destroyLTXEditor(node);
@@ -17064,6 +17067,31 @@ function connectSelectionToGenerator(kind, genId){
 function resetCanvasHistory(){
     undoStack = [];
     redoStack = [];
+    permanentlyDeletedOpenShopNodeIds.clear();
+}
+function trackPermanentlyDeletedOpenShopNodes(items){
+    (items || []).forEach(node => {
+        if(node?.type === 'openshop-layered' && node.id){
+            permanentlyDeletedOpenShopNodeIds.add(node.id);
+        }
+    });
+}
+function filterPermanentlyDeletedOpenShopHistoryState(state){
+    const nextNodes = (state?.nodes || []).filter(node => !permanentlyDeletedOpenShopNodeIds.has(node?.id));
+    const nodeIds = new Set(nextNodes.map(node => node.id));
+    const next = {
+        ...state,
+        nodes:nextNodes,
+        connections:(state?.connections || []).filter(connection => nodeIds.has(connection.from) && nodeIds.has(connection.to)),
+    };
+    if(Array.isArray(state?.selectedIds)){
+        next.selectedIds = state.selectedIds.filter(id => nodeIds.has(id));
+    }
+    if(next.selectedId && !nodeIds.has(next.selectedId)) next.selectedId = '';
+    if(next.selectedImage?.nodeId && !nodeIds.has(next.selectedImage.nodeId)){
+        next.selectedImage = {nodeId:'', index:-1};
+    }
+    return next;
 }
 function canvasHistorySnapshot(){
     return {
@@ -17081,13 +17109,14 @@ function pushHistorySnapshot(stack, state){
 }
 function applyCanvasHistoryState(state){
     if(!canvas || !state || state.canvasId !== canvas?.id) return false;
-    nodes = JSON.parse(JSON.stringify(state.nodes || []));
-    connections = JSON.parse(JSON.stringify(state.connections || []));
-    viewport = {...(state.viewport || viewport || {x:0, y:0, scale:1})};
+    const safeState = filterPermanentlyDeletedOpenShopHistoryState(state);
+    nodes = JSON.parse(JSON.stringify(safeState.nodes || []));
+    connections = JSON.parse(JSON.stringify(safeState.connections || []));
+    viewport = {...(safeState.viewport || viewport || {x:0, y:0, scale:1})};
     canvas.nodes = nodes;
     canvas.connections = connections;
     canvas.viewport = {...viewport};
-    selected = new Set((state.selectedIds || []).filter(id => nodes.some(node => node.id === id)));
+    selected = new Set((safeState.selectedIds || []).filter(id => nodes.some(node => node.id === id)));
     sanitizeConnections();
     applyViewport();
     render();
@@ -18499,7 +18528,12 @@ function deleteSelectedNodes(){
         }
     };
     selected.forEach(collect);
-    toDelete.forEach(id => destroyLTXEditor(nodes.find(n => n.id === id)));
+    const deletingNodes = [...toDelete].map(id => nodes.find(node => node.id === id)).filter(Boolean);
+    trackPermanentlyDeletedOpenShopNodes(deletingNodes);
+    deletingNodes.forEach(node => {
+        window.HstarClassicOpenShopAdapter?.disposeNode?.(node);
+        destroyLTXEditor(node);
+    });
     nodes = nodes.filter(n => !toDelete.has(n.id));
     connections = connections.filter(c => !toDelete.has(c.from) && !toDelete.has(c.to));
     selected.clear();

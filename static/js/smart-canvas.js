@@ -209,6 +209,7 @@ let suppressNodeClickUntil = 0;
 let textSelectionGuard = null;
 const UNDO_LIMIT = 40;
 const undoStack = [];
+const permanentlyDeletedOpenShopNodeIds = new Set();
 let undoSuppressed = false;
 let pendingUndoSnapshot = null;
 let runningHubWorkflowCache = {};
@@ -252,6 +253,30 @@ function commitPendingUndo(){
     }
 }
 function discardPendingUndo(){ pendingUndoSnapshot = null; }
+function trackPermanentlyDeletedOpenShopNodes(items){
+    (items || []).forEach(node => {
+        if(node?.type === 'openshop-layered' && node.id){
+            permanentlyDeletedOpenShopNodeIds.add(node.id);
+        }
+    });
+}
+function filterPermanentlyDeletedOpenShopHistoryState(state){
+    const nextNodes = (state?.nodes || []).filter(node => !permanentlyDeletedOpenShopNodeIds.has(node?.id));
+    const nodeIds = new Set(nextNodes.map(node => node.id));
+    const next = {
+        ...state,
+        nodes:nextNodes,
+        connections:(state?.connections || []).filter(connection => nodeIds.has(connection.from) && nodeIds.has(connection.to)),
+    };
+    if(Array.isArray(state?.selectedIds)){
+        next.selectedIds = state.selectedIds.filter(id => nodeIds.has(id));
+    }
+    if(next.selectedId && !nodeIds.has(next.selectedId)) next.selectedId = '';
+    if(next.selectedImage?.nodeId && !nodeIds.has(next.selectedImage.nodeId)){
+        next.selectedImage = {nodeId:'', index:-1};
+    }
+    return next;
+}
 function snapshotForUndo(){
     return {
         nodes: JSON.parse(JSON.stringify(nodes)),
@@ -269,7 +294,7 @@ function pushUndo(){
 }
 function performUndo(){
     if(!undoStack.length){ toast(tr('smart.toastNoUndo')); return; }
-    const snap = undoStack.pop();
+    const snap = filterPermanentlyDeletedOpenShopHistoryState(undoStack.pop());
     undoSuppressed = true;
     nodes = snap.nodes;
     if(canvas) canvas.connections = snap.connections;
@@ -5895,6 +5920,9 @@ async function loadCanvas(){
         if(!res.ok) return;
         const data = await res.json();
         canvas = data.canvas;
+        permanentlyDeletedOpenShopNodeIds.clear();
+        undoStack.length = 0;
+        pendingUndoSnapshot = null;
         rememberCanvasListProject(canvas.project || 'default');
         canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
         document.title = canvas.title || tr('canvas.smartCanvas');
@@ -12478,6 +12506,7 @@ function setDropHighlight(targetId){
 function deleteNode(id){
     pushUndo();
     const node = nodes.find(candidate => candidate.id === id);
+    trackPermanentlyDeletedOpenShopNodes([node]);
     window.HstarSmartOpenShopAdapter?.disposeNode?.(node);
     const deleteIds = new Set([id]);
     nodes.forEach(node => {
