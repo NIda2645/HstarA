@@ -1640,6 +1640,25 @@ async function saveCanvas(){
             const data = await res.json().catch(() => ({}));
             const remote = data.detail?.canvas || data.canvas;
             if(localCanvasDirty || saveCanvasAgain){
+                if(remote){
+                    const merged = mergeClassicCanvasConflictState({
+                        nodes,
+                        connections,
+                        selectedIds:[...selected],
+                    }, remote);
+                    nodes = merged.nodes;
+                    connections = merged.connections;
+                    canvas = {
+                        ...remote,
+                        ...canvas,
+                        nodes,
+                        connections,
+                        updated_at:Number(remote.updated_at || canvas.updated_at || 0),
+                    };
+                    selected = new Set(merged.selectedIds || []);
+                    sanitizeConnections();
+                    render();
+                }
                 lastCanvasUpdatedAt = Number(data.detail?.updated_at || data.updated_at || remote?.updated_at || lastCanvasUpdatedAt || 0);
                 saveCanvasAgain = true;
                 setStatus('Saving...');
@@ -17107,6 +17126,37 @@ function filterPermanentlyDeletedOpenShopHistoryState(state){
         next.selectedImage = {nodeId:'', index:-1};
     }
     return next;
+}
+function mergeClassicCanvasConflictState(localState, remoteState){
+    const localNodes = Array.isArray(localState?.nodes) ? localState.nodes : [];
+    const remoteNodes = Array.isArray(remoteState?.nodes) ? remoteState.nodes : [];
+    const localById = new Map(localNodes.map(node => [node.id, node]));
+    const remoteById = new Map(remoteNodes.map(node => [node.id, node]));
+    const order = [];
+    const seenNodeIds = new Set();
+    [...remoteNodes, ...localNodes].forEach(node => {
+        if(!node?.id || seenNodeIds.has(node.id)) return;
+        seenNodeIds.add(node.id);
+        order.push(node.id);
+    });
+    const mergedNodes = order
+        .map(id => localById.get(id) || remoteById.get(id))
+        .filter(Boolean);
+    const mergedConnections = [];
+    const seenConnections = new Set();
+    [...(remoteState?.connections || []), ...(localState?.connections || [])].forEach(connection => {
+        if(!connection) return;
+        const key = connection.id || `${connection.from}->${connection.to}`;
+        if(seenConnections.has(key)) return;
+        seenConnections.add(key);
+        mergedConnections.push(connection);
+    });
+    return filterPermanentlyDeletedOpenShopHistoryState({
+        ...remoteState,
+        ...localState,
+        nodes:mergedNodes,
+        connections:mergedConnections,
+    });
 }
 function canvasHistorySnapshot(){
     return {
