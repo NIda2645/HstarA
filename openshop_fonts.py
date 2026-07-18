@@ -103,6 +103,10 @@ INSTALLER_DISAMBIGUATOR = re.compile(
     re.IGNORECASE,
 )
 CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+KANA_TEXT = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff\uff66-\uff9f]")
+HANGUL_TEXT = re.compile(
+    r"[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7ff]"
+)
 ALIBABA_PUHUITI_3 = "阿里巴巴普惠体 3"
 ALIBABA_PUHUITI_3_0 = "阿里巴巴普惠体 3.0"
 ALIBABA_PUHUITI_NUMBERED_L3_FACE = re.compile(
@@ -159,7 +163,11 @@ def _font_metadata(family):
         normalized_name = sort_name.casefold()
         if normalized_name in KNOWN_ZH_HANT_FAMILIES:
             language_group = "zh-hant"
-        elif normalized_name in KNOWN_ZH_HANS_FAMILIES or CJK_TEXT.search(sort_name):
+        elif normalized_name in KNOWN_ZH_HANS_FAMILIES:
+            language_group = "zh-hans"
+        elif KANA_TEXT.search(sort_name) or HANGUL_TEXT.search(sort_name):
+            language_group = "en"
+        elif CJK_TEXT.search(sort_name):
             language_group = "zh-hans"
         else:
             language_group = "en"

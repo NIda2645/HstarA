@@ -140,6 +140,53 @@ class OpenShopFontCatalogTests(unittest.TestCase):
             "zh-hant",
         )
 
+    def test_excludes_kana_and_hangul_names_from_generic_chinese_detection(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        non_chinese_families = (
+            "游ゴシック",
+            "UD デジタル 教科書体 NK-R",
+            "맑은 고딕",
+            "맑은 고딕 漢",
+        )
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": family, "weight": 400, "italic": False}
+                for family in non_chinese_families
+            ],
+            platform="win32",
+        )
+
+        fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
+
+        for family in non_chinese_families:
+            with self.subTest(family=family):
+                self.assertEqual(fonts[family]["languageGroup"], "en")
+                self.assertEqual(fonts[family]["freeCommercialCategory"], "")
+
+    def test_free_prefixes_override_kana_and_hangul_script_guards(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        expected = {
+            "01免游ゴシック": ("zh-hans", "01"),
+            "02免맑은 고딕 漢": ("zh-hant", "02"),
+            "03免UD デジタル 教科書体 NK-R": ("en", "03"),
+        }
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": family, "weight": 400, "italic": False}
+                for family in expected
+            ],
+            platform="win32",
+        )
+
+        fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
+
+        for family, (language_group, category) in expected.items():
+            with self.subTest(family=family):
+                self.assertEqual(fonts[family]["languageGroup"], language_group)
+                self.assertEqual(fonts[family]["freeCommercialCategory"], category)
+
     def test_collapses_installer_aliases_without_inventing_removed_family_aliases(self):
         from openshop_fonts import OpenShopFontCatalog
 
