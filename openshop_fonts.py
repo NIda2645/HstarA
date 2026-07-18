@@ -117,9 +117,25 @@ KNOWN_ZH_HANS_FAMILIES = frozenset(
         "Microsoft YaHei UI",
         "Microsoft YaHei",
         "SimSun",
+        "NSimSun",
+        "SimSun-ExtB",
         "SimHei",
         "KaiTi",
         "FangSong",
+        "DengXian",
+        "YouYuan",
+    )
+)
+KNOWN_ZH_HANT_FAMILIES = frozenset(
+    family.casefold()
+    for family in (
+        "Microsoft JhengHei UI",
+        "Microsoft JhengHei",
+        "MingLiU",
+        "PMingLiU",
+        "MingLiU-ExtB",
+        "PMingLiU-ExtB",
+        "DFKai-SB",
     )
 )
 
@@ -140,11 +156,13 @@ def _font_metadata(family):
     elif category == "03":
         language_group = "en"
     else:
-        language_group = (
-            "zh-hans"
-            if sort_name.casefold() in KNOWN_ZH_HANS_FAMILIES or CJK_TEXT.search(sort_name)
-            else "en"
-        )
+        normalized_name = sort_name.casefold()
+        if normalized_name in KNOWN_ZH_HANT_FAMILIES:
+            language_group = "zh-hant"
+        elif normalized_name in KNOWN_ZH_HANS_FAMILIES or CJK_TEXT.search(sort_name):
+            language_group = "zh-hans"
+        else:
+            language_group = "en"
     return {
         "languageGroup": language_group,
         "freeCommercialCategory": category,

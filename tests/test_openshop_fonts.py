@@ -67,34 +67,78 @@ class OpenShopFontCatalogTests(unittest.TestCase):
         self.assertEqual(fonts["03免Libre Baskerville"]["family"], "03免Libre Baskerville")
         self.assertEqual(fonts["03免Libre Baskerville"]["label"], "03免Libre Baskerville")
 
-    def test_classifies_known_latin_named_chinese_system_families_as_zh_hans(self):
-        from openshop_fonts import OpenShopFontCatalog
+    def test_classifies_known_windows_simplified_chinese_families_as_zh_hans(self):
+        from openshop_fonts import OpenShopFontCatalog, _font_metadata
 
-        known_chinese_families = (
+        simplified_families = (
             "Microsoft YaHei UI",
             "Microsoft YaHei",
             "SimSun",
+            "NSimSun",
+            "SimSun-ExtB",
             "SimHei",
             "KaiTi",
             "FangSong",
+            "DengXian",
+            "YouYuan",
         )
+        non_chinese_families = ("Example Sans", "Meiryo", "Malgun Gothic")
         catalog = OpenShopFontCatalog(
             enumerator=lambda: [
                 {"family": family, "weight": 400, "italic": False}
-                for family in (*known_chinese_families, "Example Sans")
+                for family in (*simplified_families, *non_chinese_families)
             ],
             platform="win32",
         )
 
         fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
 
-        for family in known_chinese_families:
+        for family in simplified_families:
             with self.subTest(family=family):
                 self.assertEqual(fonts[family]["languageGroup"], "zh-hans")
                 self.assertEqual(fonts[family]["freeCommercialCategory"], "")
                 self.assertEqual(fonts[family]["family"], family)
                 self.assertEqual(fonts[family]["label"], family)
-        self.assertEqual(fonts["Example Sans"]["languageGroup"], "en")
+        for family in non_chinese_families:
+            with self.subTest(non_chinese_family=family):
+                self.assertEqual(fonts[family]["languageGroup"], "en")
+        self.assertEqual(
+            _font_metadata("mIcRoSoFt yAhEi Ui")["languageGroup"],
+            "zh-hans",
+        )
+
+    def test_classifies_known_windows_traditional_chinese_families_as_zh_hant(self):
+        from openshop_fonts import OpenShopFontCatalog, _font_metadata
+
+        traditional_families = (
+            "Microsoft JhengHei UI",
+            "Microsoft JhengHei",
+            "MingLiU",
+            "PMingLiU",
+            "MingLiU-ExtB",
+            "PMingLiU-ExtB",
+            "DFKai-SB",
+        )
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": family, "weight": 400, "italic": False}
+                for family in traditional_families
+            ],
+            platform="win32",
+        )
+
+        fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
+
+        for family in traditional_families:
+            with self.subTest(family=family):
+                self.assertEqual(fonts[family]["languageGroup"], "zh-hant")
+                self.assertEqual(fonts[family]["freeCommercialCategory"], "")
+                self.assertEqual(fonts[family]["family"], family)
+                self.assertEqual(fonts[family]["label"], family)
+        self.assertEqual(
+            _font_metadata("mIcRoSoFt jHeNgHeI Ui")["languageGroup"],
+            "zh-hant",
+        )
 
     def test_collapses_installer_aliases_without_inventing_removed_family_aliases(self):
         from openshop_fonts import OpenShopFontCatalog
