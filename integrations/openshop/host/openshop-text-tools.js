@@ -18,6 +18,12 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function sameContext(left, right){
+    if(!left || !right) return false;
+    return ['canvasType', 'canvasId', 'nodeId', 'projectId']
+      .every(key => clean(left[key]) === clean(right[key]));
+  }
+
   function createId(prefix){
     const randomId = root.crypto?.randomUUID?.();
     return randomId
@@ -50,6 +56,7 @@
       reviewTaskRecord:null,
       activeTaskId:'',
       activeTaskRecord:null,
+      pendingTextApply:null,
       runGeneration:0,
       lastRemovalOptions:{mode:'layer', quality:'auto', prompt:''},
       unsubscribeCatalog:null,
@@ -433,6 +440,32 @@
       )) || null;
     }
 
+    function activeOcrReviewRecord(){
+      if(!state.reviewBlocks.length) return null;
+      return state.reviewTaskRecord
+        || [...taskRecords()].reverse().find(item => (
+          item.toolId === TOOL_EXTRACT
+          && item.status === 'succeeded'
+          && !item.appliedAt
+        ))
+        || null;
+    }
+
+    function ownsTextApply(owner){
+      if(!owner || state.pendingTextApply !== owner || !state.started || state.destroyed) return false;
+      if(owner.generation !== state.runGeneration || state.activeTool !== TOOL_EXTRACT) return false;
+      if(activeOcrReviewRecord() !== owner.record) return false;
+      try {
+        return sameContext(owner.context, currentContext());
+      } catch(error){
+        return false;
+      }
+    }
+
+    function invalidatePendingTextApply(){
+      state.pendingTextApply = null;
+    }
+
     function showOcrReview(record){
       if(!record) return false;
       state.activeTool = TOOL_EXTRACT;
@@ -445,10 +478,35 @@
       return true;
     }
 
-    async function applyTextExtraction(blocks = state.reviewBlocks){
-      if(!Array.isArray(blocks) || !blocks.length) throw new Error('没有可确认的文字提取结果');
-      const record = state.reviewTaskRecord
-        || [...taskRecords()].reverse().find(item => item.toolId === TOOL_EXTRACT && item.status === 'succeeded' && !item.appliedAt);
+    function applyTextExtraction(blocks = state.reviewBlocks){
+      if(!Array.isArray(blocks) || !blocks.length){
+        return Promise.reject(new Error('没有可确认的文字提取结果'));
+      }
+      const record = activeOcrReviewRecord();
+      let context;
+      try {
+        context = currentContext();
+      } catch(error){
+        return Promise.reject(error);
+      }
+      if(state.pendingTextApply && ownsTextApply(state.pendingTextApply)){
+        return state.pendingTextApply.promise;
+      }
+      const owner = {
+        generation:state.runGeneration,
+        context,
+        record,
+        promise:null,
+      };
+      let resolveApply;
+      let rejectApply;
+      owner.promise = new Promise((resolve, reject) => {
+        resolveApply = resolve;
+        rejectApply = reject;
+      });
+      state.pendingTextApply = owner;
+      renderPanel();
+
       const canvasWidth = Number(editor.canvasW || record?.result?.width || 1920);
       const canvasHeight = Number(editor.canvasH || record?.result?.height || 1080);
       const resultWidth = Number(record?.result?.width || canvasWidth);
@@ -459,93 +517,116 @@
       const sourceLayerId = clean(record?.sourceLayerId);
       const sourceAssetId = clean(record?.sourceAssetId);
       const originalBlocks = Array.isArray(record?.result?.blocks) ? record.result.blocks : [];
-      await fontManager.loadSystemFonts?.();
-      const matches = blocks.map(block => fontManager.matchOcrFont(block));
-      const createdLayers = [];
-      blocks.forEach((block, index) => {
-        const text = clean(block?.text);
-        if(!text) return;
-        const match = matches[index];
-        if(!clean(match?.faceFamily)) throw new Error('OCR font match did not return a usable face');
-        const geometry = quadGeometry(block.quad, canvasWidth, canvasHeight, block.rotation);
-        const reportedSize = Number(block?.font?.size);
-        const inferredSize = Math.max(1, geometry.height * 0.8);
-        const fontSize = Math.max(1, Number.isFinite(reportedSize) && reportedSize > 0
-          ? reportedSize * sourcePixelScale
-          : inferredSize);
-        const fontCandidates = fontCandidatesForBlock(block);
-        const visualProfile = ocrVisualProfile(block);
-        const originalBlock = originalBlocks.find(item => clean(item?.id) && clean(item.id) === clean(block?.id))
-          || originalBlocks[index]
-          || block;
-        const layerId = createId('hstar-text-layer').replaceAll('-', '_');
-        const object = new fabricRef.IText(text, {
-          left:Math.round(geometry.left),
-          top:Math.round(geometry.top),
-          originX:'left',
-          originY:'top',
-          fontFamily:match.faceFamily,
-          fontSize,
-          fill:visualProfile.fill,
-          fontWeight:match.weight,
-          fontStyle:match.italic ? 'italic' : 'normal',
-          charSpacing:visualProfile.letterSpacing,
-          lineHeight:visualProfile.lineHeight,
-          textAlign:visualProfile.alignment,
-          angle:geometry.angle,
-          stroke:visualProfile.strokeColor,
-          strokeWidth:visualProfile.strokeWidth * sourcePixelScale,
-          shadow:new fabricRef.Shadow({
-            color:visualProfile.shadow.color,
-            blur:visualProfile.shadow.blur * sourcePixelScale,
-            offsetX:visualProfile.shadow.offsetX * sourcePixelScale,
-            offsetY:visualProfile.shadow.offsetY * sourcePixelScale,
-          }),
-          editable:true,
-          selectable:true,
-          name:textLayerName(text, index),
-          hstarLayerId:layerId,
-          hstarOcrSourceAssetId:sourceAssetId,
-          hstarOcrBlockId:clean(block.id) || `ocr-${index + 1}`,
-          hstarOcrSourceLayerId:sourceLayerId,
-          hstarOcrQuad:clone(originalBlock.quad || block.quad),
-          hstarOcrVisualProfile:visualProfile,
-          hstarOcrOriginalText:String(originalBlock.text ?? block.text ?? ''),
-          hstarArtFontRequestGeneration:0,
-          hstarOcrConfidence:Number(block.confidence || 0),
-          hstarOcrLanguage:clean(block.language) || 'unknown',
-          hstarOcrFontCandidates:fontCandidates,
-        });
-        fitTextUniformly(object, geometry);
-        createdLayers.push({
-          layerId,
-          name:textLayerName(text, index),
-          visible:true,
-          opacity:100,
-          blend:'source-over',
-          objects:[object],
-        });
+      const runApply = async () => {
+        try {
+          if(!ownsTextApply(owner)) return [];
+          await fontManager.loadSystemFonts?.();
+          if(!ownsTextApply(owner)) return [];
+          const matches = blocks.map(block => fontManager.matchOcrFont(block));
+          const createdLayers = [];
+          blocks.forEach((block, index) => {
+            const text = clean(block?.text);
+            if(!text) return;
+            const match = matches[index];
+            if(!clean(match?.faceFamily)) throw new Error('OCR font match did not return a usable face');
+            const geometry = quadGeometry(block.quad, canvasWidth, canvasHeight, block.rotation);
+            const reportedSize = Number(block?.font?.size);
+            const inferredSize = Math.max(1, geometry.height * 0.8);
+            const fontSize = Math.max(1, Number.isFinite(reportedSize) && reportedSize > 0
+              ? reportedSize * sourcePixelScale
+              : inferredSize);
+            const fontCandidates = fontCandidatesForBlock(block);
+            const visualProfile = ocrVisualProfile(block);
+            const originalBlock = originalBlocks.find(item => clean(item?.id) && clean(item.id) === clean(block?.id))
+              || originalBlocks[index]
+              || block;
+            const layerId = createId('hstar-text-layer').replaceAll('-', '_');
+            const object = new fabricRef.IText(text, {
+              left:Math.round(geometry.left),
+              top:Math.round(geometry.top),
+              originX:'left',
+              originY:'top',
+              fontFamily:match.faceFamily,
+              fontSize,
+              fill:visualProfile.fill,
+              fontWeight:match.weight,
+              fontStyle:match.italic ? 'italic' : 'normal',
+              charSpacing:visualProfile.letterSpacing,
+              lineHeight:visualProfile.lineHeight,
+              textAlign:visualProfile.alignment,
+              angle:geometry.angle,
+              stroke:visualProfile.strokeColor,
+              strokeWidth:visualProfile.strokeWidth * sourcePixelScale,
+              shadow:new fabricRef.Shadow({
+                color:visualProfile.shadow.color,
+                blur:visualProfile.shadow.blur * sourcePixelScale,
+                offsetX:visualProfile.shadow.offsetX * sourcePixelScale,
+                offsetY:visualProfile.shadow.offsetY * sourcePixelScale,
+              }),
+              editable:true,
+              selectable:true,
+              name:textLayerName(text, index),
+              hstarLayerId:layerId,
+              hstarOcrSourceAssetId:sourceAssetId,
+              hstarOcrBlockId:clean(block.id) || `ocr-${index + 1}`,
+              hstarOcrSourceLayerId:sourceLayerId,
+              hstarOcrQuad:clone(originalBlock.quad || block.quad),
+              hstarOcrVisualProfile:visualProfile,
+              hstarOcrOriginalText:String(originalBlock.text ?? block.text ?? ''),
+              hstarArtFontRequestGeneration:0,
+              hstarOcrConfidence:Number(block.confidence || 0),
+              hstarOcrLanguage:clean(block.language) || 'unknown',
+              hstarOcrFontCandidates:fontCandidates,
+            });
+            fitTextUniformly(object, geometry);
+            createdLayers.push({
+              layerId,
+              name:textLayerName(text, index),
+              visible:true,
+              opacity:100,
+              blend:'source-over',
+              objects:[object],
+            });
+          });
+          if(!createdLayers.length) throw new Error('校对结果没有可创建的文字');
+          if(!ownsTextApply(owner)) return [];
+          createdLayers.forEach(layer => editor.canvas.add?.(layer.objects[0]));
+          const sourceIndex = sourceLayerId
+            ? editor.layers.findIndex(item => clean(item?.layerId) === sourceLayerId)
+            : Number(editor.activeLayerIdx || 0);
+          const insertIndex = Math.max(0, Math.min(editor.layers.length, sourceIndex + 1));
+          editor.layers.splice(insertIndex, 0, ...createdLayers);
+          editor.activeLayerIdx = insertIndex + createdLayers.length - 1;
+          syncCanvasObjectOrder();
+          editor.canvas.renderAll?.();
+          editor.updateLayersPanel?.();
+          editor.saveHistory?.('文字提取');
+          fontManager.scanEditor(editor);
+          if(record){ record.appliedAt = Date.now(); record.updatedAt = record.appliedAt; }
+          state.reviewBlocks = [];
+          state.reviewSourceDataUrl = '';
+          state.reviewTaskRecord = null;
+          if(!showOcrReview(pendingOcrRecord())) setStatus('applied');
+          markDirty('Apply extracted text');
+          return createdLayers;
+        } catch(error){
+          if(!ownsTextApply(owner)) return [];
+          throw error;
+        }
+      };
+      const finishApply = () => {
+        const shouldRender = ownsTextApply(owner);
+        if(state.pendingTextApply === owner) state.pendingTextApply = null;
+        if(shouldRender) renderPanel();
+      };
+      void runApply().then(value => {
+        finishApply();
+        resolveApply(value);
+      }, error => {
+        finishApply();
+        rejectApply(error);
       });
-      if(!createdLayers.length) throw new Error('校对结果没有可创建的文字');
-      createdLayers.forEach(layer => editor.canvas.add?.(layer.objects[0]));
-      const sourceIndex = sourceLayerId
-        ? editor.layers.findIndex(item => clean(item?.layerId) === sourceLayerId)
-        : Number(editor.activeLayerIdx || 0);
-      const insertIndex = Math.max(0, Math.min(editor.layers.length, sourceIndex + 1));
-      editor.layers.splice(insertIndex, 0, ...createdLayers);
-      editor.activeLayerIdx = insertIndex + createdLayers.length - 1;
-      syncCanvasObjectOrder();
-      editor.canvas.renderAll?.();
-      editor.updateLayersPanel?.();
-      editor.saveHistory?.('文字提取');
-      fontManager.scanEditor(editor);
-      if(record){ record.appliedAt = Date.now(); record.updatedAt = record.appliedAt; }
-      state.reviewBlocks = [];
-      state.reviewSourceDataUrl = '';
-      state.reviewTaskRecord = null;
-      if(!showOcrReview(pendingOcrRecord())) setStatus('applied');
-      markDirty('Apply extracted text');
-      return createdLayers;
+      return owner.promise;
     }
 
     async function createRemovedImageLayer(result, taskRecord = null){
@@ -811,6 +892,9 @@
 
     function reviewHtml(){
       if(!state.reviewBlocks.length) return '';
+      const applyPending = Boolean(state.pendingTextApply
+        && state.pendingTextApply.generation === state.runGeneration
+        && state.pendingTextApply.record === activeOcrReviewRecord());
       const boxes = state.reviewBlocks.map(block => {
         const bounds = quadBounds(block.quad);
         return `<span class="hstar-ocr-box ${block.lowConfidence ? 'low' : ''}" style="left:${bounds.left * 100}%;top:${bounds.top * 100}%;width:${bounds.width * 100}%;height:${bounds.height * 100}%"></span>`;
@@ -822,7 +906,7 @@
       return `<section class="hstar-text-section"><div class="hstar-text-label">识别校对</div>
         <div class="hstar-ocr-preview"><img src="${escapeHtml(state.reviewSourceDataUrl)}" alt="文字识别校对预览">${boxes}</div>
         <div class="hstar-ocr-list">${rows}</div>
-        <div class="hstar-text-actions"><button type="button" class="btn btn-primary" data-hstar-action="apply-extraction">确认并创建文字图层</button></div>
+        <div class="hstar-text-actions"><button type="button" class="btn btn-primary" data-hstar-action="apply-extraction" ${applyPending ? 'disabled' : ''}>确认并创建文字图层</button></div>
       </section>`;
     }
 
@@ -923,6 +1007,7 @@
     }
 
     function onSessionOpened(event){
+      invalidatePendingTextApply();
       state.runGeneration += 1;
       state.activeTaskId = '';
       state.activeTaskRecord = null;
@@ -934,6 +1019,7 @@
     }
 
     function onProjectLoaded(){
+      invalidatePendingTextApply();
       const generation = ++state.runGeneration;
       state.activeTaskId = '';
       state.activeTaskRecord = null;
@@ -951,6 +1037,7 @@
     }
 
     function onSessionStopped(){
+      invalidatePendingTextApply();
       state.runGeneration += 1;
       state.activeTaskId = '';
       state.activeTaskRecord = null;
@@ -977,6 +1064,7 @@
     function destroy(){
       if(state.destroyed) return;
       state.destroyed = true;
+      invalidatePendingTextApply();
       state.runGeneration += 1;
       state.listeners.splice(0).forEach(remove => remove());
       state.unsubscribeCatalog?.();

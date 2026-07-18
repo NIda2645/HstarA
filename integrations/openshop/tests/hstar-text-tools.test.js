@@ -15,6 +15,25 @@ const SOURCE_ASSET_ID = 'a'.repeat(64);
 const MASK_ASSET_ID = 'b'.repeat(64);
 const OUTPUT_ASSET_ID = 'c'.repeat(64);
 
+function createDeferred() {
+  let resolvePromise;
+  let rejectPromise;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {promise, resolve:resolvePromise, reject:rejectPromise};
+}
+
+function createOcrBlock({id='ocr-race', text='Deferred OCR'} = {}) {
+  return {
+    id, text, language:'en', script:'en', confidence:0.96, lowConfidence:false,
+    quad:[{x:0.1,y:0.1},{x:0.4,y:0.1},{x:0.4,y:0.2},{x:0.1,y:0.2}],
+    font:{familyCandidates:['Arial'], size:40, weight:400, style:'normal'},
+    color:'#112233', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+  };
+}
+
 class FakeIText {
   constructor(text, options={}) {
     this.type = 'i-text';
@@ -163,7 +182,7 @@ function createHarness({pollResults={}, fontManagerOverrides={}} = {}) {
     set(values){ Object.assign(this, values); },
   }));
   const runtime = {
-    getState:() => ({activeSession:{context}}),
+    getState:vi.fn(() => ({activeSession:{context}})),
     requestSave:vi.fn(async () => ({saved:true})),
   };
   const controller = window.HstarOpenShopTextTools.createController({
@@ -478,6 +497,186 @@ describe('Hstar OpenShop multilingual text tools', () => {
     }));
     expect(editor.canvas.add).not.toHaveBeenCalled();
     controller.destroy();
+  });
+
+  it('coalesces rapid OCR applies while font loading is pending', async () => {
+    const blocks = [createOcrBlock()];
+    const fontLoad = createDeferred();
+    const loadSystemFonts = vi.fn(() => fontLoad.promise);
+    const {controller, editor, fontManager} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
+      fontManagerOverrides:{loadSystemFonts},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const firstApply = controller.applyTextExtraction();
+    const secondApply = controller.applyTextExtraction();
+
+    const loadCallsWhilePending = loadSystemFonts.mock.calls.length;
+    const canvasCallsWhilePending = editor.canvas.add.mock.calls.length;
+    fontLoad.resolve([]);
+    const [firstLayers, secondLayers] = await Promise.all([firstApply, secondApply]);
+    const finalLayerCount = editor.layers.length;
+    const finalCanvasCalls = editor.canvas.add.mock.calls.length;
+    const finalHistoryCalls = editor.saveHistory.mock.calls.length;
+    const finalScanCalls = fontManager.scanEditor.mock.calls.length;
+    controller.destroy();
+
+    expect(loadCallsWhilePending).toBe(1);
+    expect(canvasCallsWhilePending).toBe(0);
+    expect(secondLayers).toBe(firstLayers);
+    expect(firstLayers).toHaveLength(1);
+    expect(finalLayerCount).toBe(2);
+    expect(finalCanvasCalls).toBe(1);
+    expect(finalHistoryCalls).toBe(1);
+    expect(finalScanCalls).toBe(2);
+  });
+
+  it('abandons a pending OCR apply when a new project owns the review panel', async () => {
+    const oldBlocks = [createOcrBlock({id:'ocr-old-project', text:'Old project OCR'})];
+    const newBlocks = [createOcrBlock({id:'ocr-new-project', text:'New project OCR'})];
+    const fontLoad = createDeferred();
+    const {controller, editor, runtime} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks:oldBlocks}}},
+      fontManagerOverrides:{loadSystemFonts:vi.fn(() => fontLoad.promise)},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+    const oldRecord = editor.__hstarAiTaskRecords[0];
+    const dirty = vi.fn();
+    window.addEventListener('openshop:project-dirty', dirty);
+
+    const pendingApply = controller.applyTextExtraction();
+    const newContext = {...context, canvasId:'canvas-2', nodeId:'node-2', projectId:'project-2'};
+    const newRecord = {
+      taskId:'task-new-project', toolId:'text-extract', status:'succeeded',
+      sourceLayerId:'layer-source', sourceAssetId:SOURCE_ASSET_ID,
+      createdAt:3, updatedAt:4, completedAt:4, appliedAt:0, error:'',
+      result:{width:1920, height:1080, blocks:newBlocks},
+    };
+    runtime.getState.mockReturnValue({activeSession:{context:newContext}});
+    editor.__hstarAiTaskRecords = [newRecord];
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {detail:{project:{projectId:'project-2'}}}));
+    await vi.waitFor(() => expect(controller.getState()).toMatchObject({status:'review', reviewBlocks:newBlocks}));
+
+    fontLoad.resolve([]);
+    await pendingApply;
+
+    const finalState = controller.getState();
+    const finalReviewText = document.querySelector('[data-hstar-ocr-index="0"]')?.value;
+    const finalApplyDisabled = document.querySelector('[data-hstar-action="apply-extraction"]')?.disabled;
+    const finalLayerCount = editor.layers.length;
+    const finalCanvasCalls = editor.canvas.add.mock.calls.length;
+    const finalHistoryCalls = editor.saveHistory.mock.calls.length;
+    const finalDirtyCalls = dirty.mock.calls.length;
+    window.removeEventListener('openshop:project-dirty', dirty);
+    controller.destroy();
+
+    expect(finalLayerCount).toBe(1);
+    expect(finalCanvasCalls).toBe(0);
+    expect(finalHistoryCalls).toBe(0);
+    expect(finalDirtyCalls).toBe(0);
+    expect(oldRecord.appliedAt).toBe(0);
+    expect(newRecord.appliedAt).toBe(0);
+    expect(finalState).toMatchObject({status:'review', reviewBlocks:newBlocks});
+    expect(finalReviewText).toBe('New project OCR');
+    expect(finalApplyDisabled).toBe(false);
+  });
+
+  it('checks protocol context again after deferred font loading', async () => {
+    const blocks = [createOcrBlock({id:'ocr-context-change'})];
+    const fontLoad = createDeferred();
+    const {controller, editor, runtime} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
+      fontManagerOverrides:{loadSystemFonts:vi.fn(() => fontLoad.promise)},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const pendingApply = controller.applyTextExtraction();
+    runtime.getState.mockReturnValue({
+      activeSession:{context:{...context, canvasType:'smart', canvasId:'smart-canvas-1'}},
+    });
+    fontLoad.resolve([]);
+    await pendingApply;
+
+    const finalLayerCount = editor.layers.length;
+    const finalCanvasCalls = editor.canvas.add.mock.calls.length;
+    const finalHistoryCalls = editor.saveHistory.mock.calls.length;
+    controller.destroy();
+
+    expect(finalLayerCount).toBe(1);
+    expect(finalCanvasCalls).toBe(0);
+    expect(finalHistoryCalls).toBe(0);
+  });
+
+  it('disables apply during font preflight and restores it for the same review', async () => {
+    const blocks = [createOcrBlock({id:'ocr-button-pending'})];
+    const fontLoad = createDeferred();
+    const matchOcrFont = vi.fn(() => { throw new Error('Deferred font match failed'); });
+    const {controller, editor} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
+      fontManagerOverrides:{loadSystemFonts:vi.fn(() => fontLoad.promise), matchOcrFont},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    document.querySelector('[data-hstar-action="apply-extraction"]').click();
+
+    const disabledWhilePending = document.querySelector('[data-hstar-action="apply-extraction"]')?.disabled;
+    const canvasCallsWhilePending = editor.canvas.add.mock.calls.length;
+    fontLoad.resolve([]);
+    await vi.waitFor(() => expect(controller.getState()).toMatchObject({
+      status:'failed', error:'Deferred font match failed',
+    }));
+
+    const disabledAfterCompletion = document.querySelector('[data-hstar-action="apply-extraction"]')?.disabled;
+    const finalCanvasCalls = editor.canvas.add.mock.calls.length;
+    controller.destroy();
+
+    expect(disabledWhilePending).toBe(true);
+    expect(canvasCallsWhilePending).toBe(0);
+    expect(matchOcrFont).toHaveBeenCalledOnce();
+    expect(disabledAfterCompletion).toBe(false);
+    expect(finalCanvasCalls).toBe(0);
+  });
+
+  it.each([
+    ['session reset', controller => window.dispatchEvent(new CustomEvent('openshop:session-opened', {
+      detail:{session:{context:{...context, projectId:'project-reset'}}},
+    }))],
+    ['controller destroy', controller => controller.destroy()],
+  ])('invalidates a pending OCR apply on %s', async (_label, invalidate) => {
+    const blocks = [createOcrBlock({id:'ocr-invalidated'})];
+    const fontLoad = createDeferred();
+    const {controller, editor} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
+      fontManagerOverrides:{loadSystemFonts:vi.fn(() => fontLoad.promise)},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const pendingApply = controller.applyTextExtraction();
+    invalidate(controller);
+    fontLoad.resolve([]);
+    await pendingApply;
+
+    const finalLayerCount = editor.layers.length;
+    const finalCanvasCalls = editor.canvas.add.mock.calls.length;
+    const finalHistoryCalls = editor.saveHistory.mock.calls.length;
+    const finalState = controller.getState();
+    const panelExists = Boolean(document.getElementById('hstar-text-tools-panel'));
+    controller.destroy();
+
+    expect(finalLayerCount).toBe(1);
+    expect(finalCanvasCalls).toBe(0);
+    expect(finalHistoryCalls).toBe(0);
+    if(_label === 'controller destroy'){
+      expect(panelExists).toBe(false);
+    } else {
+      expect(finalState).toMatchObject({status:'idle', reviewBlocks:[]});
+    }
   });
 
   it('removes text without OCR and adds a new pixel layer while preserving the source', async () => {
