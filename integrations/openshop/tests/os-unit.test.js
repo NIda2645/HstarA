@@ -1313,11 +1313,13 @@ describe('OpenShop core object', () => {
       hstarOcrBlockId:'ocr-title',
       hstarOcrQuad:[{x:.1,y:.2},{x:.4,y:.2},{x:.4,y:.3},{x:.1,y:.3}],
       hstarOcrVisualProfile:{script:'en', fill:'#112233'},
+      hstarOcrOriginalText:'Original OCR title',
     };
     const manual = {type:'i-text', text:'Manual', hstarLayerId:'text-layer-2'};
     OS.layers = [
       {layerId:'text-layer-1',name:'OCR title',visible:true,locked:false,opacity:100,blend:'source-over',objects:[eligible]},
       {layerId:'text-layer-2',name:'Manual',visible:true,locked:false,opacity:100,blend:'source-over',objects:[manual]},
+      {layerId:'source-layer-1',name:'Source',visible:true,locked:false,opacity:100,blend:'source-over',objects:[]},
     ];
     OS.activeLayerIdx = 0;
     OS._selectedLayers = new Set([OS.layers[0]]);
@@ -1344,6 +1346,10 @@ describe('OpenShop core object', () => {
     expect(OS.activeLayerIdx).toBe(0);
     expect(dispatched).toHaveBeenCalledOnce();
     expect(dispatched.mock.calls[0][0].detail).toEqual({layerId:'text-layer-1'});
+
+    OS.layers = OS.layers.filter(layer => layer.layerId !== 'source-layer-1');
+    OS.updateLayersPanel();
+    expect(document.querySelector('[data-layer-index="0"] .layer-art-font').disabled).toBe(true);
     delete window.HstarOpenShopTextToolsController;
   });
 
@@ -1595,6 +1601,18 @@ describe('OpenShop core object', () => {
     });
     expect(OS.__hstarAiTaskRecords[0].discardedAt).toBeGreaterThan(0);
     expect(restoredEvents).toHaveBeenCalledOnce();
+
+    OS.redo();
+
+    const redoneRasters = canvas.getObjects().filter(object => object.hstarAiGeneration?.taskId === 'task-art-1');
+    expect(redoneRasters).toHaveLength(1);
+    expect(redoneRasters[0].hstarAiGeneration).toEqual(ART_GENERATION);
+    expect(OS.layers.filter(layer => layer.hstarAiGeneration?.taskId === 'task-art-1')).toHaveLength(1);
+    expect(OS.layers.find(layer => layer.layerId === 'text-layer-1')).toMatchObject({visible:false});
+    expect(OS.__hstarAiTaskRecords[0]).toMatchObject({reconcileState:'discarded', reconcileReason:'undone'});
+    OS._reconcileArtFontHistoryRestore();
+    expect(canvas.getObjects().filter(object => object.hstarAiGeneration?.taskId === 'task-art-1')).toHaveLength(1);
+    expect(restoredEvents).toHaveBeenCalledTimes(2);
     window.removeEventListener('openshop:history-restored', restoredEvents);
   });
 

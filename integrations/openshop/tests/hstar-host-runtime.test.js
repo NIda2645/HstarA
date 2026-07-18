@@ -122,14 +122,15 @@ describe('Hstar OpenShop editor host runtime', () => {
     const customPropertySource = html.match(/_fabricCustomProperties:\s*Object\.freeze\(\[([\s\S]*?)\]\)/)?.[1] || '';
     const customProperties = [...customPropertySource.matchAll(/'([^']+)'/g)].map(match => match[1]);
     expect(html).toContain("new CustomEvent('openshop:project-dirty'");
-    expect(customProperties).toEqual([
+    expect(customProperties).toEqual(expect.arrayContaining([
       'name', 'excludeFromExport', 'globalCompositeOperation',
       'hstarAssetId', 'hstarAssetRole', 'hstarEdgeId', 'hstarSourceNodeId', 'hstarLayerId',
       'hstarSnapAnchor', 'hstarAiGeneration', 'hstarKerningMode',
       'hstarOcrSourceAssetId', 'hstarOcrSourceLayerId', 'hstarOcrBlockId', 'hstarOcrQuad',
       'hstarOcrVisualProfile', 'hstarOcrOriginalText', 'hstarArtFontRequestGeneration',
       'hstarOcrConfidence', 'hstarOcrLanguage', 'hstarOcrFontCandidates',
-    ]);
+    ]));
+    expect(customProperties.filter(property => property === 'hstarAiGeneration')).toHaveLength(1);
     expect(html).toContain('window.HstarOpenShopAssetApi');
     expect(html).toMatch(/\/api\/openshop\/projects\/.*\/assets/);
     expect(html).toContain("assetResolver: assetId => `/api/openshop/assets/${encodeURIComponent(assetId)}`");

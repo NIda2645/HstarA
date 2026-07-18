@@ -243,7 +243,7 @@ describe('Hstar OpenShop global API client', () => {
     client.destroy();
   });
 
-  it('still returns a posted task identity when the local session closes before the response', async () => {
+  it('rejects a late artistic-font create response after the node scope changes', async () => {
     let resolvePost;
     const postResponse = new Promise(resolve => { resolvePost = resolve; });
     const fetchImpl = vi.fn(() => postResponse);
@@ -255,13 +255,14 @@ describe('Hstar OpenShop global API client', () => {
     });
     await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
 
-    client.stopSession();
+    client.startSession({...context, nodeId:'node-2', projectId:'project-2'});
     resolvePost(new Response(JSON.stringify({task_id:'task-art-posted', status:'queued'}), {
       status:200, headers:{'Content-Type':'application/json'},
     }));
 
-    await expect(creating).resolves.toMatchObject({task_id:'task-art-posted'});
-    expect(fetchImpl.mock.calls[0][1].signal).toBeUndefined();
+    await expect(creating).rejects.toMatchObject({name:'AbortError'});
+    expect(fetchImpl.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+    expect(fetchImpl.mock.calls[0][1].signal.aborted).toBe(true);
     client.destroy();
   });
 

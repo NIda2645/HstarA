@@ -73,8 +73,10 @@
       pendingTextApply:null,
       runGeneration:0,
       artSessionGeneration:0,
+      artPollGeneration:0,
       artRunsByLayerId:new Map(),
       artRunsByTaskId:new Map(),
+      detachedArtTasks:new Map(),
       lastRemovalOptions:{mode:'layer', quality:'auto', prompt:''},
       unsubscribeCatalog:null,
       listeners:[],
@@ -193,6 +195,52 @@
         canvasId:clean(context?.canvasId),
         nodeId:clean(context?.nodeId),
       };
+    }
+
+    function contextFingerprint(context){
+      return ['canvasType', 'canvasId', 'nodeId', 'projectId'].map(key => {
+        const value = clean(context?.[key]);
+        return `${value.length}:${value}`;
+      }).join('|');
+    }
+
+    function captureArtScope(context, sessionGeneration = state.artSessionGeneration, pollGeneration = state.artPollGeneration){
+      const capturedContext = {...context};
+      return {
+        sessionGeneration,
+        pollGeneration,
+        context:capturedContext,
+        owner:ownerFromContext(capturedContext),
+        fingerprint:contextFingerprint(capturedContext),
+      };
+    }
+
+    function artScopeIsCurrent(scope){
+      if(!scope || state.destroyed || !state.started || scope.sessionGeneration !== state.artSessionGeneration) return false;
+      let context;
+      try { context = currentContext(); }
+      catch(error){ return false; }
+      return scope.fingerprint === contextFingerprint(context)
+        && sameContext(scope.context, context)
+        && sameOwner(scope.owner, ownerFromContext(context));
+    }
+
+    function artPollIsCurrent(scope){
+      return artScopeIsCurrent(scope) && scope.pollGeneration === state.artPollGeneration;
+    }
+
+    function isolateArtTask(record, reason){
+      if(!record) return record;
+      const detached = clone(record);
+      detached.detachedReason = clean(reason) || 'scope-changed';
+      detached.detachedAt = Date.now();
+      const key = [
+        contextFingerprint(detached.context), clean(detached.taskId),
+        clean(detached.snapshot?.textLayerId), Number(detached.snapshot?.requestGeneration),
+        clean(detached.outputAssetId),
+      ].join('|');
+      state.detachedArtTasks.set(key, detached);
+      return record;
     }
 
     async function persistState(reason, action){
@@ -743,6 +791,8 @@
         && clean(object?.hstarOcrSourceAssetId)
         && clean(object?.hstarOcrSourceLayerId)
         && clean(object?.hstarOcrBlockId)
+        && typeof object?.hstarOcrOriginalText === 'string'
+        && clean(object.hstarOcrOriginalText)
         && Array.isArray(object?.hstarOcrQuad)
         && object.hstarOcrQuad.length === 4
         && object?.hstarOcrVisualProfile
@@ -750,16 +800,29 @@
       );
     }
 
-    function findArtCarrier(textLayerId, ocrBlockId = ''){
+    function findArtCarrierCandidate(textLayerId, ocrBlockId = ''){
       const layerId = clean(textLayerId);
       const layerIndex = editor.layers?.findIndex(layer => clean(layer?.layerId) === layerId) ?? -1;
       if(layerIndex < 0) return null;
       const layer = editor.layers[layerIndex];
-      const object = (layer?.objects || []).find(candidate => (
-        isArtFontEligibleObject(candidate)
-        && (!clean(ocrBlockId) || clean(candidate.hstarOcrBlockId) === clean(ocrBlockId))
-      ));
+      const textObjects = (layer?.objects || []).filter(isTextObject);
+      const blockId = clean(ocrBlockId);
+      const object = blockId
+        ? textObjects.find(candidate => clean(candidate.hstarOcrBlockId) === blockId) || textObjects[0]
+        : textObjects.find(isArtFontEligibleObject) || textObjects[0];
       return object ? {layer, object, layerIndex} : null;
+    }
+
+    function findArtCarrier(textLayerId, ocrBlockId = ''){
+      const carrier = findArtCarrierCandidate(textLayerId, ocrBlockId);
+      return carrier && isArtFontEligibleObject(carrier.object) ? carrier : null;
+    }
+
+    function findLiveSourceLayer(sourceLayerId){
+      const layerId = clean(sourceLayerId);
+      return layerId
+        ? editor.layers?.find(layer => clean(layer?.layerId) === layerId) || null
+        : null;
     }
 
     function exactArtIdentity(value, record){
@@ -783,6 +846,39 @@
         && sameOwner(record?.owner, ownerFromContext(context));
     }
 
+    function validateArtLiveState(record, scope, expectedObject = null){
+      if(scope && !artScopeIsCurrent(scope)) return {isolated:true, reason:'scope-changed'};
+      const context = scope?.context || currentContext();
+      if(!artRecordScopeMatches(record, context)) return {reason:'scope-mismatch'};
+      if(!findLiveSourceLayer(record?.sourceLayerId)) return {reason:'source-layer-missing'};
+
+      const snapshot = record?.snapshot;
+      const carrier = findArtCarrierCandidate(snapshot?.textLayerId, snapshot?.ocrBlockId);
+      if(!carrier) return {reason:'carrier-missing'};
+      const object = carrier.object;
+      if(expectedObject && object !== expectedObject) return {reason:'carrier-changed'};
+      if(
+        !isArtFontEligibleObject(object)
+        || clean(object.hstarOcrSourceAssetId) !== clean(record.sourceAssetId)
+        || clean(object.hstarOcrSourceLayerId) !== clean(record.sourceLayerId)
+        || clean(object.hstarOcrBlockId) !== clean(snapshot?.ocrBlockId)
+        || String(object.hstarOcrOriginalText ?? '') !== String(snapshot?.originalText ?? '')
+        || !sameValue(object.hstarOcrQuad, snapshot?.quad)
+        || !sameValue(object.hstarOcrVisualProfile, snapshot?.visualProfile)
+      ) return {reason:'provenance-changed'};
+      if(Number(object.hstarArtFontRequestGeneration) !== Number(snapshot?.requestGeneration)){
+        return {reason:'generation-changed'};
+      }
+      if(String(object.text ?? '') !== String(snapshot?.currentText ?? '')){
+        return {reason:'text-changed'};
+      }
+      if(
+        Number(editor.canvasW) !== Number(snapshot?.document?.width)
+        || Number(editor.canvasH) !== Number(snapshot?.document?.height)
+      ) return {reason:'document-changed'};
+      return {carrier, object};
+    }
+
     function setArtBusy(layerId, run){
       const normalized = clean(layerId);
       if(run) state.artRunsByLayerId.set(normalized, run);
@@ -790,8 +886,9 @@
       editor.updateLayersPanel?.();
     }
 
-    async function updateArtReconcile(record, reconcileState, reason){
+    async function updateArtReconcile(record, reconcileState, reason, scope = null){
       if(!record || TERMINAL_RECONCILE_STATES.has(clean(record.reconcileState))) return record;
+      if(scope && !artScopeIsCurrent(scope)) return isolateArtTask(record, 'scope-changed');
       const timestamp = Date.now();
       record.reconcileState = reconcileState;
       record.reconcileReason = clean(reason).slice(0, 160);
@@ -853,62 +950,58 @@
       };
     }
 
-    async function reconcileArtRecord(record, context = currentContext()){
+    async function reconcileArtRecord(record, scope = captureArtScope(currentContext())){
       if(!record || record.toolId !== TOOL_ART_FONT || record.reconcileState !== 'pending') return record;
-      if(!artRecordScopeMatches(record, context)){
-        return updateArtReconcile(record, 'stale', 'scope-mismatch');
+      if(!artScopeIsCurrent(scope)) return isolateArtTask(record, 'scope-changed');
+      if(!artPollIsCurrent(scope)) return record;
+      if(!artRecordScopeMatches(record, scope.context)){
+        return updateArtReconcile(record, 'stale', 'scope-mismatch', scope);
       }
       if(record.status === 'failed' || record.status === 'cancelled'){
-        return updateArtReconcile(record, 'discarded', record.status === 'cancelled' ? 'cancelled' : 'task-failed');
+        return updateArtReconcile(record, 'discarded', record.status === 'cancelled' ? 'cancelled' : 'task-failed', scope);
       }
       if(record.status !== 'succeeded') return record;
+
+      const initialState = validateArtLiveState(record, scope);
+      if(initialState.isolated) return isolateArtTask(record, initialState.reason);
+      if(initialState.reason) return updateArtReconcile(record, 'stale', initialState.reason, scope);
 
       const existing = existingArtOutput(record);
       if(existing){
         record.generatedLayerId = clean(existing.layerId);
-        return updateArtReconcile(record, 'applied', 'existing-output');
+        return updateArtReconcile(record, 'applied', 'existing-output', scope);
       }
 
       const snapshot = record.snapshot;
-      const carrier = findArtCarrier(snapshot?.textLayerId, snapshot?.ocrBlockId);
-      if(!carrier) return updateArtReconcile(record, 'stale', 'carrier-missing');
-      const object = carrier.object;
-      if(
-        clean(object.hstarOcrSourceAssetId) !== clean(record.sourceAssetId)
-        || clean(object.hstarOcrSourceLayerId) !== clean(record.sourceLayerId)
-        || clean(object.hstarOcrBlockId) !== clean(snapshot.ocrBlockId)
-        || !sameValue(object.hstarOcrQuad, snapshot.quad)
-        || !sameValue(object.hstarOcrVisualProfile, snapshot.visualProfile)
-      ) return updateArtReconcile(record, 'stale', 'provenance-changed');
-      if(Number(object.hstarArtFontRequestGeneration) !== Number(snapshot.requestGeneration)){
-        return updateArtReconcile(record, 'stale', 'generation-changed');
-      }
-      if(String(object.text ?? '') !== String(snapshot.currentText ?? '')){
-        return updateArtReconcile(record, 'stale', 'text-changed');
-      }
-      if(
-        Number(editor.canvasW) !== Number(snapshot.document?.width)
-        || Number(editor.canvasH) !== Number(snapshot.document?.height)
-      ) return updateArtReconcile(record, 'stale', 'document-changed');
-
       let image = null;
       let generatedLayer = null;
       let historySaved = false;
-      const historyLength = Array.isArray(editor.history) ? editor.history.length : 0;
-      const priorHistoryIndex = Number(editor.historyIdx);
-      const priorLastAction = editor._lastAction;
-      const priorLayerVisible = carrier.layer.visible !== false;
-      const priorObjectVisibility = new Map((carrier.layer.objects || []).map(item => [item, item.visible !== false]));
+      let carrier = initialState.carrier;
+      const object = initialState.object;
+      let historyLength = 0;
+      let priorHistoryIndex = 0;
+      let priorLastAction;
+      let priorLayerVisible = true;
+      let priorObjectVisibility = new Map();
       try {
         const result = validatedArtResult(record);
         image = await imageLoader(result, fabricRef);
+        if(!artScopeIsCurrent(scope)) return isolateArtTask(record, 'scope-changed');
+        if(!artPollIsCurrent(scope)) return record;
+        const liveState = validateArtLiveState(record, scope, object);
+        if(liveState.isolated) return isolateArtTask(record, liveState.reason);
+        if(liveState.reason) return updateArtReconcile(record, 'stale', liveState.reason, scope);
+        const liveResult = validatedArtResult(record);
+        if(!sameValue(result, liveResult)) throw invalidArtOutput('艺术字体结果在解码期间发生变化');
         if(!image || Number(image.width) !== result.width || Number(image.height) !== result.height){
           throw invalidArtOutput('艺术字体结果尺寸与 PNG 不一致');
         }
-        const liveCarrier = findArtCarrier(snapshot.textLayerId, snapshot.ocrBlockId);
-        if(!liveCarrier || liveCarrier.object !== object) {
-          return updateArtReconcile(record, 'stale', 'carrier-changed');
-        }
+        carrier = liveState.carrier;
+        historyLength = Array.isArray(editor.history) ? editor.history.length : 0;
+        priorHistoryIndex = Number(editor.historyIdx);
+        priorLastAction = editor._lastAction;
+        priorLayerVisible = carrier.layer.visible !== false;
+        priorObjectVisibility = new Map((carrier.layer.objects || []).map(item => [item, item.visible !== false]));
         const geometry = quadGeometry(snapshot.quad, snapshot.document.width, snapshot.document.height, snapshot.visualProfile?.rotation);
         const scale = Math.max(0.0001, Math.min(
           geometry.width / result.contentBox.width,
@@ -975,6 +1068,7 @@
         await persistState('art-font-applied', 'Apply artistic font');
         return record;
       } catch(error){
+        if(!artScopeIsCurrent(scope)) return isolateArtTask(record, 'scope-changed');
         if(generatedLayer){
           const index = editor.layers.indexOf(generatedLayer);
           if(index >= 0) editor.layers.splice(index, 1);
@@ -994,22 +1088,24 @@
         record.appliedAt = 0;
         editor.canvas.renderAll?.();
         editor.updateLayersPanel?.();
-        return updateArtReconcile(record, 'discarded', error?.artReconcileReason || 'apply-failed');
+        return updateArtReconcile(record, 'discarded', error?.artReconcileReason || 'apply-failed', scope);
       }
     }
 
-    async function pollArtRecord(record, context, sessionGeneration){
+    async function pollArtRecord(record, scope){
       const taskId = clean(record?.taskId);
       if(!taskId || state.artRunsByTaskId.has(taskId)) return state.artRunsByTaskId.get(taskId)?.promise || record;
       const controller = new AbortController();
       const run = {record, controller, promise:null};
       run.promise = (async () => {
         try {
-          const task = await aiClient.pollTask(context, taskId, {signal:controller.signal});
-          if(sessionGeneration !== state.artSessionGeneration || !artRecordScopeMatches(record, context)) return record;
+          const task = await aiClient.pollTask(scope.context, taskId, {signal:controller.signal});
+          if(!artScopeIsCurrent(scope)) return isolateArtTask(record, 'scope-changed');
+          if(!artPollIsCurrent(scope) || !artRecordScopeMatches(record, scope.context)) return record;
           updateArtExecution(record, task);
           await persistState('art-font-task', 'Update artistic font task');
-          return reconcileArtRecord(record, context);
+          if(!artPollIsCurrent(scope)) return record;
+          return reconcileArtRecord(record, scope);
         } catch(error){
           return record;
         } finally {
@@ -1020,10 +1116,12 @@
       return run.promise;
     }
 
-    async function runArtFontRestore(textLayerId, sessionGeneration){
+    async function runArtFontRestore(textLayerId, sessionGeneration, pollGeneration){
       const context = currentContext();
+      const scope = captureArtScope(context, sessionGeneration, pollGeneration);
+      if(!artScopeIsCurrent(scope)) return null;
       const carrier = findArtCarrier(textLayerId);
-      if(!carrier) return null;
+      if(!carrier || !findLiveSourceLayer(carrier.object.hstarOcrSourceLayerId)) return null;
       reserveArtTaskRecord();
       const selected = resolvedPreference(TOOL_ART_FONT);
       if(!selected.available) throw new Error(selected.reason || '艺术字体模型不可用');
@@ -1050,6 +1148,13 @@
         maskAssetId:'', apiConfigId:selected.apiConfigId, modelId:selected.modelId,
         mode:'layer', options:{artFont:snapshot},
       };
+      const pendingRecord = {
+        context:{...scope.context}, owner:{...scope.owner},
+        sourceLayerId:request.sourceLayerId, sourceAssetId:request.sourceAssetId,
+        snapshot:clone(snapshot),
+      };
+      const requestState = validateArtLiveState(pendingRecord, scope, carrier.object);
+      if(requestState.isolated || requestState.reason) return null;
       const created = await aiClient.createTask(context, request);
       const taskId = clean(created?.task_id || created?.task?.taskId);
       if(!taskId) throw new Error('艺术字体任务没有返回标识');
@@ -1060,17 +1165,21 @@
         apiConfigId:clean(request.apiConfigId), modelId:clean(request.modelId),
         status:['queued', 'running'].includes(createdStatus) ? createdStatus : 'queued',
         reconcileState:'pending', reconcileReason:'', mode:'layer',
-        context:{...context}, owner:ownerFromContext(context),
+        context:{...scope.context}, owner:{...scope.owner},
         sourceLayerId:request.sourceLayerId, sourceAssetId:request.sourceAssetId,
         maskAssetId:'', outputAssetId:'', snapshot:clone(snapshot), generatedLayerId:'',
         createdAt:timestamp, updatedAt:timestamp, completedAt:0,
         appliedAt:0, staleAt:0, discardedAt:0, error:'',
       };
+      if(!artScopeIsCurrent(scope) || !artRecordScopeMatches(record, scope.context)){
+        return isolateArtTask(record, 'scope-changed');
+      }
       taskRecords().push(record);
       retainTaskRecords();
       await persistState('art-font-task', 'Start artistic font task');
-      if(sessionGeneration !== state.artSessionGeneration) return record;
-      return pollArtRecord(record, context, sessionGeneration);
+      if(!artScopeIsCurrent(scope)) return isolateArtTask(record, 'scope-changed');
+      if(!artPollIsCurrent(scope)) return record;
+      return pollArtRecord(record, scope);
     }
 
     function restoreArtFont(textLayerId){
@@ -1079,7 +1188,7 @@
       const existing = state.artRunsByLayerId.get(layerId);
       if(existing) return existing.promise;
       const run = {promise:null};
-      run.promise = runArtFontRestore(layerId, state.artSessionGeneration)
+      run.promise = runArtFontRestore(layerId, state.artSessionGeneration, state.artPollGeneration)
         .catch(error => {
           root.console?.error?.('[OpenShop] 艺术字体处理失败', error);
           return null;
@@ -1093,22 +1202,23 @@
 
     async function restorePendingArtTasks(){
       const context = currentContext();
-      const sessionGeneration = state.artSessionGeneration;
+      const scope = captureArtScope(context);
       const records = taskRecords().filter(record => (
         record?.toolId === TOOL_ART_FONT
         && !TERMINAL_RECONCILE_STATES.has(clean(record?.reconcileState))
       ));
       await Promise.allSettled(records.map(async record => {
-        if(!artRecordScopeMatches(record, context)) return reconcileArtRecord(record, context);
+        if(!artRecordScopeMatches(record, context)) return reconcileArtRecord(record, scope);
         if(['queued', 'running'].includes(clean(record.status))){
-          return pollArtRecord(record, context, sessionGeneration);
+          return pollArtRecord(record, scope);
         }
-        return reconcileArtRecord(record, context);
+        return reconcileArtRecord(record, scope);
       }));
     }
 
-    function abortArtPolling(){
-      state.artSessionGeneration += 1;
+    function abortArtPolling({sessionChanged = false} = {}){
+      if(sessionChanged) state.artSessionGeneration += 1;
+      state.artPollGeneration += 1;
       state.artRunsByTaskId.forEach(run => run.controller?.abort?.());
       state.artRunsByTaskId.clear();
       state.artRunsByLayerId.clear();
@@ -1468,7 +1578,7 @@
 
     function onSessionOpened(event){
       invalidatePendingTextApply();
-      abortArtPolling();
+      abortArtPolling({sessionChanged:true});
       state.runGeneration += 1;
       state.activeTaskId = '';
       state.activeTaskRecord = null;
@@ -1481,7 +1591,7 @@
 
     function onProjectLoaded(){
       invalidatePendingTextApply();
-      abortArtPolling();
+      abortArtPolling({sessionChanged:true});
       const generation = ++state.runGeneration;
       state.activeTaskId = '';
       state.activeTaskRecord = null;
@@ -1503,7 +1613,7 @@
 
     function onSessionStopped(){
       invalidatePendingTextApply();
-      abortArtPolling();
+      abortArtPolling({sessionChanged:true});
       state.runGeneration += 1;
       state.activeTaskId = '';
       state.activeTaskRecord = null;
@@ -1570,7 +1680,7 @@
       if(state.destroyed) return;
       state.destroyed = true;
       invalidatePendingTextApply();
-      abortArtPolling();
+      abortArtPolling({sessionChanged:true});
       state.runGeneration += 1;
       state.listeners.splice(0).forEach(remove => remove());
       state.unsubscribeCatalog?.();
@@ -1588,6 +1698,7 @@
         reviewBlocks:clone(state.reviewBlocks),
         activeTaskId:state.activeTaskId,
         artBusyLayerIds:[...state.artRunsByLayerId.keys()],
+        detachedArtTaskCount:state.detachedArtTasks.size,
       };
     }
 

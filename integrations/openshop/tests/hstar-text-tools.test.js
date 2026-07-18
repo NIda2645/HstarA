@@ -1183,6 +1183,132 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
+  it('isolates a late create response after a node and project switch', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient, runtime} = harness;
+    addArtCarrier(harness);
+    const post = createDeferred();
+    aiClient.createTask.mockReturnValue(post.promise);
+    await controller.start();
+    const creating = controller.restoreArtFont('text-layer-1');
+    await vi.waitFor(() => expect(aiClient.createTask).toHaveBeenCalledOnce());
+
+    const contextB = {...context, nodeId:'node-2', projectId:'project-2'};
+    runtime.getState.mockReturnValue({activeSession:{context:contextB}});
+    window.dispatchEvent(new CustomEvent('openshop:session-opened', {detail:{session:{context:contextB}}}));
+    editor.__hstarAiTaskRecords = [];
+    const savesBeforeResponse = runtime.requestSave.mock.calls.length;
+    post.resolve({task_id:'task-from-node-1', status:'queued'});
+    await creating;
+
+    expect(editor.__hstarAiTaskRecords).toEqual([]);
+    expect(runtime.requestSave).toHaveBeenCalledTimes(savesBeforeResponse);
+    expect(aiClient.pollTask).not.toHaveBeenCalled();
+    expect(controller.getState().detachedArtTaskCount).toBe(1);
+    controller.destroy();
+  });
+
+  it('revalidates edited text after deferred image decode before mutating the canvas', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient, imageLoader} = harness;
+    const carrier = addArtCarrier(harness);
+    const decoded = createDeferred();
+    imageLoader.mockReturnValue(decoded.promise);
+    aiClient.pollTask.mockResolvedValue({taskId:'task-1', status:'succeeded', result:artResult()});
+    await controller.start();
+    const restoring = controller.restoreArtFont('text-layer-1');
+    await vi.waitFor(() => expect(imageLoader).toHaveBeenCalledOnce());
+
+    carrier.object.text = 'Changed during decode';
+    decoded.resolve({type:'image', width:360, height:120, set(values){ Object.assign(this, values); }});
+    await restoring;
+
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      status:'succeeded', reconcileState:'stale', reconcileReason:'text-changed',
+    });
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(0);
+    expect(carrier.layer.visible).toBe(true);
+    expect(carrier.object.visible).toBe(true);
+    expect(editor.saveHistory).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+
+  it('isolates a decoded result after a node switch without updating the new project UI', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient, imageLoader, runtime} = harness;
+    addArtCarrier(harness);
+    const decoded = createDeferred();
+    imageLoader.mockReturnValue(decoded.promise);
+    aiClient.pollTask.mockResolvedValue({taskId:'task-1', status:'succeeded', result:artResult()});
+    await controller.start();
+    const restoring = controller.restoreArtFont('text-layer-1');
+    await vi.waitFor(() => expect(imageLoader).toHaveBeenCalledOnce());
+
+    const contextB = {...context, nodeId:'node-2', projectId:'project-2'};
+    runtime.getState.mockReturnValue({activeSession:{context:contextB}});
+    window.dispatchEvent(new CustomEvent('openshop:session-opened', {detail:{session:{context:contextB}}}));
+    editor.__hstarAiTaskRecords = [];
+    editor.layers = [{layerId:'node-2-layer', name:'Node 2', visible:true, objects:[]}];
+    editor.updateLayersPanel.mockClear();
+    editor.canvas.renderAll.mockClear();
+    editor.saveHistory.mockClear();
+    runtime.requestSave.mockClear();
+    decoded.resolve({type:'image', width:360, height:120, set(values){ Object.assign(this, values); }});
+    await restoring;
+
+    expect(editor.__hstarAiTaskRecords).toEqual([]);
+    expect(editor.layers).toEqual([{layerId:'node-2-layer', name:'Node 2', visible:true, objects:[]}]);
+    expect(editor.updateLayersPanel).not.toHaveBeenCalled();
+    expect(editor.canvas.renderAll).not.toHaveBeenCalled();
+    expect(editor.saveHistory).not.toHaveBeenCalled();
+    expect(runtime.requestSave).not.toHaveBeenCalled();
+    expect(controller.getState().detachedArtTaskCount).toBe(1);
+    controller.destroy();
+  });
+
+  it('requires original OCR text and a live source layer before creating art work', async () => {
+    const missingOriginal = createHarness();
+    const originalCarrier = addArtCarrier(missingOriginal);
+    delete originalCarrier.object.hstarOcrOriginalText;
+    await missingOriginal.controller.start();
+    await missingOriginal.controller.restoreArtFont('text-layer-1');
+    expect(missingOriginal.aiClient.createTask).not.toHaveBeenCalled();
+    expect(originalCarrier.object.hstarArtFontRequestGeneration).toBe(0);
+    missingOriginal.controller.destroy();
+
+    const deletedSource = createHarness();
+    const sourceCarrier = addArtCarrier(deletedSource);
+    deletedSource.editor.layers = deletedSource.editor.layers.filter(layer => layer !== deletedSource.sourceLayer);
+    await deletedSource.controller.start();
+    await deletedSource.controller.restoreArtFont('text-layer-1');
+    expect(deletedSource.aiClient.createTask).not.toHaveBeenCalled();
+    expect(sourceCarrier.object.hstarArtFontRequestGeneration).toBe(0);
+    deletedSource.controller.destroy();
+  });
+
+  it('marks a succeeded result stale when its live OCR source layer was deleted', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient, sourceLayer} = harness;
+    const carrier = addArtCarrier(harness);
+    const terminal = createDeferred();
+    aiClient.pollTask.mockReturnValue(terminal.promise);
+    await controller.start();
+    const restoring = controller.restoreArtFont('text-layer-1');
+    await vi.waitFor(() => expect(aiClient.pollTask).toHaveBeenCalledOnce());
+
+    editor.layers = editor.layers.filter(layer => layer !== sourceLayer);
+    terminal.resolve({taskId:'task-1', status:'succeeded', result:artResult()});
+    await restoring;
+
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      reconcileState:'stale', reconcileReason:'source-layer-missing',
+    });
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(0);
+    expect(carrier.layer.visible).toBe(true);
+    expect(editor.saveHistory).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+
   it('rejects new art work at the active record cap without changing the carrier', async () => {
     const harness = createHarness();
     const {controller, editor, aiClient} = harness;

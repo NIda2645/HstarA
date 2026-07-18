@@ -185,11 +185,11 @@
     async function createTask(context, input = {}){
       const normalized = safeContext(context);
       const generation = state.generation;
-      const durableIdentity = clean(input.toolId) === 'art-font-restore';
       assertSession(normalized, generation);
       const requestOptions = {
         method:'POST',
         headers:{'Content-Type':'application/json'},
+        signal:state.sessionController.signal,
         body:JSON.stringify({
           owner:{
             canvasType:normalized.canvasType,
@@ -206,10 +206,9 @@
           options:input.options && typeof input.options === 'object' ? input.options : {},
         }),
       };
-      if(!durableIdentity) requestOptions.signal = state.sessionController.signal;
       const response = await fetchImpl(projectTaskUrl(normalized), requestOptions);
       const value = await responseJson(response, '创建 OpenShop AI 任务失败');
-      if(!durableIdentity) assertSession(normalized, generation);
+      assertSession(normalized, generation);
       return value;
     }
 

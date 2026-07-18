@@ -2675,13 +2675,17 @@ self.onmessage = function(e) {
             const textObjects = l.objects.filter(object => ['i-text','itext','text','textbox'].includes(String(object?.type || '').toLowerCase()));
             const textObject = textObjects.find(object => Boolean(object.hstarOcrSourceAssetId
                 && object.hstarOcrSourceLayerId && object.hstarOcrBlockId
+                && typeof object.hstarOcrOriginalText === 'string' && object.hstarOcrOriginalText.trim()
                 && Array.isArray(object.hstarOcrQuad) && object.hstarOcrQuad.length === 4
                 && object.hstarOcrVisualProfile && typeof object.hstarOcrVisualProfile === 'object')) || textObjects[0];
+            const artSourceLayer = textObject && this.layers.find(layer => String(layer.layerId || '') === String(textObject.hstarOcrSourceLayerId || ''));
             const artEligible = Boolean(textObject
                 && textObject.hstarOcrSourceAssetId && textObject.hstarOcrSourceLayerId
                 && textObject.hstarOcrBlockId && Array.isArray(textObject.hstarOcrQuad)
                 && textObject.hstarOcrQuad.length === 4
-                && textObject.hstarOcrVisualProfile && typeof textObject.hstarOcrVisualProfile === 'object');
+                && typeof textObject.hstarOcrOriginalText === 'string' && textObject.hstarOcrOriginalText.trim()
+                && textObject.hstarOcrVisualProfile && typeof textObject.hstarOcrVisualProfile === 'object'
+                && artSourceLayer);
             const artBusy = Boolean(textObject && window.HstarOpenShopTextToolsController?.isArtFontBusy?.(l.layerId));
             const artTitle = this._esc(this._t(artEligible ? 'Artistic font processing' : 'No original image reference'));
             const artButton = textObject
