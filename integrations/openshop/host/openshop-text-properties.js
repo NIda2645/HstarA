@@ -489,6 +489,9 @@
       fontRowsLayer.dataset.fontRows = 'true';
       fontList?.replaceChildren(fontSpacer, fontRowsLayer);
 
+      addDomListener(fontTrigger, 'mousedown', event => {
+        if(activeTextObject()?.isEditing) event.preventDefault();
+      });
       addDomListener(fontTrigger, 'click', () => {
         if(fontList?.hidden) openFontList();
         else closeFontList();

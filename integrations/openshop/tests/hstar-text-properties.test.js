@@ -377,6 +377,32 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
+  it('prevents trigger mousedown only while the active Fabric text is editing', async () => {
+    const {controller, textObject} = createHarness({
+      catalogRows:createCatalogRows(),
+      editing:true,
+      selectionStart:2,
+      selectionEnd:2,
+    });
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    const editingMouseDown = new MouseEvent('mousedown', {bubbles:true, cancelable:true});
+
+    expect(trigger.dispatchEvent(editingMouseDown)).toBe(false);
+    expect(editingMouseDown.defaultPrevented).toBe(true);
+
+    textObject.isEditing = false;
+    const normalMouseDown = new MouseEvent('mousedown', {bubbles:true, cancelable:true});
+    expect(trigger.dispatchEvent(normalMouseDown)).toBe(true);
+    expect(normalMouseDown.defaultPrevented).toBe(false);
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+    trigger.click();
+    expect(list.hidden).toBe(false);
+    controller.destroy();
+  });
+
   it('closes the virtualized list on Escape and outside mousedown', async () => {
     const {controller} = createHarness({catalogRows:createCatalogRows()});
     await controller.start();

@@ -259,6 +259,28 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
     'group-zh-unprefixed', 'group-01', 'group-02', 'group-03', 'group-en-unprefixed',
   ]);
   expect(catalogAudit.violations).toEqual([]);
+  const editingFocusState = () => page.evaluate(() => {
+    const text = OS.canvas.getObjects().find(object => object.type === 'i-text');
+    return {
+      isEditing:text.isEditing,
+      selectionStart:text.selectionStart,
+      selectionEnd:text.selectionEnd,
+      hiddenTextareaFocused:document.activeElement === text.hiddenTextarea,
+    };
+  });
+  const expectedEditingFocus = {
+    isEditing:true,
+    selectionStart:7,
+    selectionEnd:7,
+    hiddenTextareaFocused:true,
+  };
+  expect(await editingFocusState()).toEqual(expectedEditingFocus);
+  await trigger.click();
+  await expect(list).toBeVisible();
+  expect(await editingFocusState()).toEqual(expectedEditingFocus);
+  await trigger.click();
+  await expect(list).toBeHidden();
+  expect(await editingFocusState()).toEqual(expectedEditingFocus);
   const openMetrics = await page.evaluate(() => {
     const triggerElement = document.querySelector('[data-text-family]');
     const listElement = document.querySelector('[data-text-font-list]');
