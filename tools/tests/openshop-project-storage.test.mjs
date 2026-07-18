@@ -1578,12 +1578,19 @@ async def api_lifecycle():
                 main.save_canvas = original_save_canvas
 
             assert {result.status_code for result in concurrent_results} <= {200, 409}
+            assert save_rendezvous.broken
             concurrent_saved = main.load_canvas(concurrent_canvas["id"])
             if main.openshop_project_owners(concurrent_saved.get("nodes")):
                 assert main.OPENSHOP_STORE.load(
                     concurrent_project_id,
                     concurrent_owner,
                 )["owner"] == concurrent_owner
+            else:
+                try:
+                    main.OPENSHOP_STORE.load(concurrent_project_id, concurrent_owner)
+                    raise AssertionError("detached concurrent project must be deleted")
+                except OpenShopNotFound:
+                    pass
 
             startup_response = await client.post(
                 "/api/canvases",
