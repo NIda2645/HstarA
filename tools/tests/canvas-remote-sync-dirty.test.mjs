@@ -34,32 +34,48 @@ const mergeSource = extractFunction(js, 'mergeClassicCanvasConflictState');
 const sandbox = {output:null};
 vm.createContext(sandbox);
 vm.runInContext(`
-  const permanentlyDeletedOpenShopNodeIds = new Set(['openshop-deleted']);
+  const permanentlyDeletedOpenShopNodeIds = new Set();
   ${filterSource}
   ${mergeSource}
-  output = mergeClassicCanvasConflictState({
+  const merged = mergeClassicCanvasConflictState({
     nodes:[
-      {id:'shared-node', type:'prompt', text:'local edit'},
+      {id:'shared-node', type:'output', x:100, images:[]},
+      {id:'openshop-remote-deleted', type:'openshop-layered'},
       {id:'local-new', type:'image'},
     ],
-    connections:[{id:'local-link', from:'local-new', to:'shared-node'}],
-    selectedIds:['local-new'],
+    connections:[
+      {id:'openshop-link', from:'openshop-remote-deleted', to:'shared-node'},
+      {id:'local-link', from:'local-new', to:'shared-node'},
+    ],
+    selectedIds:['openshop-remote-deleted', 'local-new'],
   }, {
     nodes:[
-      {id:'shared-node', type:'prompt', text:'remote old'},
+      {id:'shared-node', type:'output', x:0, images:[{url:'/output/remote-result.png'}]},
+      {id:'ordinary-local-deleted', type:'image'},
       {id:'remote-new', type:'image'},
-      {id:'openshop-deleted', type:'openshop-layered'},
     ],
     connections:[
+      {id:'ordinary-link', from:'ordinary-local-deleted', to:'shared-node'},
       {id:'remote-link', from:'remote-new', to:'shared-node'},
-      {id:'deleted-link', from:'openshop-deleted', to:'remote-new'},
+    ],
+    selectedIds:[],
+  }, {
+    nodes:[
+      {id:'shared-node', type:'output', x:0, images:[]},
+      {id:'openshop-remote-deleted', type:'openshop-layered'},
+      {id:'ordinary-local-deleted', type:'image'},
+    ],
+    connections:[
+      {id:'openshop-link', from:'openshop-remote-deleted', to:'shared-node'},
+      {id:'ordinary-link', from:'ordinary-local-deleted', to:'shared-node'},
     ],
     selectedIds:[],
   });
+  output = {merged, tombstones:[...permanentlyDeletedOpenShopNodeIds]};
 `, sandbox);
-const merged = JSON.parse(JSON.stringify(sandbox.output));
+const {merged, tombstones} = JSON.parse(JSON.stringify(sandbox.output));
 assert.deepEqual(merged.nodes, [
-  {id:'shared-node', type:'prompt', text:'local edit'},
+  {id:'shared-node', type:'output', x:100, images:[{url:'/output/remote-result.png'}]},
   {id:'remote-new', type:'image'},
   {id:'local-new', type:'image'},
 ]);
@@ -68,6 +84,7 @@ assert.deepEqual(merged.connections, [
   {id:'local-link', from:'local-new', to:'shared-node'},
 ]);
 assert.deepEqual(merged.selectedIds, ['local-new']);
+assert.deepEqual(tombstones, ['openshop-remote-deleted']);
 assert.match(extractFunction(js, 'saveCanvas'), /mergeClassicCanvasConflictState\(/, 'ordinary canvas 409 handling should merge remote additions before retrying local changes');
 
 console.log('ordinary canvas dirty remote sync tests passed');
