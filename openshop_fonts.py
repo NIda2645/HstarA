@@ -1,5 +1,6 @@
 import copy
 import ctypes
+import os
 import re
 import sys
 from ctypes import wintypes
@@ -96,6 +97,38 @@ SPECIAL_FACE_SUFFIXES = (
     (re.compile(r"(?:\s+|-)Math$", re.IGNORECASE), "Math"),
 )
 REGISTRY_FORMAT_SUFFIX = re.compile(r"\s*\((?:TrueType|OpenType)\)\s*$", re.IGNORECASE)
+FREE_COMMERCIAL_PREFIX = re.compile(r"^(01|02|03)免")
+INSTALLER_DISAMBIGUATOR = re.compile(
+    r"\s*\[(?:\d+|other-\d+)\]\s*$",
+    re.IGNORECASE,
+)
+CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+ALIBABA_PUHUITI_3 = "阿里巴巴普惠体 3"
+ALIBABA_PUHUITI_3_0 = "阿里巴巴普惠体 3.0"
+
+
+def _strip_installer_disambiguator(value):
+    return INSTALLER_DISAMBIGUATOR.sub("", str(value or "")).strip()
+
+
+def _font_metadata(family):
+    display = _strip_installer_disambiguator(family)
+    match = FREE_COMMERCIAL_PREFIX.match(display)
+    category = match.group(1) if match else ""
+    sort_name = display[match.end():].strip() if match else display
+    if category == "01":
+        language_group = "zh-hans"
+    elif category == "02":
+        language_group = "zh-hant"
+    elif category == "03":
+        language_group = "en"
+    else:
+        language_group = "zh-hans" if CJK_TEXT.search(sort_name) else "en"
+    return {
+        "languageGroup": language_group,
+        "freeCommercialCategory": category,
+        "sortName": sort_name or display,
+    }
 
 
 def _display_style(value):
@@ -162,7 +195,7 @@ def _font_family_for_face(family, weight, italic, allow_vendor_code=False):
 def _normalize_faces(faces):
     vendor_code_groups = {}
     for face in faces:
-        family = str(face.get("family") or "").strip()
+        family = _strip_installer_disambiguator(face.get("family"))
         match = VENDOR_CODE_SUFFIX.search(family)
         if not match:
             continue
@@ -174,7 +207,7 @@ def _normalize_faces(faces):
 
     grouped = {}
     for face in faces:
-        family = str(face.get("family") or "").strip()
+        family = _strip_installer_disambiguator(face.get("family"))
         if not family or family.startswith("@"):
             continue
         try:
@@ -202,6 +235,26 @@ def _normalize_faces(faces):
             "localNames": list(dict.fromkeys([family, group["family"]])),
         })
 
+    legacy_key = ALIBABA_PUHUITI_3.casefold()
+    canonical_key = ALIBABA_PUHUITI_3_0.casefold()
+    if legacy_key in grouped and canonical_key in grouped:
+        legacy_group = grouped.pop(legacy_key)
+        canonical_group = grouped[canonical_key]
+        for style_key, style in legacy_group["styles"].items():
+            existing = canonical_group["styles"].get(style_key)
+            if existing is None:
+                style["localNames"] = list(dict.fromkeys([
+                    *style["localNames"],
+                    canonical_group["family"],
+                ]))
+                canonical_group["styles"][style_key] = style
+            else:
+                existing["localNames"] = list(dict.fromkeys([
+                    *existing["localNames"],
+                    *style["localNames"],
+                    canonical_group["family"],
+                ]))
+
     fonts = []
     for value in sorted(grouped.values(), key=lambda item: item["family"].casefold()):
         styles = sorted(
@@ -221,7 +274,9 @@ def _normalize_faces(faces):
                 ):
                     style["label"] = "Default"
             styles.sort(key=lambda style: (style["label"] != "Default", style["weight"], style["label"]))
-        fonts.append({"family": value["family"], "label": value["family"], "styles": styles})
+        font = {"family": value["family"], "label": value["family"], "styles": styles}
+        font.update(_font_metadata(value["family"]))
+        fonts.append(font)
     return fonts
 
 
@@ -230,6 +285,24 @@ def _fallback_faces():
         {"family": family, "weight": 400, "italic": False}
         for family in COMMON_FONTS
     ]
+
+
+def _registry_font_path(hive, file_value, winreg_module):
+    value = os.path.expandvars(str(file_value or "").strip())
+    if not value:
+        return ""
+    if os.path.isabs(value):
+        return value
+    if hive is winreg_module.HKEY_CURRENT_USER:
+        root = os.path.join(
+            os.environ.get("LOCALAPPDATA", ""),
+            "Microsoft",
+            "Windows",
+            "Fonts",
+        )
+    else:
+        root = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    return os.path.normpath(os.path.join(root, value))
 
 
 def _enumerate_windows_registry_faces():
@@ -249,9 +322,12 @@ def _enumerate_windows_registry_faces():
                         display_name, _file_value, _value_type = winreg.EnumValue(key, index)
                     except OSError:
                         continue
+                    font_path = _registry_font_path(hive, _file_value, winreg)
+                    if not font_path or not os.path.isfile(font_path):
+                        continue
                     family = REGISTRY_FORMAT_SUFFIX.sub("", str(display_name)).strip()
                     families = [family]
-                    if str(_file_value or "").strip().casefold().endswith((".ttc", ".otc")):
+                    if font_path.casefold().endswith((".ttc", ".otc")):
                         collection_families = [
                             part.strip() for part in re.split(r"\s+&\s+", family) if part.strip()
                         ]

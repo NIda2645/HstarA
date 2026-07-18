@@ -1,3 +1,4 @@
+import os
 import unittest
 import sys
 from types import SimpleNamespace
@@ -5,6 +6,161 @@ from unittest.mock import patch
 
 
 class OpenShopFontCatalogTests(unittest.TestCase):
+    @staticmethod
+    def _fake_registry(machine_entries, user_entries=None):
+        local_machine = object()
+        current_user = object()
+
+        class RegistryKey:
+            def __init__(self, entries):
+                self.entries = entries
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def open_key(hive, _path):
+            if hive is current_user and user_entries is None:
+                raise OSError("missing user font key")
+            entries = machine_entries if hive is local_machine else user_entries
+            return RegistryKey(entries)
+
+        return SimpleNamespace(
+            HKEY_LOCAL_MACHINE=local_machine,
+            HKEY_CURRENT_USER=current_user,
+            OpenKey=open_key,
+            QueryInfoKey=lambda key: (0, len(key.entries), 0),
+            EnumValue=lambda key, index: key.entries[index],
+        )
+
+    def test_emits_authoritative_language_and_free_commercial_metadata(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "思源黑体", "weight": 400, "italic": False},
+                {"family": "Example Sans", "weight": 400, "italic": False},
+                {"family": "01免霞鹜文楷", "weight": 400, "italic": False},
+                {"family": "02免源云明体", "weight": 400, "italic": False},
+                {"family": "03免Libre Baskerville", "weight": 400, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
+
+        self.assertEqual(fonts["思源黑体"]["languageGroup"], "zh-hans")
+        self.assertEqual(fonts["思源黑体"]["freeCommercialCategory"], "")
+        self.assertEqual(fonts["思源黑体"]["sortName"], "思源黑体")
+        self.assertEqual(fonts["Example Sans"]["languageGroup"], "en")
+        self.assertEqual(fonts["Example Sans"]["freeCommercialCategory"], "")
+        self.assertEqual(fonts["Example Sans"]["sortName"], "Example Sans")
+        self.assertEqual(fonts["01免霞鹜文楷"]["languageGroup"], "zh-hans")
+        self.assertEqual(fonts["01免霞鹜文楷"]["freeCommercialCategory"], "01")
+        self.assertEqual(fonts["02免源云明体"]["languageGroup"], "zh-hant")
+        self.assertEqual(fonts["02免源云明体"]["freeCommercialCategory"], "02")
+        self.assertEqual(fonts["03免Libre Baskerville"]["languageGroup"], "en")
+        self.assertEqual(fonts["03免Libre Baskerville"]["freeCommercialCategory"], "03")
+        self.assertEqual(fonts["03免Libre Baskerville"]["sortName"], "Libre Baskerville")
+        self.assertEqual(fonts["03免Libre Baskerville"]["family"], "03免Libre Baskerville")
+        self.assertEqual(fonts["03免Libre Baskerville"]["label"], "03免Libre Baskerville")
+
+    def test_collapses_installer_aliases_without_inventing_removed_family_aliases(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "01免Example Sans", "weight": 400, "italic": False},
+                {
+                    "family": "01免Example Sans Regular [123]",
+                    "weight": 400,
+                    "italic": False,
+                },
+                {
+                    "family": "01免Example Sans Bold [other-12]",
+                    "weight": 700,
+                    "italic": False,
+                },
+                {"family": "阿里巴巴普惠体 3.0", "weight": 400, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
+
+        self.assertEqual(set(fonts), {"01免Example Sans", "阿里巴巴普惠体 3.0"})
+        self.assertEqual(
+            [
+                (style["family"], style["weight"], style["label"])
+                for style in fonts["01免Example Sans"]["styles"]
+            ],
+            [
+                ("01免Example Sans", 400, "Regular"),
+                ("01免Example Sans Bold", 700, "Bold"),
+            ],
+        )
+        self.assertTrue(
+            all(
+                "01免Example Sans" in style["localNames"]
+                for style in fonts["01免Example Sans"]["styles"]
+            )
+        )
+        self.assertNotIn("阿里巴巴普惠体 3", fonts)
+
+    def test_canonicalizes_confirmed_alibaba_3_alias_to_3_0(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "阿里巴巴普惠体 3 Thin", "weight": 100, "italic": False},
+                {"family": "阿里巴巴普惠体 3.0 Light", "weight": 300, "italic": False},
+                {"family": "阿里巴巴普惠体 3 Regular", "weight": 400, "italic": False},
+                {"family": "阿里巴巴普惠体 3.0 Medium", "weight": 500, "italic": False},
+                {"family": "阿里巴巴普惠体 3 SemiBold", "weight": 600, "italic": False},
+                {"family": "阿里巴巴普惠体 3.0 ExtraBold", "weight": 800, "italic": False},
+                {"family": "阿里巴巴普惠体 3 Heavy", "weight": 900, "italic": False},
+                {"family": "阿里巴巴普惠体 3.0 Black", "weight": 900, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        fonts = catalog.get_catalog()["fonts"]
+
+        self.assertEqual([font["family"] for font in fonts], ["阿里巴巴普惠体 3.0"])
+        self.assertEqual(
+            [
+                (style["family"], style["weight"], style["label"])
+                for style in fonts[0]["styles"]
+            ],
+            [
+                ("阿里巴巴普惠体 3 Thin", 100, "Thin"),
+                ("阿里巴巴普惠体 3.0 Light", 300, "Light"),
+                ("阿里巴巴普惠体 3 Regular", 400, "Regular"),
+                ("阿里巴巴普惠体 3.0 Medium", 500, "Medium"),
+                ("阿里巴巴普惠体 3 SemiBold", 600, "Semibold"),
+                ("阿里巴巴普惠体 3.0 ExtraBold", 800, "Extrabold"),
+                ("阿里巴巴普惠体 3.0 Black", 900, "Black"),
+                ("阿里巴巴普惠体 3 Heavy", 900, "Heavy"),
+            ],
+        )
+
+    def test_does_not_generically_merge_versioned_family_names(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "Example Sans 3", "weight": 400, "italic": False},
+                {"family": "Example Sans 3.0", "weight": 400, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        families = [font["family"] for font in catalog.get_catalog()["fonts"]]
+
+        self.assertEqual(families, ["Example Sans 3", "Example Sans 3.0"])
+
     def test_groups_separate_light_faces_under_the_base_family(self):
         from openshop_fonts import OpenShopFontCatalog
 
@@ -163,40 +319,72 @@ class OpenShopFontCatalogTests(unittest.TestCase):
     def test_splits_registry_collection_names_without_splitting_regular_font_names(self):
         from openshop_fonts import _enumerate_windows_registry_faces
 
-        local_machine = object()
-        current_user = object()
         entries = [
             ("Cambria & Cambria Math (TrueType)", "cambria.ttc", 1),
             ("Rock & Roll (TrueType)", "rock-roll.ttf", 1),
         ]
+        fake_winreg = self._fake_registry(entries)
 
-        class RegistryKey:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-        def open_key(hive, _path):
-            if hive is current_user:
-                raise OSError("missing user font key")
-            return RegistryKey()
-
-        fake_winreg = SimpleNamespace(
-            HKEY_LOCAL_MACHINE=local_machine,
-            HKEY_CURRENT_USER=current_user,
-            OpenKey=open_key,
-            QueryInfoKey=lambda _key: (0, len(entries), 0),
-            EnumValue=lambda _key, index: entries[index],
-        )
-
-        with patch.dict(sys.modules, {"winreg": fake_winreg}):
+        with patch.dict(sys.modules, {"winreg": fake_winreg}), patch(
+            "os.path.isfile", return_value=True
+        ):
             faces = _enumerate_windows_registry_faces()
 
         self.assertEqual(
             [face["family"] for face in faces],
             ["Cambria", "Cambria Math", "Rock & Roll"],
         )
+
+    def test_resolves_registry_font_paths_by_hive(self):
+        from openshop_fonts import _enumerate_windows_registry_faces
+
+        machine_entries = [
+            ("Absolute Font (TrueType)", r"D:\Fonts\absolute.ttf", 1),
+            ("Machine Font (TrueType)", "machine.ttf", 1),
+        ]
+        user_entries = [("User Font (TrueType)", "user.ttf", 1)]
+        fake_winreg = self._fake_registry(machine_entries, user_entries)
+        checked_paths = []
+
+        def is_file(path):
+            checked_paths.append(path)
+            return True
+
+        with patch.dict(sys.modules, {"winreg": fake_winreg}), patch.dict(
+            os.environ,
+            {"WINDIR": r"C:\WindowsRoot", "LOCALAPPDATA": r"C:\Users\Test\AppData\Local"},
+        ), patch("os.path.isfile", side_effect=is_file):
+            faces = _enumerate_windows_registry_faces()
+
+        self.assertEqual(
+            checked_paths,
+            [
+                os.path.normpath(r"D:\Fonts\absolute.ttf"),
+                os.path.normpath(r"C:\WindowsRoot\Fonts\machine.ttf"),
+                os.path.normpath(r"C:\Users\Test\AppData\Local\Microsoft\Windows\Fonts\user.ttf"),
+            ],
+        )
+        self.assertEqual(
+            [face["family"] for face in faces],
+            ["Absolute Font", "Machine Font", "User Font"],
+        )
+
+    def test_registry_refresh_excludes_missing_backing_files(self):
+        from openshop_fonts import _enumerate_windows_registry_faces
+
+        entries = [
+            ("01免Available (TrueType)", r"C:\Fonts\available.ttf", 1),
+            ("01免Removed (TrueType)", r"C:\Fonts\removed.ttf", 1),
+        ]
+        fake_winreg = self._fake_registry(entries)
+
+        with patch.dict(sys.modules, {"winreg": fake_winreg}), patch(
+            "os.path.isfile",
+            side_effect=lambda path: path.casefold().endswith("available.ttf"),
+        ):
+            faces = _enumerate_windows_registry_faces()
+
+        self.assertEqual([face["family"] for face in faces], ["01免Available"])
 
     def test_response_never_exposes_font_paths_or_binary_metadata(self):
         from openshop_fonts import OpenShopFontCatalog
