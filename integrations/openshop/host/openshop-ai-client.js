@@ -37,7 +37,9 @@
     }
     if(!response.ok){
       const detail = typeof value?.detail === 'string' ? value.detail : value?.error;
-      throw new Error(clean(detail || text || `${fallback} (${response.status})`).slice(0, 500));
+      const requestError = new Error(clean(detail || text || `${fallback} (${response.status})`).slice(0, 500));
+      requestError.status = Number(response.status) || 0;
+      throw requestError;
     }
     return value || {};
   }

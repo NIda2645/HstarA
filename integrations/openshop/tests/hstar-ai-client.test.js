@@ -245,6 +245,20 @@ describe('Hstar OpenShop global API client', () => {
     client.destroy();
   });
 
+  it('preserves HTTP status on poll failures for controller classification', async () => {
+    const fetchImpl = vi.fn(() => jsonResponse({detail:'task registry entry missing'}, 404));
+    const client = window.HstarOpenShopAiClient.createClient({
+      fetchImpl, BroadcastChannelImpl:FakeBroadcastChannel,
+    });
+    client.startSession(context);
+
+    await expect(client.pollTask(context, 'task-missing')).rejects.toMatchObject({
+      status:404,
+      message:'task registry entry missing',
+    });
+    client.destroy();
+  });
+
   it('rejects a late artistic-font create response after the node scope changes', async () => {
     let resolvePost;
     const postResponse = new Promise(resolve => { resolvePost = resolve; });

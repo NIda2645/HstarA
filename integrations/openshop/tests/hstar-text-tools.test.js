@@ -26,6 +26,12 @@ function createDeferred() {
   return {promise, resolve:resolvePromise, reject:rejectPromise};
 }
 
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
 function createOcrBlock({id='ocr-race', text='Deferred OCR'} = {}) {
   return {
     id, text, language:'en', script:'en', confidence:0.96, lowConfidence:false,
@@ -73,7 +79,10 @@ function artResult({assetId=OUTPUT_ASSET_ID, width=360, height=120} = {}) {
   };
 }
 
-function provisionalArtRecord({clientRequestId='art-font-request.project-1.node-1.text-layer-1.1'} = {}) {
+function provisionalArtRecord({
+  layerId='text-layer-1', blockId='ocr-title', text='Edited title', requestGeneration=1,
+  clientRequestId=`art-font-request.project-1.node-1.${layerId}.${requestGeneration}`,
+} = {}) {
   return {
     taskId:`provisional:${clientRequestId}`,
     clientRequestId,
@@ -84,8 +93,8 @@ function provisionalArtRecord({clientRequestId='art-font-request.project-1.node-
     sourceLayerId:'layer-source', sourceAssetId:SOURCE_ASSET_ID, maskAssetId:'',
     outputAssetId:'', generatedLayerId:'',
     snapshot:{
-      textLayerId:'text-layer-1', ocrBlockId:'ocr-title', originalText:'Original title',
-      currentText:'Edited title', requestGeneration:1, document:{width:1920,height:1080},
+      textLayerId:layerId, ocrBlockId:blockId, originalText:'Original title',
+      currentText:text, requestGeneration, document:{width:1920,height:1080},
       quad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
       visualProfile:artVisualProfile(),
     },
@@ -165,7 +174,7 @@ function createEditor() {
   return {editor, sourceImage, sourceLayer, objects};
 }
 
-function createHarness({pollResults={}, fontManagerOverrides={}} = {}) {
+function createHarness({pollResults={}, fontManagerOverrides={}, controllerOptions={}} = {}) {
   const {editor, sourceImage, sourceLayer, objects} = createEditor();
   let taskSequence = 0;
   const createdTasks = [];
@@ -268,6 +277,7 @@ function createHarness({pollResults={}, fontManagerOverrides={}} = {}) {
     fabricRef:{IText:FakeIText, Shadow:FakeShadow},
     imageLoader,
     maskRenderer:vi.fn(() => 'data:image/png;base64,SELECTION_MASK'),
+    ...controllerOptions,
   });
   return {controller, editor, sourceImage, sourceLayer, objects, aiClient, assetApi, fontManager, imageLoader, runtime, createdTasks};
 }
@@ -962,7 +972,6 @@ describe('Hstar OpenShop multilingual text tools', () => {
     const {layer:carrierLayer, object:carrier} = addArtCarrier(harness);
     const provisionalSave = createDeferred();
     runtime.requestSave
-      .mockResolvedValueOnce({saved:true})
       .mockImplementationOnce(() => provisionalSave.promise)
       .mockResolvedValue({saved:true});
     aiClient.pollTask.mockResolvedValue({
@@ -974,11 +983,10 @@ describe('Hstar OpenShop multilingual text tools', () => {
     await controller.start();
 
     const restoring = controller.restoreArtFont('text-layer-1');
-    await vi.waitFor(() => expect(runtime.requestSave).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(runtime.requestSave).toHaveBeenCalledTimes(1));
 
     expect(carrier.hstarArtFontRequestGeneration).toBe(1);
-    expect(runtime.requestSave).toHaveBeenNthCalledWith(1, {reason:'art-font-generation'});
-    expect(runtime.requestSave).toHaveBeenNthCalledWith(2, {reason:'art-font-provisional'});
+    expect(runtime.requestSave).toHaveBeenNthCalledWith(1, {reason:'art-font-provisional'});
     expect(aiClient.createTask).not.toHaveBeenCalled();
     expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
       taskId:expect.stringMatching(/^provisional:/), clientRequestId:expect.any(String),
@@ -1028,6 +1036,47 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
+  it('retries one failed provisional save with the same identity before issuing one POST', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient, runtime} = harness;
+    const carrier = addArtCarrier(harness);
+    let provisionalSaveAttempts = 0;
+    runtime.requestSave.mockImplementation(({reason}) => {
+      if(reason === 'art-font-provisional' && ++provisionalSaveAttempts === 1){
+        return Promise.reject(new Error('provisional storage unavailable'));
+      }
+      return Promise.resolve({saved:true});
+    });
+    aiClient.pollTask.mockResolvedValue({
+      taskId:'task-after-save-retry', status:'succeeded', result:artResult(),
+    });
+    await controller.start();
+
+    await controller.restoreArtFont('text-layer-1');
+
+    expect(aiClient.createTask).not.toHaveBeenCalled();
+    expect(editor.__hstarAiTaskRecords).toHaveLength(1);
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      taskId:expect.stringMatching(/^provisional:/), creationState:'provisional',
+      provisionalSaveState:'failed', error:'provisional storage unavailable',
+      snapshot:{textLayerId:'text-layer-1', requestGeneration:1},
+    });
+    const clientRequestId = editor.__hstarAiTaskRecords[0].clientRequestId;
+
+    await controller.restoreArtFont('text-layer-1');
+
+    expect(provisionalSaveAttempts).toBe(2);
+    expect(aiClient.createTask).toHaveBeenCalledOnce();
+    expect(aiClient.createTask.mock.calls[0][1].clientRequestId).toBe(clientRequestId);
+    expect(editor.__hstarAiTaskRecords).toHaveLength(1);
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      taskId:'task-1', clientRequestId, creationState:'created',
+      snapshot:{textLayerId:'text-layer-1', requestGeneration:1},
+    });
+    expect(carrier.object.hstarArtFontRequestGeneration).toBe(1);
+    controller.destroy();
+  });
+
   it('runs different text layers concurrently while deduplicating repeat clicks on one layer', async () => {
     const harness = createHarness();
     const {controller, aiClient, editor} = harness;
@@ -1056,6 +1105,171 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(2);
     expect(controller.isArtFontBusy('text-layer-a')).toBe(false);
     expect(controller.isArtFontBusy('text-layer-b')).toBe(false);
+    controller.destroy();
+  });
+
+  it('keeps a restored running layer busy while another layer runs independently', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient} = harness;
+    const firstCarrier = addArtCarrier(harness, {layerId:'text-layer-a', blockId:'ocr-a', text:'Alpha'});
+    addArtCarrier(harness, {layerId:'text-layer-b', blockId:'ocr-b', text:'Beta'});
+    firstCarrier.object.hstarArtFontRequestGeneration = 1;
+    editor.__hstarAiTaskRecords = [{
+      ...provisionalArtRecord({layerId:'text-layer-a', blockId:'ocr-a', text:'Alpha'}),
+      taskId:'task-restored-a', creationState:'created', status:'running',
+    }];
+    const polls = new Map();
+    aiClient.pollTask.mockImplementation((_context, taskId) => {
+      const deferred = createDeferred();
+      polls.set(taskId, deferred);
+      return deferred.promise;
+    });
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded'));
+    await vi.waitFor(() => expect(polls.has('task-restored-a')).toBe(true));
+    expect(controller.isArtFontBusy('text-layer-a')).toBe(true);
+    expect(controller.isArtFontBusy('text-layer-b')).toBe(false);
+
+    const sameLayer = controller.restoreArtFont('text-layer-a');
+    const otherLayer = controller.restoreArtFont('text-layer-b');
+    await vi.waitFor(() => expect(aiClient.pollTask).toHaveBeenCalledTimes(2));
+
+    expect(aiClient.createTask).toHaveBeenCalledOnce();
+    expect(controller.isArtFontBusy('text-layer-a')).toBe(true);
+    expect(controller.isArtFontBusy('text-layer-b')).toBe(true);
+    polls.get('task-restored-a').resolve({
+      taskId:'task-restored-a', status:'succeeded', result:artResult({assetId:'d'.repeat(64)}),
+    });
+    polls.get('task-1').resolve({
+      taskId:'task-1', status:'succeeded', result:artResult({assetId:'e'.repeat(64)}),
+    });
+    await Promise.all([sameLayer, otherLayer]);
+
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(2);
+    expect(controller.isArtFontBusy('text-layer-a')).toBe(false);
+    expect(controller.isArtFontBusy('text-layer-b')).toBe(false);
+    controller.destroy();
+  });
+
+  it('retries transient poll errors with bounded backoff and applies after recovery', async () => {
+    const retryWait = vi.fn(async () => {});
+    const harness = createHarness({controllerOptions:{artPollMaxAttempts:3, artPollRetryWait:retryWait}});
+    const {controller, editor, aiClient} = harness;
+    addArtCarrier(harness);
+    aiClient.pollTask
+      .mockRejectedValueOnce(new TypeError('network unavailable'))
+      .mockRejectedValueOnce(httpError(503, 'provider unavailable'))
+      .mockResolvedValueOnce({taskId:'task-1', status:'succeeded', result:artResult()});
+    await controller.start();
+
+    await controller.restoreArtFont('text-layer-1');
+
+    expect(aiClient.pollTask).toHaveBeenCalledTimes(3);
+    expect(retryWait).toHaveBeenCalledTimes(2);
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      status:'succeeded', reconcileState:'applied', error:'',
+    });
+    controller.destroy();
+  });
+
+  it('keeps a task pending after bounded poll exhaustion and resumes the same task manually', async () => {
+    const retryWait = vi.fn(async () => {});
+    const harness = createHarness({controllerOptions:{artPollMaxAttempts:3, artPollRetryWait:retryWait}});
+    const {controller, editor, aiClient} = harness;
+    const carrier = addArtCarrier(harness);
+    aiClient.pollTask
+      .mockRejectedValueOnce(new TypeError('network attempt 1'))
+      .mockRejectedValueOnce(new TypeError('network attempt 2'))
+      .mockRejectedValueOnce(httpError(502, 'network attempt 3'))
+      .mockResolvedValueOnce({taskId:'task-1', status:'succeeded', result:artResult()});
+    await controller.start();
+
+    await controller.restoreArtFont('text-layer-1');
+
+    const pending = editor.__hstarAiTaskRecords[0];
+    expect(aiClient.pollTask).toHaveBeenCalledTimes(3);
+    expect(aiClient.createTask).toHaveBeenCalledOnce();
+    expect(pending).toMatchObject({
+      taskId:'task-1', status:'queued', reconcileState:'pending', error:'network attempt 3',
+    });
+    expect(controller.isArtFontBusy('text-layer-1')).toBe(false);
+
+    await controller.restoreArtFont('text-layer-1');
+
+    expect(aiClient.createTask).toHaveBeenCalledOnce();
+    expect(aiClient.pollTask).toHaveBeenCalledTimes(4);
+    expect(editor.__hstarAiTaskRecords).toHaveLength(1);
+    expect(editor.__hstarAiTaskRecords[0]).toBe(pending);
+    expect(pending.reconcileState).toBe('applied');
+    expect(carrier.object.hstarArtFontRequestGeneration).toBe(1);
+    controller.destroy();
+  });
+
+  it('recreates a missing backend task with the same client request identity after 404', async () => {
+    const harness = createHarness({controllerOptions:{artPollRetryWait:vi.fn(async () => {})}});
+    const {controller, editor, aiClient} = harness;
+    addArtCarrier(harness);
+    aiClient.createTask
+      .mockResolvedValueOnce({task_id:'task-lost', status:'queued'})
+      .mockResolvedValueOnce({task_id:'task-recreated', status:'queued'});
+    aiClient.pollTask
+      .mockRejectedValueOnce(httpError(404, 'task registry entry missing'))
+      .mockResolvedValueOnce({taskId:'task-recreated', status:'succeeded', result:artResult()});
+    await controller.start();
+
+    await controller.restoreArtFont('text-layer-1');
+
+    expect(aiClient.createTask).toHaveBeenCalledTimes(2);
+    expect(aiClient.createTask.mock.calls[1][1].clientRequestId)
+      .toBe(aiClient.createTask.mock.calls[0][1].clientRequestId);
+    expect(editor.__hstarAiTaskRecords).toHaveLength(1);
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      taskId:'task-recreated', status:'succeeded', reconcileState:'applied',
+    });
+    controller.destroy();
+  });
+
+  it('continues when idempotent 404 recovery returns the same backend task identity', async () => {
+    const harness = createHarness({controllerOptions:{artPollRetryWait:vi.fn(async () => {})}});
+    const {controller, editor, aiClient} = harness;
+    addArtCarrier(harness);
+    aiClient.createTask.mockResolvedValue({task_id:'task-same', status:'queued'});
+    aiClient.pollTask
+      .mockRejectedValueOnce(httpError(404, 'transient registry lookup miss'))
+      .mockResolvedValueOnce({taskId:'task-same', status:'succeeded', result:artResult()});
+    await controller.start();
+
+    const restoring = controller.restoreArtFont('text-layer-1');
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('404 recovery deadlocked')), 100));
+    await expect(Promise.race([restoring, timeout])).resolves.toMatchObject({reconcileState:'applied'});
+
+    expect(aiClient.createTask).toHaveBeenCalledTimes(2);
+    expect(aiClient.pollTask).toHaveBeenCalledTimes(2);
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      taskId:'task-same', status:'succeeded', reconcileState:'applied',
+    });
+    controller.destroy();
+  });
+
+  it('terminals authentication poll errors without automatic retry', async () => {
+    const retryWait = vi.fn(async () => {});
+    const harness = createHarness({controllerOptions:{artPollMaxAttempts:3, artPollRetryWait:retryWait}});
+    const {controller, editor, aiClient} = harness;
+    const carrier = addArtCarrier(harness);
+    aiClient.pollTask.mockRejectedValue(httpError(401, 'API authentication expired'));
+    await controller.start();
+
+    await controller.restoreArtFont('text-layer-1');
+
+    expect(aiClient.pollTask).toHaveBeenCalledOnce();
+    expect(retryWait).not.toHaveBeenCalled();
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      status:'failed', reconcileState:'discarded', reconcileReason:'poll-auth-error',
+      error:'API authentication expired',
+    });
+    expect(carrier.layer.visible).toBe(true);
+    expect(carrier.object.visible).toBe(true);
     controller.destroy();
   });
 
@@ -1136,6 +1350,50 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(carrier.object.visible).toBe(true);
     expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
       status:'succeeded', reconcileState:'discarded', reconcileReason:'apply-failed',
+    });
+    controller.destroy();
+  });
+
+  it('keeps a previously hidden carrier hidden when decode fails before mutation', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient, imageLoader} = harness;
+    const carrier = addArtCarrier(harness);
+    carrier.layer.visible = false;
+    carrier.object.visible = false;
+    aiClient.pollTask.mockResolvedValue({taskId:'task-1', status:'succeeded', result:artResult()});
+    imageLoader.mockRejectedValue(new Error('PNG decode failed'));
+    await controller.start();
+
+    await controller.restoreArtFont('text-layer-1');
+
+    expect(carrier.layer.visible).toBe(false);
+    expect(carrier.object.visible).toBe(false);
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(0);
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      reconcileState:'discarded', reconcileReason:'apply-failed',
+    });
+    controller.destroy();
+  });
+
+  it('restores exact mixed carrier visibility after a failure following hide mutation', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient, objects} = harness;
+    const carrier = addArtCarrier(harness);
+    const hiddenCompanion = {type:'image', visible:false, hstarLayerId:'text-layer-1'};
+    carrier.layer.objects.push(hiddenCompanion);
+    objects.push(hiddenCompanion);
+    aiClient.pollTask.mockResolvedValue({taskId:'task-1', status:'succeeded', result:artResult()});
+    editor.canvas.setActiveObject.mockImplementation(() => { throw new Error('selection failed after hide'); });
+    await controller.start();
+
+    await controller.restoreArtFont('text-layer-1');
+
+    expect(carrier.layer.visible).toBe(true);
+    expect(carrier.object.visible).toBe(true);
+    expect(hiddenCompanion.visible).toBe(false);
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(0);
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      reconcileState:'discarded', reconcileReason:'apply-failed',
     });
     controller.destroy();
   });
