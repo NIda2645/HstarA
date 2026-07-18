@@ -1670,7 +1670,9 @@ async def api_lifecycle():
             purge_path = Path(main.canvas_path(purge_canvas["id"]))
             remove_entered = threading.Event()
             allow_remove = threading.Event()
+            initialize_worker_started = threading.Event()
             original_os_remove = main.os.remove
+            original_asyncio_to_thread = main.asyncio.to_thread
 
             def pause_canvas_remove(path):
                 if Path(path) == purge_path:
@@ -1687,7 +1689,16 @@ async def api_lifecycle():
                         )
                 return asyncio.run(request_once())
 
+            async def observe_initialize_worker(func, *args, **kwargs):
+                if getattr(func, "__name__", "") == "initialize_project":
+                    def run_observed_initialize():
+                        initialize_worker_started.set()
+                        return func(*args, **kwargs)
+                    return await original_asyncio_to_thread(run_observed_initialize)
+                return await original_asyncio_to_thread(func, *args, **kwargs)
+
             main.os.remove = pause_canvas_remove
+            main.asyncio.to_thread = observe_initialize_worker
             purge_task = asyncio.create_task(asyncio.to_thread(run_purge_request))
             try:
                 assert await asyncio.to_thread(remove_entered.wait, 5)
@@ -1695,7 +1706,7 @@ async def api_lifecycle():
                     f"/api/openshop/projects/{purge_project_id}/initialize",
                     json={"owner": purge_owner, "document": {"width": 640, "height": 480}},
                 ))
-                await asyncio.wait({raced_initialize}, timeout=0.2)
+                assert await asyncio.to_thread(initialize_worker_started.wait, 5)
                 allow_remove.set()
                 purge_result, raced_initialize_result = await asyncio.gather(
                     purge_task,
@@ -1704,6 +1715,7 @@ async def api_lifecycle():
             finally:
                 allow_remove.set()
                 main.os.remove = original_os_remove
+                main.asyncio.to_thread = original_asyncio_to_thread
             assert purge_result.status_code == 200, purge_result.text
             assert raced_initialize_result.status_code == 404, raced_initialize_result.text
             assert not purge_path.exists()
