@@ -161,7 +161,9 @@
 
   function compareFonts(left, right){
     const group = Number(isChineseFont(right)) - Number(isChineseFont(left));
-    return group || compareSubgroupFonts(left, right);
+    return group
+      || FONT_COLLATOR.compare(left.label || left.family, right.label || right.family)
+      || FONT_COLLATOR.compare(left.family, right.family);
   }
 
   function buildCatalogRows(fonts){

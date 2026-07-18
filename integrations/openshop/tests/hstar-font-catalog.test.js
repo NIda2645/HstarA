@@ -288,6 +288,29 @@ describe('Hstar OpenShop font catalog', () => {
     expect(groups.slice(firstOther).some(Boolean)).toBe(false);
   });
 
+  it('preserves legacy Chinese-first label and family ordering in state and search results', async () => {
+    const fixtures = [
+      {family:'Zh Order Fixture A', label:'Alpha Label', languageGroup:'zh-hans', sortName:'Zulu Sort'},
+      {family:'Zh Order Fixture B', label:'Beta Label', languageGroup:'zh-hans', sortName:'Able Sort'},
+      {family:'Zh Order Fixture C', label:'Alpha Label', languageGroup:'zh-hans', sortName:'Middle Sort'},
+      {family:'En Order Fixture A', label:'Alpha Label', languageGroup:'en', sortName:'Zulu Sort'},
+      {family:'En Order Fixture B', label:'Beta Label', languageGroup:'en', sortName:'Able Sort'},
+      {family:'En Order Fixture C', label:'Alpha Label', languageGroup:'en', sortName:'Middle Sort'},
+    ];
+    const {manager} = await loadCatalog(fixtures);
+    const expected = [
+      'Zh Order Fixture A',
+      'Zh Order Fixture C',
+      'Zh Order Fixture B',
+      'En Order Fixture A',
+      'En Order Fixture C',
+      'En Order Fixture B',
+    ];
+
+    expect(manager.getState().fonts.filter(font => font.family.includes('Order Fixture')).map(font => font.family)).toEqual(expected);
+    expect(manager.searchFonts('Order Fixture').map(font => font.family)).toEqual(expected);
+  });
+
   it('orders section and group headings while preserving server metadata and family prefixes', async () => {
     const {manager, loaded} = await loadCatalog([
       {family:'03免English Free', label:'03免English Free', language:'en', languageGroup:'en', freeCommercialCategory:'03', sortName:'English Free'},
