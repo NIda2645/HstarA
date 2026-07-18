@@ -34,7 +34,28 @@ OPENSHOP_HARD_MAX_OUTPUTS = 64
 _CLI_PROTOCOLS = {"codex", "gemini-cli"}
 _ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
-_HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+_HEX_COLOR_PATTERN = re.compile(r"^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+_CJK_PATTERN = re.compile(r"[\u3400-\u9fff]")
+_LATIN_PATTERN = re.compile(r"[A-Za-z]")
+_TRADITIONAL_MARKERS = frozenset(
+    "體臺灣萬與專業東絲兩嚴個豐臨為麗舉麼義烏樂喬習鄉書買亂爭於虧雲亞產親億僅從"
+    "倉儀們價眾優會傳倫偉側偵傑傾僕償儲兒兌黨蘭關興養獸內岡冊寫軍農馮凍淨準涼"
+    "減湊凱別刪則剛創劃劇劉劍劑勁動務勛勝勞勢勵勸區醫華協單賣盧衛卻廠廳歷厲壓"
+    "厭廁廂廈廚廢廣莊慶廬庫應廟龐開異棄張彌彎彙後徑徹恆戀惡惱懷態總慣愛憂戲戶"
+    "撲執擴掃揚擾撫拋搶護報擔擬攏揀擁擇擊擋據擲攝攜擺搖敗敘敵數齋斂斃斷無時曆"
+    "曉暫曄會朧術樸機殺雜權條來楊極構槍標樞樣樹橋檔檢樓橫櫃欄歡歐殘殼毀畢氈氣"
+    "漢湯溝滅滬淚澆濁測濟瀏渾濃塗濤澗潤漲漸澀淵漁滲溫灣濕滿滾滯濫濱灘靈災爐點"
+    "煉煙煩燒燭熱燈獎獨獲獻現環瓊畫當疇療瘋癰發皺盜監盤睏睜瞞矚礦碼磚禮禍離種"
+    "積穩窮竄竅窩競筆築篩簡簽簾籃類糧糾紀紡紋納紐純紗紙級紛細組終紹經結繞繪給"
+    "絡絕統綠維綱網緊緒線練縣縮繳罷羅職聯聰肅腸膚膠膽臉臘舊艦藝節華萊萬葉蒼蓋"
+    "蓮蔥蔣藍虛蟲蝕蠶衆衝補裝裡製複見觀規覓視覺覽觸訂計訊記講許論設訪證評識詐"
+    "訴詞話該詳語誠誤說請諸諾讀課誰調談謀謝譜貝負財貢貧貨販貪貫責貴貸費貼貿賀"
+    "賓賜賞賠賢賬賴賺購贈趕趙跡踐車軌軒轉輪軟轟輕載較輔輛輝輩邊遼達遷過邁運還"
+    "這進遠違連遲適選遺郵鄰鄭釋鑒針釣鈔鈴鉅銀銅銘銷鋪錄錢錦錯鍋鍵鎖鎮鏡鐵鑄鑽"
+    "長門閃閉開閑間閣閥閱隊陽陰陣階際陸陳險隨隱隸難雛雙雞電霧靜韋韓頁頂頃項順"
+    "須頑頓頗領頭頻題額顏風飛飯飲飾餅餓館馬馳駁駐騎騙驅驗驚髮鬥魚鮮鳥鳴鴨鷹麥"
+    "黃齊齒龍龜"
+)
 _NON_VISUAL_MODEL_MARKERS = (
     "embedding",
     "rerank",
@@ -236,12 +257,16 @@ def build_ocr_prompt(width: int, height: int) -> str:
         f"Read every visible Chinese, English, and mixed-language text block in this {width}x{height} image. "
         "Return JSON only with a top-level blocks array, in natural reading order. Return one block per "
         "visually distinct text line or independently styled text run; never merge unrelated labels, titles, "
-        "or paragraphs. Every block must contain text, quad, language, confidence, font, color, align, "
-        "rotation, paragraphId, and lineIndex. quad must contain four clockwise points around the tight visible "
+        "or paragraphs. Every block must contain text, quad, language, script (zh-hans, zh-hant, en, or mixed), "
+        "confidence, font, color (the glyph fill), align, rotation, paragraphId, and lineIndex. For mixed script, "
+        "optionally include dominantScript. quad must contain four clockwise points around the tight visible "
         "glyph bounds, with normalized x and y values from 0 to 1. Preserve punctuation, whitespace, line "
-        "order, and the original 中文/English spelling. font must contain ordered familyCandidates, font.size "
-        "in source-image pixels, weight, and style. Return the dominant glyph fill as a #RRGGBB color and "
-        "preserve alignment and rotation. Do not return markdown or image descriptions. If reliable text "
+        "order, and the original 中文/English spelling. font must contain artistic, ordered familyCandidates, "
+        "size, weight, style, styleDescription, letterSpacing, lineHeight, strokeColor, strokeWidth, and shadow. "
+        "shadow must contain color, blur, offsetX, and offsetY. Define letterSpacing as thousandths of an em and "
+        "lineHeight as a ratio. Define size, strokeWidth, shadow blur, offsetX, and offsetY in source-image pixels. "
+        "Return fill/color, strokeColor, and shadow color as #RRGGBB or #RRGGBBAA values, and preserve alignment "
+        "and rotation. Do not return markdown or image descriptions. If reliable text "
         "positions cannot be determined, return {\"blocks\":[]}."
     )
 
@@ -289,6 +314,70 @@ def _finite_number(value: Any, label: str) -> float:
     if not math.isfinite(number):
         raise OpenShopAiValidationError(f"Invalid OCR {label}")
     return number
+
+
+def _bounded_finite(
+    value: Any,
+    fallback: float,
+    minimum: float,
+    maximum: float,
+    precision: int = 3,
+) -> float:
+    if isinstance(value, bool):
+        return fallback
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(number):
+        return fallback
+    return round(max(minimum, min(maximum, number)), precision)
+
+
+def _normalize_color(value: Any, fallback: str) -> str:
+    color = str(value or "").strip()
+    return color.lower() if _HEX_COLOR_PATTERN.fullmatch(color) else fallback
+
+
+def _script_alias(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "zh": "zh-hans",
+        "zh-cn": "zh-hans",
+        "zh-sg": "zh-hans",
+        "simplified": "zh-hans",
+        "zh-hans": "zh-hans",
+        "zh-tw": "zh-hant",
+        "zh-hk": "zh-hant",
+        "zh-mo": "zh-hant",
+        "traditional": "zh-hant",
+        "zh-hant": "zh-hant",
+        "en": "en",
+        "english": "en",
+        "mixed": "mixed",
+    }
+    return aliases.get(normalized, "")
+
+
+def _infer_legacy_script(text: str, language: Any) -> str:
+    language_script = _script_alias(language)
+    if language_script in {"en", "mixed", "zh-hant"}:
+        return language_script
+    has_cjk = bool(_CJK_PATTERN.search(text))
+    has_latin = bool(_LATIN_PATTERN.search(text))
+    if has_cjk and has_latin:
+        return "mixed"
+    if has_cjk:
+        return "zh-hant" if any(char in _TRADITIONAL_MARKERS for char in text) else "zh-hans"
+    if has_latin:
+        return "en"
+    return language_script or "mixed"
+
+
+def _normalize_script(value: Any, text: str, language: Any) -> str:
+    if value is None or not str(value).strip():
+        return _infer_legacy_script(text, language)
+    return _script_alias(value) or "mixed"
 
 
 def _normalize_points(points: Any, width: int, height: int) -> list[dict[str, float]]:
@@ -346,13 +435,28 @@ def _normalize_font(value: Any) -> dict[str, Any]:
         font.get("familyCandidates") or font.get("families") or [],
         max_items=8,
     )
-    size = _finite_number(font.get("size", 0), "font size")
-    weight = int(round(_finite_number(font.get("weight", 400), "font weight") / 100) * 100)
+    size = _bounded_finite(font.get("size"), 0.0, 0.0, 2000.0, 2)
+    raw_weight = _bounded_finite(font.get("weight"), 400.0, 100.0, 900.0)
+    weight = int(math.floor(raw_weight / 100 + 0.5) * 100)
+    style = str(font.get("style") or "").strip().lower()
+    shadow = font.get("shadow") if isinstance(font.get("shadow"), dict) else {}
     return {
+        "artistic": font.get("artistic") is True,
         "familyCandidates": candidates,
-        "size": max(0.0, min(2000.0, round(size, 2))),
+        "size": size,
         "weight": max(100, min(900, weight)),
-        "style": "italic" if str(font.get("style") or "").lower() == "italic" else "normal",
+        "style": "italic" if style in {"italic", "oblique"} else "normal",
+        "styleDescription": _clean_text(font.get("styleDescription"), 500),
+        "letterSpacing": _bounded_finite(font.get("letterSpacing"), 0.0, -1000.0, 10000.0),
+        "lineHeight": _bounded_finite(font.get("lineHeight"), 1.16, 0.1, 10.0),
+        "strokeColor": _normalize_color(font.get("strokeColor"), "#00000000"),
+        "strokeWidth": _bounded_finite(font.get("strokeWidth"), 0.0, 0.0, 200.0),
+        "shadow": {
+            "color": _normalize_color(shadow.get("color"), "#00000000"),
+            "blur": _bounded_finite(shadow.get("blur"), 0.0, 0.0, 500.0),
+            "offsetX": _bounded_finite(shadow.get("offsetX"), 0.0, -2000.0, 2000.0),
+            "offsetY": _bounded_finite(shadow.get("offsetY"), 0.0, -2000.0, 2000.0),
+        },
     }
 
 
@@ -370,29 +474,33 @@ def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[st
     align = str(value.get("align") or "left").strip().lower()
     if align not in {"left", "center", "right", "justify"}:
         align = "left"
-    color = str(value.get("color") or "#ffffff").strip()
-    if not _HEX_COLOR_PATTERN.fullmatch(color):
-        color = "#ffffff"
+    script = _normalize_script(value.get("script"), text, language)
+    dominant_script = _script_alias(value.get("dominantScript"))
+    color = _normalize_color(value.get("color", value.get("fill")), "#ffffff")
     rotation = _finite_number(value.get("rotation", 0), "rotation")
     line_index = value.get("lineIndex", index)
     try:
         line_index = max(0, int(line_index))
     except (TypeError, ValueError):
         line_index = index
-    return {
+    block = {
         "id": _clean_text(value.get("id"), 96, f"ocr-{index + 1}"),
         "text": text,
         "quad": quad,
         "language": language,
+        "script": script,
         "confidence": round(confidence, 4),
         "lowConfidence": confidence < 0.7,
         "font": _normalize_font(value.get("font")),
-        "color": color.lower(),
+        "color": color,
         "align": align,
         "rotation": max(-360.0, min(360.0, round(rotation, 3))),
         "paragraphId": _clean_text(value.get("paragraphId"), 96, f"paragraph-{index + 1}"),
         "lineIndex": line_index,
     }
+    if script == "mixed" and dominant_script in {"zh-hans", "zh-hant", "en"}:
+        block["dominantScript"] = dominant_script
+    return block
 
 
 def normalize_ocr_layout(raw_text: Any, width: int, height: int) -> dict[str, Any]:
@@ -404,7 +512,7 @@ def normalize_ocr_layout(raw_text: Any, width: int, height: int) -> dict[str, An
         raise OpenShopAiValidationError("OCR model did not return reliable text positions")
     blocks = [_normalize_block(value, index, width, height) for index, value in enumerate(values[:500])]
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "width": width,
         "height": height,
         "blocks": blocks,

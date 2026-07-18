@@ -115,6 +115,16 @@ prompt = build_ocr_prompt(1920, 1080)
 assert "1920" in prompt and "1080" in prompt
 assert "quad" in prompt and "confidence" in prompt
 assert "中文" in prompt and "English" in prompt
+for field in (
+    "script", "dominantScript", "artistic", "familyCandidates", "size", "weight",
+    "style", "styleDescription", "letterSpacing", "lineHeight", "fill", "color",
+    "align", "rotation", "strokeColor", "strokeWidth", "shadow", "blur",
+    "offsetX", "offsetY",
+):
+    assert field in prompt, f"OCR prompt must request {field}"
+assert "thousandths of an em" in prompt
+assert "lineHeight" in prompt and "ratio" in prompt
+assert "source-image pixels" in prompt
 
 valid = json.dumps({
     "blocks": [
@@ -127,8 +137,27 @@ valid = json.dumps({
                 {"x": 0.10, "y": 0.20},
             ],
             "language": "mixed",
+            "script": "mixed",
+            "dominantScript": "zh-hant",
             "confidence": 0.62,
-            "font": {"familyCandidates": ["Microsoft YaHei UI", "Arial"], "size": 48, "weight": 600},
+            "font": {
+                "artistic": True,
+                "familyCandidates": ["Microsoft YaHei UI", "Arial"],
+                "size": 48,
+                "weight": 760,
+                "style": "italic",
+                "styleDescription": "hand-painted condensed display lettering",
+                "letterSpacing": 125,
+                "lineHeight": 1.4,
+                "strokeColor": "#ABCDEF88",
+                "strokeWidth": 3.5,
+                "shadow": {
+                    "color": "#11223344",
+                    "blur": 6,
+                    "offsetX": 2,
+                    "offsetY": -3,
+                },
+            },
             "color": "#ffffff",
             "align": "center",
             "rotation": 0,
@@ -141,17 +170,100 @@ valid = json.dumps({
             "language": "en",
             "confidence": 1.2,
         },
+        {
+            "text": "Independent defaults",
+            "bbox": {"x": 100, "y": 800, "width": 600, "height": 100},
+            "script": "en",
+            "confidence": 0.9,
+            "font": {
+                "familyCandidates": ["Arial"],
+                "size": "bad",
+                "weight": 760,
+                "style": "italic",
+                "letterSpacing": "bad",
+                "lineHeight": "bad",
+                "strokeColor": "#123456",
+                "strokeWidth": "bad",
+                "shadow": {
+                    "color": "#abcdef88",
+                    "blur": "bad",
+                    "offsetX": 5,
+                    "offsetY": "bad",
+                },
+            },
+            "color": "rgb(1, 2, 3)",
+        },
+        {
+            "text": "Independent colors",
+            "bbox": {"x": 800, "y": 800, "width": 600, "height": 100},
+            "script": "invalid-script",
+            "confidence": 0.9,
+            "font": {
+                "strokeColor": "#fff",
+                "strokeWidth": 4,
+                "shadow": {"color": "red", "blur": 8, "offsetX": -2, "offsetY": 3},
+            },
+            "color": "#A1B2C3D4",
+        },
     ]
 }, ensure_ascii=False)
 layout = normalize_ocr_layout(valid, width=1920, height=1080)
+assert layout["schemaVersion"] == 2
 assert layout["width"] == 1920 and layout["height"] == 1080
 assert layout["blocks"][0]["text"] == "中文 English"
 assert layout["blocks"][0]["quad"][2] == {"x": 0.4, "y": 0.2}
 assert layout["blocks"][0]["lowConfidence"] is True
 assert layout["blocks"][0]["font"]["familyCandidates"] == ["Microsoft YaHei UI", "Arial"]
+assert layout["blocks"][0]["script"] == "mixed"
+assert layout["blocks"][0]["dominantScript"] == "zh-hant"
+assert layout["blocks"][0]["font"] == {
+    "artistic": True,
+    "familyCandidates": ["Microsoft YaHei UI", "Arial"],
+    "size": 48.0,
+    "weight": 800,
+    "style": "italic",
+    "styleDescription": "hand-painted condensed display lettering",
+    "letterSpacing": 125.0,
+    "lineHeight": 1.4,
+    "strokeColor": "#abcdef88",
+    "strokeWidth": 3.5,
+    "shadow": {"color": "#11223344", "blur": 6.0, "offsetX": 2.0, "offsetY": -3.0},
+}
 assert layout["blocks"][1]["quad"][0] == {"x": 0.5, "y": 0.5}
 assert layout["blocks"][1]["quad"][2] == {"x": 0.75, "y": 0.6}
 assert layout["blocks"][1]["confidence"] == 1.0
+assert layout["blocks"][1]["script"] == "en"
+assert "dominantScript" not in layout["blocks"][1]
+assert layout["blocks"][2]["font"] == {
+    "artistic": False,
+    "familyCandidates": ["Arial"],
+    "size": 0.0,
+    "weight": 800,
+    "style": "italic",
+    "styleDescription": "",
+    "letterSpacing": 0.0,
+    "lineHeight": 1.16,
+    "strokeColor": "#123456",
+    "strokeWidth": 0.0,
+    "shadow": {"color": "#abcdef88", "blur": 0.0, "offsetX": 5.0, "offsetY": 0.0},
+}
+assert layout["blocks"][2]["color"] == "#ffffff"
+assert layout["blocks"][3]["script"] == "mixed"
+assert layout["blocks"][3]["color"] == "#a1b2c3d4"
+assert layout["blocks"][3]["font"]["strokeColor"] == "#00000000"
+assert layout["blocks"][3]["font"]["strokeWidth"] == 4.0
+assert layout["blocks"][3]["font"]["shadow"] == {
+    "color": "#00000000", "blur": 8.0, "offsetX": -2.0, "offsetY": 3.0,
+}
+
+ocr_record = normalize_ai_task_record({
+    "taskId": "task-ocr-v2",
+    "toolId": "text-extract",
+    "status": "succeeded",
+    "sourceAssetId": "f" * 64,
+    "result": layout,
+})
+assert ocr_record["result"] == layout
 
 for invalid in (
     "just plain text without coordinates",

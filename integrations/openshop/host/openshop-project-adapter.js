@@ -1,5 +1,28 @@
 (function bootstrapOpenShopProjectAdapter(root){
   const SCHEMA_VERSION = 1;
+  const FABRIC_CUSTOM_PROPERTIES = Object.freeze([
+    'name',
+    'excludeFromExport',
+    'globalCompositeOperation',
+    'hstarAssetId',
+    'hstarAssetRole',
+    'hstarEdgeId',
+    'hstarSourceNodeId',
+    'hstarLayerId',
+    'hstarSnapAnchor',
+    'hstarKerningMode',
+    'hstarOcrSourceAssetId',
+    'hstarOcrSourceLayerId',
+    'hstarOcrBlockId',
+    'hstarOcrQuad',
+    'hstarOcrVisualProfile',
+    'hstarOcrOriginalText',
+    'hstarArtFontRequestGeneration',
+    'hstarOcrConfidence',
+    'hstarOcrLanguage',
+    'hstarOcrFontCandidates',
+    'assetRef',
+  ]);
   let layerSequence = 0;
 
   function clean(value){
@@ -740,7 +763,7 @@
     if(!value || typeof value !== 'object') return;
     const assetKeys = new Set([
       'assetId', 'assetRef', 'hstarAssetId', 'sourceAssetId', 'maskAssetId',
-      'outputAssetId', 'primaryReferenceAssetId', 'pendingAssetId',
+      'outputAssetId', 'primaryReferenceAssetId', 'pendingAssetId', 'hstarOcrSourceAssetId',
     ]);
     Object.entries(value).forEach(([key, child]) => {
       if(assetKeys.has(key)){
@@ -760,27 +783,11 @@
     const createdAt = Number(editor.__hstarProjectCreatedAt || timestamp);
     editor.__hstarProjectCreatedAt = createdAt;
     ensureEditorLayerIds(editor);
-    const editorJson = clone(editor.canvas.toJSON([
-      'name',
-      'excludeFromExport',
-      'globalCompositeOperation',
-      'hstarAssetId',
-      'hstarAssetRole',
-      'hstarEdgeId',
-      'hstarSourceNodeId',
-      'hstarLayerId',
-      'hstarSnapAnchor',
-      'hstarKerningMode',
-      'hstarOcrBlockId',
-      'hstarOcrSourceLayerId',
-      'hstarOcrConfidence',
-      'hstarOcrLanguage',
-      'hstarOcrFontCandidates',
-      'assetRef',
-    ]));
+    const editorJson = clone(editor.canvas.toJSON(FABRIC_CUSTOM_PROPERTIES));
     removeBoundaryPatternBytes(editorJson);
     const assetRefs = new Set();
     externalizeAssets(editorJson, assetRefs);
+    collectAssetRefs(editorJson, assetRefs);
 
     const layers = editor.layers.map(layer => ({
       layerId: ensureLayerId(layer),

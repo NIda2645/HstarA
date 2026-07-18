@@ -19,6 +19,7 @@ class FakeIText {
   constructor(text, options={}) {
     this.type = 'i-text';
     this.text = text;
+    this.initialOptions = {...options};
     this.width = Math.max(1, text.length * Number(options.fontSize || 16) * 0.55);
     this.height = Math.max(1, Number(options.fontSize || 16) * 1.2);
     Object.assign(this, options);
@@ -26,6 +27,19 @@ class FakeIText {
 
   set(values) {
     Object.assign(this, values);
+  }
+
+  initDimensions() {
+    const spacing = Number(this.charSpacing || 0) * Number(this.fontSize || 16) / 1000;
+    this.width = Math.max(1, this.text.length * Number(this.fontSize || 16) * 0.55
+      + Math.max(0, this.text.length - 1) * spacing);
+    this.height = Math.max(1, Number(this.fontSize || 16) * 1.2);
+  }
+}
+
+class FakeShadow {
+  constructor(options={}) {
+    Object.assign(this, options);
   }
 }
 
@@ -64,7 +78,7 @@ function createEditor() {
   return {editor, sourceImage, sourceLayer, objects};
 }
 
-function createHarness({pollResults={}} = {}) {
+function createHarness({pollResults={}, fontManagerOverrides={}} = {}) {
   const {editor, sourceImage, sourceLayer, objects} = createEditor();
   let taskSequence = 0;
   const createdTasks = [];
@@ -126,12 +140,21 @@ function createHarness({pollResults={}} = {}) {
   };
   const fontManager = {
     isAvailable:vi.fn(family => family !== 'Missing Font'),
+    loadSystemFonts:vi.fn(async () => []),
+    matchOcrFont:vi.fn(block => ({
+      faceFamily:['zh', 'zh-hans', 'zh-hant', 'mixed'].includes(block.script || block.language)
+        ? 'Microsoft YaHei UI'
+        : 'Arial',
+      weight:Number(block.font?.weight || 400),
+      italic:block.font?.style === 'italic',
+    })),
     scanEditor:vi.fn(() => []),
     replaceFont:vi.fn(),
     listCommonFonts:vi.fn(() => [
       {family:'Microsoft YaHei UI', label:'微软雅黑 UI', status:'available'},
       {family:'Arial', label:'Arial', status:'available'},
     ]),
+    ...fontManagerOverrides,
   };
   const imageLoader = vi.fn(async result => ({
     type:'image', width:960, height:540, src:result.url,
@@ -147,7 +170,7 @@ function createHarness({pollResults={}} = {}) {
     aiClient,
     assetApi,
     fontManager,
-    fabricRef:{IText:FakeIText},
+    fabricRef:{IText:FakeIText, Shadow:FakeShadow},
     imageLoader,
     maskRenderer:vi.fn(() => 'data:image/png;base64,SELECTION_MASK'),
   });
@@ -248,7 +271,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(result.blocks).toEqual(blocks);
     expect(createdTasks[0]).toMatchObject({toolId:'text-extract', sourceAssetId:SOURCE_ASSET_ID});
     expect(sourceLayer.objects).toHaveLength(1);
-    const extractedLayers = controller.applyTextExtraction();
+    const extractedLayers = await controller.applyTextExtraction();
     expect(extractedLayers).toHaveLength(1);
     expect(editor.layers.indexOf(extractedLayers[0])).toBe(editor.layers.indexOf(sourceLayer) + 1);
     controller.destroy();
@@ -277,7 +300,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(assetApi.upload).toHaveBeenCalledWith(expect.objectContaining({role:'ai-source'}));
     expect(document.getElementById('hstar-text-tools-panel').textContent).toContain('低置信度');
 
-    const layers = controller.applyTextExtraction();
+    const layers = await controller.applyTextExtraction();
     expect(layers).toHaveLength(1);
     expect(layers[0].name).toBe('中文 English');
     expect(layers[0].objects).toHaveLength(1);
@@ -295,20 +318,35 @@ describe('Hstar OpenShop multilingual text tools', () => {
   it('creates one precisely fitted editable layer per OCR block in reading order', async () => {
     const blocks = [
       {
-        id:'ocr-title', text:'经典奶茶', language:'zh', confidence:0.98, lowConfidence:false,
+        id:'ocr-title', text:'经典奶茶', language:'zh', script:'zh-hans', confidence:0.98, lowConfidence:false,
         quad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
-        font:{familyCandidates:['Missing Font', 'Microsoft YaHei UI'], size:48, weight:700, style:'normal'},
+        font:{
+          artistic:true, familyCandidates:['Missing Font', 'Microsoft YaHei UI'], size:48,
+          weight:700, style:'normal', styleDescription:'painted condensed title',
+          letterSpacing:125, lineHeight:1.4, strokeColor:'#12345678', strokeWidth:3.5,
+          shadow:{color:'#10203080', blur:6, offsetX:2, offsetY:-3},
+        },
         color:'#7b3f12', align:'center', rotation:0, paragraphId:'title', lineIndex:0,
       },
       {
-        id:'ocr-subtitle', text:'Bubble Milk Tea', language:'en', confidence:0.94, lowConfidence:false,
+        id:'ocr-subtitle', text:'Bubble Milk Tea', language:'en', script:'en', confidence:0.94, lowConfidence:false,
         quad:[{x:0.2,y:0.4},{x:0.7,y:0.42},{x:0.69,y:0.46},{x:0.19,y:0.44}],
-        font:{familyCandidates:['Missing Font', 'Arial'], size:22, weight:400, style:'italic'},
+        font:{
+          artistic:false, familyCandidates:['Missing Font', 'Arial'], size:22, weight:400,
+          style:'italic', styleDescription:'clean italic sans', letterSpacing:20, lineHeight:1.16,
+          strokeColor:'#00000000', strokeWidth:0,
+          shadow:{color:'#00000000', blur:0, offsetX:0, offsetY:0},
+        },
         color:'#d77721', align:'left', rotation:2, paragraphId:'subtitle', lineIndex:0,
       },
     ];
-    const {controller, editor, sourceLayer, sourceImage, objects} = createHarness({
+    const loadSystemFonts = vi.fn(async () => []);
+    const matchOcrFont = vi.fn(block => block.id === 'ocr-title'
+      ? {faceFamily:'01免Title Face', weight:800, italic:true}
+      : {faceFamily:'03免Subtitle Face', weight:500, italic:false});
+    const {controller, editor, sourceLayer, sourceImage, objects, fontManager} = createHarness({
       pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:960, height:540, blocks}}},
+      fontManagerOverrides:{loadSystemFonts, matchOcrFont},
     });
     const existingTopObject = {type:'rect', name:'existing top object'};
     const existingTopLayer = {
@@ -320,38 +358,116 @@ describe('Hstar OpenShop multilingual text tools', () => {
     await controller.start();
     await controller.runTextExtraction();
 
-    const layers = controller.applyTextExtraction();
+    const reviewedBlocks = [{...blocks[0], text:'经典奶茶（校对）'}, blocks[1]];
+    const layers = await controller.applyTextExtraction(reviewedBlocks);
     expect(layers).toHaveLength(2);
     expect(editor.layers).toEqual([sourceLayer, ...layers, existingTopLayer]);
     expect(objects).toEqual([sourceImage, ...layers.map(layer => layer.objects[0]), existingTopObject]);
     expect(sourceLayer.objects).toEqual([sourceImage]);
-    expect(layers.map(layer => layer.name)).toEqual(['经典奶茶', 'Bubble Milk Tea']);
+    expect(layers.map(layer => layer.name)).toEqual(['经典奶茶（校对）', 'Bubble Milk Tea']);
     expect(layers.every(layer => layer.objects.length === 1)).toBe(true);
     expect(new Set(layers.map(layer => layer.layerId)).size).toBe(2);
+    expect(loadSystemFonts).toHaveBeenCalledOnce();
+    expect(matchOcrFont).toHaveBeenNthCalledWith(1, reviewedBlocks[0]);
+    expect(matchOcrFont).toHaveBeenNthCalledWith(2, reviewedBlocks[1]);
+    expect(loadSystemFonts.mock.invocationCallOrder[0]).toBeLessThan(matchOcrFont.mock.invocationCallOrder[0]);
+    expect(matchOcrFont.mock.invocationCallOrder[1]).toBeLessThan(editor.canvas.add.mock.invocationCallOrder.at(-1));
 
     const title = layers[0].objects[0];
     expect(title).toMatchObject({
-      type:'i-text', text:'经典奶茶', left:192, top:216,
-      fontFamily:'Microsoft YaHei UI', fontSize:96, fill:'#7b3f12', fontWeight:700,
-      fontStyle:'normal', textAlign:'center', editable:true,
+      type:'i-text', text:'经典奶茶（校对）', left:192, top:216,
+      fontFamily:'01免Title Face', fontSize:96, fill:'#7b3f12', fontWeight:800,
+      fontStyle:'italic', textAlign:'center', lineHeight:1.4, editable:true,
+      stroke:'#12345678', strokeWidth:7,
       hstarOcrBlockId:'ocr-title', hstarOcrSourceLayerId:'layer-source',
+      hstarOcrSourceAssetId:SOURCE_ASSET_ID,
       hstarOcrFontCandidates:['Missing Font', 'Microsoft YaHei UI'],
+      hstarOcrOriginalText:'经典奶茶', hstarArtFontRequestGeneration:0,
     });
-    expect(title.width * title.scaleX).toBeCloseTo(576, 3);
-    expect(title.height * title.scaleY).toBeCloseTo(108, 3);
+    expect(title.initialOptions.charSpacing).toBe(125);
+    expect(title.initialOptions.charSpacing).not.toBe(250);
+    expect(title.shadow).toEqual(expect.objectContaining({color:'#10203080', blur:12, offsetX:4, offsetY:-6}));
+    expect(title.shadow).toBeInstanceOf(FakeShadow);
+    expect(title.scaleX).toBeCloseTo(title.scaleY, 10);
+    expect(title.hstarOcrQuad).toEqual(blocks[0].quad);
+    expect(title.hstarOcrVisualProfile).toEqual({
+      script:'zh-hans', dominantScript:'', fill:'#7b3f12', alignment:'center', rotation:0,
+      artistic:true, familyCandidates:['Missing Font', 'Microsoft YaHei UI'], size:48,
+      weight:700, style:'normal', styleDescription:'painted condensed title',
+      letterSpacing:125, lineHeight:1.4, strokeColor:'#12345678', strokeWidth:3.5,
+      shadow:{color:'#10203080', blur:6, offsetX:2, offsetY:-3},
+    });
 
     const subtitle = layers[1].objects[0];
     expect(subtitle).toMatchObject({
       type:'i-text', text:'Bubble Milk Tea', left:384, top:432,
-      fontFamily:'Arial', fontSize:44, fill:'#d77721', fontWeight:400,
-      fontStyle:'italic', textAlign:'left', editable:true,
+      fontFamily:'03免Subtitle Face', fontSize:44, fill:'#d77721', fontWeight:500,
+      fontStyle:'normal', textAlign:'left', editable:true,
       hstarOcrBlockId:'ocr-subtitle', hstarOcrSourceLayerId:'layer-source',
       hstarOcrFontCandidates:['Missing Font', 'Arial'],
     });
     expect(subtitle.angle).toBeCloseTo(1.289, 2);
-    expect(subtitle.width * subtitle.scaleX).toBeCloseTo(960.243, 2);
-    expect(subtitle.height * subtitle.scaleY).toBeCloseTo(47.275, 2);
+    expect(subtitle.scaleX).toBeCloseTo(subtitle.scaleY, 10);
     expect(editor.activeLayerIdx).toBe(2);
+    expect(fontManager.scanEditor).toHaveBeenCalledWith(editor);
+    controller.destroy();
+  });
+
+  it('preflights every OCR font match before canvas mutation and leaves no partial text on failure', async () => {
+    const blocks = [
+      {
+        id:'ocr-ok', text:'First', script:'en', confidence:0.9,
+        quad:[{x:0.1,y:0.1},{x:0.3,y:0.1},{x:0.3,y:0.2},{x:0.1,y:0.2}],
+        font:{familyCandidates:['Arial'], size:32, weight:400, style:'normal'}, color:'#112233',
+      },
+      {
+        id:'ocr-missing', text:'Second', script:'en', confidence:0.9,
+        quad:[{x:0.1,y:0.3},{x:0.3,y:0.3},{x:0.3,y:0.4},{x:0.1,y:0.4}],
+        font:{familyCandidates:['Missing Face'], size:32, weight:400, style:'normal'}, color:'#445566',
+      },
+    ];
+    const matchOcrFont = vi.fn(block => {
+      if(block.id === 'ocr-missing') throw new Error('No free-commercial local font match');
+      return {faceFamily:'03免Arial', weight:400, italic:false};
+    });
+    const {controller, editor, objects} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:960, height:540, blocks}}},
+      fontManagerOverrides:{matchOcrFont},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+    const originalLayers = [...editor.layers];
+    const originalObjects = [...objects];
+
+    await expect(controller.applyTextExtraction()).rejects.toThrow('No free-commercial local font match');
+
+    expect(matchOcrFont).toHaveBeenCalledTimes(2);
+    expect(editor.layers).toEqual(originalLayers);
+    expect(objects).toEqual(originalObjects);
+    expect(editor.canvas.add).not.toHaveBeenCalled();
+    expect(editor.saveHistory).not.toHaveBeenCalledWith('文字提取');
+    controller.destroy();
+  });
+
+  it('surfaces review-button font preflight failures without an unhandled async apply', async () => {
+    const blocks = [{
+      id:'ocr-missing-click', text:'Missing', script:'en', confidence:0.9,
+      quad:[{x:0.1,y:0.1},{x:0.3,y:0.1},{x:0.3,y:0.2},{x:0.1,y:0.2}],
+      font:{familyCandidates:['Missing Face'], size:32, weight:400, style:'normal'}, color:'#112233',
+    }];
+    const {controller, editor} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:960, height:540, blocks}}},
+      fontManagerOverrides:{matchOcrFont:vi.fn(() => { throw new Error('No local OCR face'); })},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    document.querySelector('[data-hstar-action="apply-extraction"]').click();
+
+    await vi.waitFor(() => expect(controller.getState()).toMatchObject({
+      status:'failed', error:'No local OCR face',
+    }));
+    expect(editor.canvas.add).not.toHaveBeenCalled();
     controller.destroy();
   });
 
@@ -476,7 +592,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
       .toBe(`/api/openshop/assets/${SOURCE_ASSET_ID}`);
     expect(aiClient.pollTask).not.toHaveBeenCalled();
 
-    controller.applyTextExtraction();
+    await controller.applyTextExtraction();
     expect(editor.__hstarAiTaskRecords[0].appliedAt).toBeGreaterThan(0);
     controller.destroy();
   });

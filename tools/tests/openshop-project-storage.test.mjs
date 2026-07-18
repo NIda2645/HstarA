@@ -183,6 +183,29 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-provisional-") as data_
         pass
 
 
+with tempfile.TemporaryDirectory(prefix="hstara-openshop-ocr-source-ref-") as data_dir:
+    store = OpenShopProjectStore(data_dir, canvas_dir=Path(data_dir) / "canvases")
+    owner = {
+        "canvasType": "classic",
+        "canvasId": "canvas-ocr-source-ref",
+        "nodeId": "node-ocr-source-ref",
+    }
+    project = store.initialize("project-ocr-source-ref", owner, {"width": 8, "height": 6})
+    source = store.store_image(
+        "project-ocr-source-ref", owner, png_bytes((44, 88, 132, 255)),
+        "image/png", "ocr-source.png", "ai-source",
+    )
+    project["editor"] = {"objects": [{
+        "type": "i-text",
+        "text": "OCR provenance only",
+        "hstarOcrSourceAssetId": source["assetId"],
+    }]}
+    project["assetRefs"] = []
+    saved = store.save("project-ocr-source-ref", owner, project, base_version=1)
+    assert saved["assetRefs"] == [source["assetId"]]
+    assert saved["pendingAssetRefs"] == []
+
+
 with tempfile.TemporaryDirectory(prefix="hstara-openshop-preview-promotion-") as data_dir:
     store = OpenShopProjectStore(data_dir, canvas_dir=Path(data_dir) / "canvases")
     store.MAX_PENDING_ASSET_REFS = 1

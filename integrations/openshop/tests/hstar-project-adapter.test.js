@@ -53,19 +53,9 @@ function createEditor() {
           type: object.type,
           name: object.name,
           src: object.src,
-          hstarAssetId: object.hstarAssetId,
-          hstarEdgeId: object.hstarEdgeId,
-          hstarSourceNodeId: object.hstarSourceNodeId,
-          hstarLayerId: object.hstarLayerId,
-           ...(properties.includes('hstarSnapAnchor')
-             ? {hstarSnapAnchor:object.hstarSnapAnchor}
-             : {}),
-           ...(properties.includes('hstarKerningMode')
-             ? {hstarKerningMode:object.hstarKerningMode}
-             : {}),
-           ...(properties.includes('hstarOcrFontCandidates')
-             ? {hstarOcrFontCandidates:object.hstarOcrFontCandidates}
-             : {}),
+          ...Object.fromEntries(properties
+            .filter(property => property in object)
+            .map(property => [property, object[property]])),
         }))
       }))
     },
@@ -480,11 +470,28 @@ describe('Hstar OpenShop project adapter', () => {
     });
   });
 
-  it('persists OCR font candidates with the editable text object', () => {
+  it('round-trips complete OCR provenance and discovers its source asset from editor JSON alone', async () => {
     const adapter = window.HstarOpenShopProjectAdapter;
     const editor = createEditor();
+    const sourceAssetId = 'f'.repeat(64);
+    const visualProfile = {
+      script:'zh-hans', dominantScript:'', fill:'#7b3f12', alignment:'center', rotation:0,
+      artistic:true, familyCandidates:['Alibaba PuHuiTi', 'Microsoft YaHei UI'], size:48,
+      weight:700, style:'normal', styleDescription:'painted title', letterSpacing:125,
+      lineHeight:1.4, strokeColor:'#12345678', strokeWidth:3.5,
+      shadow:{color:'#10203080', blur:6, offsetX:2, offsetY:-3},
+    };
     const text = {
       type:'i-text', text:'经典奶茶',
+      hstarOcrSourceAssetId:sourceAssetId,
+      hstarOcrSourceLayerId:'layer-source',
+      hstarOcrBlockId:'ocr-title',
+      hstarOcrQuad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
+      hstarOcrVisualProfile:visualProfile,
+      hstarOcrOriginalText:'经典奶茶',
+      hstarArtFontRequestGeneration:0,
+      hstarOcrConfidence:0.98,
+      hstarOcrLanguage:'zh',
       hstarOcrFontCandidates:['Alibaba PuHuiTi', 'Microsoft YaHei UI'],
     };
     editor.canvas.add(text);
@@ -494,7 +501,38 @@ describe('Hstar OpenShop project adapter', () => {
 
     expect(project.editor.objects[0]).toMatchObject({
       type:'i-text',
+      hstarOcrSourceAssetId:sourceAssetId,
+      hstarOcrSourceLayerId:'layer-source',
+      hstarOcrBlockId:'ocr-title',
+      hstarOcrQuad:text.hstarOcrQuad,
+      hstarOcrVisualProfile:visualProfile,
+      hstarOcrOriginalText:'经典奶茶',
+      hstarArtFontRequestGeneration:0,
+      hstarOcrConfidence:0.98,
+      hstarOcrLanguage:'zh',
       hstarOcrFontCandidates:['Alibaba PuHuiTi', 'Microsoft YaHei UI'],
+    });
+    expect(project.assetRefs).toEqual([sourceAssetId]);
+    expect(project.aiTaskRecords).toEqual([]);
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => restored.canvas.add({...object}));
+      callback();
+    });
+    await adapter.restoreProject({
+      editor:restored,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+    expect(restored.canvas.getObjects()[0]).toMatchObject({
+      hstarOcrSourceAssetId:sourceAssetId,
+      hstarOcrSourceLayerId:'layer-source',
+      hstarOcrBlockId:'ocr-title',
+      hstarOcrQuad:text.hstarOcrQuad,
+      hstarOcrVisualProfile:visualProfile,
+      hstarOcrOriginalText:'经典奶茶',
+      hstarArtFontRequestGeneration:0,
     });
   });
 

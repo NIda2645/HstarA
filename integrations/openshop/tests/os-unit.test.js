@@ -13,6 +13,18 @@ import {
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const snapEnginePath = resolve(testDir, '..', 'host', 'openshop-snap-engine.js');
+const OCR_CUSTOM_PROPERTIES = [
+  'hstarOcrSourceAssetId',
+  'hstarOcrSourceLayerId',
+  'hstarOcrBlockId',
+  'hstarOcrQuad',
+  'hstarOcrVisualProfile',
+  'hstarOcrOriginalText',
+  'hstarArtFontRequestGeneration',
+  'hstarOcrConfidence',
+  'hstarOcrLanguage',
+  'hstarOcrFontCandidates',
+];
 
 describe('OpenShop core object', () => {
   beforeEach(() => {
@@ -1428,10 +1440,29 @@ describe('OpenShop core object', () => {
     const OS = loadOpenShop();
     const canvas = createCanvasMock();
     let snapshotName = 'Initial';
-    canvas.toJSON = vi.fn(() => ({ objects: [{ name: snapshotName }] }));
+    const provenance = {
+      hstarOcrSourceAssetId:'f'.repeat(64),
+      hstarOcrSourceLayerId:'layer-source',
+      hstarOcrBlockId:'ocr-title',
+      hstarOcrQuad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
+      hstarOcrVisualProfile:{script:'zh-hans', fill:'#112233', weight:700},
+      hstarOcrOriginalText:'Original OCR',
+      hstarArtFontRequestGeneration:0,
+      hstarOcrConfidence:0.98,
+      hstarOcrLanguage:'zh',
+      hstarOcrFontCandidates:['01免Title Face'],
+    };
+    canvas.toJSON = vi.fn(properties => ({
+      objects:[{
+        name:snapshotName,
+        ...Object.fromEntries(properties
+          .filter(property => property in provenance)
+          .map(property => [property, provenance[property]])),
+      }],
+    }));
     const restored = [];
     canvas.loadFromJSON = vi.fn((json, callback) => {
-      restored.push(json.objects[0].name);
+      restored.push(json);
       callback();
     });
     OS.canvas = canvas;
@@ -1446,7 +1477,9 @@ describe('OpenShop core object', () => {
     OS.undo();
     OS.redo();
 
-    expect(restored).toEqual(['Initial', 'Edited']);
+    expect(restored.map(json => json.objects[0].name)).toEqual(['Initial', 'Edited']);
+    expect(restored[0].objects[0]).toMatchObject(provenance);
+    expect(restored[1].objects[0]).toMatchObject(provenance);
     expect(OS.historyIdx).toBe(1);
     expect(OS.setTool).toHaveBeenCalledWith('select', {forceInteraction:true});
   });
@@ -1459,6 +1492,7 @@ describe('OpenShop core object', () => {
     OS.saveHistory('Text Kerning');
 
     expect(OS.canvas.toJSON).toHaveBeenCalledWith(expect.arrayContaining(['hstarKerningMode']));
+    expect(OS.canvas.toJSON).toHaveBeenCalledWith(expect.arrayContaining(OCR_CUSTOM_PROPERTIES));
   });
 
   it('exports PNG using a sanitized download name', () => {
@@ -1987,6 +2021,26 @@ describe('OpenShop core object', () => {
     }
   });
 
+  it('keeps complete OCR provenance in standalone auto-save snapshots', async () => {
+    const writable = {write:vi.fn(async () => {}), close:vi.fn(async () => {})};
+    const root = {
+      getFileHandle:vi.fn(async () => ({createWritable:vi.fn(async () => writable)})),
+    };
+    vi.stubGlobal('navigator', {storage:{getDirectory:vi.fn(async () => root)}});
+    const OS = loadOpenShop();
+    const canvas = createCanvasMock();
+    OS._persistenceMode = 'standalone';
+    OS._autoSaveDirty = true;
+    OS.historyIdx = 1;
+    OS.canvas = canvas;
+    OS.layers = [];
+
+    await OS._autoSave();
+
+    expect(canvas.toJSON).toHaveBeenCalledWith(expect.arrayContaining(OCR_CUSTOM_PROPERTIES));
+    expect(writable.write).toHaveBeenCalledOnce();
+  });
+
   it('shows recovery storage status and restores sanitized recovery data', async () => {
     const OS = loadOpenShop();
     const canvas = createCanvasMock();
@@ -2071,6 +2125,7 @@ describe('OpenShop core object', () => {
       clicks.push({ download: this.download });
     });
     await OS.saveProject();
+    expect(canvas.toJSON).toHaveBeenLastCalledWith(expect.arrayContaining(OCR_CUSTOM_PROPERTIES));
     expect(clicks).toHaveLength(1);
     expect(clicks[0].download).toBe('openshop-project.json');
 

@@ -906,6 +906,7 @@ class OpenShopProjectStore:
             "maskAssetId",
             "outputAssetId",
             "primaryReferenceAssetId",
+            "hstarOcrSourceAssetId",
         }
         if isinstance(value, dict):
             for key, child in value.items():

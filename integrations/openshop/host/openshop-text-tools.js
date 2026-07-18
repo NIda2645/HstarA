@@ -344,13 +344,60 @@
         : [];
     }
 
-    function fontFamilyForBlock(block, candidates = fontCandidatesForBlock(block)){
-      const available = candidates.find(family => fontManager.isAvailable?.(family));
-      const fallback = ['zh', 'mixed'].includes(clean(block?.language).toLowerCase())
-        ? 'Microsoft YaHei UI'
-        : 'Arial';
-      const requested = available || candidates[0] || fallback;
-      return clean(fontManager.resolveFamily?.(requested)) || requested;
+    function finite(value, fallback = 0){
+      const number = Number(value);
+      return Number.isFinite(number) ? number : fallback;
+    }
+
+    function ocrVisualProfile(block){
+      const font = block?.font && typeof block.font === 'object' ? block.font : {};
+      const shadow = font.shadow && typeof font.shadow === 'object' ? font.shadow : {};
+      return {
+        script:clean(block?.script) || 'mixed',
+        dominantScript:clean(block?.dominantScript),
+        fill:clean(block?.color || block?.fill) || '#ffffff',
+        alignment:['left', 'center', 'right', 'justify'].includes(block?.align) ? block.align : 'left',
+        rotation:finite(block?.rotation),
+        artistic:font.artistic === true,
+        familyCandidates:fontCandidatesForBlock(block),
+        size:finite(font.size),
+        weight:finite(font.weight, 400),
+        style:font.style === 'italic' ? 'italic' : 'normal',
+        styleDescription:clean(font.styleDescription),
+        letterSpacing:finite(font.letterSpacing),
+        lineHeight:finite(font.lineHeight, 1.16),
+        strokeColor:clean(font.strokeColor) || '#00000000',
+        strokeWidth:finite(font.strokeWidth),
+        shadow:{
+          color:clean(shadow.color) || '#00000000',
+          blur:finite(shadow.blur),
+          offsetX:finite(shadow.offsetX),
+          offsetY:finite(shadow.offsetY),
+        },
+      };
+    }
+
+    function fitTextUniformly(object, geometry){
+      object.initDimensions?.();
+      const naturalWidth = Math.max(1, finite(object.width, geometry.width));
+      const naturalHeight = Math.max(1, finite(object.height, geometry.height));
+      const fontSize = Math.max(1, finite(object.fontSize, 1));
+      const graphemeGaps = Math.max(0, Array.from(String(object.text || '')).length - 1);
+      if(graphemeGaps){
+        const heightScale = geometry.height / naturalHeight;
+        const targetNaturalWidth = heightScale > 0 ? geometry.width / heightScale : naturalWidth;
+        const spacingDelta = (targetNaturalWidth - naturalWidth) * 1000 / (fontSize * graphemeGaps);
+        const charSpacing = Math.max(-1000, Math.min(10000, finite(object.charSpacing) + spacingDelta));
+        if(typeof object.set === 'function') object.set({charSpacing});
+        else object.charSpacing = charSpacing;
+        object.initDimensions?.();
+      }
+      const fittedWidth = Math.max(1, finite(object.width, naturalWidth));
+      const fittedHeight = Math.max(1, finite(object.height, naturalHeight));
+      const scale = Math.max(0.0001, Math.min(geometry.width / fittedWidth, geometry.height / fittedHeight));
+      if(typeof object.set === 'function') object.set({scaleX:scale, scaleY:scale});
+      else Object.assign(object, {scaleX:scale, scaleY:scale});
+      object.setCoords?.();
     }
 
     function textLayerName(text, index){
@@ -398,58 +445,78 @@
       return true;
     }
 
-    function applyTextExtraction(blocks = state.reviewBlocks){
+    async function applyTextExtraction(blocks = state.reviewBlocks){
       if(!Array.isArray(blocks) || !blocks.length) throw new Error('没有可确认的文字提取结果');
       const record = state.reviewTaskRecord
         || [...taskRecords()].reverse().find(item => item.toolId === TOOL_EXTRACT && item.status === 'succeeded' && !item.appliedAt);
       const canvasWidth = Number(editor.canvasW || record?.result?.width || 1920);
       const canvasHeight = Number(editor.canvasH || record?.result?.height || 1080);
+      const resultWidth = Number(record?.result?.width || canvasWidth);
       const resultHeight = Number(record?.result?.height || canvasHeight);
-      const fontScale = resultHeight > 0 ? canvasHeight / resultHeight : 1;
+      const widthRatio = resultWidth > 0 ? canvasWidth / resultWidth : 1;
+      const heightRatio = resultHeight > 0 ? canvasHeight / resultHeight : 1;
+      const sourcePixelScale = Math.min(widthRatio, heightRatio);
       const sourceLayerId = clean(record?.sourceLayerId);
+      const sourceAssetId = clean(record?.sourceAssetId);
+      const originalBlocks = Array.isArray(record?.result?.blocks) ? record.result.blocks : [];
+      await fontManager.loadSystemFonts?.();
+      const matches = blocks.map(block => fontManager.matchOcrFont(block));
       const createdLayers = [];
       blocks.forEach((block, index) => {
         const text = clean(block?.text);
         if(!text) return;
+        const match = matches[index];
+        if(!clean(match?.faceFamily)) throw new Error('OCR font match did not return a usable face');
         const geometry = quadGeometry(block.quad, canvasWidth, canvasHeight, block.rotation);
         const reportedSize = Number(block?.font?.size);
         const inferredSize = Math.max(1, geometry.height * 0.8);
         const fontSize = Math.max(1, Number.isFinite(reportedSize) && reportedSize > 0
-          ? reportedSize * fontScale
+          ? reportedSize * sourcePixelScale
           : inferredSize);
         const fontCandidates = fontCandidatesForBlock(block);
+        const visualProfile = ocrVisualProfile(block);
+        const originalBlock = originalBlocks.find(item => clean(item?.id) && clean(item.id) === clean(block?.id))
+          || originalBlocks[index]
+          || block;
         const layerId = createId('hstar-text-layer').replaceAll('-', '_');
         const object = new fabricRef.IText(text, {
           left:Math.round(geometry.left),
           top:Math.round(geometry.top),
           originX:'left',
           originY:'top',
-          fontFamily:fontFamilyForBlock(block, fontCandidates),
+          fontFamily:match.faceFamily,
           fontSize,
-          fill:clean(block.color) || '#ffffff',
-          fontWeight:Number(block.font?.weight || 400),
-          fontStyle:block.font?.style === 'italic' ? 'italic' : 'normal',
-          textAlign:['left', 'center', 'right', 'justify'].includes(block.align) ? block.align : 'left',
+          fill:visualProfile.fill,
+          fontWeight:match.weight,
+          fontStyle:match.italic ? 'italic' : 'normal',
+          charSpacing:visualProfile.letterSpacing,
+          lineHeight:visualProfile.lineHeight,
+          textAlign:visualProfile.alignment,
           angle:geometry.angle,
+          stroke:visualProfile.strokeColor,
+          strokeWidth:visualProfile.strokeWidth * sourcePixelScale,
+          shadow:new fabricRef.Shadow({
+            color:visualProfile.shadow.color,
+            blur:visualProfile.shadow.blur * sourcePixelScale,
+            offsetX:visualProfile.shadow.offsetX * sourcePixelScale,
+            offsetY:visualProfile.shadow.offsetY * sourcePixelScale,
+          }),
           editable:true,
           selectable:true,
           name:textLayerName(text, index),
           hstarLayerId:layerId,
+          hstarOcrSourceAssetId:sourceAssetId,
           hstarOcrBlockId:clean(block.id) || `ocr-${index + 1}`,
           hstarOcrSourceLayerId:sourceLayerId,
+          hstarOcrQuad:clone(originalBlock.quad || block.quad),
+          hstarOcrVisualProfile:visualProfile,
+          hstarOcrOriginalText:String(originalBlock.text ?? block.text ?? ''),
+          hstarArtFontRequestGeneration:0,
           hstarOcrConfidence:Number(block.confidence || 0),
           hstarOcrLanguage:clean(block.language) || 'unknown',
           hstarOcrFontCandidates:fontCandidates,
         });
-        const naturalWidth = Math.max(1, Number(object.width || geometry.width));
-        const naturalHeight = Math.max(1, Number(object.height || fontSize));
-        const fittedScale = {
-          scaleX:geometry.width / naturalWidth,
-          scaleY:geometry.height / naturalHeight,
-        };
-        if(typeof object.set === 'function') object.set(fittedScale);
-        else Object.assign(object, fittedScale);
-        object.setCoords?.();
+        fitTextUniformly(object, geometry);
         createdLayers.push({
           layerId,
           name:textLayerName(text, index),
@@ -458,9 +525,9 @@
           blend:'source-over',
           objects:[object],
         });
-        editor.canvas.add?.(object);
       });
       if(!createdLayers.length) throw new Error('校对结果没有可创建的文字');
+      createdLayers.forEach(layer => editor.canvas.add?.(layer.objects[0]));
       const sourceIndex = sourceLayerId
         ? editor.layers.findIndex(item => clean(item?.layerId) === sourceLayerId)
         : Number(editor.activeLayerIdx || 0);
@@ -803,7 +870,13 @@
       else if(action === 'run-extraction') await runTextExtraction();
       else if(action === 'run-removal') await runTextRemoval(state.lastRemovalOptions);
       else if(action === 'cancel') await cancelActiveTask();
-      else if(action === 'apply-extraction') applyTextExtraction();
+      else if(action === 'apply-extraction'){
+        try {
+          await applyTextExtraction();
+        } catch(error){
+          setStatus('failed', error instanceof Error ? error.message : String(error));
+        }
+      }
       const mode = event.target.closest?.('[data-hstar-remove-mode]')?.dataset?.hstarRemoveMode;
       if(mode){ state.lastRemovalOptions.mode = mode === 'selection' ? 'selection' : 'layer'; renderPanel(); }
     }
