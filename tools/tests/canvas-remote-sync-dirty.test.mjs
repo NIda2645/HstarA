@@ -105,6 +105,9 @@ assert.deepEqual(merged.logs, [
   {id:'local-log', value:'local'},
 ]);
 assert.deepEqual(tombstones, ['openshop-remote-deleted']);
-assert.match(extractFunction(js, 'saveCanvas'), /mergeClassicCanvasConflictState\(/, 'ordinary canvas 409 handling should merge remote additions before retrying local changes');
+const saveCanvasSource = extractFunction(js, 'saveCanvas');
+assert.match(saveCanvasSource, /mergeClassicCanvasConflictState\(/, 'ordinary canvas 409 handling should merge remote additions before retrying local changes');
+assert.match(saveCanvasSource, /const\s+currentLogs\s*=\s*canvas\.logs\s*\|\|\s*\[\]/, 'ordinary canvas save should capture logs added while a request is in flight');
+assert.match(saveCanvasSource, /canvas\s*=\s*\{[\s\S]*logs:currentLogs/, 'ordinary canvas save response should preserve in-flight logs for the queued retry');
 
 console.log('ordinary canvas dirty remote sync tests passed');

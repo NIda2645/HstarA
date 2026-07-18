@@ -1677,9 +1677,10 @@ async function saveCanvas(){
         if(!res.ok) throw new Error('save failed');
         const data = await res.json().catch(() => ({}));
         const localViewport = {...viewport};
+        const currentLogs = canvas.logs || [];
         if(data.canvas){
             lastSyncedCanvasState = captureClassicCanvasSyncState(data.canvas);
-            canvas = {...canvas, ...data.canvas, viewport:localViewport};
+            canvas = {...canvas, ...data.canvas, viewport:localViewport, logs:currentLogs};
         }
         viewport = localViewport;
         canvas.updated_at = Number(canvas.updated_at || Date.now());
