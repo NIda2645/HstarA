@@ -354,7 +354,7 @@ QUEUE_LOCK = Lock()
 HISTORY_LOCK = Lock()
 GLOBAL_CONFIG_LOCK = Lock()
 CONVERSATION_LOCK = Lock()
-CANVAS_LOCK = Lock()
+CANVAS_LOCK = RLock()
 LOAD_LOCK = Lock()
 RUNNINGHUB_WORKFLOW_LOCK = Lock()
 NEXT_TASK_ID = 1
@@ -18684,31 +18684,42 @@ def canvas_save_request_matches(canvas, payload):
     return all(candidate.get(field) == canvas.get(field) for field in persisted_fields)
 
 
+def save_and_reconcile_canvas_request(canvas_id, payload):
+    with CANVAS_LOCK:
+        canvas = load_canvas(canvas_id)
+        previous_openshop_asset_refs = openshop_asset_refs_from_value(canvas)
+        current_updated_at = int(canvas.get("updated_at") or 0)
+        if (
+            payload.base_updated_at
+            and current_updated_at
+            and int(payload.base_updated_at) < current_updated_at
+        ):
+            if canvas_save_request_matches(canvas, payload):
+                reconcile_openshop_canvas_projects(canvas)
+                return canvas
+            raise HTTPException(status_code=409, detail={
+                "message": "画布已被其他页面更新，已拒绝旧版本覆盖。",
+                "canvas": canvas,
+                "updated_at": current_updated_at,
+            })
+        apply_canvas_save_request(canvas, payload)
+        save_canvas(canvas)
+        removed_openshop_projects = reconcile_openshop_canvas_projects(canvas)
+        if (
+            not removed_openshop_projects
+            and previous_openshop_asset_refs - openshop_asset_refs_from_value(canvas)
+        ):
+            collect_openshop_garbage()
+        return canvas
+
+
 @app.put("/api/canvases/{canvas_id}")
 async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
-    canvas = load_canvas(canvas_id)
-    previous_openshop_asset_refs = openshop_asset_refs_from_value(canvas)
-    current_updated_at = int(canvas.get("updated_at") or 0)
-    if payload.base_updated_at and current_updated_at and int(payload.base_updated_at) < current_updated_at:
-        if canvas_save_request_matches(canvas, payload):
-            await asyncio.to_thread(reconcile_openshop_canvas_projects, canvas)
-            return {"canvas": canvas}
-        raise HTTPException(status_code=409, detail={
-            "message": "画布已被其他页面更新，已拒绝旧版本覆盖。",
-            "canvas": canvas,
-            "updated_at": current_updated_at,
-        })
-    apply_canvas_save_request(canvas, payload)
-    save_canvas(canvas)
-    removed_openshop_projects = await asyncio.to_thread(
-        reconcile_openshop_canvas_projects,
-        canvas,
+    canvas = await asyncio.to_thread(
+        save_and_reconcile_canvas_request,
+        canvas_id,
+        payload,
     )
-    if (
-        not removed_openshop_projects
-        and previous_openshop_asset_refs - openshop_asset_refs_from_value(canvas)
-    ):
-        await asyncio.to_thread(collect_openshop_garbage)
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get("updated_at") or now_ms()), payload.client_id)
     return {"canvas": canvas}
 

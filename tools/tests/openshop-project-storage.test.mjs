@@ -57,6 +57,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import httpx
@@ -1387,6 +1388,11 @@ async def api_lifecycle():
             original_delete = main.OPENSHOP_STORE.delete
             delete_failure = {"remaining": 1}
             delete_attempts = []
+            retry_broadcasts = []
+            original_broadcast = main.manager.broadcast_canvas_updated
+
+            async def record_retry_broadcast(*args, **kwargs):
+                retry_broadcasts.append((args, kwargs))
 
             def fail_later_exact_delete(project_id, delete_owner):
                 if project_id == shared_project_id and delete_owner in (
@@ -1404,6 +1410,7 @@ async def api_lifecycle():
                 return original_delete(project_id, delete_owner)
 
             main.OPENSHOP_STORE.delete = fail_later_exact_delete
+            main.manager.broadcast_canvas_updated = record_retry_broadcast
             try:
                 try:
                     await client.put(f"/api/canvases/{canvas['id']}", json=shared_payload)
@@ -1445,8 +1452,10 @@ async def api_lifecycle():
                     },
                 )
                 assert divergent_retry.status_code == 409, divergent_retry.text
+                assert len(retry_broadcasts) == 1
             finally:
                 main.OPENSHOP_STORE.delete = original_delete
+                main.manager.broadcast_canvas_updated = original_broadcast
 
             assert not shared_sidecar_a.exists()
             assert shared_sidecar_b.is_file()
@@ -1490,6 +1499,91 @@ async def api_lifecycle():
             assert (
                 await client.get(f"/api/openshop/assets/{failed_asset['assetId']}")
             ).status_code == 404
+
+            concurrent_response = await client.post(
+                "/api/canvases",
+                json={"title": "Concurrent reconciliation", "icon": "layers", "kind": "classic"},
+            )
+            concurrent_canvas = concurrent_response.json()["canvas"]
+            concurrent_owner = {
+                "canvasType": "classic",
+                "canvasId": concurrent_canvas["id"],
+                "nodeId": "node-concurrent-openshop",
+            }
+            concurrent_project_id = "project-concurrent-openshop"
+            concurrent_init = await client.post(
+                f"/api/openshop/projects/{concurrent_project_id}/initialize",
+                json={"owner": concurrent_owner, "document": {"width": 640, "height": 480}},
+            )
+            assert concurrent_init.status_code == 200, concurrent_init.text
+            concurrent_payload = {
+                "title": concurrent_canvas["title"],
+                "icon": concurrent_canvas["icon"],
+                "nodes": [{
+                    "id": concurrent_owner["nodeId"],
+                    "type": "openshop-layered",
+                    "projectId": concurrent_project_id,
+                }],
+                "connections": [],
+                "viewport": {},
+                "logs": [],
+                "settings": {},
+                "base_updated_at": concurrent_canvas["updated_at"],
+            }
+            concurrent_attached = await client.put(
+                f"/api/canvases/{concurrent_canvas['id']}",
+                json=concurrent_payload,
+            )
+            assert concurrent_attached.status_code == 200, concurrent_attached.text
+            concurrent_payload["base_updated_at"] = concurrent_attached.json()["canvas"]["updated_at"]
+            concurrent_detach_payload = {**concurrent_payload, "nodes": []}
+            concurrent_attach_payload = copy.deepcopy(concurrent_payload)
+            save_rendezvous = threading.Barrier(2)
+            detached_saved = threading.Event()
+            attached_saved = threading.Event()
+            original_save_canvas = main.save_canvas
+
+            def interleaved_save_canvas(candidate):
+                is_detach = not main.openshop_project_owners(candidate.get("nodes"))
+                try:
+                    save_rendezvous.wait(timeout=1)
+                except threading.BrokenBarrierError:
+                    return original_save_canvas(candidate)
+                if is_detach:
+                    original_save_canvas(candidate)
+                    detached_saved.set()
+                    assert attached_saved.wait(timeout=5)
+                else:
+                    assert detached_saved.wait(timeout=5)
+                    original_save_canvas(candidate)
+                    attached_saved.set()
+
+            def run_concurrent_canvas_put(request_payload):
+                async def request_once():
+                    transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=True)
+                    async with httpx.AsyncClient(transport=transport, base_url="http://test") as thread_client:
+                        return await thread_client.put(
+                            f"/api/canvases/{concurrent_canvas['id']}",
+                            json=request_payload,
+                        )
+                return asyncio.run(request_once())
+
+            main.save_canvas = interleaved_save_canvas
+            try:
+                concurrent_results = await asyncio.gather(
+                    asyncio.to_thread(run_concurrent_canvas_put, concurrent_detach_payload),
+                    asyncio.to_thread(run_concurrent_canvas_put, concurrent_attach_payload),
+                )
+            finally:
+                main.save_canvas = original_save_canvas
+
+            assert {result.status_code for result in concurrent_results} <= {200, 409}
+            concurrent_saved = main.load_canvas(concurrent_canvas["id"])
+            if main.openshop_project_owners(concurrent_saved.get("nodes")):
+                assert main.OPENSHOP_STORE.load(
+                    concurrent_project_id,
+                    concurrent_owner,
+                )["owner"] == concurrent_owner
 
             startup_response = await client.post(
                 "/api/canvases",
