@@ -111,6 +111,17 @@ ALIBABA_PUHUITI_NUMBERED_L3_FACE = re.compile(
     r"semi\s*bold|demi\s*bold|bold|extra\s*bold|ultra\s*bold|black|heavy)\s+L3$",
     re.IGNORECASE,
 )
+KNOWN_ZH_HANS_FAMILIES = frozenset(
+    family.casefold()
+    for family in (
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "SimSun",
+        "SimHei",
+        "KaiTi",
+        "FangSong",
+    )
+)
 
 
 def _strip_installer_disambiguator(value):
@@ -129,7 +140,11 @@ def _font_metadata(family):
     elif category == "03":
         language_group = "en"
     else:
-        language_group = "zh-hans" if CJK_TEXT.search(sort_name) else "en"
+        language_group = (
+            "zh-hans"
+            if sort_name.casefold() in KNOWN_ZH_HANS_FAMILIES or CJK_TEXT.search(sort_name)
+            else "en"
+        )
     return {
         "languageGroup": language_group,
         "freeCommercialCategory": category,
@@ -210,6 +225,45 @@ def _font_family_for_face(family, weight, italic, allow_vendor_code=False):
     return base or family, weight, italic, _style_label(weight, italic)
 
 
+def _ordered_local_names(representative_family, *name_groups):
+    aliases = {
+        name
+        for names in name_groups
+        for name in names
+        if name
+    }
+    aliases.add(representative_family)
+    remaining = sorted(
+        (name for name in aliases if name != representative_family),
+        key=lambda name: (name.casefold(), name),
+    )
+    return [representative_family, *remaining]
+
+
+def _style_preference(style, group_family):
+    family = style["family"]
+    return (
+        family.casefold() == group_family.casefold(),
+        family.casefold(),
+        family,
+        style["weight"],
+        style["id"],
+    )
+
+
+def _merge_same_style(existing, candidate, group_family):
+    representative = min(
+        (existing, candidate),
+        key=lambda style: _style_preference(style, group_family),
+    )
+    representative["localNames"] = _ordered_local_names(
+        representative["family"],
+        existing["localNames"],
+        candidate["localNames"],
+    )
+    return representative
+
+
 def _normalize_faces(faces):
     vendor_code_groups = {}
     for face in faces:
@@ -244,14 +298,20 @@ def _normalize_faces(faces):
         key = group_family.casefold()
         group = grouped.setdefault(key, {"family": group_family, "styles": {}})
         style_key = (style_label.casefold(), italic)
-        group["styles"].setdefault(style_key, {
+        candidate = {
             "id": _style_id(family, weight, italic),
             "family": family,
             "label": style_label,
             "weight": weight,
             "italic": italic,
             "localNames": list(dict.fromkeys([family, group["family"]])),
-        })
+        }
+        existing = group["styles"].get(style_key)
+        group["styles"][style_key] = (
+            _merge_same_style(existing, candidate, group["family"])
+            if existing is not None
+            else candidate
+        )
 
     legacy_key = ALIBABA_PUHUITI_3.casefold()
     canonical_key = ALIBABA_PUHUITI_3_0.casefold()
@@ -261,17 +321,19 @@ def _normalize_faces(faces):
         for style_key, style in legacy_group["styles"].items():
             existing = canonical_group["styles"].get(style_key)
             if existing is None:
-                style["localNames"] = list(dict.fromkeys([
-                    *style["localNames"],
-                    canonical_group["family"],
-                ]))
+                style["localNames"] = _ordered_local_names(
+                    style["family"],
+                    style["localNames"],
+                    [canonical_group["family"]],
+                )
                 canonical_group["styles"][style_key] = style
             else:
-                existing["localNames"] = list(dict.fromkeys([
-                    *existing["localNames"],
-                    *style["localNames"],
-                    canonical_group["family"],
-                ]))
+                existing["localNames"] = _ordered_local_names(
+                    existing["family"],
+                    existing["localNames"],
+                    style["localNames"],
+                    [canonical_group["family"]],
+                )
 
     fonts = []
     for value in sorted(grouped.values(), key=lambda item: item["family"].casefold()):
@@ -310,16 +372,19 @@ def _registry_font_path(hive, file_value, winreg_module):
     if not value:
         return ""
     if os.path.isabs(value):
-        return value
+        return os.path.normpath(value)
     if hive is winreg_module.HKEY_CURRENT_USER:
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if not local_app_data:
+            return ""
         root = os.path.join(
-            os.environ.get("LOCALAPPDATA", ""),
+            local_app_data,
             "Microsoft",
             "Windows",
             "Fonts",
         )
     else:
-        root = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+        root = os.path.join(os.environ.get("WINDIR") or r"C:\Windows", "Fonts")
     return os.path.normpath(os.path.join(root, value))
 
 
