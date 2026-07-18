@@ -17571,7 +17571,11 @@ async def touch_canvas(canvas_id: str):
     with CANVAS_LOCK:
         canvas = load_canvas(canvas_id)
         save_canvas(canvas)
-    return {"canvas": canvas_record(canvas), "updated_at": canvas.get("updated_at", 0)}
+    return {
+        "canvas": canvas_record(canvas),
+        "full_canvas": canvas,
+        "updated_at": canvas.get("updated_at", 0),
+    }
 
 @app.get("/api/canvas-assets")
 async def list_canvas_assets():

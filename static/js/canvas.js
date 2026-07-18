@@ -1646,6 +1646,7 @@ async function saveCanvas(){
                         nodes,
                         connections,
                         selectedIds:[...selected],
+                        logs:canvas.logs || [],
                     }, remote, lastSyncedCanvasState || {});
                     nodes = merged.nodes;
                     connections = merged.connections;
@@ -1654,6 +1655,7 @@ async function saveCanvas(){
                         ...canvas,
                         nodes,
                         connections,
+                        logs:merged.logs || [],
                         updated_at:Number(remote.updated_at || canvas.updated_at || 0),
                     };
                     selected = new Set(merged.selectedIds || []);
@@ -1884,7 +1886,7 @@ async function touchCanvasOpened(id, {renderList=true}={}){
         if(!res.ok) return null;
         const data = await res.json();
         if(data.canvas) updateCanvasListRecord(data.canvas);
-        return data.canvas || data;
+        return data.full_canvas || data.canvas || data;
     } catch(e) {
         console.warn('touch canvas failed', e);
         return null;
@@ -2256,7 +2258,8 @@ async function openCanvas(id){
         canvas = data.canvas;
         rememberCanvasListProject(canvas.project || 'default');
         const touched = await touchCanvasOpened(canvas.id, {renderList:false});
-        if(touched?.updated_at) canvas.updated_at = Number(touched.updated_at);
+        if(touched?.nodes) canvas = touched;
+        else if(touched?.updated_at) canvas.updated_at = Number(touched.updated_at);
         if((canvas.kind || 'classic') === 'smart'){
             openSmartCanvasPage(canvas.id);
             return;
@@ -2264,6 +2267,7 @@ async function openCanvas(id){
         canvas.logs = canvas.logs || [];
         nodes = canvas.nodes || [];
         connections = canvas.connections || [];
+        lastSyncedCanvasState = captureClassicCanvasSyncState(canvas);
         viewport = localViewportForCanvas(canvas.id, canvas.viewport || {x:0, y:0, scale:1});
         canvas.viewport = {...viewport};
         lastCanvasUpdatedAt = Number(canvas.updated_at || 0);
@@ -17157,10 +17161,8 @@ function mergeClassicCanvasConflictState(localState, remoteState, baseState){
         try { return JSON.stringify(left) === JSON.stringify(right); }
         catch(e) { return false; }
     };
-    const mergeArrayValues = (localItems, remoteItems) => {
-        const merged = [];
-        const seen = new Set();
-        [...(remoteItems || []), ...(localItems || [])].forEach(item => {
+    const mergeArrayValues = (localItems, remoteItems, baseItems=[]) => {
+        const itemKey = item => {
             let key;
             if(item && typeof item === 'object'){
                 key = item.id || item.url || item.assetId || item.taskId;
@@ -17169,11 +17171,40 @@ function mergeClassicCanvasConflictState(localState, remoteState, baseState){
                 try { key = JSON.stringify(item); }
                 catch(e) { key = String(item); }
             }
+            return key;
+        };
+        const localByKey = new Map((localItems || []).map(item => [itemKey(item), item]));
+        const remoteByKey = new Map((remoteItems || []).map(item => [itemKey(item), item]));
+        const baseByKey = new Map((baseItems || []).map(item => [itemKey(item), item]));
+        const order = [];
+        const seen = new Set();
+        [...(remoteItems || []), ...(localItems || [])].forEach(item => {
+            const key = itemKey(item);
             if(seen.has(key)) return;
             seen.add(key);
-            merged.push(item);
+            order.push(key);
         });
-        return merged;
+        return order.map(key => {
+            const hasLocal = localByKey.has(key);
+            const hasRemote = remoteByKey.has(key);
+            const hasBase = baseByKey.has(key);
+            if(hasBase && (!hasLocal || !hasRemote)) return null;
+            const localItem = localByKey.get(key);
+            const remoteItem = remoteByKey.get(key);
+            const baseItem = baseByKey.get(key);
+            if(hasLocal && hasRemote){
+                if(sameValue(localItem, baseItem)) return remoteItem;
+                if(sameValue(remoteItem, baseItem)) return localItem;
+                if(
+                    localItem && remoteItem
+                    && typeof localItem === 'object' && typeof remoteItem === 'object'
+                ){
+                    return {...remoteItem, ...localItem};
+                }
+                return localItem;
+            }
+            return localItem || remoteItem;
+        }).filter(item => item !== null && item !== undefined);
     };
     const mergeNode = (localNode, remoteNode, baseNode) => {
         if(!baseNode) return {...remoteNode, ...localNode};
@@ -17188,7 +17219,7 @@ function mergeClassicCanvasConflictState(localState, remoteState, baseState){
             else if(sameValue(localValue, baseValue)) value = remoteValue;
             else if(sameValue(remoteValue, baseValue)) value = localValue;
             else if(['images','generatedOutputs'].includes(key) && Array.isArray(localValue) && Array.isArray(remoteValue)){
-                value = mergeArrayValues(localValue, remoteValue);
+                value = mergeArrayValues(localValue, remoteValue, Array.isArray(baseValue) ? baseValue : []);
             } else if(
                 localValue && remoteValue
                 && typeof localValue === 'object' && typeof remoteValue === 'object'
@@ -17253,12 +17284,14 @@ function mergeClassicCanvasConflictState(localState, remoteState, baseState){
         ...localState,
         nodes:mergedNodes,
         connections:mergedConnections,
+        logs:mergeArrayValues(localState?.logs || [], remoteState?.logs || [], baseState?.logs || []),
     });
 }
 function captureClassicCanvasSyncState(state){
     return JSON.parse(JSON.stringify({
         nodes:(state?.nodes || []).map(serializableCanvasNode),
         connections:state?.connections || [],
+        logs:state?.logs || [],
     }));
 }
 function canvasHistorySnapshot(){

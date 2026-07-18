@@ -1227,10 +1227,13 @@ async def api_lifecycle():
             assert attached.status_code == 200, attached.text
             assert api_project_path.is_file()
             assert clone_project_path.is_file()
+            touched_attached = await client.post(f"/api/canvases/{canvas['id']}/touch")
+            assert touched_attached.status_code == 200, touched_attached.text
+            assert touched_attached.json()["full_canvas"]["nodes"] == canvas_payload["nodes"]
             canvas_payload["nodes"] = [
                 node for node in canvas_payload["nodes"] if node["id"] == "output-api"
             ]
-            canvas_payload["base_updated_at"] = attached.json()["canvas"]["updated_at"]
+            canvas_payload["base_updated_at"] = touched_attached.json()["full_canvas"]["updated_at"]
             detached = await client.put(f"/api/canvases/{canvas['id']}", json=canvas_payload)
             assert detached.status_code == 200, detached.text
 

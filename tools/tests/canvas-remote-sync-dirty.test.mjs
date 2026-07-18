@@ -13,6 +13,9 @@ const clearDirtyIndex = handler.indexOf('localCanvasDirty = false');
 
 assert.ok(guardIndex >= 0, 'ordinary canvas should defer remote sync while local node edits are pending');
 assert.ok(clearDirtyIndex < 0 || guardIndex < clearDirtyIndex, 'ordinary canvas should check local dirty state before clearing it for remote sync');
+const openCanvasSource = js.slice(js.indexOf('async function openCanvas('), js.indexOf('function applyRemoteCanvasData(', js.indexOf('async function openCanvas(')));
+assert.match(openCanvasSource, /if\(touched\?\.nodes\) canvas = touched;/, 'ordinary canvas open should adopt the full latest canvas returned by touch');
+assert.match(openCanvasSource, /lastSyncedCanvasState\s*=\s*captureClassicCanvasSyncState/, 'ordinary canvas open should capture its fetched merge baseline');
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`);
@@ -48,9 +51,16 @@ vm.runInContext(`
       {id:'local-link', from:'local-new', to:'shared-node'},
     ],
     selectedIds:['openshop-remote-deleted', 'local-new'],
+    logs:[
+      {id:'base-log', value:'base'},
+      {id:'local-log', value:'local'},
+    ],
   }, {
     nodes:[
-      {id:'shared-node', type:'output', x:0, images:[{url:'/output/remote-result.png'}]},
+      {id:'shared-node', type:'output', x:0, images:[
+        {url:'/output/base-result.png'},
+        {url:'/output/remote-result.png'},
+      ]},
       {id:'ordinary-local-deleted', type:'image'},
       {id:'remote-new', type:'image'},
     ],
@@ -59,9 +69,13 @@ vm.runInContext(`
       {id:'remote-link', from:'remote-new', to:'shared-node'},
     ],
     selectedIds:[],
+    logs:[
+      {id:'base-log', value:'base'},
+      {id:'remote-log', value:'remote'},
+    ],
   }, {
     nodes:[
-      {id:'shared-node', type:'output', x:0, images:[]},
+      {id:'shared-node', type:'output', x:0, images:[{url:'/output/base-result.png'}]},
       {id:'openshop-remote-deleted', type:'openshop-layered'},
       {id:'ordinary-local-deleted', type:'image'},
     ],
@@ -70,6 +84,7 @@ vm.runInContext(`
       {id:'ordinary-link', from:'ordinary-local-deleted', to:'shared-node'},
     ],
     selectedIds:[],
+    logs:[{id:'base-log', value:'base'}],
   });
   output = {merged, tombstones:[...permanentlyDeletedOpenShopNodeIds]};
 `, sandbox);
@@ -84,6 +99,11 @@ assert.deepEqual(merged.connections, [
   {id:'local-link', from:'local-new', to:'shared-node'},
 ]);
 assert.deepEqual(merged.selectedIds, ['local-new']);
+assert.deepEqual(merged.logs, [
+  {id:'base-log', value:'base'},
+  {id:'remote-log', value:'remote'},
+  {id:'local-log', value:'local'},
+]);
 assert.deepEqual(tombstones, ['openshop-remote-deleted']);
 assert.match(extractFunction(js, 'saveCanvas'), /mergeClassicCanvasConflictState\(/, 'ordinary canvas 409 handling should merge remote additions before retrying local changes');
 
