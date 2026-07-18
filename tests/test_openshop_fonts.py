@@ -146,6 +146,49 @@ class OpenShopFontCatalogTests(unittest.TestCase):
             ],
         )
 
+    def test_canonicalizes_alibaba_numbered_l3_faces_and_preserves_local_names(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        legacy_l3 = "阿里巴巴普惠体 3 55 Regular L3"
+        canonical_l3 = "阿里巴巴普惠体 3.0 55 Regular L3"
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "阿里巴巴普惠体 3 Regular", "weight": 400, "italic": False},
+                {"family": "阿里巴巴普惠体 3.0 Regular", "weight": 400, "italic": False},
+                {"family": legacy_l3, "weight": 400, "italic": False},
+                {"family": canonical_l3, "weight": 400, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        fonts = catalog.get_catalog()["fonts"]
+
+        self.assertEqual([font["family"] for font in fonts], ["阿里巴巴普惠体 3.0"])
+        l3_style = next(
+            style for style in fonts[0]["styles"] if style["label"] == "55 Regular L3"
+        )
+        self.assertEqual(l3_style["family"], canonical_l3)
+        self.assertEqual(l3_style["weight"], 400)
+        self.assertEqual(
+            set(l3_style["localNames"]),
+            {legacy_l3, "阿里巴巴普惠体 3", canonical_l3, "阿里巴巴普惠体 3.0"},
+        )
+
+    def test_does_not_strip_numbered_l3_suffix_from_unrelated_fonts(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                {"family": "Example Sans", "weight": 400, "italic": False},
+                {"family": "Example Sans 55 Regular L3", "weight": 400, "italic": False},
+            ],
+            platform="win32",
+        )
+
+        families = [font["family"] for font in catalog.get_catalog()["fonts"]]
+
+        self.assertEqual(families, ["Example Sans", "Example Sans 55 Regular L3"])
+
     def test_does_not_generically_merge_versioned_family_names(self):
         from openshop_fonts import OpenShopFontCatalog
 

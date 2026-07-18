@@ -105,6 +105,12 @@ INSTALLER_DISAMBIGUATOR = re.compile(
 CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 ALIBABA_PUHUITI_3 = "阿里巴巴普惠体 3"
 ALIBABA_PUHUITI_3_0 = "阿里巴巴普惠体 3.0"
+ALIBABA_PUHUITI_NUMBERED_L3_FACE = re.compile(
+    rf"^{re.escape(ALIBABA_PUHUITI_3)}(?:\.0)?\s+\d{{2,3}}\s+"
+    r"(?:thin|extra\s*light|ultra\s*light|light|regular|normal|medium|"
+    r"semi\s*bold|demi\s*bold|bold|extra\s*bold|ultra\s*bold|black|heavy)\s+L3$",
+    re.IGNORECASE,
+)
 
 
 def _strip_installer_disambiguator(value):
@@ -139,6 +145,18 @@ def _font_family_for_face(family, weight, italic, allow_vendor_code=False):
     base = ITALIC_SUFFIX.sub("", family).strip()
     if base != family:
         italic = True
+    if ALIBABA_PUHUITI_NUMBERED_L3_FACE.fullmatch(base):
+        group_family, weight, italic, style_label = _font_family_for_face(
+            base[:-2].rstrip(),
+            weight,
+            italic,
+        )
+        italic_suffix = " Italic"
+        if style_label.endswith(italic_suffix):
+            style_label = f"{style_label[:-len(italic_suffix)]} L3{italic_suffix}"
+        else:
+            style_label = f"{style_label} L3"
+        return group_family, weight, italic, style_label
     numeric_match = NUMERIC_STYLE_SUFFIX.search(base)
     if numeric_match:
         style_name = numeric_match.group("style")
