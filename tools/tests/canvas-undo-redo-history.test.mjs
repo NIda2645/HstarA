@@ -97,11 +97,17 @@ assert.match(canvasJs, /deleteSelectedNodes\([\s\S]*HstarClassicOpenShopAdapter\
 assert.match(canvasJs, /function\s+applyCanvasHistoryState\([\s\S]*filterPermanentlyDeletedOpenShopHistoryState\(/, 'classic undo and redo restoration should filter tombstoned OpenShop nodes');
 assert.match(canvasJs, /function\s+applyRemoteCanvasData\([\s\S]*filterPermanentlyDeletedOpenShopHistoryState\(/, 'classic remote synchronization should filter permanently deleted OpenShop nodes');
 assert.match(canvasJs, /function\s+applyRemoteCanvasData\([\s\S]*blockedPermanentlyDeletedOpenShopNode[\s\S]*scheduleSave\(\)/, 'classic remote resurrection attempts should schedule a corrective save');
+const classicRemoteSource = extractFunction(canvasJs, 'applyRemoteCanvasData');
+assert.ok(
+  classicRemoteSource.indexOf('applyingRemoteCanvas = false') < classicRemoteSource.lastIndexOf('if(blockedPermanentlyDeletedOpenShopNode) scheduleSave()'),
+  'classic corrective save should run after remote-application mode is cleared',
+);
 
 assert.match(smartJs, /function\s+deleteNode\([\s\S]*trackPermanentlyDeletedOpenShopNodes\(\[node\]\)/, 'smart delete should tombstone the OpenShop node');
 assert.match(smartJs, /function\s+performUndo\([\s\S]*filterPermanentlyDeletedOpenShopHistoryState\(/, 'smart undo restoration should filter tombstoned OpenShop nodes');
 assert.match(smartJs, /async function\s+loadCanvas\([\s\S]*permanentlyDeletedOpenShopNodeIds\.clear\(\)/, 'smart canvas load should clear permanent OpenShop tombstones');
 assert.match(smartJs, /function\s+applyMergedServerCanvas\([\s\S]*permanentlyDeletedOpenShopNodeIds[\s\S]*deletedNodeIds/, 'smart remote synchronization should always include permanent OpenShop tombstones');
 assert.match(smartJs, /function\s+applyMergedServerCanvas\([\s\S]*blockedPermanentlyDeletedOpenShopNode[\s\S]*scheduleSave\(\)/, 'smart remote resurrection attempts should schedule a corrective save');
+assert.match(smartJs, /function\s+applyMergedServerCanvas\([\s\S]*remotelyDeletedOpenShopNodeIds[\s\S]*permanentlyDeletedOpenShopNodeIds\.add/, 'smart authoritative remote deletion should become a permanent session tombstone');
 
 console.log('canvas undo/redo history tests passed');

@@ -2269,13 +2269,14 @@ function applyRemoteCanvasData(remote){
         remoteSyncTimer = setTimeout(syncRemoteCanvasNow, 1000);
         return;
     }
+    let blockedPermanentlyDeletedOpenShopNode = false;
     applyingRemoteCanvas = true;
     try {
         resetCascadeRuntimeState();
         const localViewport = localViewportForCanvas(canvas.id, viewport || remote.viewport || {x:0, y:0, scale:1});
         const localSelectedIds = new Set(selected);
         const safeRemote = filterPermanentlyDeletedOpenShopHistoryState(remote);
-        const blockedPermanentlyDeletedOpenShopNode = safeRemote.nodes.length < (remote.nodes || []).length;
+        blockedPermanentlyDeletedOpenShopNode = safeRemote.nodes.length < (remote.nodes || []).length;
         canvas = {...remote, nodes:safeRemote.nodes, connections:safeRemote.connections};
         canvas.logs = canvas.logs || [];
         nodes = canvas.nodes || [];
@@ -2294,11 +2295,11 @@ function applyRemoteCanvasData(remote){
         resumeCanvasImageTasks();
         if(currentCanvasTitle) currentCanvasTitle.textContent = canvas.title || tr('canvas.untitled');
         if(currentCanvasTime) currentCanvasTime.textContent = formatCanvasTime(canvas.updated_at || canvas.created_at);
-        if(blockedPermanentlyDeletedOpenShopNode) scheduleSave();
         setStatus('Synced');
     } finally {
         applyingRemoteCanvas = false;
     }
+    if(blockedPermanentlyDeletedOpenShopNode) scheduleSave();
 }
 function resetTransientRunState(list=nodes){
     (list || []).forEach(node => {

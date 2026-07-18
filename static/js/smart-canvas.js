@@ -5324,7 +5324,7 @@ function mergeSmartNodeLists(localNodes, remoteNodes, options={}){
     return order.map(id => {
         const local = localById.get(id);
         const remote = remoteById.get(id);
-        if(local && !remote) return local;     // 仅本地存在：保留（我新建的节点；对方删了也宁可复活也不丢结果）
+        if(local && !remote) return deletedNodeIds.has(String(id)) ? null : local;
         if(remote && !local) return deletedNodeIds.has(String(id)) ? null : remote;     // 本地已删的节点不从旧快照复活
         return mergeSmartNode(local, remote, options);
     }).filter(Boolean);
@@ -5344,7 +5344,15 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 function applyMergedServerCanvas(serverCanvas, options={}){
     if(!serverCanvas || !canvas) return false;
     const remoteNodes = (Array.isArray(serverCanvas.nodes) ? serverCanvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
-    const blockedPermanentlyDeletedOpenShopNode = remoteNodes.some(node => permanentlyDeletedOpenShopNodeIds.has(String(node.id)));
+    const remoteNodeIds = new Set(remoteNodes.map(node => String(node.id)));
+    const remotelyDeletedOpenShopNodeIds = options.preserveLocalChanges
+        ? []
+        : nodes
+            .filter(node => node?.type === 'openshop-layered' && !remoteNodeIds.has(String(node.id)))
+            .map(node => String(node.id));
+    remotelyDeletedOpenShopNodeIds.forEach(id => permanentlyDeletedOpenShopNodeIds.add(id));
+    const blockedPermanentlyDeletedOpenShopNode = remotelyDeletedOpenShopNodeIds.length > 0
+        || remoteNodes.some(node => permanentlyDeletedOpenShopNodeIds.has(String(node.id)));
     const deletedNodeIds = new Set(permanentlyDeletedOpenShopNodeIds);
     if(options.preserveLocalChanges){
         smartDeletedNodeIds.forEach(id => deletedNodeIds.add(id));

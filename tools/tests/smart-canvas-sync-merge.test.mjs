@@ -43,4 +43,33 @@ assert.equal(
   'dirty smart canvas merge should not resurrect locally deleted generated nodes from an old remote snapshot'
 );
 
+const localOnlyNodes = [
+  {id:'openshop-remote-deleted', type:'openshop-layered', projectId:'project-deleted'},
+  {id:'ordinary-local-result', type:'smart-image', images:[{url:'/assets/local-result.png'}]},
+];
+const authoritativeMerge = context.mergeSmartNodeLists(localOnlyNodes, [], {
+  preferLocal:false,
+  deletedNodeIds:new Set(['openshop-remote-deleted']),
+});
+assert.equal(
+  authoritativeMerge.some(node => node.id === 'openshop-remote-deleted'),
+  false,
+  'authoritative remote deletion should remove a clean local OpenShop node',
+);
+assert.equal(
+  authoritativeMerge.some(node => node.id === 'ordinary-local-result'),
+  true,
+  'authoritative remote merge should preserve ordinary local-only results',
+);
+
+const dirtyMerge = context.mergeSmartNodeLists(localOnlyNodes, [], {
+  preferLocal:true,
+  deletedNodeIds:new Set(),
+});
+assert.equal(
+  dirtyMerge.some(node => node.id === 'openshop-remote-deleted'),
+  true,
+  'dirty local merge should preserve a not-yet-saved OpenShop node',
+);
+
 console.log('smart canvas sync merge tests passed');
