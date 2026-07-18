@@ -31,6 +31,35 @@ function createCatalogRows(count = 2500) {
   });
 }
 
+function createSectionedCatalogRows() {
+  const fonts = createCatalogRows();
+  return [
+    {kind:'section', key:'section-zh', label:'Chinese fonts'},
+    {kind:'group', key:'group-zh-unprefixed', label:'Common Chinese'},
+    fonts[0],
+    {kind:'group', key:'group-01', label:'Simplified Chinese'},
+    ...fonts.slice(1, 1250),
+    {kind:'section', key:'section-en', label:'English fonts'},
+    {kind:'group', key:'group-en-unprefixed', label:'Other English'},
+    ...fonts.slice(1250),
+  ];
+}
+
+function createDeferred() {
+  let resolvePromise;
+  let rejectPromise;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {promise, resolve:resolvePromise, reject:rejectPromise};
+}
+
+async function settleAsyncEvent() {
+  await Promise.resolve();
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 0));
+}
+
 class FakeCanvas {
   constructor() {
     this.listeners = new Map();
@@ -403,6 +432,119 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
+  it('navigates the complete virtual row model while skipping headings', async () => {
+    const rows = createSectionedCatalogRows();
+    const fontRows = rows.filter(row => row.kind === 'font');
+    const {controller, textObject} = createHarness({catalogRows:rows});
+    textObject.fontFamily = fontRows[0].family;
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    const press = (target, key) => target.dispatchEvent(new KeyboardEvent('keydown', {
+      key,
+      bubbles:true,
+      cancelable:true,
+    }));
+    const activeOption = () => document.getElementById(list.getAttribute('aria-activedescendant'));
+
+    trigger.focus();
+    press(trigger, 'ArrowDown');
+
+    expect(list.hidden).toBe(false);
+    expect(list.tabIndex).toBe(-1);
+    expect(document.activeElement).toBe(list);
+    expect(activeOption().dataset.family).toBe(fontRows[0].family);
+    expect(activeOption().getAttribute('aria-selected')).toBe('true');
+
+    press(list, 'ArrowDown');
+    expect(activeOption().dataset.family).toBe(fontRows[1].family);
+    expect(activeOption().getAttribute('aria-selected')).toBe('false');
+    expect(list.querySelector(`[data-family="${fontRows[0].family}"]`).getAttribute('aria-selected')).toBe('true');
+
+    press(list, 'End');
+    expect(activeOption().dataset.family).toBe(fontRows.at(-1).family);
+    expect(list.scrollTop).toBeGreaterThan(2000 * FONT_ROW_HEIGHT);
+    expect(list.querySelectorAll('[role="option"]').length).toBeLessThanOrEqual(16);
+
+    press(list, 'Home');
+    expect(activeOption().dataset.family).toBe(fontRows[0].family);
+    expect(list.scrollTop).toBe(rows.findIndex(row => row === fontRows[0]) * FONT_ROW_HEIGHT);
+
+    press(list, 'End');
+    press(list, 'Enter');
+    expect(list.hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+    expect(textObject.set).toHaveBeenCalledWith({fontFamily:fontRows.at(-1).family});
+    controller.destroy();
+  });
+
+  it('selects the keyboard-active font with Space and restores trigger focus', async () => {
+    const rows = createSectionedCatalogRows();
+    const fontRows = rows.filter(row => row.kind === 'font');
+    const {controller, textObject} = createHarness({catalogRows:rows});
+    textObject.fontFamily = fontRows[0].family;
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    const press = (target, key) => target.dispatchEvent(new KeyboardEvent('keydown', {
+      key,
+      bubbles:true,
+      cancelable:true,
+    }));
+
+    trigger.focus();
+    press(trigger, 'ArrowDown');
+    press(list, 'ArrowDown');
+    press(list, ' ');
+
+    expect(list.hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+    expect(textObject.set).toHaveBeenCalledWith({fontFamily:fontRows[1].family});
+    controller.destroy();
+  });
+
+  it('moves from the selected row when ArrowDown follows a pointer-opened list', async () => {
+    const rows = createSectionedCatalogRows();
+    const fontRows = rows.filter(row => row.kind === 'font');
+    const {controller, textObject} = createHarness({catalogRows:rows});
+    textObject.fontFamily = fontRows[0].family;
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    trigger.focus();
+    trigger.dispatchEvent(new MouseEvent('click', {bubbles:true, detail:1}));
+
+    trigger.dispatchEvent(new KeyboardEvent('keydown', {
+      key:'ArrowDown',
+      bubbles:true,
+      cancelable:true,
+    }));
+
+    const activeOption = document.getElementById(list.getAttribute('aria-activedescendant'));
+    expect(activeOption.dataset.family).toBe(fontRows[1].family);
+    expect(document.activeElement).toBe(list);
+    controller.destroy();
+  });
+
+  it('closes keyboard navigation with Escape without selecting', async () => {
+    const rows = createSectionedCatalogRows();
+    const {controller, textObject} = createHarness({catalogRows:rows});
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    trigger.focus();
+    trigger.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown', bubbles:true, cancelable:true}));
+    list.dispatchEvent(new KeyboardEvent('keydown', {key:'End', bubbles:true, cancelable:true}));
+    textObject.set.mockClear();
+
+    list.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true}));
+
+    expect(list.hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+    expect(textObject.set).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+
   it('closes the virtualized list on Escape and outside mousedown', async () => {
     const {controller} = createHarness({catalogRows:createCatalogRows()});
     await controller.start();
@@ -445,6 +587,34 @@ describe('Hstar OpenShop text properties', () => {
       expect(document.querySelector('[data-font-status]').textContent).toBe('本机字体已刷新');
     });
     controller.destroy();
+  });
+
+  it('ignores an in-flight refresh that resolves after destroy', async () => {
+    const deferred = createDeferred();
+    const {controller, fontManager} = createHarness();
+    fontManager.refreshSystemFonts.mockReturnValue(deferred.promise);
+    await controller.start();
+    document.querySelector('[data-font-refresh]').click();
+    controller.destroy();
+
+    deferred.resolve([]);
+    await settleAsyncEvent();
+
+    expect(document.getElementById('hstar-text-properties-panel')).toBeNull();
+  });
+
+  it('handles an in-flight refresh rejection after destroy', async () => {
+    const deferred = createDeferred();
+    const {controller, fontManager} = createHarness();
+    fontManager.refreshSystemFonts.mockReturnValue(deferred.promise);
+    await controller.start();
+    document.querySelector('[data-font-refresh]').click();
+    controller.destroy();
+
+    deferred.reject(new Error('refresh failed'));
+    await settleAsyncEvent();
+
+    expect(document.getElementById('hstar-text-properties-panel')).toBeNull();
   });
 
   it('closes, swaps rows, and cancels stale rendering on a catalog subscription update', async () => {
@@ -519,6 +689,7 @@ describe('Hstar OpenShop text properties', () => {
     expect(listRule).toContain('scrollbar-gutter:stable');
     expect(css).toMatch(/\.hstar-font-option,.hstar-font-heading\{[^}]*height:30px/);
     expect(css).toMatch(/\.hstar-font-row-label\{[^}]*text-overflow:ellipsis/);
+    expect(css).toMatch(/\.hstar-font-option\[data-active=true\]\{[^}]*outline:/);
   });
 
   it('applies styles to the whole object outside editing and syncs the top bar', async () => {

@@ -364,6 +364,35 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
   await expect(list).toBeVisible();
   await page.locator('#statusbar').dispatchEvent('mousedown');
   await expect(list).toBeHidden();
+
+  await page.evaluate(() => {
+    const text = OS.canvas.getObjects().find(object => object.type === 'i-text');
+    text.exitEditing();
+    OS.canvas.fire('text:editing:exited', {target:text});
+    document.querySelector('[data-text-family]').focus();
+  });
+  await page.keyboard.press('ArrowDown');
+  await expect(list).toBeVisible();
+  expect(await list.evaluate(element => document.activeElement === element)).toBe(true);
+  await page.keyboard.press('End');
+  const keyboardEnd = await list.evaluate(element => {
+    const rows = window.__hstarVirtualFontManager.catalogRows();
+    const expectedFamily = rows.filter(row => row.kind === 'font').at(-1).family;
+    const activeId = element.getAttribute('aria-activedescendant');
+    return {
+      activeFamily:document.getElementById(activeId)?.dataset.family,
+      expectedFamily,
+      mounted:element.querySelectorAll('[role="option"]').length,
+    };
+  });
+  expect(keyboardEnd.activeFamily).toBe(keyboardEnd.expectedFamily);
+  expect(keyboardEnd.mounted).toBeLessThanOrEqual(16);
+  await page.keyboard.press('Enter');
+  await expect(list).toBeHidden();
+  expect(await trigger.evaluate(element => document.activeElement === element)).toBe(true);
+  expect(await page.evaluate(() => (
+    OS.canvas.getObjects().find(object => object.type === 'i-text')?.fontFamily
+  ))).toBe(keyboardEnd.expectedFamily);
   expect(pageErrors).toEqual([]);
 });
 
