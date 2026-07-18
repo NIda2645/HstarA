@@ -1342,7 +1342,7 @@ async def api_lifecycle():
                 for node in shared_payload["nodes"]
                 if node["id"] in {shared_owner_b["nodeId"], "node-shared-upstream"}
             ]
-            shared_payload["base_updated_at"] = 0
+            shared_payload["base_updated_at"] = shared_attached.json()["canvas"]["updated_at"]
             original_delete = main.OPENSHOP_STORE.delete
             delete_failure = {"remaining": 1}
             delete_attempts = []
@@ -1393,6 +1393,17 @@ async def api_lifecycle():
                     f"/api/canvases/{canvas['id']}", json=shared_payload
                 )
                 assert shared_removed.status_code == 200, shared_removed.text
+                divergent_retry = await client.put(
+                    f"/api/canvases/{canvas['id']}",
+                    json={
+                        **shared_payload,
+                        "nodes": [
+                            *shared_payload["nodes"],
+                            {"id": "stale-divergent-node", "type": "image"},
+                        ],
+                    },
+                )
+                assert divergent_retry.status_code == 409, divergent_retry.text
             finally:
                 main.OPENSHOP_STORE.delete = original_delete
 
