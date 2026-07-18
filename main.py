@@ -229,6 +229,11 @@ async def startup_event():
     except Exception as exc:
         print(f"纠正图片扩展名失败: {exc}")
 
+    try:
+        await asyncio.to_thread(reconcile_saved_openshop_projects)
+    except Exception:
+        logging.exception("OpenShop startup reconciliation failed")
+
 @app.websocket("/ws/stats")
 async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
     await manager.connect(websocket, client_id)
@@ -3415,6 +3420,56 @@ def openshop_project_owners(nodes):
         and node.get("projectId")
         and node.get("id")
     }
+
+def reconcile_openshop_canvas_projects(canvas):
+    canvas_type = normalize_canvas_kind(canvas.get("kind"))
+    canvas_id = str(canvas.get("id") or "")
+    project_owners = openshop_project_owners(canvas.get("nodes"))
+    with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+        removed_records = OPENSHOP_STORE.reconcile_canvas_projects(
+            canvas_type,
+            canvas_id,
+            project_owners,
+        )
+        for record in removed_records:
+            OPENSHOP_AI_TASKS.cancel_project(record["projectId"], record["owner"])
+    if removed_records:
+        collect_openshop_garbage()
+    return removed_records
+
+def reconcile_saved_openshop_projects():
+    removed_records = []
+    try:
+        filenames = sorted(os.listdir(CANVAS_DIR))
+    except Exception:
+        logging.exception(
+            "OpenShop startup reconciliation could not list canvas directory %s",
+            CANVAS_DIR,
+        )
+        return removed_records
+
+    for filename in filenames:
+        if not filename.endswith(".json"):
+            continue
+        path = os.path.join(CANVAS_DIR, filename)
+        try:
+            with CANVAS_LOCK:
+                with open(path, "r", encoding="utf-8") as f:
+                    canvas = json.load(f)
+            if not isinstance(canvas, dict):
+                raise OpenShopValidationError("Invalid canvas record")
+            canvas_id = str(canvas.get("id") or os.path.splitext(filename)[0])
+            expected_path = os.path.normcase(os.path.abspath(canvas_path(canvas_id)))
+            if expected_path != os.path.normcase(os.path.abspath(path)):
+                raise OpenShopValidationError("Invalid canvas record path")
+            canvas["id"] = canvas_id
+            removed_records.extend(reconcile_openshop_canvas_projects(canvas))
+        except Exception:
+            logging.exception(
+                "OpenShop startup reconciliation failed for canvas file %s",
+                filename,
+            )
+    return removed_records
 
 def remove_openshop_projects(project_owners, canvas_type, canvas_id):
     removed = []
@@ -18597,8 +18652,6 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
             "canvas": canvas,
             "updated_at": current_updated_at,
         })
-    previous_openshop_projects = openshop_project_owners(canvas.get("nodes"))
-    next_openshop_projects = openshop_project_owners(payload.nodes)
     canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
     canvas["icon"] = (payload.icon or canvas.get("icon") or "layers")[:32]
     canvas["kind"] = normalize_canvas_kind(canvas.get("kind"))
@@ -18611,15 +18664,14 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
     canvas["logs"] = payload.logs[-500:]
     canvas["settings"] = payload.settings or {}
     save_canvas(canvas)
-    removed_openshop_projects = previous_openshop_projects - next_openshop_projects
-    if removed_openshop_projects:
-        await asyncio.to_thread(
-            remove_openshop_projects,
-            removed_openshop_projects,
-            canvas["kind"],
-            canvas_id,
-        )
-    if previous_openshop_asset_refs - openshop_asset_refs_from_value(canvas):
+    removed_openshop_projects = await asyncio.to_thread(
+        reconcile_openshop_canvas_projects,
+        canvas,
+    )
+    if (
+        not removed_openshop_projects
+        and previous_openshop_asset_refs - openshop_asset_refs_from_value(canvas)
+    ):
         await asyncio.to_thread(collect_openshop_garbage)
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get("updated_at") or now_ms()), payload.client_id)
     return {"canvas": canvas}

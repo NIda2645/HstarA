@@ -973,6 +973,51 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-canvas-delete-records-"
     }]
 
 
+with tempfile.TemporaryDirectory(prefix="hstara-openshop-canvas-reconcile-") as data_dir:
+    root = Path(data_dir)
+    canvas_dir = root / "canvases"
+    store = OpenShopProjectStore(data_dir, canvas_dir=canvas_dir)
+    owner_active = {
+        "canvasType": "classic",
+        "canvasId": "canvas-reconcile",
+        "nodeId": "node-z-active",
+    }
+    owner_stale = {**owner_active, "nodeId": "node-a-stale"}
+    owner_legacy = {**owner_active, "nodeId": "node-m-legacy"}
+    store.initialize("project-shared", owner_active, {"width": 320, "height": 240})
+    store.initialize("project-shared", owner_stale, {"width": 320, "height": 240})
+    legacy_project = store.initialize(
+        "project-legacy",
+        owner_legacy,
+        {"width": 320, "height": 240},
+    )
+    legacy_sidecar = (
+        canvas_dir / "canvas-reconcile.openshop" / "node-m-legacy" / "project.json"
+    )
+    legacy_sidecar.unlink()
+    legacy_sidecar.parent.rmdir()
+    legacy_path = root / "projects" / "project-legacy.json"
+    legacy_path.write_text(json.dumps(legacy_project, ensure_ascii=False), encoding="utf-8")
+
+    reconciled_records = store.reconcile_canvas_projects(
+        "classic",
+        "canvas-reconcile",
+        {("node-z-active", "project-shared")},
+    )
+    assert reconciled_records == [{
+        "projectId": "project-shared",
+        "owner": owner_stale,
+    }, {
+        "projectId": "project-legacy",
+        "owner": owner_legacy,
+    }]
+    assert store.load("project-shared", owner_active)["owner"] == owner_active
+    assert not (
+        canvas_dir / "canvas-reconcile.openshop" / "node-a-stale" / "project.json"
+    ).exists()
+    assert not legacy_path.exists()
+
+
 async def api_lifecycle():
     with tempfile.TemporaryDirectory(prefix="hstara-openshop-api-") as app_root:
         settings_dir = Path(app_root) / "data"
@@ -1189,6 +1234,47 @@ async def api_lifecycle():
                 )
                 assert shared_init.status_code == 200, shared_init.text
 
+            stale_asset = main.OPENSHOP_STORE.store_image(
+                shared_project_id,
+                shared_owner_a,
+                png_bytes((21, 32, 43, 255)),
+                "image/png",
+                "stale.png",
+                "source",
+            )
+            upstream_asset = main.OPENSHOP_STORE.store_image(
+                shared_project_id,
+                shared_owner_a,
+                png_bytes((54, 65, 76, 255)),
+                "image/png",
+                "upstream.png",
+                "output",
+            )
+            survivor_asset = main.OPENSHOP_STORE.store_image(
+                shared_project_id,
+                shared_owner_b,
+                png_bytes((87, 98, 109, 255)),
+                "image/png",
+                "survivor.png",
+                "source",
+            )
+            stale_task = main.OPENSHOP_AI_TASKS.create(
+                shared_project_id,
+                shared_owner_a,
+                "text-remove",
+                "vision",
+                "test-model",
+                stale_asset["assetId"],
+            )
+            survivor_task = main.OPENSHOP_AI_TASKS.create(
+                shared_project_id,
+                shared_owner_b,
+                "text-remove",
+                "vision",
+                "test-model",
+                survivor_asset["assetId"],
+            )
+
             shared_payload = {
                 **canvas_payload,
                 "nodes": [{
@@ -1199,6 +1285,11 @@ async def api_lifecycle():
                     "id": shared_owner_b["nodeId"],
                     "type": "openshop-layered",
                     "projectId": shared_project_id,
+                }, {
+                    "id": "node-shared-upstream",
+                    "type": "image",
+                    "url": f"/api/openshop/assets/{upstream_asset['assetId']}",
+                    "openshopAssetId": upstream_asset["assetId"],
                 }],
                 "base_updated_at": removed_output.json()["canvas"]["updated_at"],
             }
@@ -1207,12 +1298,55 @@ async def api_lifecycle():
             )
             assert shared_attached.status_code == 200, shared_attached.text
 
-            shared_payload["nodes"] = [shared_payload["nodes"][1]]
-            shared_payload["base_updated_at"] = shared_attached.json()["canvas"]["updated_at"]
-            shared_removed = await client.put(
-                f"/api/canvases/{canvas['id']}", json=shared_payload
+            shared_sidecar_a = (
+                Path(main.CANVAS_DIR)
+                / f"{canvas['id']}.openshop"
+                / shared_owner_a["nodeId"]
+                / "project.json"
             )
-            assert shared_removed.status_code == 200, shared_removed.text
+            shared_sidecar_b = (
+                Path(main.CANVAS_DIR)
+                / f"{canvas['id']}.openshop"
+                / shared_owner_b["nodeId"]
+                / "project.json"
+            )
+            shared_payload["nodes"] = shared_payload["nodes"][1:]
+            shared_payload["base_updated_at"] = 0
+            original_delete = main.OPENSHOP_STORE.delete
+            delete_failure = {"remaining": 1}
+
+            def fail_first_exact_delete(project_id, delete_owner):
+                if (
+                    delete_failure["remaining"]
+                    and project_id == shared_project_id
+                    and delete_owner == shared_owner_a
+                ):
+                    delete_failure["remaining"] -= 1
+                    raise OSError("injected exact OpenShop delete failure")
+                return original_delete(project_id, delete_owner)
+
+            main.OPENSHOP_STORE.delete = fail_first_exact_delete
+            try:
+                try:
+                    await client.put(f"/api/canvases/{canvas['id']}", json=shared_payload)
+                    raise AssertionError("the first exact sidecar delete must fail after canvas save")
+                except OSError as exc:
+                    assert "injected exact OpenShop delete failure" in str(exc)
+
+                saved_after_failure = main.load_canvas(canvas["id"])
+                assert saved_after_failure["nodes"] == shared_payload["nodes"]
+                assert shared_sidecar_a.is_file()
+                assert shared_sidecar_b.is_file()
+
+                shared_removed = await client.put(
+                    f"/api/canvases/{canvas['id']}", json=shared_payload
+                )
+                assert shared_removed.status_code == 200, shared_removed.text
+            finally:
+                main.OPENSHOP_STORE.delete = original_delete
+
+            assert not shared_sidecar_a.exists()
+            assert shared_sidecar_b.is_file()
             removed_shared_project = await client.get(
                 f"/api/openshop/projects/{shared_project_id}",
                 params={
@@ -1231,6 +1365,147 @@ async def api_lifecycle():
             )
             assert removed_shared_project.status_code == 404
             assert surviving_shared_project.status_code == 200
+            assert main.OPENSHOP_AI_TASKS.get(
+                stale_task["taskId"], shared_project_id, shared_owner_a
+            )["status"] == "cancelled"
+            assert main.OPENSHOP_AI_TASKS.get(
+                survivor_task["taskId"], shared_project_id, shared_owner_b
+            )["status"] == "queued"
+            assert (
+                await client.get(f"/api/openshop/assets/{stale_asset['assetId']}")
+            ).status_code == 404
+            assert (
+                await client.get(f"/api/openshop/assets/{upstream_asset['assetId']}")
+            ).status_code == 200
+            assert (
+                await client.get(f"/api/openshop/assets/{survivor_asset['assetId']}")
+            ).status_code == 200
+
+            startup_response = await client.post(
+                "/api/canvases",
+                json={"title": "Startup reconciliation", "icon": "refresh-cw", "kind": "classic"},
+            )
+            startup_canvas = startup_response.json()["canvas"]
+            startup_active_owner = {
+                "canvasType": "classic",
+                "canvasId": startup_canvas["id"],
+                "nodeId": "node-startup-active",
+            }
+            startup_stale_owner = {
+                **startup_active_owner,
+                "nodeId": "node-startup-stale",
+            }
+            for startup_project_id, startup_owner in (
+                ("project-startup-active", startup_active_owner),
+                ("project-startup-stale", startup_stale_owner),
+            ):
+                startup_init = await client.post(
+                    f"/api/openshop/projects/{startup_project_id}/initialize",
+                    json={"owner": startup_owner, "document": {"width": 640, "height": 480}},
+                )
+                assert startup_init.status_code == 200, startup_init.text
+            startup_asset = main.OPENSHOP_STORE.store_image(
+                "project-startup-stale",
+                startup_stale_owner,
+                png_bytes((120, 131, 142, 255)),
+                "image/png",
+                "startup-upstream.png",
+                "output",
+            )
+            startup_task = main.OPENSHOP_AI_TASKS.create(
+                "project-startup-stale",
+                startup_stale_owner,
+                "text-remove",
+                "vision",
+                "test-model",
+                startup_asset["assetId"],
+            )
+            startup_canvas["nodes"] = [{
+                "id": startup_active_owner["nodeId"],
+                "type": "openshop-layered",
+                "projectId": "project-startup-active",
+            }, {
+                "id": "node-startup-upstream",
+                "type": "image",
+                "projectId": "project-startup-stale",
+                "url": f"/api/openshop/assets/{startup_asset['assetId']}",
+                "openshopAssetId": startup_asset["assetId"],
+            }]
+            main.save_canvas(startup_canvas)
+
+            trash_response = await client.post(
+                "/api/canvases",
+                json={"title": "Startup trash survivor", "icon": "trash-2", "kind": "smart"},
+            )
+            trash_canvas = trash_response.json()["canvas"]
+            trash_owner = {
+                "canvasType": "smart",
+                "canvasId": trash_canvas["id"],
+                "nodeId": "node-trash-active",
+            }
+            trash_init = await client.post(
+                "/api/openshop/projects/project-trash-active/initialize",
+                json={"owner": trash_owner, "document": {"width": 640, "height": 480}},
+            )
+            assert trash_init.status_code == 200, trash_init.text
+            trash_canvas["nodes"] = [{
+                "id": trash_owner["nodeId"],
+                "type": "openshop-layered",
+                "projectId": "project-trash-active",
+            }]
+            main.save_canvas(trash_canvas)
+            trash_deleted = await client.delete(f"/api/canvases/{trash_canvas['id']}")
+            assert trash_deleted.status_code == 200, trash_deleted.text
+
+            malformed_canvas_path = Path(main.CANVAS_DIR) / "000-malformed.json"
+            malformed_canvas_path.write_text("{not-json", encoding="utf-8")
+            logged_startup_errors = []
+            original_log_exception = main.logging.exception
+            main.logging.exception = lambda message, *args, **kwargs: logged_startup_errors.append(
+                (message, args)
+            )
+            try:
+                startup_removed = await asyncio.to_thread(main.reconcile_saved_openshop_projects)
+            finally:
+                main.logging.exception = original_log_exception
+                malformed_canvas_path.unlink()
+
+            assert {
+                "projectId": "project-startup-stale",
+                "owner": startup_stale_owner,
+            } in startup_removed
+            assert logged_startup_errors
+            startup_active_sidecar = (
+                Path(main.CANVAS_DIR)
+                / f"{startup_canvas['id']}.openshop"
+                / startup_active_owner["nodeId"]
+                / "project.json"
+            )
+            startup_stale_sidecar = (
+                Path(main.CANVAS_DIR)
+                / f"{startup_canvas['id']}.openshop"
+                / startup_stale_owner["nodeId"]
+                / "project.json"
+            )
+            trash_sidecar = (
+                Path(main.CANVAS_DIR)
+                / f"{trash_canvas['id']}.openshop"
+                / trash_owner["nodeId"]
+                / "project.json"
+            )
+            assert startup_active_sidecar.is_file()
+            assert not startup_stale_sidecar.exists()
+            assert trash_sidecar.is_file()
+            assert main.load_canvas(startup_canvas["id"])["nodes"] == startup_canvas["nodes"]
+            saved_trash_canvas = main.load_canvas_any(trash_canvas["id"])
+            assert saved_trash_canvas["deleted_at"]
+            assert saved_trash_canvas["nodes"] == trash_canvas["nodes"]
+            assert main.OPENSHOP_AI_TASKS.get(
+                startup_task["taskId"], "project-startup-stale", startup_stale_owner
+            )["status"] == "cancelled"
+            assert (
+                await client.get(f"/api/openshop/assets/{startup_asset['assetId']}")
+            ).status_code == 200
 
             smart_response = await client.post(
                 "/api/canvases",

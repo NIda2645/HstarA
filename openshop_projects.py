@@ -216,6 +216,75 @@ class OpenShopProjectStore:
                 canvas_sidecar.rmdir()
             return True
 
+    def reconcile_canvas_projects(
+        self,
+        canvas_type: str,
+        canvas_id: str,
+        project_owners,
+    ) -> list[dict]:
+        normalized_canvas_type = str(canvas_type or "").strip()
+        if normalized_canvas_type not in {"classic", "smart"}:
+            raise OpenShopValidationError("canvasType must be classic or smart")
+        normalized_canvas_id = self._validate_id(canvas_id, "canvasId")
+        active_projects = set()
+        for record in project_owners or set():
+            if not isinstance(record, (list, tuple)) or len(record) != 2:
+                raise OpenShopValidationError("Invalid OpenShop canvas project owner")
+            active_projects.add((
+                self._validate_id(record[0], "nodeId"),
+                self._validate_id(record[1], "projectId"),
+            ))
+        canvas_sidecar = self.canvas_dir / f"{normalized_canvas_id}.openshop"
+
+        with self._lock:
+            canvas_projects = {}
+            if canvas_sidecar.is_dir():
+                for path in sorted(canvas_sidecar.glob("*/project.json")):
+                    node_id = self._validate_id(path.parent.name, "nodeId")
+                    owner = {
+                        "canvasType": normalized_canvas_type,
+                        "canvasId": normalized_canvas_id,
+                        "nodeId": node_id,
+                    }
+                    if path != self._project_path(owner):
+                        raise OpenShopValidationError(
+                            f"Invalid OpenShop project path: {path.name}"
+                        )
+                    project = self._read_json(path, "project")
+                    project_id = self._validate_id(project.get("projectId"), "projectId")
+                    self._validate_project_manifest(project, project_id, owner)
+                    canvas_projects[(node_id, project_id)] = {
+                        "projectId": project_id,
+                        "owner": copy.deepcopy(owner),
+                    }
+
+            for path in sorted(self.legacy_projects_dir.glob("*.json")):
+                project = self._read_json(path, "legacy project")
+                project_id = self._validate_id(project.get("projectId"), "projectId")
+                owner = self._normalize_owner(project.get("owner"))
+                self._validate_project_manifest(project, project_id, owner)
+                if path != self._legacy_project_path(project_id):
+                    raise OpenShopValidationError(
+                        f"Invalid OpenShop legacy project path: {path.name}"
+                    )
+                if (
+                    owner["canvasType"] == normalized_canvas_type
+                    and owner["canvasId"] == normalized_canvas_id
+                ):
+                    canvas_projects[(owner["nodeId"], project_id)] = {
+                        "projectId": project_id,
+                        "owner": copy.deepcopy(owner),
+                    }
+
+            removed_records = []
+            for key in sorted(canvas_projects):
+                if key in active_projects:
+                    continue
+                record = canvas_projects[key]
+                if self.delete(record["projectId"], record["owner"]):
+                    removed_records.append(record)
+            return removed_records
+
     def delete_canvas_projects(self, canvas_type: str, canvas_id: str) -> list[dict]:
         normalized_canvas_type = str(canvas_type or "").strip()
         if normalized_canvas_type not in {"classic", "smart"}:
