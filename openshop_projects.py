@@ -45,6 +45,12 @@ class OpenShopValidationError(OpenShopStoreError):
     pass
 
 
+class OpenShopReconciliationError(OpenShopStoreError):
+    def __init__(self, removed_records: list[dict]):
+        super().__init__("OpenShop canvas reconciliation did not complete")
+        self.removed_records = copy.deepcopy(removed_records)
+
+
 class OpenShopProjectStore:
     SCHEMA_VERSION = 1
     MAX_IMAGE_BYTES = 64 * 1024 * 1024
@@ -281,8 +287,11 @@ class OpenShopProjectStore:
                 if key in active_projects:
                     continue
                 record = canvas_projects[key]
-                if self.delete(record["projectId"], record["owner"]):
-                    removed_records.append(record)
+                try:
+                    if self.delete(record["projectId"], record["owner"]):
+                        removed_records.append(record)
+                except Exception as exc:
+                    raise OpenShopReconciliationError(removed_records) from exc
             return removed_records
 
     def delete_canvas_projects(self, canvas_type: str, canvas_id: str) -> list[dict]:

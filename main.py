@@ -45,6 +45,7 @@ from openshop_projects import (
     OpenShopNotFound,
     OpenShopOwnershipError,
     OpenShopProjectStore,
+    OpenShopReconciliationError,
     OpenShopStoreError,
     OpenShopValidationError,
     OpenShopVersionConflict,
@@ -3425,16 +3426,28 @@ def reconcile_openshop_canvas_projects(canvas):
     canvas_type = normalize_canvas_kind(canvas.get("kind"))
     canvas_id = str(canvas.get("id") or "")
     project_owners = openshop_project_owners(canvas.get("nodes"))
-    with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
-        removed_records = OPENSHOP_STORE.reconcile_canvas_projects(
-            canvas_type,
-            canvas_id,
-            project_owners,
-        )
-        for record in removed_records:
-            OPENSHOP_AI_TASKS.cancel_project(record["projectId"], record["owner"])
-    if removed_records:
-        collect_openshop_garbage()
+    removed_records = []
+    reconciliation_error = None
+    try:
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            try:
+                removed_records = OPENSHOP_STORE.reconcile_canvas_projects(
+                    canvas_type,
+                    canvas_id,
+                    project_owners,
+                )
+            except OpenShopReconciliationError as exc:
+                removed_records = exc.removed_records
+                reconciliation_error = exc
+            for record in removed_records:
+                OPENSHOP_AI_TASKS.cancel_project(record["projectId"], record["owner"])
+    finally:
+        if removed_records:
+            collect_openshop_garbage()
+    if reconciliation_error:
+        if reconciliation_error.__cause__ is not None:
+            raise reconciliation_error.__cause__
+        raise reconciliation_error
     return removed_records
 
 def reconcile_saved_openshop_projects():

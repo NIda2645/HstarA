@@ -1227,7 +1227,8 @@ async def api_lifecycle():
                 "nodeId": "node-shared-a",
             }
             shared_owner_b = {**shared_owner_a, "nodeId": "node-shared-b"}
-            for shared_owner in (shared_owner_a, shared_owner_b):
+            shared_owner_c = {**shared_owner_a, "nodeId": "node-shared-c"}
+            for shared_owner in (shared_owner_a, shared_owner_b, shared_owner_c):
                 shared_init = await client.post(
                     f"/api/openshop/projects/{shared_project_id}/initialize",
                     json={"owner": shared_owner, "document": {"width": 640, "height": 480}},
@@ -1258,6 +1259,14 @@ async def api_lifecycle():
                 "survivor.png",
                 "source",
             )
+            failed_asset = main.OPENSHOP_STORE.store_image(
+                shared_project_id,
+                shared_owner_c,
+                png_bytes((110, 121, 132, 255)),
+                "image/png",
+                "failed-later.png",
+                "source",
+            )
             stale_task = main.OPENSHOP_AI_TASKS.create(
                 shared_project_id,
                 shared_owner_a,
@@ -1274,6 +1283,14 @@ async def api_lifecycle():
                 "test-model",
                 survivor_asset["assetId"],
             )
+            failed_task = main.OPENSHOP_AI_TASKS.create(
+                shared_project_id,
+                shared_owner_c,
+                "text-remove",
+                "vision",
+                "test-model",
+                failed_asset["assetId"],
+            )
 
             shared_payload = {
                 **canvas_payload,
@@ -1283,6 +1300,10 @@ async def api_lifecycle():
                     "projectId": shared_project_id,
                 }, {
                     "id": shared_owner_b["nodeId"],
+                    "type": "openshop-layered",
+                    "projectId": shared_project_id,
+                }, {
+                    "id": shared_owner_c["nodeId"],
                     "type": "openshop-layered",
                     "projectId": shared_project_id,
                 }, {
@@ -1310,33 +1331,63 @@ async def api_lifecycle():
                 / shared_owner_b["nodeId"]
                 / "project.json"
             )
-            shared_payload["nodes"] = shared_payload["nodes"][1:]
+            shared_sidecar_c = (
+                Path(main.CANVAS_DIR)
+                / f"{canvas['id']}.openshop"
+                / shared_owner_c["nodeId"]
+                / "project.json"
+            )
+            shared_payload["nodes"] = [
+                node
+                for node in shared_payload["nodes"]
+                if node["id"] in {shared_owner_b["nodeId"], "node-shared-upstream"}
+            ]
             shared_payload["base_updated_at"] = 0
             original_delete = main.OPENSHOP_STORE.delete
             delete_failure = {"remaining": 1}
+            delete_attempts = []
 
-            def fail_first_exact_delete(project_id, delete_owner):
+            def fail_later_exact_delete(project_id, delete_owner):
+                if project_id == shared_project_id and delete_owner in (
+                    shared_owner_a,
+                    shared_owner_c,
+                ):
+                    delete_attempts.append(delete_owner["nodeId"])
                 if (
                     delete_failure["remaining"]
                     and project_id == shared_project_id
-                    and delete_owner == shared_owner_a
+                    and delete_owner == shared_owner_c
                 ):
                     delete_failure["remaining"] -= 1
-                    raise OSError("injected exact OpenShop delete failure")
+                    raise OSError("injected later exact OpenShop delete failure")
                 return original_delete(project_id, delete_owner)
 
-            main.OPENSHOP_STORE.delete = fail_first_exact_delete
+            main.OPENSHOP_STORE.delete = fail_later_exact_delete
             try:
                 try:
                     await client.put(f"/api/canvases/{canvas['id']}", json=shared_payload)
-                    raise AssertionError("the first exact sidecar delete must fail after canvas save")
+                    raise AssertionError("the later exact sidecar delete must fail after canvas save")
                 except OSError as exc:
-                    assert "injected exact OpenShop delete failure" in str(exc)
+                    assert "injected later exact OpenShop delete failure" in str(exc)
 
                 saved_after_failure = main.load_canvas(canvas["id"])
                 assert saved_after_failure["nodes"] == shared_payload["nodes"]
-                assert shared_sidecar_a.is_file()
+                assert delete_attempts == [shared_owner_a["nodeId"], shared_owner_c["nodeId"]]
+                assert not shared_sidecar_a.exists()
                 assert shared_sidecar_b.is_file()
+                assert shared_sidecar_c.is_file()
+                assert main.OPENSHOP_AI_TASKS.get(
+                    stale_task["taskId"], shared_project_id, shared_owner_a
+                )["status"] == "cancelled"
+                assert main.OPENSHOP_AI_TASKS.get(
+                    failed_task["taskId"], shared_project_id, shared_owner_c
+                )["status"] == "queued"
+                assert (
+                    await client.get(f"/api/openshop/assets/{stale_asset['assetId']}")
+                ).status_code == 404
+                assert (
+                    await client.get(f"/api/openshop/assets/{failed_asset['assetId']}")
+                ).status_code == 200
 
                 shared_removed = await client.put(
                     f"/api/canvases/{canvas['id']}", json=shared_payload
@@ -1347,6 +1398,7 @@ async def api_lifecycle():
 
             assert not shared_sidecar_a.exists()
             assert shared_sidecar_b.is_file()
+            assert not shared_sidecar_c.exists()
             removed_shared_project = await client.get(
                 f"/api/openshop/projects/{shared_project_id}",
                 params={
@@ -1371,6 +1423,9 @@ async def api_lifecycle():
             assert main.OPENSHOP_AI_TASKS.get(
                 survivor_task["taskId"], shared_project_id, shared_owner_b
             )["status"] == "queued"
+            assert main.OPENSHOP_AI_TASKS.get(
+                failed_task["taskId"], shared_project_id, shared_owner_c
+            )["status"] == "cancelled"
             assert (
                 await client.get(f"/api/openshop/assets/{stale_asset['assetId']}")
             ).status_code == 404
@@ -1380,6 +1435,9 @@ async def api_lifecycle():
             assert (
                 await client.get(f"/api/openshop/assets/{survivor_asset['assetId']}")
             ).status_code == 200
+            assert (
+                await client.get(f"/api/openshop/assets/{failed_asset['assetId']}")
+            ).status_code == 404
 
             startup_response = await client.post(
                 "/api/canvases",
