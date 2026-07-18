@@ -119,8 +119,17 @@ describe('Hstar OpenShop editor host runtime', () => {
 
   it('wires editor dirty events and same-origin asset APIs in the OpenShop page', () => {
     const html = readFileSync(indexPath, 'utf8');
+    const customPropertySource = html.match(/_fabricCustomProperties:\s*Object\.freeze\(\[([\s\S]*?)\]\)/)?.[1] || '';
+    const customProperties = [...customPropertySource.matchAll(/'([^']+)'/g)].map(match => match[1]);
     expect(html).toContain("new CustomEvent('openshop:project-dirty'");
-    expect(html).toContain("'hstarAssetId','hstarAssetRole','hstarEdgeId','hstarSourceNodeId','hstarLayerId'");
+    expect(customProperties).toEqual([
+      'name', 'excludeFromExport', 'globalCompositeOperation',
+      'hstarAssetId', 'hstarAssetRole', 'hstarEdgeId', 'hstarSourceNodeId', 'hstarLayerId',
+      'hstarSnapAnchor', 'hstarAiGeneration', 'hstarKerningMode',
+      'hstarOcrSourceAssetId', 'hstarOcrSourceLayerId', 'hstarOcrBlockId', 'hstarOcrQuad',
+      'hstarOcrVisualProfile', 'hstarOcrOriginalText', 'hstarArtFontRequestGeneration',
+      'hstarOcrConfidence', 'hstarOcrLanguage', 'hstarOcrFontCandidates',
+    ]);
     expect(html).toContain('window.HstarOpenShopAssetApi');
     expect(html).toMatch(/\/api\/openshop\/projects\/.*\/assets/);
     expect(html).toContain("assetResolver: assetId => `/api/openshop/assets/${encodeURIComponent(assetId)}`");
@@ -148,6 +157,27 @@ describe('Hstar OpenShop editor host runtime', () => {
       .map(call => call[0])
       .filter(message => message.type === type);
   }
+
+  it('dispatches scoped hidden and visible events from session visibility envelopes', async () => {
+    const hidden = vi.fn();
+    const visible = vi.fn();
+    window.addEventListener('openshop:session-hidden', hidden);
+    window.addEventListener('openshop:session-visible', visible);
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-visibility'));
+    await flushMessages();
+
+    dispatch(envelope(protocol.TYPES.SESSION_VISIBILITY, 'visibility-hidden', {visible:false}));
+    await flushMessages();
+    dispatch(envelope(protocol.TYPES.SESSION_VISIBILITY, 'visibility-visible', {visible:true}));
+    await flushMessages();
+
+    expect(hidden).toHaveBeenCalledOnce();
+    expect(hidden.mock.calls[0][0].detail.context).toEqual(context);
+    expect(visible).toHaveBeenCalledOnce();
+    expect(visible.mock.calls[0][0].detail.context).toEqual(context);
+    window.removeEventListener('openshop:session-hidden', hidden);
+    window.removeEventListener('openshop:session-visible', visible);
+  });
 
   async function flushAsync() {
     await Promise.resolve();

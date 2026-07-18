@@ -421,6 +421,14 @@
   async function applyRequest(envelope){
     const types = state.protocol.TYPES;
     let reason = '';
+    if(envelope.type === types.SESSION_VISIBILITY){
+      const visible = envelope.payload?.visible === true;
+      root.dispatchEvent?.(new CustomEvent(
+        visible ? 'openshop:session-visible' : 'openshop:session-hidden',
+        {detail:{context:{...state.activeSession.context}}}
+      ));
+      return;
+    }
     if(envelope.type === types.SAVE_CONFIRMED){
       confirmSave(envelope);
       return;

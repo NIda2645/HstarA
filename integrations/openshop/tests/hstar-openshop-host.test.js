@@ -114,6 +114,55 @@ describe('Hstar OpenShop host page visibility', () => {
     expect(overlay.classList.contains('is-open')).toBe(false);
     expect(overlay.getAttribute('aria-hidden')).toBe('true');
   });
+
+  it('notifies the live editor to pause polling when the overlay is hidden', async () => {
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1', projectId:'project-1',
+      projectName:'Layered text', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
+    });
+    const frame = document.querySelector('iframe.openshop-session-frame');
+    const postMessage = vi.spyOn(frame.contentWindow, 'postMessage');
+
+    host.close();
+
+    expect(postMessage.mock.calls.some(([message]) => (
+      message.type === window.HstarOpenShopProtocol.TYPES.SESSION_VISIBILITY
+      && message.payload?.visible === false
+    ))).toBe(true);
+  });
+
+  it('counts queued artistic-font records as active background work', async () => {
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1', projectId:'project-1',
+      projectName:'Layered text', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
+    });
+    const session = host.getState().activeSession;
+    const frame = document.querySelector('iframe.openshop-session-frame');
+    const envelope = window.HstarOpenShopProtocol.createEnvelope({
+      type:window.HstarOpenShopProtocol.TYPES.PROJECT_CHANGED,
+      sessionId:session.sessionId,
+      requestId:'project-art-running',
+      context:session.context,
+      payload:{project:{
+        projectId:'project-1', owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
+        aiTaskRecords:[{
+          taskId:'task-art-1', toolId:'art-font-restore', kind:'single',
+          status:'queued', reconcileState:'pending',
+        }],
+      }},
+    });
+    const event = new Event('message');
+    Object.defineProperties(event, {
+      origin:{value:window.location.origin}, source:{value:frame.contentWindow}, data:{value:envelope},
+    });
+
+    window.dispatchEvent(event);
+    await flushMutations();
+
+    expect(host.getState().sessions[0].activeTaskCount).toBe(1);
+  });
 });
 
 describe('Hstar OpenShop host project disposal', () => {

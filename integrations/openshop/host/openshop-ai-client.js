@@ -124,7 +124,9 @@
         const modelId = clean(preference.modelId);
         const provider = providers.find(item => clean(item?.id) === apiConfigId);
         const model = provider?.models?.find(item => clean(item?.id) === modelId);
-        if(!provider || provider.available === false || !model || model.available === false){
+        const supportsInput = toolId !== 'art-font-restore'
+          || (model?.capabilities?.supportsImageInput !== false && model?.imageInput !== false);
+        if(!provider || provider.available === false || !model || model.available === false || !supportsInput){
           return unavailable(toolId, {mode, apiConfigId, modelId}, provider?.name);
         }
         return {
@@ -139,7 +141,11 @@
       }
       const primaryId = clean(state.catalog?.primaryProviderId);
       const provider = providers.find(item => clean(item?.id) === primaryId && item.available !== false);
-      const model = provider?.models?.find(item => item?.available !== false);
+      const model = provider?.models?.find(item => (
+        item?.available !== false
+        && (toolId !== 'art-font-restore'
+          || (item?.capabilities?.supportsImageInput !== false && item?.imageInput !== false))
+      ));
       if(!provider || !model) return unavailable(toolId, {mode, apiConfigId:primaryId, modelId:''});
       return {
         available:true,
@@ -179,11 +185,11 @@
     async function createTask(context, input = {}){
       const normalized = safeContext(context);
       const generation = state.generation;
+      const durableIdentity = clean(input.toolId) === 'art-font-restore';
       assertSession(normalized, generation);
-      const response = await fetchImpl(projectTaskUrl(normalized), {
+      const requestOptions = {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        signal:state.sessionController.signal,
         body:JSON.stringify({
           owner:{
             canvasType:normalized.canvasType,
@@ -192,15 +198,18 @@
           },
           tool_id:clean(input.toolId),
           source_asset_id:clean(input.sourceAssetId),
+          source_layer_id:clean(input.sourceLayerId),
           mask_asset_id:clean(input.maskAssetId),
           provider_id:clean(input.apiConfigId),
           model_id:clean(input.modelId),
           mode:input.mode === 'selection' ? 'selection' : 'layer',
           options:input.options && typeof input.options === 'object' ? input.options : {},
         }),
-      });
+      };
+      if(!durableIdentity) requestOptions.signal = state.sessionController.signal;
+      const response = await fetchImpl(projectTaskUrl(normalized), requestOptions);
       const value = await responseJson(response, '创建 OpenShop AI 任务失败');
-      assertSession(normalized, generation);
+      if(!durableIdentity) assertSession(normalized, generation);
       return value;
     }
 
@@ -219,17 +228,29 @@
       const normalized = safeContext(context);
       const generation = state.generation;
       const externalSignal = pollOptions.signal;
+      const sessionSignal = state.sessionController?.signal;
+      const pollController = new AbortController();
+      const abortPoll = () => pollController.abort();
       assertSession(normalized, generation);
-      while(true){
-        if(externalSignal?.aborted) throw abortError();
-        const response = await fetchImpl(projectTaskUrl(normalized, taskId), {
-          method:'GET', cache:'no-store', signal:state.sessionController.signal,
-        });
-        const value = await responseJson(response, '查询 OpenShop AI 任务失败');
-        assertSession(normalized, generation);
-        const task = value.task || value;
-        if(['succeeded', 'partial', 'failed', 'cancelled'].includes(task?.status)) return task;
-        await wait(Number(pollOptions.intervalMs || pollIntervalMs), state.sessionController.signal);
+      sessionSignal?.addEventListener?.('abort', abortPoll, {once:true});
+      externalSignal?.addEventListener?.('abort', abortPoll, {once:true});
+      if(sessionSignal?.aborted || externalSignal?.aborted) abortPoll();
+      try {
+        while(true){
+          if(pollController.signal.aborted) throw abortError();
+          const response = await fetchImpl(projectTaskUrl(normalized, taskId), {
+            method:'GET', cache:'no-store', signal:pollController.signal,
+          });
+          const value = await responseJson(response, '查询 OpenShop AI 任务失败');
+          if(pollController.signal.aborted) throw abortError();
+          assertSession(normalized, generation);
+          const task = value.task || value;
+          if(['succeeded', 'partial', 'failed', 'cancelled'].includes(task?.status)) return task;
+          await wait(Number(pollOptions.intervalMs || pollIntervalMs), pollController.signal);
+        }
+      } finally {
+        sessionSignal?.removeEventListener?.('abort', abortPoll);
+        externalSignal?.removeEventListener?.('abort', abortPoll);
       }
     }
 

@@ -75,6 +75,17 @@
         const pageHidden = !canvasPageIsActive();
         overlay.hidden = pageHidden;
         overlay.setAttribute('aria-hidden', String(pageHidden || !overlay.classList.contains('is-open')));
+        state.sessions.forEach(session => {
+            const visible = Boolean(
+                !pageHidden
+                && overlay.classList.contains('is-open')
+                && session.scope === state.activeScope
+                && !session.frame.hidden
+            );
+            if(session.pollingVisible === visible) return;
+            session.pollingVisible = visible;
+            postToEditor(session, Protocol.TYPES.SESSION_VISIBILITY, {visible}, uuid('openshop-visibility'));
+        });
     }
 
     function hookPageSwitch(){
@@ -384,6 +395,7 @@
             status:'loading',
             error:'',
             activeTaskCount:0,
+            pollingVisible:null,
             savePending:false,
             idleSince:0,
         };
@@ -391,6 +403,7 @@
             session.frameLoaded = true;
             session.openSent = false;
             sendOpenSession(session);
+            syncPageVisibility();
         });
         state.sessions.set(scope, session);
         getOverlay().appendChild(frame);
@@ -415,6 +428,7 @@
         session.viewReady = true;
         if(session.scope === state.activeScope && getOverlay().classList.contains('is-open')){
             session.frame.hidden = false;
+            syncPageVisibility();
             fitRevealedWorkspace(session);
         }
         return true;
@@ -432,7 +446,11 @@
         overlay.setAttribute('aria-hidden', 'true');
         ui('[data-openshop-source-panel]')?.classList?.remove('is-open');
         const session = activeSession();
-        if(session) session.idleSince = Date.now();
+        if(session){
+            session.idleSince = Date.now();
+            session.pollingVisible = null;
+        }
+        syncPageVisibility();
     }
 
     function openNodeSession(contextValue, sources=[]){
@@ -541,7 +559,7 @@
     function updateTaskSummary(session, project){
         const tasks = Array.isArray(project?.aiTaskRecords) ? project.aiTaskRecords : [];
         session.activeTaskCount = tasks.filter(task => (
-            task?.kind === 'parent' && ['queued', 'running'].includes(clean(task.status))
+            ['queued', 'running'].includes(clean(task?.status))
         )).length;
     }
 

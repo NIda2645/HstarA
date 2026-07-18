@@ -10,6 +10,7 @@
     'hstarSourceNodeId',
     'hstarLayerId',
     'hstarSnapAnchor',
+    'hstarAiGeneration',
     'hstarKerningMode',
     'hstarOcrSourceAssetId',
     'hstarOcrSourceLayerId',
@@ -207,6 +208,27 @@
     const managed = new Set(layerObjects);
     const unmanaged = editor.canvas.getObjects().filter(object => !managed.has(object));
     [...unmanaged, ...layerObjects].forEach((object, index) => editor.canvas.moveTo(object, index));
+  }
+
+  function retainAiTaskRecords(value, limit = 100){
+    const records = clone(Array.isArray(value) ? value : []);
+    while(records.length > limit){
+      let evictionIndex = -1;
+      let evictionTime = Infinity;
+      records.forEach((record, index) => {
+        if(['queued', 'running'].includes(clean(record?.status))) return;
+        const timestamp = Number(record?.createdAt || record?.updatedAt || 0);
+        if(timestamp < evictionTime){
+          evictionTime = timestamp;
+          evictionIndex = index;
+        }
+      });
+      if(evictionIndex < 0){
+        throw new Error('OpenShop active AI task records exceed the retention limit');
+      }
+      records.splice(evictionIndex, 1);
+    }
+    return records;
   }
 
   function centeredCoordinate(documentSize, objectSize, origin){
@@ -819,9 +841,7 @@
     const aiReferenceRecords = clone(
       Array.isArray(editor.__hstarAiReferenceRecords) ? editor.__hstarAiReferenceRecords : []
     );
-    const aiTaskRecords = clone(
-      Array.isArray(editor.__hstarAiTaskRecords) ? editor.__hstarAiTaskRecords.slice(-100) : []
-    );
+    const aiTaskRecords = retainAiTaskRecords(editor.__hstarAiTaskRecords);
     const aiPendingResults = clone(
       Array.isArray(editor.__hstarAiPendingResults) ? editor.__hstarAiPendingResults.slice(-64) : []
     );
@@ -1005,9 +1025,7 @@
     editor.__hstarAiReferenceRecords = clone(
       Array.isArray(project.aiReferenceRecords) ? project.aiReferenceRecords : []
     );
-    editor.__hstarAiTaskRecords = clone(
-      Array.isArray(project.aiTaskRecords) ? project.aiTaskRecords.slice(-100) : []
-    );
+    editor.__hstarAiTaskRecords = retainAiTaskRecords(project.aiTaskRecords);
     editor.__hstarAiPendingResults = clone(
       Array.isArray(project.aiPendingResults) ? project.aiPendingResults.slice(-64) : []
     );
@@ -1036,7 +1054,7 @@
           const index = editor.__hstarAiTaskRecords.findIndex(record => record.taskId === update.taskId);
           if(index >= 0) editor.__hstarAiTaskRecords[index] = clone(update);
           else editor.__hstarAiTaskRecords.push(clone(update));
-          editor.__hstarAiTaskRecords = editor.__hstarAiTaskRecords.slice(-100);
+          editor.__hstarAiTaskRecords = retainAiTaskRecords(editor.__hstarAiTaskRecords);
         },
       });
       if(typeof applyTaskResults === 'function'){

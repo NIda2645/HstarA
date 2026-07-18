@@ -584,6 +584,25 @@ assert normalized_art_task["result"] == {
     "height": 120,
     "contentBox": {"x": 10, "y": 5, "width": 340, "height": 110},
 }
+reconciled_art_task = normalize_ai_task_record({
+    **normalized_art_task,
+    "context": {**owner_a, "projectId": "project-a"},
+    "owner": owner_a,
+    "reconcileState": "applied",
+    "reconcileReason": "",
+    "generatedLayerId": "generated-layer-1",
+    "appliedAt": 1234,
+    "staleAt": 0,
+    "discardedAt": 0,
+})
+assert reconciled_art_task["context"] == {**owner_a, "projectId": "project-a"}
+assert reconciled_art_task["owner"] == owner_a
+assert reconciled_art_task["reconcileState"] == "applied"
+assert reconciled_art_task["reconcileReason"] == ""
+assert reconciled_art_task["generatedLayerId"] == "generated-layer-1"
+assert reconciled_art_task["appliedAt"] == 1234
+assert reconciled_art_task["staleAt"] == 0
+assert reconciled_art_task["discardedAt"] == 0
 
 strict_art_result = normalized_art_task["result"]
 for dimension in ("width", "height"):

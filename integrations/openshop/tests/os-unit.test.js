@@ -25,6 +25,11 @@ const OCR_CUSTOM_PROPERTIES = [
   'hstarOcrLanguage',
   'hstarOcrFontCandidates',
 ];
+const ART_GENERATION = {
+  taskId:'task-art-1', textLayerId:'text-layer-1', requestGeneration:1,
+  outputAssetId:'c'.repeat(64), toolId:'art-font-restore',
+  contentBox:{x:10,y:5,width:340,height:110},
+};
 
 describe('OpenShop core object', () => {
   beforeEach(() => {
@@ -1297,6 +1302,51 @@ describe('OpenShop core object', () => {
     expect(OS._keyboardContext).toBe('layers');
   });
 
+  it('renders a fixed artistic-font action per text layer with eligibility and busy state', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock();
+    quietUiMethods(OS, {keepLayersPanel:true});
+    OS.updateInfoPanel = vi.fn();
+    const eligible = {
+      type:'i-text', text:'OCR title', hstarLayerId:'text-layer-1',
+      hstarOcrSourceAssetId:'a'.repeat(64), hstarOcrSourceLayerId:'source-layer-1',
+      hstarOcrBlockId:'ocr-title',
+      hstarOcrQuad:[{x:.1,y:.2},{x:.4,y:.2},{x:.4,y:.3},{x:.1,y:.3}],
+      hstarOcrVisualProfile:{script:'en', fill:'#112233'},
+    };
+    const manual = {type:'i-text', text:'Manual', hstarLayerId:'text-layer-2'};
+    OS.layers = [
+      {layerId:'text-layer-1',name:'OCR title',visible:true,locked:false,opacity:100,blend:'source-over',objects:[eligible]},
+      {layerId:'text-layer-2',name:'Manual',visible:true,locked:false,opacity:100,blend:'source-over',objects:[manual]},
+    ];
+    OS.activeLayerIdx = 0;
+    OS._selectedLayers = new Set([OS.layers[0]]);
+    window.HstarOpenShopTextToolsController = {isArtFontBusy:vi.fn(layerId => layerId === 'text-layer-1')};
+    const dispatched = vi.fn();
+    window.addEventListener('openshop:art-font-restore', dispatched, {once:true});
+
+    OS.updateLayersPanel();
+
+    const enabled = document.querySelector('[data-layer-index="0"] .layer-art-font');
+    const disabled = document.querySelector('[data-layer-index="1"] .layer-art-font');
+    expect(enabled).toBeTruthy();
+    expect(enabled.classList.contains('busy')).toBe(true);
+    expect(enabled.disabled).toBe(true);
+    expect(enabled.title).toBe('Artistic font processing');
+    expect(disabled.disabled).toBe(true);
+    expect(disabled.title).toBe('No original image reference');
+    expect(readFileSync(resolve(testDir, '..', 'index.html'), 'utf8'))
+      .toMatch(/\.layer-art-font\s*\{[^}]*width:24px;[^}]*height:24px;/s);
+
+    window.HstarOpenShopTextToolsController.isArtFontBusy.mockReturnValue(false);
+    OS.updateLayersPanel();
+    document.querySelector('[data-layer-index="0"] .layer-art-font').click();
+    expect(OS.activeLayerIdx).toBe(0);
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(dispatched.mock.calls[0][0].detail).toEqual({layerId:'text-layer-1'});
+    delete window.HstarOpenShopTextToolsController;
+  });
+
   it('keeps a layer row mounted so double-click can start rename after selection', () => {
     const OS = loadOpenShop();
     OS.canvas = createCanvasMock();
@@ -1448,6 +1498,7 @@ describe('OpenShop core object', () => {
       hstarOcrVisualProfile:{script:'zh-hans', fill:'#112233', weight:700},
       hstarOcrOriginalText:'Original OCR',
       hstarArtFontRequestGeneration:0,
+      hstarAiGeneration:ART_GENERATION,
       hstarOcrConfidence:0.98,
       hstarOcrLanguage:'zh',
       hstarOcrFontCandidates:['01免Title Face'],
@@ -1484,6 +1535,69 @@ describe('OpenShop core object', () => {
     expect(OS.setTool).toHaveBeenCalledWith('select', {forceInteraction:true});
   });
 
+  it('undoes an applied artistic-font raster, reveals its carrier and terminals the matching record', () => {
+    const OS = loadOpenShop();
+    const carrier = {
+      type:'i-text', text:'Edited title', name:'Carrier', visible:true, hstarLayerId:'text-layer-1',
+      hstarArtFontRequestGeneration:1,
+    };
+    const canvas = createCanvasMock([carrier]);
+    canvas.toJSON = vi.fn(properties => ({
+      objects:canvas.objects.map(object => ({
+        type:object.type, text:object.text, name:object.name, visible:object.visible,
+        ...Object.fromEntries(properties.filter(property => property in object).map(property => [property, object[property]])),
+      })),
+    }));
+    canvas.loadFromJSON = vi.fn((json, callback) => {
+      canvas.objects.splice(0, canvas.objects.length, ...json.objects.map(object => ({...object})));
+      callback();
+    });
+    OS.canvas = canvas;
+    OS.layers = [{
+      layerId:'text-layer-1', name:'Carrier', visible:true, locked:false,
+      opacity:100, blend:'source-over', objects:[carrier],
+    }];
+    OS.activeLayerIdx = 0;
+    OS._selectedLayers = new Set([OS.layers[0]]);
+    OS.__hstarAiTaskRecords = [{
+      taskId:'task-art-1', toolId:'art-font-restore', status:'succeeded', reconcileState:'applied',
+      reconcileReason:'', generatedLayerId:'generated-layer-1', snapshot:{
+        textLayerId:'text-layer-1', requestGeneration:1,
+      }, outputAssetId:'c'.repeat(64), discardedAt:0, updatedAt:1,
+    }];
+    quietUiMethods(OS);
+    OS.setTool = vi.fn();
+    const restoredEvents = vi.fn();
+    window.addEventListener('openshop:history-restored', restoredEvents);
+    OS.saveHistory('Before artistic font');
+
+    carrier.visible = false;
+    OS.layers[0].visible = false;
+    const raster = {
+      type:'image', name:'Art font', visible:true, hstarLayerId:'generated-layer-1',
+      hstarAiGeneration:ART_GENERATION,
+    };
+    canvas.add(raster);
+    OS.layers.push({
+      layerId:'generated-layer-1', name:'Art font', visible:true, locked:false,
+      opacity:100, blend:'source-over', objects:[raster], hstarAiGeneration:ART_GENERATION,
+    });
+    OS.saveHistory('艺术字体处理');
+
+    OS.undo();
+
+    expect(canvas.getObjects()).toHaveLength(1);
+    expect(canvas.getObjects()[0]).toMatchObject({hstarLayerId:'text-layer-1', visible:true});
+    expect(OS.layers.map(layer => layer.layerId)).toEqual(['text-layer-1']);
+    expect(OS.layers[0].visible).toBe(true);
+    expect(OS.__hstarAiTaskRecords[0]).toMatchObject({
+      reconcileState:'discarded', reconcileReason:'undone', generatedLayerId:'generated-layer-1',
+    });
+    expect(OS.__hstarAiTaskRecords[0].discardedAt).toBeGreaterThan(0);
+    expect(restoredEvents).toHaveBeenCalledOnce();
+    window.removeEventListener('openshop:history-restored', restoredEvents);
+  });
+
   it('keeps the text kerning mode in history snapshots', () => {
     const OS = loadOpenShop();
     OS.canvas = createCanvasMock();
@@ -1493,6 +1607,7 @@ describe('OpenShop core object', () => {
 
     expect(OS.canvas.toJSON).toHaveBeenCalledWith(expect.arrayContaining(['hstarKerningMode']));
     expect(OS.canvas.toJSON).toHaveBeenCalledWith(expect.arrayContaining(OCR_CUSTOM_PROPERTIES));
+    expect(OS.canvas.toJSON).toHaveBeenCalledWith(expect.arrayContaining(['hstarAiGeneration']));
   });
 
   it('exports PNG using a sanitized download name', () => {

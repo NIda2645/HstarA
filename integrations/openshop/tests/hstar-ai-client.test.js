@@ -29,6 +29,13 @@ function catalog({extractModel='gemini-3.1-pro-high', removeModel='gemini-3-pro-
           models:removeModel ? [{id:removeModel, name:removeModel, available:true}] : [],
         }],
       },
+      'art-font-restore':{
+        id:'art-font-restore', label:'艺术字体处理', capability:'reference-image-generation-transparent',
+        providers:[{
+          id:'vision', name:'Vision API', protocol:'openai', available:true,
+          models:removeModel ? [{id:removeModel, name:removeModel, available:true, imageInput:true}] : [],
+        }],
+      },
     },
   };
 }
@@ -168,6 +175,93 @@ describe('Hstar OpenShop global API client', () => {
 
     expect(completed.status).toBe('succeeded');
     expect(cancelled.status).toBe('cancelled');
+    client.destroy();
+  });
+
+  it('forwards the artistic-font source layer and snapshot without rewriting them', async () => {
+    const artFont = {
+      textLayerId:'text-layer-1', ocrBlockId:'ocr-title', originalText:'Original', currentText:'Edited',
+      requestGeneration:3, document:{width:1920, height:1080},
+      quad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
+      visualProfile:{script:'en', fill:'#112233', weight:700},
+    };
+    const fetchImpl = vi.fn((_url, options={}) => {
+      const body = JSON.parse(options.body);
+      expect(body.source_layer_id).toBe('source-layer-1');
+      expect(body.options.artFont).toEqual(artFont);
+      return jsonResponse({task_id:'task-art-1', status:'queued'});
+    });
+    const client = window.HstarOpenShopAiClient.createClient({fetchImpl, BroadcastChannelImpl:FakeBroadcastChannel});
+    client.startSession(context);
+
+    await client.createTask(context, {
+      toolId:'art-font-restore', sourceLayerId:'source-layer-1', sourceAssetId:'a'.repeat(64),
+      apiConfigId:'vision', modelId:'gemini-3-pro-image', mode:'layer', options:{artFont},
+    });
+
+    client.destroy();
+  });
+
+  it('polls independent artistic-font tasks concurrently', async () => {
+    const calls = new Map();
+    const fetchImpl = vi.fn((url) => {
+      const taskId = url.includes('task-art-a') ? 'task-art-a' : 'task-art-b';
+      const count = (calls.get(taskId) || 0) + 1;
+      calls.set(taskId, count);
+      return jsonResponse({task:{taskId, status:count === 1 ? 'running' : 'succeeded'}});
+    });
+    const client = window.HstarOpenShopAiClient.createClient({
+      fetchImpl, BroadcastChannelImpl:FakeBroadcastChannel, pollIntervalMs:1,
+    });
+    client.startSession(context);
+
+    const results = await Promise.all([
+      client.pollTask(context, 'task-art-a'),
+      client.pollTask(context, 'task-art-b'),
+    ]);
+
+    expect(results.map(task => task.taskId).sort()).toEqual(['task-art-a', 'task-art-b']);
+    expect(calls).toEqual(new Map([['task-art-a', 2], ['task-art-b', 2]]));
+    client.destroy();
+  });
+
+  it('aborts local polling on session stop without deleting the server task', async () => {
+    const fetchImpl = vi.fn((_url, options={}) => jsonResponse({
+      task:{taskId:'task-art-running', status:'running'},
+    }));
+    const client = window.HstarOpenShopAiClient.createClient({
+      fetchImpl, BroadcastChannelImpl:FakeBroadcastChannel, pollIntervalMs:50,
+    });
+    client.startSession(context);
+    const polling = client.pollTask(context, 'task-art-running');
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+
+    client.stopSession();
+
+    await expect(polling).rejects.toMatchObject({name:'AbortError'});
+    expect(fetchImpl.mock.calls.some(([, options]) => options?.method === 'DELETE')).toBe(false);
+    client.destroy();
+  });
+
+  it('still returns a posted task identity when the local session closes before the response', async () => {
+    let resolvePost;
+    const postResponse = new Promise(resolve => { resolvePost = resolve; });
+    const fetchImpl = vi.fn(() => postResponse);
+    const client = window.HstarOpenShopAiClient.createClient({fetchImpl, BroadcastChannelImpl:FakeBroadcastChannel});
+    client.startSession(context);
+    const creating = client.createTask(context, {
+      toolId:'art-font-restore', sourceLayerId:'source-layer-1', sourceAssetId:'a'.repeat(64),
+      apiConfigId:'vision', modelId:'gemini-3-pro-image', options:{artFont:{}},
+    });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+
+    client.stopSession();
+    resolvePost(new Response(JSON.stringify({task_id:'task-art-posted', status:'queued'}), {
+      status:200, headers:{'Content-Type':'application/json'},
+    }));
+
+    await expect(creating).resolves.toMatchObject({task_id:'task-art-posted'});
+    expect(fetchImpl.mock.calls[0][1].signal).toBeUndefined();
     client.destroy();
   });
 

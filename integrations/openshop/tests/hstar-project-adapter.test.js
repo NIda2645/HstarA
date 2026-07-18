@@ -455,6 +455,79 @@ describe('Hstar OpenShop project adapter', () => {
     expect(project.aiTaskRecords[0].status).toBe('succeeded');
   });
 
+  it('round-trips the complete artistic-font reconciliation record and correlated layer metadata', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceAssetId = 'd'.repeat(64);
+    const outputAssetId = 'e'.repeat(64);
+    const generation = {
+      taskId:'task-art-1', textLayerId:'text-layer-1', requestGeneration:4, outputAssetId,
+      toolId:'art-font-restore', contentBox:{x:8,y:4,width:320,height:100},
+    };
+    const image = {type:'image', name:'art-font.png', hstarAssetId:outputAssetId, hstarAiGeneration:generation};
+    editor.canvas.add(image);
+    editor.layers[0].layerId = 'generated-layer-1';
+    editor.layers[0].objects.push(image);
+    editor.layers[0].hstarAiGeneration = generation;
+    editor.__hstarAiToolPreferences = {
+      'art-font-restore':{
+        toolId:'art-font-restore', mode:'project', apiConfigId:'image-api', modelId:'image-model',
+      },
+    };
+    editor.__hstarAiTaskRecords = [{
+      taskId:'task-art-1', toolId:'art-font-restore', apiConfigId:'image-api', modelId:'image-model',
+      status:'succeeded', reconcileState:'applied', reconcileReason:'', mode:'layer',
+      context:{...context}, owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
+      sourceLayerId:'source-layer-1', sourceAssetId, maskAssetId:'', outputAssetId,
+      snapshot:{
+        textLayerId:'text-layer-1', ocrBlockId:'ocr-title', originalText:'Original', currentText:'Edited',
+        requestGeneration:4, document:{width:1920,height:1080},
+        quad:[{x:.1,y:.2},{x:.4,y:.2},{x:.4,y:.3},{x:.1,y:.3}],
+        visualProfile:{
+          script:'en', fill:'#112233', alignment:'left', rotation:0, artistic:false,
+          familyCandidates:['Arial'], size:40, weight:700, style:'normal', styleDescription:'painted',
+          letterSpacing:0, lineHeight:1.2, strokeColor:'#00000000', strokeWidth:0,
+          shadow:{color:'#00000000',blur:0,offsetX:0,offsetY:0},
+        },
+      },
+      generatedLayerId:'generated-layer-1', createdAt:1, updatedAt:2, completedAt:2,
+      appliedAt:3, staleAt:0, discardedAt:0, error:'',
+    }];
+
+    const project = adapter.serializeProject({editor, context, now:() => 4000});
+
+    expect(project.aiToolPreferences['art-font-restore']).toEqual(editor.__hstarAiToolPreferences['art-font-restore']);
+    expect(project.aiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(project.layers[0].hstarAiGeneration).toEqual(generation);
+    expect(project.editor.objects[0].hstarAiGeneration).toEqual(generation);
+    expect(project.assetRefs).toEqual([sourceAssetId, outputAssetId].sort());
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((_json, callback) => callback());
+    await adapter.restoreProject({
+      editor:restored, project, assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+    expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(restored.__hstarAiToolPreferences).toEqual(editor.__hstarAiToolPreferences);
+  });
+
+  it('never evicts active artistic-font records when enforcing retention', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const active = Array.from({length:100}, (_, index) => ({
+      taskId:`task-active-${index}`, toolId:'art-font-restore', status:index % 2 ? 'running' : 'queued',
+      reconcileState:'pending', createdAt:index + 1, updatedAt:index + 1,
+    }));
+    editor.__hstarAiTaskRecords = [active[0], {
+      taskId:'task-old-terminal', toolId:'text-remove', status:'failed', createdAt:0, updatedAt:0,
+    }, ...active.slice(1)];
+
+    const project = adapter.serializeProject({editor, context, now:() => 5000});
+
+    expect(project.aiTaskRecords).toHaveLength(100);
+    expect(project.aiTaskRecords.map(record => record.taskId)).toEqual(active.map(record => record.taskId));
+  });
+
   it('persists the text kerning mode with the Fabric text object', () => {
     const adapter = window.HstarOpenShopProjectAdapter;
     const editor = createEditor();

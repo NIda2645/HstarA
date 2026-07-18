@@ -27,6 +27,7 @@ describe('Hstar OpenShop protocol', () => {
       REQUEST_SEND_TO_CANVAS: 'hstar:openshop:request-send-to-canvas',
       SEND_TO_CANVAS: 'hstar:openshop:send-to-canvas',
       OPEN_API_SETTINGS: 'hstar:openshop:open-api-settings',
+      SESSION_VISIBILITY: 'hstar:openshop:session-visibility',
     });
     expect(protocol.createProjectScope({
       canvasType: 'classic',

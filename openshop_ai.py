@@ -931,6 +931,27 @@ def _normalize_child_record(value: Any) -> dict[str, Any]:
     return child
 
 
+def _normalize_reconciliation_scope(value: Any) -> tuple[dict[str, str], dict[str, str]]:
+    context_value = value.get("context")
+    owner_value = value.get("owner")
+    if not isinstance(context_value, dict) or not isinstance(owner_value, dict):
+        raise OpenShopAiValidationError("OpenShop AI reconciliation scope is incomplete")
+    owner = {
+        "canvasType": _task_safe_id(owner_value.get("canvasType"), "owner canvasType"),
+        "canvasId": _task_safe_id(owner_value.get("canvasId"), "owner canvasId"),
+        "nodeId": _task_safe_id(owner_value.get("nodeId"), "owner nodeId"),
+    }
+    context = {
+        "canvasType": _task_safe_id(context_value.get("canvasType"), "context canvasType"),
+        "canvasId": _task_safe_id(context_value.get("canvasId"), "context canvasId"),
+        "nodeId": _task_safe_id(context_value.get("nodeId"), "context nodeId"),
+        "projectId": _task_safe_id(context_value.get("projectId"), "context projectId"),
+    }
+    if any(context[key] != owner[key] for key in owner):
+        raise OpenShopAiValidationError("OpenShop AI reconciliation owner does not match context")
+    return context, owner
+
+
 def normalize_ai_task_record(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OpenShopAiValidationError("OpenShop AI task record must be an object")
@@ -1005,6 +1026,26 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
         record["snapshot"] = normalize_art_font_snapshot(value.get("snapshot"))
         if isinstance(result, dict):
             record["result"] = normalize_art_font_result(result)
+        reconciliation_keys = {
+            "context", "reconcileState", "reconcileReason", "generatedLayerId",
+            "staleAt", "discardedAt",
+        }
+        if any(key in value for key in reconciliation_keys):
+            context, owner = _normalize_reconciliation_scope(value)
+            reconcile_state = _clean_text(value.get("reconcileState"), 20).lower()
+            if reconcile_state not in {"pending", "applied", "stale", "discarded"}:
+                raise OpenShopAiValidationError("Invalid OpenShop AI reconcileState")
+            record.update({
+                "context": context,
+                "owner": owner,
+                "reconcileState": reconcile_state,
+                "reconcileReason": _clean_text(value.get("reconcileReason"), 160),
+                "generatedLayerId": _task_safe_id(
+                    value.get("generatedLayerId"), "generatedLayerId", required=False
+                ),
+                "staleAt": max(0, int(value.get("staleAt") or 0)),
+                "discardedAt": max(0, int(value.get("discardedAt") or 0)),
+            })
     elif isinstance(result, dict) and isinstance(result.get("blocks"), list):
         width = _positive_dimension(result.get("width"), "result width")
         height = _positive_dimension(result.get("height"), "result height")
