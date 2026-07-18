@@ -210,6 +210,7 @@ let textSelectionGuard = null;
 const UNDO_LIMIT = 40;
 const undoStack = [];
 const permanentlyDeletedOpenShopNodeIds = new Set();
+let lastSyncedSmartOpenShopNodeIds = new Set();
 let undoSuppressed = false;
 let pendingUndoSnapshot = null;
 let runningHubWorkflowCache = {};
@@ -259,6 +260,13 @@ function trackPermanentlyDeletedOpenShopNodes(items){
             permanentlyDeletedOpenShopNodeIds.add(node.id);
         }
     });
+}
+function rememberSyncedSmartOpenShopNodes(items){
+    lastSyncedSmartOpenShopNodeIds = new Set(
+        (items || [])
+            .filter(node => node?.type === 'openshop-layered' && node.id)
+            .map(node => String(node.id))
+    );
 }
 function filterPermanentlyDeletedOpenShopHistoryState(state){
     const nextNodes = (state?.nodes || [])
@@ -5329,6 +5337,18 @@ function mergeSmartNodeLists(localNodes, remoteNodes, options={}){
         return mergeSmartNode(local, remote, options);
     }).filter(Boolean);
 }
+function smartRemoteDeletedOpenShopNodeIds(localNodes, remoteNodes, syncedIds){
+    const remoteIds = new Set((remoteNodes || []).map(node => String(node?.id || '')));
+    const baselineIds = syncedIds instanceof Set ? syncedIds : new Set(syncedIds || []);
+    return new Set(
+        (localNodes || [])
+            .filter(node => {
+                const id = String(node?.id || '');
+                return node?.type === 'openshop-layered' && id && baselineIds.has(id) && !remoteIds.has(id);
+            })
+            .map(node => String(node.id))
+    );
+}
 function mergeSmartConnections(localConns, remoteConns, nodeIds){
     const out = [];
     const seen = new Set();
@@ -5344,14 +5364,13 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 function applyMergedServerCanvas(serverCanvas, options={}){
     if(!serverCanvas || !canvas) return false;
     const remoteNodes = (Array.isArray(serverCanvas.nodes) ? serverCanvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
-    const remoteNodeIds = new Set(remoteNodes.map(node => String(node.id)));
-    const remotelyDeletedOpenShopNodeIds = options.preserveLocalChanges
-        ? []
-        : nodes
-            .filter(node => node?.type === 'openshop-layered' && !remoteNodeIds.has(String(node.id)))
-            .map(node => String(node.id));
+    const remotelyDeletedOpenShopNodeIds = smartRemoteDeletedOpenShopNodeIds(
+        nodes,
+        remoteNodes,
+        lastSyncedSmartOpenShopNodeIds
+    );
     remotelyDeletedOpenShopNodeIds.forEach(id => permanentlyDeletedOpenShopNodeIds.add(id));
-    const blockedPermanentlyDeletedOpenShopNode = remotelyDeletedOpenShopNodeIds.length > 0
+    const blockedPermanentlyDeletedOpenShopNode = remotelyDeletedOpenShopNodeIds.size > 0
         || remoteNodes.some(node => permanentlyDeletedOpenShopNodeIds.has(String(node.id)));
     const deletedNodeIds = new Set(permanentlyDeletedOpenShopNodeIds);
     if(options.preserveLocalChanges){
@@ -5368,6 +5387,7 @@ function applyMergedServerCanvas(serverCanvas, options={}){
     });
     nodes = safeMergedState.nodes;
     canvas.connections = safeMergedState.connections;
+    rememberSyncedSmartOpenShopNodes(remoteNodes);
     const cleanedState = clearCompletedNodeBusyStates();
     const recoveredLoopOutputs = recoverStuckLoopOutputsFromLogs();
     canvas.updated_at = Number(serverCanvas.updated_at || canvas.updated_at || 0);
@@ -5956,6 +5976,7 @@ async function loadCanvas(){
         document.title = canvas.title || tr('canvas.smartCanvas');
         document.getElementById('smartTitle').textContent = canvas.title || tr('canvas.smartCanvas');
         nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
+        rememberSyncedSmartOpenShopNodes(nodes);
         migrateSmartGroupImageMembers();
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         nodes.forEach(n => {
@@ -6039,6 +6060,7 @@ async function saveCanvas(){
         if(res.ok){
             const data = await res.json();
             if(data.canvas && data.canvas.updated_at) canvas.updated_at = data.canvas.updated_at;
+            if(Array.isArray(data.canvas?.nodes)) rememberSyncedSmartOpenShopNodes(data.canvas.nodes);
             clearSmartCanvasDirtyIfCurrent(saveRevision);
         } else if(res.status === 409) {
             // 冲突：别人先保存了。合并对方的状态（节点 id 合并、图片取并集，谁都不丢），

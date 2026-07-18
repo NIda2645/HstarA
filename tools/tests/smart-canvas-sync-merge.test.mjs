@@ -14,7 +14,7 @@ const context = {
   smartNodeRunTokens: { delete() {} },
 };
 vm.createContext(context);
-vm.runInContext(`${snippet}\nglobalThis.mergeSmartNodeLists = mergeSmartNodeLists;`, context);
+vm.runInContext(`${snippet}\nglobalThis.mergeSmartNodeLists = mergeSmartNodeLists;\nglobalThis.smartRemoteDeletedOpenShopNodeIds = smartRemoteDeletedOpenShopNodeIds;`, context);
 
 const localNodes = [
   { id: 'gen-1', type: 'smart-image', x: 260, y: 140, images: [{ url: '/assets/new-local.png' }] },
@@ -71,5 +71,28 @@ assert.equal(
   true,
   'dirty local merge should preserve a not-yet-saved OpenShop node',
 );
+
+assert.deepEqual(
+  Array.from(context.smartRemoteDeletedOpenShopNodeIds(
+    localOnlyNodes,
+    [],
+    new Set(['openshop-remote-deleted']),
+  )),
+  ['openshop-remote-deleted'],
+  'dirty conflict should recognize a remotely deleted OpenShop node from the last synced baseline',
+);
+assert.deepEqual(
+  Array.from(context.smartRemoteDeletedOpenShopNodeIds(
+    localOnlyNodes,
+    [],
+    new Set(),
+  )),
+  [],
+  'dirty conflict should not classify a new unsaved OpenShop node as remotely deleted',
+);
+
+assert.match(js, /async function\s+loadCanvas\([\s\S]*rememberSyncedSmartOpenShopNodes\(/, 'smart canvas load should capture the synced OpenShop baseline');
+assert.match(js, /async function\s+saveCanvas\([\s\S]*rememberSyncedSmartOpenShopNodes\(/, 'smart canvas successful save should refresh the synced OpenShop baseline');
+assert.match(js, /function\s+applyMergedServerCanvas\([\s\S]*smartRemoteDeletedOpenShopNodeIds\(/, 'smart conflict merge should consult the synced OpenShop baseline');
 
 console.log('smart canvas sync merge tests passed');
