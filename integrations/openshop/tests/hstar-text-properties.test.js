@@ -344,6 +344,7 @@ describe('Hstar OpenShop text properties', () => {
     flushAnimationFrames();
 
     expect(list.querySelector(`[data-family="${targetFamily}"]`)).not.toBeNull();
+    expect(list.querySelectorAll('[role="option"]').length).toBeLessThanOrEqual(16);
     controller.destroy();
   });
 
@@ -383,11 +384,40 @@ describe('Hstar OpenShop text properties', () => {
     const list = document.querySelector('[data-text-font-list]');
 
     trigger.click();
+    list.scrollTop = 9000;
+    list.dispatchEvent(new Event('scroll'));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
     trigger.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
     expect(list.hidden).toBe(true);
+    expect(cancelAnimationFrame).toHaveBeenCalledTimes(1);
     trigger.click();
+    list.scrollTop = 12000;
+    list.dispatchEvent(new Event('scroll'));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(2);
     document.body.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
     expect(list.hidden).toBe(true);
+    expect(cancelAnimationFrame).toHaveBeenCalledTimes(2);
+    controller.destroy();
+  });
+
+  it('closes and cancels pending rendering through the refresh control', async () => {
+    const {controller, fontManager} = createHarness({catalogRows:createCatalogRows()});
+    await controller.start();
+    const trigger = document.querySelector('[data-text-family]');
+    const list = document.querySelector('[data-text-font-list]');
+    trigger.click();
+    list.scrollTop = 15000;
+    list.dispatchEvent(new Event('scroll'));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+
+    document.querySelector('[data-font-refresh]').click();
+
+    expect(fontManager.refreshSystemFonts).toHaveBeenCalledTimes(1);
+    expect(list.hidden).toBe(true);
+    expect(cancelAnimationFrame).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-font-status]').textContent).toBe('本机字体已刷新');
+    });
     controller.destroy();
   });
 

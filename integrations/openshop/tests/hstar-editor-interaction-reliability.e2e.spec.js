@@ -167,9 +167,17 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
   test.setTimeout(120000);
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.stack || error.message));
+  const catalogGroups = [
+    {prefix:'Chinese Common', languageGroup:'zh-hans', freeCommercialCategory:''},
+    {prefix:'01免 Simplified', languageGroup:'zh-hans', freeCommercialCategory:'01'},
+    {prefix:'02免 Traditional', languageGroup:'zh-hant', freeCommercialCategory:'02'},
+    {prefix:'03免 English', languageGroup:'en', freeCommercialCategory:'03'},
+    {prefix:'English Other', languageGroup:'en', freeCommercialCategory:''},
+  ];
   const fonts = Array.from({length:2500}, (_, index) => {
-    const family = `Perf Font ${String(index).padStart(4, '0')}`;
-    return {family, label:family, languageGroup:'en', styles:[]};
+    const group = catalogGroups[Math.floor(index / 500)];
+    const family = `${group.prefix} ${String(index).padStart(4, '0')}`;
+    return {...group, family, label:family, styles:[]};
   });
   await page.route('**/api/openshop/fonts*', route => route.fulfill({
     status:200,
@@ -192,7 +200,7 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
     const text = new fabric.IText('Virtual font test', {
       left:80,
       top:90,
-      fontFamily:'Perf Font 1250',
+      fontFamily:'02免 Traditional 1250',
       fontSize:48,
       fill:'#ffffff',
       editable:true,
@@ -201,24 +209,82 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
     OS.layers[OS.activeLayerIdx].objects.push(text);
     OS.canvas.setActiveObject(text);
     OS.canvas.fire('selection:created', {selected:[text], target:text});
+    text.enterEditing();
+    text.selectionStart = 7;
+    text.selectionEnd = 7;
+    text.hiddenTextarea.focus();
+    text.hiddenTextarea.setSelectionRange(7, 7);
+    OS.canvas.fire('text:editing:entered', {target:text});
+    OS.canvas.fire('text:selection:changed', {target:text});
   });
 
   const trigger = page.locator('[data-text-family]');
   const list = page.locator('[data-text-font-list]');
+  const catalogAudit = await page.evaluate(() => {
+    const rows = window.__hstarVirtualFontManager.catalogRows();
+    let sectionKey = '';
+    let groupKey = '';
+    const violations = [];
+    rows.forEach((row, index) => {
+      if(row.kind === 'section') {
+        sectionKey = row.key;
+        groupKey = '';
+        return;
+      }
+      if(row.kind === 'group') {
+        groupKey = row.key;
+        return;
+      }
+      if(row.kind !== 'font') return;
+      const languageGroup = String(row.font?.languageGroup || '').toLowerCase();
+      const category = String(row.font?.freeCommercialCategory || '');
+      const expectedSection = languageGroup.startsWith('zh') ? 'section-zh' : 'section-en';
+      const expectedGroup = category
+        ? `group-${category}`
+        : (languageGroup.startsWith('zh') ? 'group-zh-unprefixed' : 'group-en-unprefixed');
+      if(sectionKey !== expectedSection || groupKey !== expectedGroup) {
+        violations.push({index, family:row.family, sectionKey, groupKey, expectedSection, expectedGroup});
+      }
+    });
+    return {
+      fontCount:rows.filter(row => row.kind === 'font').length,
+      sectionKeys:rows.filter(row => row.kind === 'section').map(row => row.key),
+      groupKeys:rows.filter(row => row.kind === 'group').map(row => row.key),
+      violations,
+    };
+  });
+  expect(catalogAudit.fontCount).toBeGreaterThanOrEqual(2500);
+  expect(catalogAudit.sectionKeys).toEqual(['section-zh', 'section-en']);
+  expect(catalogAudit.groupKeys).toEqual([
+    'group-zh-unprefixed', 'group-01', 'group-02', 'group-03', 'group-en-unprefixed',
+  ]);
+  expect(catalogAudit.violations).toEqual([]);
   const openMetrics = await page.evaluate(() => {
-    const panel = document.getElementById('hstar-text-properties-panel');
     const triggerElement = document.querySelector('[data-text-family]');
     const listElement = document.querySelector('[data-text-font-list]');
-    const beforeRect = panel.getBoundingClientRect();
-    const beforeScrollTop = panel.scrollTop;
+    let scrollingAncestor = triggerElement.parentElement;
+    while(scrollingAncestor) {
+      const overflowY = getComputedStyle(scrollingAncestor).overflowY;
+      if(/auto|scroll/.test(overflowY) && scrollingAncestor.scrollHeight > scrollingAncestor.clientHeight) break;
+      scrollingAncestor = scrollingAncestor.parentElement;
+    }
+    if(!scrollingAncestor) throw new Error('Expected a real scrolling ancestor for the font trigger');
+    const maximumScrollTop = scrollingAncestor.scrollHeight - scrollingAncestor.clientHeight;
+    const requestedScrollTop = Math.min(12, maximumScrollTop);
+    scrollingAncestor.scrollTop = requestedScrollTop;
+    const beforeRect = scrollingAncestor.getBoundingClientRect();
+    const beforeScrollTop = scrollingAncestor.scrollTop;
     const startedAt = performance.now();
     triggerElement.click();
     const duration = performance.now() - startedAt;
-    const afterRect = panel.getBoundingClientRect();
+    const afterRect = scrollingAncestor.getBoundingClientRect();
     return {
       duration,
+      scrollingAncestorId:scrollingAncestor.id,
+      maximumScrollTop,
+      requestedScrollTop,
       beforeScrollTop,
-      afterScrollTop:panel.scrollTop,
+      afterScrollTop:scrollingAncestor.scrollTop,
       beforeRect:{top:beforeRect.top, left:beforeRect.left, width:beforeRect.width, height:beforeRect.height},
       afterRect:{top:afterRect.top, left:afterRect.left, width:afterRect.width, height:afterRect.height},
       mounted:listElement.querySelectorAll('[role="option"]').length,
@@ -229,12 +295,16 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
   expect(openMetrics.duration).toBeLessThan(250);
   expect(openMetrics.mounted).toBeGreaterThan(0);
   expect(openMetrics.mounted).toBeLessThanOrEqual(Math.ceil(210 / 30) + (4 * 2));
+  expect(openMetrics.scrollingAncestorId).toBe('hstar-text-properties-panel');
+  expect(openMetrics.maximumScrollTop).toBeGreaterThan(0);
+  expect(openMetrics.beforeScrollTop).toBe(openMetrics.requestedScrollTop);
+  expect(openMetrics.beforeScrollTop).toBeGreaterThan(0);
   expect(openMetrics.afterScrollTop).toBe(openMetrics.beforeScrollTop);
   expect(openMetrics.afterRect).toEqual(openMetrics.beforeRect);
   expect(openMetrics.spacerHeight).toBe(`${openMetrics.rowCount * 30}px`);
   await expect(list).toBeVisible();
 
-  const targetFamily = 'Perf Font 2000';
+  const targetFamily = 'English Other 2000';
   await list.evaluate((element, family) => {
     const rows = window.__hstarVirtualFontManager.catalogRows();
     const index = rows.findIndex(row => row.kind === 'font' && row.family === family);
@@ -244,12 +314,29 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
   }, targetFamily);
   const target = list.locator(`[data-family="${targetFamily}"]`);
   await expect(target).toHaveCount(1);
+  expect(await list.locator('[role="option"]').count()).toBeLessThanOrEqual(16);
   await target.click();
   await expect(list).toBeHidden();
-  await expect(page.locator('[data-text-family-label]')).toHaveText(targetFamily);
   expect(await page.evaluate(() => (
     OS.canvas.getObjects().find(object => object.type === 'i-text')?.fontFamily
-  ))).toBe(targetFamily);
+  ))).toBe('02免 Traditional 1250');
+  const editingResult = await page.evaluate(() => {
+    const text = OS.canvas.getObjects().find(object => object.type === 'i-text');
+    return {
+      isEditing:text.isEditing,
+      selectionStart:text.selectionStart,
+      selectionEnd:text.selectionEnd,
+      hiddenTextareaFocused:document.activeElement === text.hiddenTextarea,
+      caretFamily:window.HstarOpenShopTextPropertiesController.getState().caretStyles.fontFamily,
+    };
+  });
+  expect(editingResult).toEqual({
+    isEditing:true,
+    selectionStart:7,
+    selectionEnd:7,
+    hiddenTextareaFocused:true,
+    caretFamily:targetFamily,
+  });
 
   await trigger.click();
   await expect(list).toBeVisible();
