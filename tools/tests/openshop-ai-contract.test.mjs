@@ -265,6 +265,74 @@ ocr_record = normalize_ai_task_record({
 })
 assert ocr_record["result"] == layout
 
+legacy_record = normalize_ai_task_record({
+    "taskId": "task-ocr-v1",
+    "toolId": "text-extract",
+    "status": "succeeded",
+    "sourceAssetId": "e" * 64,
+    "result": {
+        "schemaVersion": 1,
+        "width": 800,
+        "height": 600,
+        "blocks": [{
+            "id": "legacy-title",
+            "text": "繁體標題",
+            "bbox": {"x": 80, "y": 60, "width": 320, "height": 72},
+            "language": "zh",
+            "confidence": 0.88,
+            "font": {
+                "familyCandidates": ["Legacy Serif"],
+                "size": 36,
+                "weight": 400,
+                "style": "normal",
+            },
+            "color": "#ABCDEF",
+            "align": "right",
+            "rotation": 12,
+            "paragraphId": "legacy-p1",
+            "lineIndex": 0,
+        }],
+    },
+})
+assert legacy_record["result"]["schemaVersion"] == 2
+legacy_block = legacy_record["result"]["blocks"][0]
+assert legacy_block["script"] == "zh-hant"
+assert "dominantScript" not in legacy_block
+assert legacy_block["color"] == "#abcdef"
+assert legacy_block["align"] == "right"
+assert legacy_block["rotation"] == 12
+assert legacy_block["font"] == {
+    "artistic": False,
+    "familyCandidates": ["Legacy Serif"],
+    "size": 36.0,
+    "weight": 400,
+    "style": "normal",
+    "styleDescription": "",
+    "letterSpacing": 0.0,
+    "lineHeight": 1.16,
+    "strokeColor": "#00000000",
+    "strokeWidth": 0.0,
+    "shadow": {"color": "#00000000", "blur": 0.0, "offsetX": 0.0, "offsetY": 0.0},
+}
+
+weight_boundaries = normalize_ocr_layout(json.dumps({
+    "blocks": [
+        {
+            "text": "Below minimum",
+            "bbox": {"x": 10, "y": 10, "width": 200, "height": 40},
+            "confidence": 1,
+            "font": {"weight": -50},
+        },
+        {
+            "text": "Above maximum",
+            "bbox": {"x": 10, "y": 60, "width": 200, "height": 40},
+            "confidence": 1,
+            "font": {"weight": 1200},
+        },
+    ],
+}), width=800, height=600)
+assert [block["font"]["weight"] for block in weight_boundaries["blocks"]] == [100, 900]
+
 for invalid in (
     "just plain text without coordinates",
     json.dumps({"blocks": [{"text": "No location"}]}),

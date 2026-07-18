@@ -20,12 +20,14 @@ class FakeIText {
     this.type = 'i-text';
     this.text = text;
     this.initialOptions = {...options};
+    this.setHistory = [];
     this.width = Math.max(1, text.length * Number(options.fontSize || 16) * 0.55);
     this.height = Math.max(1, Number(options.fontSize || 16) * 1.2);
     Object.assign(this, options);
   }
 
   set(values) {
+    this.setHistory.push({...values});
     Object.assign(this, values);
   }
 
@@ -386,9 +388,16 @@ describe('Hstar OpenShop multilingual text tools', () => {
     });
     expect(title.initialOptions.charSpacing).toBe(125);
     expect(title.initialOptions.charSpacing).not.toBe(250);
+    expect(title.charSpacing).not.toBe(title.initialOptions.charSpacing);
+    const spacingMutationIndex = title.setHistory.findIndex(values => 'charSpacing' in values);
+    const scaleMutationIndex = title.setHistory.findIndex(values => 'scaleX' in values || 'scaleY' in values);
+    expect(spacingMutationIndex).toBeGreaterThanOrEqual(0);
+    expect(spacingMutationIndex).toBeLessThan(scaleMutationIndex);
     expect(title.shadow).toEqual(expect.objectContaining({color:'#10203080', blur:12, offsetX:4, offsetY:-6}));
     expect(title.shadow).toBeInstanceOf(FakeShadow);
     expect(title.scaleX).toBeCloseTo(title.scaleY, 10);
+    expect(title.width * title.scaleX).toBeLessThanOrEqual(576.001);
+    expect(title.height * title.scaleY).toBeLessThanOrEqual(108.001);
     expect(title.hstarOcrQuad).toEqual(blocks[0].quad);
     expect(title.hstarOcrVisualProfile).toEqual({
       script:'zh-hans', dominantScript:'', fill:'#7b3f12', alignment:'center', rotation:0,
