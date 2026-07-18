@@ -53,6 +53,7 @@ const classicFiltered = executeHistoryFilter(canvasJs, ['openshop-deleted'], {
   nodes:[
     {id:'openshop-deleted', type:'openshop-layered'},
     {id:'image-survivor', type:'image'},
+    {id:'group-survivor', type:'group', items:['openshop-deleted', 'image-survivor']},
   ],
   connections:[
     {id:'from-deleted', from:'openshop-deleted', to:'image-survivor'},
@@ -60,14 +61,18 @@ const classicFiltered = executeHistoryFilter(canvasJs, ['openshop-deleted'], {
   ],
   selectedIds:['openshop-deleted', 'image-survivor'],
 });
-assert.deepEqual(classicFiltered.nodes, [{id:'image-survivor', type:'image'}]);
+assert.deepEqual(classicFiltered.nodes, [
+  {id:'image-survivor', type:'image'},
+  {id:'group-survivor', type:'group', items:['image-survivor']},
+]);
 assert.deepEqual(classicFiltered.connections, []);
 assert.deepEqual(classicFiltered.selectedIds, ['image-survivor']);
 
 const smartFiltered = executeHistoryFilter(smartJs, ['smart-openshop-deleted'], {
   nodes:[
     {id:'smart-openshop-deleted', type:'openshop-layered'},
-    {id:'smart-survivor', type:'smart-image'},
+    {id:'smart-survivor', type:'smart-image', inputNodeIds:['smart-openshop-deleted']},
+    {id:'smart-group-survivor', type:'smart-group', items:['smart-openshop-deleted', 'smart-survivor']},
   ],
   connections:[
     {from:'smart-openshop-deleted', to:'smart-survivor', kind:'flow'},
@@ -76,7 +81,10 @@ const smartFiltered = executeHistoryFilter(smartJs, ['smart-openshop-deleted'], 
   selectedIds:['smart-openshop-deleted', 'smart-survivor'],
   selectedImage:{nodeId:'smart-openshop-deleted', index:0},
 });
-assert.deepEqual(smartFiltered.nodes, [{id:'smart-survivor', type:'smart-image'}]);
+assert.deepEqual(smartFiltered.nodes, [
+  {id:'smart-survivor', type:'smart-image', inputNodeIds:[]},
+  {id:'smart-group-survivor', type:'smart-group', items:['smart-survivor']},
+]);
 assert.deepEqual(smartFiltered.connections, []);
 assert.equal(smartFiltered.selectedId, '');
 assert.deepEqual(smartFiltered.selectedIds, ['smart-survivor']);
@@ -87,9 +95,13 @@ assert.match(canvasJs, /function\s+deleteNode\([\s\S]*trackPermanentlyDeletedOpe
 assert.match(canvasJs, /function\s+deleteSelectedNodes\([\s\S]*trackPermanentlyDeletedOpenShopNodes\(/, 'classic bulk delete should tombstone selected OpenShop nodes');
 assert.match(canvasJs, /deleteSelectedNodes\([\s\S]*HstarClassicOpenShopAdapter\?\.disposeNode\?\.\(node\)/, 'classic bulk delete should permanently dispose each OpenShop project');
 assert.match(canvasJs, /function\s+applyCanvasHistoryState\([\s\S]*filterPermanentlyDeletedOpenShopHistoryState\(/, 'classic undo and redo restoration should filter tombstoned OpenShop nodes');
+assert.match(canvasJs, /function\s+applyRemoteCanvasData\([\s\S]*filterPermanentlyDeletedOpenShopHistoryState\(/, 'classic remote synchronization should filter permanently deleted OpenShop nodes');
+assert.match(canvasJs, /function\s+applyRemoteCanvasData\([\s\S]*blockedPermanentlyDeletedOpenShopNode[\s\S]*scheduleSave\(\)/, 'classic remote resurrection attempts should schedule a corrective save');
 
 assert.match(smartJs, /function\s+deleteNode\([\s\S]*trackPermanentlyDeletedOpenShopNodes\(\[node\]\)/, 'smart delete should tombstone the OpenShop node');
 assert.match(smartJs, /function\s+performUndo\([\s\S]*filterPermanentlyDeletedOpenShopHistoryState\(/, 'smart undo restoration should filter tombstoned OpenShop nodes');
 assert.match(smartJs, /async function\s+loadCanvas\([\s\S]*permanentlyDeletedOpenShopNodeIds\.clear\(\)/, 'smart canvas load should clear permanent OpenShop tombstones');
+assert.match(smartJs, /function\s+applyMergedServerCanvas\([\s\S]*permanentlyDeletedOpenShopNodeIds[\s\S]*deletedNodeIds/, 'smart remote synchronization should always include permanent OpenShop tombstones');
+assert.match(smartJs, /function\s+applyMergedServerCanvas\([\s\S]*blockedPermanentlyDeletedOpenShopNode[\s\S]*scheduleSave\(\)/, 'smart remote resurrection attempts should schedule a corrective save');
 
 console.log('canvas undo/redo history tests passed');

@@ -261,7 +261,18 @@ function trackPermanentlyDeletedOpenShopNodes(items){
     });
 }
 function filterPermanentlyDeletedOpenShopHistoryState(state){
-    const nextNodes = (state?.nodes || []).filter(node => !permanentlyDeletedOpenShopNodeIds.has(node?.id));
+    const nextNodes = (state?.nodes || [])
+        .filter(node => !permanentlyDeletedOpenShopNodeIds.has(node?.id))
+        .map(node => {
+            let nextNode = node;
+            if(Array.isArray(node?.inputNodeIds)){
+                nextNode = {...nextNode, inputNodeIds:node.inputNodeIds.filter(id => !permanentlyDeletedOpenShopNodeIds.has(id))};
+            }
+            if(Array.isArray(node?.items)){
+                nextNode = {...nextNode, items:node.items.filter(id => !permanentlyDeletedOpenShopNodeIds.has(id))};
+            }
+            return nextNode;
+        });
     const nodeIds = new Set(nextNodes.map(node => node.id));
     const next = {
         ...state,
@@ -5333,13 +5344,22 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 function applyMergedServerCanvas(serverCanvas, options={}){
     if(!serverCanvas || !canvas) return false;
     const remoteNodes = (Array.isArray(serverCanvas.nodes) ? serverCanvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
+    const blockedPermanentlyDeletedOpenShopNode = remoteNodes.some(node => permanentlyDeletedOpenShopNodeIds.has(String(node.id)));
+    const deletedNodeIds = new Set(permanentlyDeletedOpenShopNodeIds);
+    if(options.preserveLocalChanges){
+        smartDeletedNodeIds.forEach(id => deletedNodeIds.add(id));
+    }
     const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes, {
         preferLocal: Boolean(options.preserveLocalChanges),
-        deletedNodeIds: options.preserveLocalChanges ? smartDeletedNodeIds : new Set(),
+        deletedNodeIds,
     });
-    const nodeIds = new Set(mergedNodes.map(n => n.id));
-    nodes = mergedNodes;
-    canvas.connections = mergeSmartConnections(canvas.connections, serverCanvas.connections, nodeIds);
+    const nodeIds = new Set(mergedNodes.map(node => node.id));
+    const safeMergedState = filterPermanentlyDeletedOpenShopHistoryState({
+        nodes:mergedNodes,
+        connections:mergeSmartConnections(canvas.connections, serverCanvas.connections, nodeIds),
+    });
+    nodes = safeMergedState.nodes;
+    canvas.connections = safeMergedState.connections;
     const cleanedState = clearCompletedNodeBusyStates();
     const recoveredLoopOutputs = recoverStuckLoopOutputsFromLogs();
     canvas.updated_at = Number(serverCanvas.updated_at || canvas.updated_at || 0);
@@ -5350,7 +5370,7 @@ function applyMergedServerCanvas(serverCanvas, options={}){
     }
     render();
     if(typeof scheduleConnectionLayerRefresh === 'function') scheduleConnectionLayerRefresh();
-    if(cleanedState || recoveredLoopOutputs) scheduleSave();
+    if(cleanedState || recoveredLoopOutputs || blockedPermanentlyDeletedOpenShopNode) scheduleSave();
     resumeSmartPendingTasks();
     resumeJimengPendingNodes();
     return true;
