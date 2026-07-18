@@ -179,6 +179,7 @@ describe('Hstar OpenShop global API client', () => {
   });
 
   it('forwards the artistic-font source layer and snapshot without rewriting them', async () => {
+    const clientRequestId = 'art-font-request.project-1.node-1.text-layer-1.3';
     const artFont = {
       textLayerId:'text-layer-1', ocrBlockId:'ocr-title', originalText:'Original', currentText:'Edited',
       requestGeneration:3, document:{width:1920, height:1080},
@@ -188,6 +189,7 @@ describe('Hstar OpenShop global API client', () => {
     const fetchImpl = vi.fn((_url, options={}) => {
       const body = JSON.parse(options.body);
       expect(body.source_layer_id).toBe('source-layer-1');
+      expect(body.client_request_id).toBe(clientRequestId);
       expect(body.options.artFont).toEqual(artFont);
       return jsonResponse({task_id:'task-art-1', status:'queued'});
     });
@@ -196,7 +198,7 @@ describe('Hstar OpenShop global API client', () => {
 
     await client.createTask(context, {
       toolId:'art-font-restore', sourceLayerId:'source-layer-1', sourceAssetId:'a'.repeat(64),
-      apiConfigId:'vision', modelId:'gemini-3-pro-image', mode:'layer', options:{artFont},
+      clientRequestId, apiConfigId:'vision', modelId:'gemini-3-pro-image', mode:'layer', options:{artFont},
     });
 
     client.destroy();

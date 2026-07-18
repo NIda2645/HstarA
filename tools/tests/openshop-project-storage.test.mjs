@@ -524,6 +524,7 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
             "modelId": "",
         },
     }
+    provisional_client_request_id = "art-font-request.project-metadata.node-a.text-layer-1.1"
     metadata_project["aiTaskRecords"] = [{
         "taskId": "task-1",
         "toolId": "text-remove",
@@ -535,12 +536,59 @@ with tempfile.TemporaryDirectory(prefix="hstara-openshop-store-") as data_dir:
         "outputAssetId": source_asset_id,
         "createdAt": 1000,
         "updatedAt": 2000,
+    }, {
+        "taskId": f"provisional:{provisional_client_request_id}",
+        "clientRequestId": provisional_client_request_id,
+        "creationState": "provisional",
+        "toolId": "art-font-restore",
+        "apiConfigId": "vision",
+        "modelId": "gemini-3-pro-image",
+        "status": "queued",
+        "mode": "layer",
+        "sourceLayerId": "source-layer-1",
+        "sourceAssetId": source_asset_id,
+        "outputAssetId": "",
+        "context": {**owner_a, "projectId": "project-metadata"},
+        "owner": owner_a,
+        "reconcileState": "pending",
+        "reconcileReason": "",
+        "generatedLayerId": "",
+        "snapshot": {
+            "textLayerId": "text-layer-1",
+            "ocrBlockId": "ocr-title",
+            "originalText": "Original",
+            "currentText": "Edited",
+            "requestGeneration": 1,
+            "document": {"width": 640, "height": 480},
+            "quad": [
+                {"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.2},
+                {"x": 0.4, "y": 0.3}, {"x": 0.1, "y": 0.3},
+            ],
+            "visualProfile": {
+                "script": "en", "dominantScript": "en", "fill": "#112233",
+                "alignment": "left", "rotation": 0, "artistic": False,
+                "familyCandidates": ["Arial"], "size": 40, "weight": 700,
+                "style": "normal", "styleDescription": "painted",
+                "letterSpacing": 0, "lineHeight": 1.2,
+                "strokeColor": "#00000000", "strokeWidth": 0,
+                "shadow": {"color": "#00000000", "blur": 0, "offsetX": 0, "offsetY": 0},
+            },
+        },
+        "createdAt": 3000,
+        "updatedAt": 3000,
+        "completedAt": 0,
+        "appliedAt": 0,
+        "staleAt": 0,
+        "discardedAt": 0,
     }]
     metadata_project["assetRefs"] = [source_asset_id]
     saved_metadata = store.save("project-metadata", owner_a, metadata_project, base_version=1)
     assert saved_metadata["fontRefs"] == metadata_project["fontRefs"]
     assert saved_metadata["aiToolPreferences"] == metadata_project["aiToolPreferences"]
     assert saved_metadata["aiTaskRecords"][0]["outputAssetId"] == source_asset_id
+    assert saved_metadata["aiTaskRecords"][1]["taskId"].startswith("provisional:")
+    assert saved_metadata["aiTaskRecords"][1]["clientRequestId"] == provisional_client_request_id
+    assert saved_metadata["aiTaskRecords"][1]["creationState"] == "provisional"
 
     too_many_tasks = copy.deepcopy(saved_metadata)
     too_many_tasks["aiTaskRecords"] = [

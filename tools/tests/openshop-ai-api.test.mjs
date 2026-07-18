@@ -944,15 +944,25 @@ async def run():
             }, {"id":"art-font-request"}
 
         main.generate_ai_image = successful_art_generate
+        idempotent_art_request = {
+            **art_request,
+            "client_request_id":"art-font-request.project-ai.node-ai.text-layer-1.3",
+        }
         art_created = await client.post(
-            "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
+            "/api/openshop/projects/project-ai/ai-tasks", json=idempotent_art_request,
         )
         assert art_created.status_code == 200, art_created.text
+        art_duplicate = await client.post(
+            "/api/openshop/projects/project-ai/ai-tasks", json=idempotent_art_request,
+        )
+        assert art_duplicate.status_code == 200, art_duplicate.text
+        assert art_duplicate.json()["task_id"] == art_created.json()["task_id"]
         art_task = await wait_for_terminal(
             client, "project-ai", art_created.json()["task_id"], owner,
         )
         assert art_task["status"] == "succeeded", art_task
         assert art_generation_calls == 1
+        assert art_task["clientRequestId"] == idempotent_art_request["client_request_id"]
         assert art_task["sourceLayerId"] == "source-layer-1"
         assert art_task["snapshot"]["currentText"] == current_art_text
         assert art_task["result"]["mime"] == "image/png"

@@ -476,6 +476,7 @@ describe('Hstar OpenShop project adapter', () => {
     };
     editor.__hstarAiTaskRecords = [{
       taskId:'task-art-1', toolId:'art-font-restore', apiConfigId:'image-api', modelId:'image-model',
+      clientRequestId:'art-font-request.project-1.node-1.text-layer-1.4', creationState:'created',
       status:'succeeded', reconcileState:'applied', reconcileReason:'', mode:'layer',
       context:{...context}, owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
       sourceLayerId:'source-layer-1', sourceAssetId, maskAssetId:'', outputAssetId,

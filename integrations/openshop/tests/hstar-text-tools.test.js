@@ -73,6 +73,27 @@ function artResult({assetId=OUTPUT_ASSET_ID, width=360, height=120} = {}) {
   };
 }
 
+function provisionalArtRecord({clientRequestId='art-font-request.project-1.node-1.text-layer-1.1'} = {}) {
+  return {
+    taskId:`provisional:${clientRequestId}`,
+    clientRequestId,
+    creationState:'provisional',
+    toolId:'art-font-restore', apiConfigId:'image-api', modelId:'gemini-3-pro-image',
+    status:'queued', reconcileState:'pending', reconcileReason:'', mode:'layer',
+    context:{...context}, owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
+    sourceLayerId:'layer-source', sourceAssetId:SOURCE_ASSET_ID, maskAssetId:'',
+    outputAssetId:'', generatedLayerId:'',
+    snapshot:{
+      textLayerId:'text-layer-1', ocrBlockId:'ocr-title', originalText:'Original title',
+      currentText:'Edited title', requestGeneration:1, document:{width:1920,height:1080},
+      quad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
+      visualProfile:artVisualProfile(),
+    },
+    createdAt:1, updatedAt:1, completedAt:0, appliedAt:0, staleAt:0, discardedAt:0,
+    error:'',
+  };
+}
+
 class FakeIText {
   constructor(text, options={}) {
     this.type = 'i-text';
@@ -935,14 +956,14 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
-  it('persists generation and task identity before polling, then applies one exact correlated raster', async () => {
+  it('persists a provisional identity before POST, then applies one exact correlated raster', async () => {
     const harness = createHarness();
     const {controller, editor, aiClient, runtime, imageLoader} = harness;
     const {layer:carrierLayer, object:carrier} = addArtCarrier(harness);
-    const recordSave = createDeferred();
+    const provisionalSave = createDeferred();
     runtime.requestSave
       .mockResolvedValueOnce({saved:true})
-      .mockImplementationOnce(() => recordSave.promise)
+      .mockImplementationOnce(() => provisionalSave.promise)
       .mockResolvedValue({saved:true});
     aiClient.pollTask.mockResolvedValue({
       taskId:'task-1', status:'succeeded', outputAssetId:OUTPUT_ASSET_ID, result:artResult(),
@@ -953,12 +974,25 @@ describe('Hstar OpenShop multilingual text tools', () => {
     await controller.start();
 
     const restoring = controller.restoreArtFont('text-layer-1');
-    await vi.waitFor(() => expect(aiClient.createTask).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(runtime.requestSave).toHaveBeenCalledTimes(2));
 
     expect(carrier.hstarArtFontRequestGeneration).toBe(1);
     expect(runtime.requestSave).toHaveBeenNthCalledWith(1, {reason:'art-font-generation'});
+    expect(runtime.requestSave).toHaveBeenNthCalledWith(2, {reason:'art-font-provisional'});
+    expect(aiClient.createTask).not.toHaveBeenCalled();
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      taskId:expect.stringMatching(/^provisional:/), clientRequestId:expect.any(String),
+      creationState:'provisional', toolId:'art-font-restore', status:'queued', reconcileState:'pending',
+      sourceLayerId:'layer-source', sourceAssetId:SOURCE_ASSET_ID,
+      snapshot:{textLayerId:'text-layer-1', currentText:'Edited title', requestGeneration:1},
+    });
+    const clientRequestId = editor.__hstarAiTaskRecords[0].clientRequestId;
+
+    provisionalSave.resolve({saved:true});
+    await vi.waitFor(() => expect(aiClient.createTask).toHaveBeenCalledTimes(1));
     expect(aiClient.createTask.mock.calls[0][1]).toMatchObject({
       toolId:'art-font-restore', sourceLayerId:'layer-source', sourceAssetId:SOURCE_ASSET_ID,
+      clientRequestId,
       options:{artFont:{
         textLayerId:'text-layer-1', ocrBlockId:'ocr-title', originalText:'Original title',
         currentText:'Edited title', requestGeneration:1,
@@ -966,14 +1000,6 @@ describe('Hstar OpenShop multilingual text tools', () => {
         visualProfile:carrier.hstarOcrVisualProfile,
       }},
     });
-    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
-      taskId:'task-1', toolId:'art-font-restore', status:'queued', reconcileState:'pending',
-      sourceLayerId:'layer-source', sourceAssetId:SOURCE_ASSET_ID,
-      snapshot:{textLayerId:'text-layer-1', currentText:'Edited title', requestGeneration:1},
-    });
-    expect(aiClient.pollTask).not.toHaveBeenCalled();
-
-    recordSave.resolve({saved:true});
     await restoring;
 
     expect(aiClient.pollTask).toHaveBeenCalledWith(context, 'task-1', expect.any(Object));
@@ -991,6 +1017,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(editor.saveHistory).toHaveBeenCalledOnce();
     expect(editor.saveHistory).toHaveBeenCalledWith('艺术字体处理');
     expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      taskId:'task-1', clientRequestId, creationState:'created',
       status:'succeeded', reconcileState:'applied', outputAssetId:OUTPUT_ASSET_ID,
       generatedLayerId:generated.layerId,
     });
@@ -1183,11 +1210,16 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
-  it('isolates a late create response after a node and project switch', async () => {
+  it('keeps the persisted provisional record in A when a late create response crosses into B', async () => {
     const harness = createHarness();
     const {controller, editor, aiClient, runtime} = harness;
     addArtCarrier(harness);
     const post = createDeferred();
+    let savedProjectARecords = [];
+    runtime.requestSave.mockImplementation(async ({reason}) => {
+      if(reason === 'art-font-provisional') savedProjectARecords = structuredClone(editor.__hstarAiTaskRecords);
+      return {saved:true};
+    });
     aiClient.createTask.mockReturnValue(post.promise);
     await controller.start();
     const creating = controller.restoreArtFont('text-layer-1');
@@ -1201,10 +1233,55 @@ describe('Hstar OpenShop multilingual text tools', () => {
     post.resolve({task_id:'task-from-node-1', status:'queued'});
     await creating;
 
+    expect(savedProjectARecords).toHaveLength(1);
+    expect(savedProjectARecords[0]).toMatchObject({
+      taskId:expect.stringMatching(/^provisional:/), clientRequestId:expect.any(String),
+      creationState:'provisional', status:'queued', reconcileState:'pending',
+      context:{nodeId:'node-1', projectId:'project-1'},
+    });
     expect(editor.__hstarAiTaskRecords).toEqual([]);
     expect(runtime.requestSave).toHaveBeenCalledTimes(savesBeforeResponse);
     expect(aiClient.pollTask).not.toHaveBeenCalled();
-    expect(controller.getState().detachedArtTaskCount).toBe(1);
+    expect(controller.getState().detachedArtTaskCount).toBe(0);
+    controller.destroy();
+  });
+
+  it('retries a persisted provisional identity on reopen and applies the existing server task once', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient} = harness;
+    const carrier = addArtCarrier(harness);
+    carrier.object.hstarArtFontRequestGeneration = 1;
+    const provisional = provisionalArtRecord();
+    editor.__hstarAiTaskRecords = [provisional];
+    aiClient.createTask.mockResolvedValue({
+      task_id:'task-existing-for-request', status:'running',
+      task:{taskId:'task-existing-for-request', status:'running', clientRequestId:provisional.clientRequestId},
+    });
+    aiClient.pollTask.mockResolvedValue({
+      taskId:'task-existing-for-request', status:'succeeded', result:artResult(),
+    });
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {detail:{project:{projectId:'project-1'}}}));
+    await vi.waitFor(() => expect(editor.__hstarAiTaskRecords[0].reconcileState).toBe('applied'));
+
+    expect(aiClient.createTask).toHaveBeenCalledOnce();
+    expect(aiClient.createTask.mock.calls[0][1]).toMatchObject({
+      toolId:'art-font-restore', clientRequestId:provisional.clientRequestId,
+      sourceLayerId:'layer-source', sourceAssetId:SOURCE_ASSET_ID,
+      options:{artFont:provisional.snapshot},
+    });
+    expect(editor.__hstarAiTaskRecords[0]).toMatchObject({
+      taskId:'task-existing-for-request', clientRequestId:provisional.clientRequestId,
+      creationState:'created', status:'succeeded', reconcileState:'applied',
+    });
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(1);
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {detail:{project:{projectId:'project-1'}}}));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(aiClient.createTask).toHaveBeenCalledOnce();
+    expect(aiClient.pollTask).toHaveBeenCalledOnce();
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(1);
     controller.destroy();
   });
 

@@ -2817,6 +2817,7 @@ class OpenShopProjectCloneRequest(BaseModel):
 class OpenShopAiTaskRequest(BaseModel):
     owner: Dict[str, Any]
     tool_id: str
+    client_request_id: str = ""
     source_asset_id: str
     mask_asset_id: str = ""
     primary_reference_asset_id: str = ""
@@ -17948,7 +17949,7 @@ async def create_openshop_ai_task(
                     raise OpenShopNotFound(
                         "OpenShop artistic-font source asset does not belong to this project"
                     )
-                record = OPENSHOP_AI_TASKS.create(
+                record, created = OPENSHOP_AI_TASKS.create_or_get(
                     project_id=project_id,
                     owner=payload.owner,
                     tool_id=payload.tool_id,
@@ -17957,15 +17958,17 @@ async def create_openshop_ai_task(
                     source_asset_id=payload.source_asset_id,
                     source_layer_id=payload.source_layer_id,
                     snapshot=payload.options.get("artFont"),
+                    client_request_id=payload.client_request_id,
                 )
         except OpenShopStoreError as exc:
             raise_openshop_http_error(exc)
         except OpenShopAiValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        future = asyncio.create_task(
-            run_openshop_ai_task(record["taskId"], project_id, payload)
-        )
-        OPENSHOP_AI_TASKS.bind(record["taskId"], future)
+        if created:
+            future = asyncio.create_task(
+                run_openshop_ai_task(record["taskId"], project_id, payload)
+            )
+            OPENSHOP_AI_TASKS.bind(record["taskId"], future)
         return {"task_id": record["taskId"], "status": record["status"], "task": record}
     if payload.tool_id in OPENSHOP_GENERATIVE_TOOL_IDS:
         snapshot = openshop_generation_snapshot(payload)

@@ -1024,6 +1024,27 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
             value.get("sourceLayerId"), "sourceLayerId"
         )
         record["snapshot"] = normalize_art_font_snapshot(value.get("snapshot"))
+        client_request_id = _task_safe_id(
+            value.get("clientRequestId"), "clientRequestId", required=False
+        )
+        creation_state = _clean_text(value.get("creationState"), 20).lower()
+        if client_request_id or creation_state:
+            if not client_request_id:
+                raise OpenShopAiValidationError("OpenShop AI clientRequestId is required")
+            if not creation_state:
+                creation_state = (
+                    "provisional"
+                    if task_id == f"provisional:{client_request_id}"
+                    else "created"
+                )
+            if creation_state not in {"provisional", "created"}:
+                raise OpenShopAiValidationError("Invalid OpenShop AI creationState")
+            if creation_state == "provisional" and (
+                task_id != f"provisional:{client_request_id}" or status != "queued"
+            ):
+                raise OpenShopAiValidationError("Invalid provisional OpenShop AI task identity")
+            record["clientRequestId"] = client_request_id
+            record["creationState"] = creation_state
         if isinstance(result, dict):
             record["result"] = normalize_art_font_result(result)
         reconciliation_keys = {
@@ -1132,7 +1153,37 @@ class OpenShopAiTaskRegistry:
         mode: str = "layer",
         source_layer_id: str = "",
         snapshot: Any = None,
+        client_request_id: str = "",
     ) -> dict[str, Any]:
+        record, _created = self.create_or_get(
+            project_id,
+            owner,
+            tool_id,
+            provider_id,
+            model_id,
+            source_asset_id,
+            mask_asset_id=mask_asset_id,
+            mode=mode,
+            source_layer_id=source_layer_id,
+            snapshot=snapshot,
+            client_request_id=client_request_id,
+        )
+        return record
+
+    def create_or_get(
+        self,
+        project_id: str,
+        owner: dict[str, Any],
+        tool_id: str,
+        provider_id: str,
+        model_id: str,
+        source_asset_id: str,
+        mask_asset_id: str = "",
+        mode: str = "layer",
+        source_layer_id: str = "",
+        snapshot: Any = None,
+        client_request_id: str = "",
+    ) -> tuple[dict[str, Any], bool]:
         self.cleanup()
         normalized_project_id = _clean_text(project_id, 96)
         if not normalized_project_id:
@@ -1140,6 +1191,9 @@ class OpenShopAiTaskRegistry:
         normalized_owner = self._owner(owner)
         if tool_id not in OPENSHOP_AI_TOOL_IDS:
             raise OpenShopAiValidationError("OpenShop AI toolId is invalid")
+        normalized_client_request_id = _task_safe_id(
+            client_request_id, "clientRequestId", required=False
+        )
         timestamp = int(time.time() * 1000)
         task_id = f"openshop_ai_{uuid.uuid4().hex}"
         record = {
@@ -1165,9 +1219,23 @@ class OpenShopAiTaskRegistry:
                 source_layer_id, "sourceLayerId"
             )
             record["snapshot"] = normalize_art_font_snapshot(snapshot)
+        if normalized_client_request_id:
+            record["clientRequestId"] = normalized_client_request_id
+            record["creationState"] = "created"
         with self._lock:
+            if normalized_client_request_id:
+                existing = next((
+                    existing_record
+                    for existing_record in self._records.values()
+                    if existing_record.get("projectId") == normalized_project_id
+                    and existing_record.get("owner") == normalized_owner
+                    and existing_record.get("toolId") == tool_id
+                    and existing_record.get("clientRequestId") == normalized_client_request_id
+                ), None)
+                if existing is not None:
+                    return self._public(existing), False
             self._records[task_id] = record
-        return self._public(record)
+        return self._public(record), True
 
     def create_parent(
         self,

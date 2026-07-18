@@ -197,6 +197,7 @@
             nodeId:normalized.nodeId,
           },
           tool_id:clean(input.toolId),
+          client_request_id:clean(input.clientRequestId),
           source_asset_id:clean(input.sourceAssetId),
           source_layer_id:clean(input.sourceLayerId),
           mask_asset_id:clean(input.maskAssetId),

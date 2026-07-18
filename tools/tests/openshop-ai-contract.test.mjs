@@ -550,10 +550,21 @@ for invalid_snapshot in (
 
 owner_a = {"canvasType": "classic", "canvasId": "canvas-a", "nodeId": "node-a"}
 registry = OpenShopAiTaskRegistry()
-art_task = registry.create(
+art_client_request_id = "art-font-request.project-a.node-a.text-layer-1.3"
+art_task, art_task_created = registry.create_or_get(
     "project-a", owner_a, "art-font-restore", "vision", "gemini-3-pro-image",
     "d" * 64, source_layer_id="source-layer-1", snapshot=art_snapshot_input,
+    client_request_id=art_client_request_id,
 )
+duplicate_art_task, duplicate_art_task_created = registry.create_or_get(
+    "project-a", owner_a, "art-font-restore", "vision", "gemini-3-pro-image",
+    "d" * 64, source_layer_id="source-layer-1", snapshot=art_snapshot_input,
+    client_request_id=art_client_request_id,
+)
+assert art_task_created is True
+assert duplicate_art_task_created is False
+assert duplicate_art_task["taskId"] == art_task["taskId"]
+assert duplicate_art_task["clientRequestId"] == art_client_request_id
 art_snapshot_input["currentText"] = "mutated after create"
 art_snapshot_input["visualProfile"]["weight"] = 100
 stored_art_task = registry.get(art_task["taskId"], "project-a", owner_a)
@@ -574,6 +585,8 @@ normalized_art_task = normalize_ai_task_record(
 )
 assert normalized_art_task["snapshot"] == art_snapshot
 assert normalized_art_task["sourceLayerId"] == "source-layer-1"
+assert normalized_art_task["clientRequestId"] == art_client_request_id
+assert normalized_art_task["creationState"] == "created"
 assert normalized_art_task["outputAssetId"] == "9" * 64
 assert normalized_art_task["result"] == {
     "assetId": "9" * 64,

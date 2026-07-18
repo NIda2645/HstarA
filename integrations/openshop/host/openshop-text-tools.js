@@ -76,6 +76,7 @@
       artPollGeneration:0,
       artRunsByLayerId:new Map(),
       artRunsByTaskId:new Map(),
+      artCreatesByClientRequestId:new Map(),
       detachedArtTasks:new Map(),
       lastRemovalOptions:{mode:'layer', quality:'auto', prompt:''},
       unsubscribeCatalog:null,
@@ -227,6 +228,48 @@
 
     function artPollIsCurrent(scope){
       return artScopeIsCurrent(scope) && scope.pollGeneration === state.artPollGeneration;
+    }
+
+    function artRequestIdPart(value, limit){
+      return clean(value).replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, limit) || 'none';
+    }
+
+    function createArtClientRequestId(scope, snapshot){
+      const random = root.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      return [
+        'art-font-request',
+        artRequestIdPart(scope.context.projectId, 24),
+        artRequestIdPart(scope.context.nodeId, 24),
+        artRequestIdPart(snapshot.textLayerId, 32),
+        Math.max(0, Number(snapshot.requestGeneration) || 0),
+        artRequestIdPart(random, 36),
+      ].join('.');
+    }
+
+    function isProvisionalArtRecord(record){
+      const clientRequestId = clean(record?.clientRequestId);
+      return Boolean(
+        record?.toolId === TOOL_ART_FONT
+        && clientRequestId
+        && (
+          clean(record?.creationState) === 'provisional'
+          || clean(record?.taskId) === `provisional:${clientRequestId}`
+        )
+      );
+    }
+
+    function artRequestFromRecord(record){
+      return {
+        toolId:TOOL_ART_FONT,
+        clientRequestId:clean(record.clientRequestId),
+        sourceLayerId:clean(record.sourceLayerId),
+        sourceAssetId:clean(record.sourceAssetId),
+        maskAssetId:'',
+        apiConfigId:clean(record.apiConfigId),
+        modelId:clean(record.modelId),
+        mode:'layer',
+        options:{artFont:clone(record.snapshot)},
+      };
     }
 
     function isolateArtTask(record, reason){
@@ -1116,6 +1159,42 @@
       return run.promise;
     }
 
+    function resumeProvisionalArtRecord(record, scope){
+      const clientRequestId = clean(record?.clientRequestId);
+      if(!clientRequestId) return Promise.resolve(record);
+      const existing = state.artCreatesByClientRequestId.get(clientRequestId);
+      if(existing) return existing.promise;
+      const run = {record, promise:null};
+      run.promise = (async () => {
+        if(!artScopeIsCurrent(scope) || !artRecordScopeMatches(record, scope.context)) return record;
+        const created = await aiClient.createTask(scope.context, artRequestFromRecord(record));
+        if(!artScopeIsCurrent(scope) || !taskRecords().includes(record)) return record;
+        const task = created?.task && typeof created.task === 'object' ? created.task : created;
+        const taskId = clean(created?.task_id || task?.taskId);
+        if(!taskId) throw new Error('艺术字体任务没有返回标识');
+        record.taskId = taskId;
+        record.creationState = 'created';
+        updateArtExecution(record, {
+          ...task,
+          taskId,
+          status:clean(task?.status || created?.status) || 'queued',
+        });
+        await persistState('art-font-task', 'Start artistic font task');
+        if(!artScopeIsCurrent(scope)) return record;
+        if(!artPollIsCurrent(scope)) return record;
+        if(['queued', 'running'].includes(clean(record.status))){
+          return pollArtRecord(record, scope);
+        }
+        return reconcileArtRecord(record, scope);
+      })().finally(() => {
+        if(state.artCreatesByClientRequestId.get(clientRequestId) === run){
+          state.artCreatesByClientRequestId.delete(clientRequestId);
+        }
+      });
+      state.artCreatesByClientRequestId.set(clientRequestId, run);
+      return run.promise;
+    }
+
     async function runArtFontRestore(textLayerId, sessionGeneration, pollGeneration){
       const context = currentContext();
       const scope = captureArtScope(context, sessionGeneration, pollGeneration);
@@ -1141,45 +1220,36 @@
         quad:clone(carrier.object.hstarOcrQuad),
         visualProfile:clone(carrier.object.hstarOcrVisualProfile),
       };
+      const clientRequestId = createArtClientRequestId(scope, snapshot);
       const request = {
         toolId:TOOL_ART_FONT,
+        clientRequestId,
         sourceLayerId:clean(carrier.object.hstarOcrSourceLayerId),
         sourceAssetId:clean(carrier.object.hstarOcrSourceAssetId),
         maskAssetId:'', apiConfigId:selected.apiConfigId, modelId:selected.modelId,
         mode:'layer', options:{artFont:snapshot},
       };
-      const pendingRecord = {
-        context:{...scope.context}, owner:{...scope.owner},
-        sourceLayerId:request.sourceLayerId, sourceAssetId:request.sourceAssetId,
-        snapshot:clone(snapshot),
-      };
-      const requestState = validateArtLiveState(pendingRecord, scope, carrier.object);
-      if(requestState.isolated || requestState.reason) return null;
-      const created = await aiClient.createTask(context, request);
-      const taskId = clean(created?.task_id || created?.task?.taskId);
-      if(!taskId) throw new Error('艺术字体任务没有返回标识');
       const timestamp = Date.now();
-      const createdStatus = clean(created?.status || created?.task?.status).toLowerCase();
       const record = {
-        taskId, toolId:TOOL_ART_FONT,
+        taskId:`provisional:${clientRequestId}`,
+        clientRequestId,
+        creationState:'provisional',
+        toolId:TOOL_ART_FONT,
         apiConfigId:clean(request.apiConfigId), modelId:clean(request.modelId),
-        status:['queued', 'running'].includes(createdStatus) ? createdStatus : 'queued',
-        reconcileState:'pending', reconcileReason:'', mode:'layer',
+        status:'queued', reconcileState:'pending', reconcileReason:'', mode:'layer',
         context:{...scope.context}, owner:{...scope.owner},
         sourceLayerId:request.sourceLayerId, sourceAssetId:request.sourceAssetId,
         maskAssetId:'', outputAssetId:'', snapshot:clone(snapshot), generatedLayerId:'',
         createdAt:timestamp, updatedAt:timestamp, completedAt:0,
         appliedAt:0, staleAt:0, discardedAt:0, error:'',
       };
-      if(!artScopeIsCurrent(scope) || !artRecordScopeMatches(record, scope.context)){
-        return isolateArtTask(record, 'scope-changed');
-      }
+      const requestState = validateArtLiveState(record, scope, carrier.object);
+      if(requestState.isolated || requestState.reason) return null;
       taskRecords().push(record);
       retainTaskRecords();
-      await persistState('art-font-task', 'Start artistic font task');
-      if(!artScopeIsCurrent(scope)) return isolateArtTask(record, 'scope-changed');
-      if(!artPollIsCurrent(scope)) return record;
-      return pollArtRecord(record, scope);
+      await persistState('art-font-provisional', 'Prepare artistic font task');
+      if(!artScopeIsCurrent(scope)) return record;
+      return resumeProvisionalArtRecord(record, scope);
     }
 
     function restoreArtFont(textLayerId){
@@ -1209,6 +1279,7 @@
       ));
       await Promise.allSettled(records.map(async record => {
         if(!artRecordScopeMatches(record, context)) return reconcileArtRecord(record, scope);
+        if(isProvisionalArtRecord(record)) return resumeProvisionalArtRecord(record, scope);
         if(['queued', 'running'].includes(clean(record.status))){
           return pollArtRecord(record, scope);
         }
@@ -1222,6 +1293,7 @@
       state.artRunsByTaskId.forEach(run => run.controller?.abort?.());
       state.artRunsByTaskId.clear();
       state.artRunsByLayerId.clear();
+      if(sessionChanged) state.artCreatesByClientRequestId.clear();
       editor.updateLayersPanel?.();
     }
 
