@@ -1468,6 +1468,32 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
+  it('reconciles a late POST result through the current visible session without duplicating work', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient} = harness;
+    addArtCarrier(harness);
+    const post = createDeferred();
+    aiClient.createTask.mockReturnValue(post.promise);
+    aiClient.pollTask.mockResolvedValue({
+      taskId:'task-after-reopen', status:'succeeded', result:artResult(),
+    });
+    await controller.start();
+
+    const creating = controller.restoreArtFont('text-layer-1');
+    await vi.waitFor(() => expect(aiClient.createTask).toHaveBeenCalledOnce());
+
+    window.dispatchEvent(new CustomEvent('openshop:session-opened', {detail:{session:{context}}}));
+    window.dispatchEvent(new CustomEvent('openshop:session-visible', {detail:{context}}));
+    post.resolve({task_id:'task-after-reopen', status:'queued'});
+    await creating;
+
+    await vi.waitFor(() => expect(editor.__hstarAiTaskRecords[0].reconcileState).toBe('applied'));
+    expect(aiClient.createTask).toHaveBeenCalledOnce();
+    expect(aiClient.pollTask).toHaveBeenCalledOnce();
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(1);
+    controller.destroy();
+  });
+
   it('keeps the persisted provisional record in A when a late create response crosses into B', async () => {
     const harness = createHarness();
     const {controller, editor, aiClient, runtime} = harness;

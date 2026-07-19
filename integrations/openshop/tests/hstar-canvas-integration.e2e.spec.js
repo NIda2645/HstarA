@@ -45,6 +45,14 @@ async function createCanvas(request, {kind, title, nodes, connections}){
       client_id:'openshop-e2e-seed',
     },
   }));
+  nodes.filter(node => node.type === 'openshop-layered').forEach(node => {
+    canvasCleanup.trackProject({
+      projectId:node.projectId,
+      canvasType:kind,
+      canvasId:canvas.id,
+      nodeId:node.id,
+    });
+  });
   return saved.canvas;
 }
 
@@ -301,9 +309,9 @@ test('keeps OpenShop node actions visible inside classic and smart canvas cards'
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   for(const kind of ['classic', 'smart']){
-    const nodeId = `openshop-layout-${kind}`;
+    const nodeId = `${TEST_ID_PREFIX}layout-${kind}-${runId}`;
     const node = {
-      id:nodeId, type:'openshop-layered', projectId:`e2e_layout_${kind}_${runId}`,
+      id:nodeId, type:'openshop-layered', projectId:`${TEST_ID_PREFIX}layout-project-${kind}-${runId}`,
       projectName:`OpenShop layout ${kind}`, x:220, y:180, w:340, h:260,
       documentWidth:1920, documentHeight:1080, layerCount:0, sourceUpdateCount:0,
       autosaveVersion:0, saveState:'new', created_at:Date.now(),
@@ -351,12 +359,14 @@ test('opens empty OpenShop nodes on templates and sourced nodes directly in the 
     },
   ];
   const emptyNode = {
-    id:'entry-empty', type:'openshop-layered', projectId:`e2e_entry_empty_${runId}`,
+    id:`${TEST_ID_PREFIX}entry-empty-${runId}`, type:'openshop-layered',
+    projectId:`${TEST_ID_PREFIX}entry-empty-project-${runId}`,
     projectName:'Empty OpenShop entry', x:420, y:100, w:340, h:260,
     documentWidth:1920, documentHeight:1080, saveState:'new', created_at:Date.now(),
   };
   const sourcedNode = {
-    ...emptyNode, id:'entry-sourced', projectId:`e2e_entry_sourced_${runId}`,
+    ...emptyNode, id:`${TEST_ID_PREFIX}entry-sourced-${runId}`,
+    projectId:`${TEST_ID_PREFIX}entry-sourced-project-${runId}`,
     projectName:'Sourced OpenShop entry', x:420, y:440,
   };
   const canvas = await createCanvas(request, {
@@ -449,7 +459,8 @@ test('uses the first source dimensions and exports the full 4K document without 
     natural_w:3840, natural_h:2160,
   };
   const layeredNode = {
-    id:'openshop-4k', type:'openshop-layered', projectId:`e2e_4k_${runId}`,
+    id:`${TEST_ID_PREFIX}4k-node-${runId}`, type:'openshop-layered',
+    projectId:`${TEST_ID_PREFIX}4k-project-${runId}`,
     projectName:'OpenShop 4K source', x:420, y:160, w:340, h:260,
     documentWidth:1920, documentHeight:1080, saveState:'new', created_at:Date.now(),
   };
@@ -548,11 +559,15 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const nodeA = {
-    id:'openshop-a', type:'openshop-layered', projectId:`e2e_project_a_${runId}`, projectName:'项目 A',
+    id:`${TEST_ID_PREFIX}node-a-${runId}`, type:'openshop-layered',
+    projectId:`${TEST_ID_PREFIX}project-a-${runId}`, projectName:'项目 A',
     x:640, y:180, w:340, h:260, documentWidth:1920, documentHeight:1080,
     layerCount:0, sourceUpdateCount:0, autosaveVersion:0, saveState:'new', created_at:Date.now(),
   };
-  const nodeB = {...nodeA, id:'openshop-b', projectId:`e2e_project_b_${runId}`, projectName:'项目 B', x:640, y:520};
+  const nodeB = {
+    ...nodeA, id:`${TEST_ID_PREFIX}node-b-${runId}`,
+    projectId:`${TEST_ID_PREFIX}project-b-${runId}`, projectName:'项目 B', x:640, y:520,
+  };
   const images = imageUrls.map((url, index) => ({
     id:`classic-image-${index + 1}`, type:'image', x:80, y:80 + index * 300, w:260, h:240,
     url, name:`来源 ${index + 1}.png`, mediaKind:'image', assetVersion:`classic-v1-${index + 1}`,
@@ -636,9 +651,9 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   await editor.waitForFunction(() => OS.layers.some(layer => layer.sourceBinding?.state === 'detached'));
   await editor.evaluate(() => window.HstarOpenShopRuntime.requestSave({reason:'e2e-detach'}));
 
-  const cloneInfo = await frame.evaluate(async () => {
+  const cloneInfo = await frame.evaluate(async nodeAId => {
     const hooks = window.HstarClassicOpenShopHooks;
-    const source = hooks.getNodes().find(node => node.id === 'openshop-a');
+    const source = hooks.getNodes().find(node => node.id === nodeAId);
     const copy = JSON.parse(JSON.stringify(source));
     copy.id = 'openshop-c';
     copy.x += 430;
@@ -647,7 +662,7 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
     hooks.render();
     await hooks.saveCanvas();
     return {projectId:copy.projectId, sourceProjectId:source.projectId};
-  });
+  }, nodeA.id);
   expect(cloneInfo.projectId).not.toBe(cloneInfo.sourceProjectId);
   editor = await openNode(page, frame, 'classic', 'openshop-c', 0);
   expect((await editorSnapshot(editor)).texts).toContain('A 独立文字');
@@ -730,7 +745,8 @@ test('classic and smart canvases receive every OpenShop output as new image node
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const classicNode = {
-    id:'classic-output-source', type:'openshop-layered', projectId:`e2e_output_classic_${runId}`, projectName:'普通输出',
+    id:`${TEST_ID_PREFIX}classic-output-source-${runId}`, type:'openshop-layered',
+    projectId:`${TEST_ID_PREFIX}output-classic-${runId}`, projectName:'普通输出',
     x:200, y:180, w:340, h:260, documentWidth:640, documentHeight:480, saveState:'new', created_at:Date.now(),
   };
   const classic = await createCanvas(request, {kind:'classic', title:'Classic output', nodes:[classicNode], connections:[]});
@@ -755,7 +771,8 @@ test('classic and smart canvases receive every OpenShop output as new image node
     images:[{url:imageUrls[0], name:'智能来源.png', kind:'image', assetVersion:'smart-v1'}], created_at:Date.now(),
   };
   const smartNode = {
-    id:'smart-output-source', type:'openshop-layered', projectId:`e2e_output_smart_${runId}`, projectName:'智能输出',
+    id:`${TEST_ID_PREFIX}smart-output-source-${runId}`, type:'openshop-layered',
+    projectId:`${TEST_ID_PREFIX}output-smart-${runId}`, projectName:'智能输出',
     x:500, y:180, w:340, h:260, documentWidth:640, documentHeight:480, saveState:'new', inputNodeIds:[smartImage.id], created_at:Date.now(),
   };
   const smart = await createCanvas(request, {
@@ -766,13 +783,13 @@ test('classic and smart canvases receive every OpenShop output as new image node
   editor = await openNode(page, frame, 'smart', smartNode.id, 1);
   await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
   await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
-  await expect.poll(() => frame.evaluate(() => {
+  await expect.poll(() => frame.evaluate(nodeId => {
     const hooks = window.HstarSmartCanvasOpenShopHooks;
-    return ['smart-output-source'].flatMap(id => {
+    return [nodeId].flatMap(id => {
       const source = hooks.getNode(id);
       return source ? hooks.getConnections().filter(connection => connection.from === source.id && (connection.kind || 'flow') === 'flow') : [];
     }).length;
-  })).toBe(2);
+  }, smartNode.id)).toBe(2);
   const smartRecord = await canvasRecord(request, smart.id);
   const smartOutputs = smartRecord.nodes.filter(node => node.sourceType === 'openshop-layered');
   expect(smartOutputs).toHaveLength(2);

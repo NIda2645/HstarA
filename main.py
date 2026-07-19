@@ -3581,6 +3581,30 @@ def list_projects():
         out.append(rec)
     return out
 
+def create_canvas_file(canvas):
+    path = canvas_path(canvas["id"])
+    file_descriptor = os.open(
+        path,
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+        0o644,
+    )
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as file:
+            file_descriptor = None
+            json.dump(canvas, file, ensure_ascii=False, indent=2)
+    except Exception:
+        if file_descriptor is not None:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                pass
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None, canvas_id=None):
     timestamp = now_ms()
     canvas_kind = normalize_canvas_kind(kind)
@@ -3612,9 +3636,10 @@ def new_canvas(title="未命名画布", icon="layers", kind="classic", project=N
     if board_y is not None:
         canvas["board_y"] = float(board_y)
     with CANVAS_LOCK:
-        if os.path.exists(canvas_path(requested_id)):
-            raise HTTPException(status_code=409, detail="画布 ID 已存在")
-        save_canvas(canvas)
+        try:
+            create_canvas_file(canvas)
+        except FileExistsError:
+            raise HTTPException(status_code=409, detail="画布 ID 已存在") from None
     return canvas
 
 def load_canvas(canvas_id):

@@ -244,9 +244,51 @@ async function installArtisticWorkflowRoutes(page){
   const artPosts = [];
   const artPolls = [];
   const deleteRequests = [];
+  let expectedOwner = null;
   let heldArtPost = null;
   let artReleased = false;
+  let artTask = null;
   let outputAsset = null;
+
+  function parseTaskRoute(url){
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(/^\/api\/openshop\/projects\/([^/]+)\/ai-tasks(?:\/([^/]+))?$/);
+    expect(match, `unexpected OpenShop AI task route: ${parsed.pathname}`).toBeTruthy();
+    return {
+      projectId:decodeURIComponent(match[1]),
+      taskId:match[2] ? decodeURIComponent(match[2]) : '',
+    };
+  }
+
+  function ownerWithoutProject(owner){
+    return {
+      canvasType:owner.canvasType,
+      canvasId:owner.canvasId,
+      nodeId:owner.nodeId,
+    };
+  }
+
+  function assertExpectedOwner(routeInfo, bodyOwner){
+    expect(expectedOwner, 'the artistic workflow route owner should be configured').toBeTruthy();
+    expect(routeInfo.projectId, 'AI task URL projectId must match the active project')
+      .toBe(expectedOwner.projectId);
+    if(bodyOwner){
+      expect(bodyOwner, 'AI task body.owner must match the active canvas node')
+        .toEqual(ownerWithoutProject(expectedOwner));
+      if(Object.hasOwn(bodyOwner, 'projectId')){
+        expect(bodyOwner.projectId, 'AI task body.owner projectId must match the URL')
+          .toBe(routeInfo.projectId);
+      }
+    }
+  }
+
+  function assertTaskOwnership(routeInfo, task){
+    assertExpectedOwner(routeInfo);
+    expect(task.projectId, 'AI task must stay associated with its creating project')
+      .toBe(routeInfo.projectId);
+    expect(task.owner, 'AI task must stay associated with its creating canvas node')
+      .toEqual(expectedOwner);
+  }
 
   await page.route('**/api/openshop/fonts*', route => route.fulfill({
     status:200, contentType:'application/json',
@@ -256,35 +298,62 @@ async function installArtisticWorkflowRoutes(page){
     status:200, contentType:'application/json', body:JSON.stringify(artisticWorkflowCatalog()),
   }));
   await page.route(/\/api\/openshop\/projects\/[^/]+\/ai-tasks(?:\?.*)?$/, async route => {
-    if(route.request().method() !== 'POST'){
+    const request = route.request();
+    if(request.method() !== 'POST'){
       await route.continue();
       return;
     }
-    const body = route.request().postDataJSON();
+    const routeInfo = parseTaskRoute(request.url());
+    if(expectedOwner && routeInfo.projectId !== expectedOwner.projectId){
+      await route.fulfill({
+        status:404, contentType:'application/json',
+        body:JSON.stringify({detail:'AI task project ownership mismatch'}),
+      });
+      return;
+    }
+    const body = request.postDataJSON();
+    assertExpectedOwner(routeInfo, body.owner);
     if(body.tool_id === 'art-font-restore'){
       artPosts.push(body);
+      const taskId = `codex-e2e-openshop-art-task-${artPosts.length}`;
+      artTask = {taskId, projectId:routeInfo.projectId, owner:{...expectedOwner}, body};
+      tasks.set(taskId, artTask);
       heldArtPost = route;
       return;
     }
-    const taskId = 'codex-e2e-openshop-ocr-task';
-    tasks.set(taskId, {body});
+    const taskId = `codex-e2e-openshop-ocr-task-${tasks.size + 1}`;
+    tasks.set(taskId, {taskId, projectId:routeInfo.projectId, owner:{...expectedOwner}, body});
     await route.fulfill({
       status:200, contentType:'application/json', body:JSON.stringify({task_id:taskId, status:'queued'}),
     });
   });
   await page.route(/\/api\/openshop\/projects\/[^/]+\/ai-tasks\/([^?]+)(?:\?.*)?$/, async route => {
     const request = route.request();
-    const taskId = decodeURIComponent(new URL(request.url()).pathname.split('/').at(-1));
+    const routeInfo = parseTaskRoute(request.url());
+    const taskId = routeInfo.taskId;
+    const task = tasks.get(taskId);
+    if(!task){
+      await route.fulfill({status:404, contentType:'application/json', body:JSON.stringify({detail:'missing task'})});
+      return;
+    }
+    if(expectedOwner && routeInfo.projectId !== expectedOwner.projectId){
+      await route.fulfill({
+        status:404, contentType:'application/json',
+        body:JSON.stringify({detail:'AI task project ownership mismatch'}),
+      });
+      return;
+    }
+    assertTaskOwnership(routeInfo, task);
     if(request.method() === 'DELETE'){
-      deleteRequests.push(taskId);
+      deleteRequests.push({taskId, projectId:routeInfo.projectId});
       await route.fulfill({
         status:200, contentType:'application/json',
         body:JSON.stringify({task:{taskId, status:'cancelled'}}),
       });
       return;
     }
-    if(taskId === 'codex-e2e-openshop-art-task'){
-      artPolls.push(taskId);
+    if(task === artTask){
+      artPolls.push({taskId, projectId:routeInfo.projectId});
       expect(outputAsset, 'the artistic output asset should be registered before polling').toBeTruthy();
       const result = {
         assetId:outputAsset.assetId,
@@ -301,11 +370,6 @@ async function installArtisticWorkflowRoutes(page){
       });
       return;
     }
-    const task = tasks.get(taskId);
-    if(!task){
-      await route.fulfill({status:404, contentType:'application/json', body:JSON.stringify({detail:'missing task'})});
-      return;
-    }
     await route.fulfill({
       status:200, contentType:'application/json',
       body:JSON.stringify({task:{
@@ -318,11 +382,18 @@ async function installArtisticWorkflowRoutes(page){
   return {
     ocrBlocks,
     get outputAssetId(){ return outputAsset?.assetId || ''; },
+    get artTaskId(){ return artTask?.taskId || ''; },
     artPosts,
     artPolls,
     deleteRequests,
+    setExpectedOwner(owner){
+      expectedOwner = {...owner};
+    },
     useOutputAsset(asset){
-      expect(asset).toMatchObject({assetId:expect.any(String), url:expect.any(String)});
+      expect(expectedOwner, 'the artistic workflow asset owner should be configured').toBeTruthy();
+      expect(asset).toMatchObject({assetId:expect.any(String), url:expect.any(String), owner:expectedOwner});
+      expect(asset.owner, 'artistic output asset must belong to the active canvas node')
+        .toEqual(expectedOwner);
       expect(asset.url).toBe(`/api/openshop/assets/${asset.assetId}`);
       outputAsset = {...asset};
     },
@@ -333,7 +404,7 @@ async function installArtisticWorkflowRoutes(page){
       heldArtPost = null;
       await route.fulfill({
         status:200, contentType:'application/json',
-        body:JSON.stringify({task_id:'codex-e2e-openshop-art-task', status:'queued'}),
+        body:JSON.stringify({task_id:artTask.taskId, status:'queued'}),
       });
     },
   };
@@ -475,7 +546,15 @@ async function uploadTransparentArtAsset(request, context){
       },
     }},
   ));
-  return uploaded.asset;
+  return {
+    ...uploaded.asset,
+    owner:{
+      canvasType:context.canvasType,
+      canvasId:context.canvasId,
+      nodeId:context.nodeId,
+      projectId:context.projectId,
+    },
+  };
 }
 
 test('artistic OCR continues across hide, stays isolated, and follows real undo history', async ({page, request}, testInfo) => {
@@ -514,6 +593,10 @@ test('artistic OCR continues across hide, stays isolated, and follows real undo 
   });
   expect([classic.id, nodeA.id, nodeA.projectId, nodeB.id, nodeB.projectId]
     .every(id => id.startsWith(TEST_ID_PREFIX))).toBe(true);
+  const ownerA = {
+    canvasType:'classic', canvasId:classic.id, nodeId:nodeA.id, projectId:nodeA.projectId,
+  };
+  ai.setExpectedOwner(ownerA);
 
   const canvas = await mountCanvas(page, 'classic', classic.id);
   let editor = await openNode(page, canvas, 'classic', nodeA.id, 1);
@@ -597,6 +680,19 @@ test('artistic OCR continues across hide, stays isolated, and follows real undo 
   expect(artPost.options.artFont.currentText).not.toBe(artPost.options.artFont.originalText);
   expect(artPost.client_request_id).toMatch(/^art-font-request\./);
 
+  const wrongProjectRoute = await page.evaluate(({projectId, taskId, owner}) => {
+    const params = new URLSearchParams({
+      canvas_type:owner.canvasType,
+      canvas_id:owner.canvasId,
+      node_id:owner.nodeId,
+    });
+    return fetch(`/api/openshop/projects/${encodeURIComponent(`${projectId}-wrong`)}/ai-tasks/${encodeURIComponent(taskId)}?${params}`)
+      .then(async response => ({status:response.status, body:await response.json()}));
+  }, {projectId:nodeA.projectId, taskId:ai.artTaskId, owner:ownerA});
+  expect(wrongProjectRoute).toEqual({
+    status:404, body:{detail:'AI task project ownership mismatch'},
+  });
+
   await expect.poll(async () => {
     const project = (await projectRecord(request, {
       canvasType:'classic', canvasId:classic.id, nodeId:nodeA.id, projectId:nodeA.projectId,
@@ -620,7 +716,7 @@ test('artistic OCR continues across hide, stays isolated, and follows real undo 
   await expect.poll(() => editor.evaluate(() => (
     OS.layers.filter(layer => layer.hstarAiGeneration?.toolId === 'art-font-restore').length
   )), {timeout:30000}).toBe(1);
-  expect(ai.artPolls).toEqual(['codex-e2e-openshop-art-task']);
+  expect(ai.artPolls).toEqual([{taskId:ai.artTaskId, projectId:nodeA.projectId}]);
 
   const appliedAudit = await editor.evaluate(({layerId, outputAssetId}) => {
     const record = OS.__hstarAiTaskRecords.find(item => (
@@ -653,7 +749,7 @@ test('artistic OCR continues across hide, stays isolated, and follows real undo 
     generatedCount:1, carrierVisible:false, rasterType:'image',
     rasterAssetId:ai.outputAssetId, rasterAlpha:0,
     record:{
-      taskId:'codex-e2e-openshop-art-task', clientRequestId:artPost.client_request_id,
+      taskId:ai.artTaskId, clientRequestId:artPost.client_request_id,
       status:'succeeded', reconcileState:'applied', outputAssetId:ai.outputAssetId,
     },
   });
@@ -661,7 +757,7 @@ test('artistic OCR continues across hide, stays isolated, and follows real undo 
   expect(appliedAudit.carrierObjectVisibility.every(visible => visible === false)).toBe(true);
   expect(appliedAudit.layerGeneration).toEqual(appliedAudit.objectGeneration);
   expect(appliedAudit.layerGeneration).toEqual({
-    taskId:'codex-e2e-openshop-art-task', textLayerId:artisticLayerId,
+    taskId:ai.artTaskId, textLayerId:artisticLayerId,
     requestGeneration:1, outputAssetId:ai.outputAssetId, toolId:'art-font-restore',
     contentBox:{x:0, y:0, width:2, height:2},
   });

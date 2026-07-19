@@ -85,6 +85,7 @@
       runGeneration:0,
       artSessionGeneration:0,
       artPollGeneration:0,
+      artSessionVisible:true,
       artRunsByLayerId:new Map(),
       artRunsByTaskId:new Map(),
       artCreatesByClientRequestId:new Map(),
@@ -900,6 +901,14 @@
         && sameOwner(record?.owner, ownerFromContext(context));
     }
 
+    function currentArtScopeForRecord(record){
+      if(!state.artSessionVisible) return null;
+      let context;
+      try { context = currentContext(); }
+      catch(error){ return null; }
+      return artRecordScopeMatches(record, context) ? captureArtScope(context) : null;
+    }
+
     function validateArtLiveState(record, scope, expectedObject = null){
       if(scope && !artScopeIsCurrent(scope)) return {isolated:true, reason:'scope-changed'};
       const context = scope?.context || currentContext();
@@ -1240,7 +1249,9 @@
       run.promise = (async () => {
         if(!artScopeIsCurrent(scope) || !artRecordScopeMatches(record, scope.context)) return record;
         const created = await aiClient.createTask(scope.context, artRequestFromRecord(record));
-        if(!artScopeIsCurrent(scope) || !taskRecords().includes(record)) return record;
+        if(!taskRecords().includes(record)) return record;
+        const creationScope = artScopeIsCurrent(scope) ? scope : currentArtScopeForRecord(record);
+        if(!creationScope) return record;
         const task = created?.task && typeof created.task === 'object' ? created.task : created;
         const taskId = clean(created?.task_id || task?.taskId);
         if(!taskId) throw new Error('艺术字体任务没有返回标识');
@@ -1253,12 +1264,14 @@
           status:clean(task?.status || created?.status) || 'queued',
         });
         await persistState('art-font-task', 'Start artistic font task');
-        if(!artScopeIsCurrent(scope)) return record;
-        if(!artPollIsCurrent(scope)) return record;
+        const activeScope = (!artScopeIsCurrent(scope) || !artPollIsCurrent(scope))
+          ? currentArtScopeForRecord(record)
+          : scope;
+        if(!activeScope) return record;
         if(['queued', 'running'].includes(clean(record.status))){
-          return pollArtRecord(record, scope, {allowRegistryRecreate});
+          return pollArtRecord(record, activeScope, {allowRegistryRecreate});
         }
-        return reconcileArtRecord(record, scope);
+        return reconcileArtRecord(record, activeScope);
       })().finally(() => {
         if(state.artCreatesByClientRequestId.get(clientRequestId) === run){
           state.artCreatesByClientRequestId.delete(clientRequestId);
@@ -1415,7 +1428,6 @@
       state.artRunsByTaskId.forEach(run => run.controller?.abort?.());
       state.artRunsByTaskId.clear();
       state.artRunsByLayerId.clear();
-      if(sessionChanged) state.artCreatesByClientRequestId.clear();
       editor.updateLayersPanel?.();
     }
 
@@ -1772,6 +1784,7 @@
 
     function onSessionOpened(event){
       invalidatePendingTextApply();
+      state.artSessionVisible = true;
       abortArtPolling({sessionChanged:true});
       state.runGeneration += 1;
       state.activeTaskId = '';
@@ -1785,6 +1798,7 @@
 
     function onProjectLoaded(){
       invalidatePendingTextApply();
+      state.artSessionVisible = true;
       abortArtPolling({sessionChanged:true});
       const generation = ++state.runGeneration;
       state.activeTaskId = '';
@@ -1807,6 +1821,7 @@
 
     function onSessionStopped(){
       invalidatePendingTextApply();
+      state.artSessionVisible = false;
       abortArtPolling({sessionChanged:true});
       state.runGeneration += 1;
       state.activeTaskId = '';
@@ -1815,10 +1830,12 @@
     }
 
     function onSessionHidden(){
+      state.artSessionVisible = false;
       abortArtPolling();
     }
 
     function onSessionVisible(){
+      state.artSessionVisible = true;
       void restorePendingArtTasks().catch(error => {
         root.console?.error?.('[OpenShop] 恢复艺术字体轮询失败', error);
       });

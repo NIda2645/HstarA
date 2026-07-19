@@ -54,6 +54,7 @@ import copy
 import asyncio
 import io
 import json
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -78,6 +79,65 @@ def png_bytes(color):
     output = io.BytesIO()
     Image.new("RGBA", (8, 6), color).save(output, format="PNG")
     return output.getvalue()
+
+
+def create_canvas_worker(canvas_id, title, start_barrier, result_queue):
+    import main
+
+    start_barrier.wait()
+    try:
+        canvas = main.new_canvas(
+            title=title,
+            icon="layers",
+            kind="classic",
+            canvas_id=canvas_id,
+        )
+    except main.HTTPException as exc:
+        result_queue.put({"status": exc.status_code, "detail": exc.detail})
+    else:
+        result_queue.put({"status": 200, "canvas": canvas})
+
+
+def assert_atomic_explicit_canvas_create(main):
+    process_context = multiprocessing.get_context("spawn")
+    for attempt in range(10):
+        canvas_id = f"codex-e2e-openshop-cross-process-{attempt}"
+        start_barrier = process_context.Barrier(2)
+        result_queue = process_context.Queue()
+        workers = [
+            process_context.Process(
+                target=create_canvas_worker,
+                args=(
+                    canvas_id,
+                    f"Cross-process canvas {worker_index}",
+                    start_barrier,
+                    result_queue,
+                ),
+            )
+            for worker_index in range(2)
+        ]
+        try:
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=20)
+            assert all(not worker.is_alive() for worker in workers), "canvas create worker timed out"
+            assert [worker.exitcode for worker in workers] == [0, 0]
+            results = [result_queue.get() for _ in workers]
+        finally:
+            for worker in workers:
+                if worker.is_alive():
+                    worker.terminate()
+                worker.join(timeout=5)
+            result_queue.close()
+
+        assert sorted(result["status"] for result in results) == [200, 409], results
+        winner = next(result["canvas"] for result in results if result["status"] == 200)
+        saved_canvas = json.loads(
+            Path(main.canvas_path(canvas_id)).read_text(encoding="utf-8")
+        )
+        assert saved_canvas == winner
+
 
 
 with tempfile.TemporaryDirectory(prefix="hstara-openshop-provisional-") as data_dir:
@@ -1142,6 +1202,7 @@ async def api_lifecycle():
         os.environ["HSTAR_DATA_DIR"] = app_root
 
         import main
+        assert_atomic_explicit_canvas_create(main)
 
         image_data = png_bytes((75, 161, 88, 255))
         output_data = png_bytes((190, 72, 44, 255))
@@ -2050,8 +2111,9 @@ async def api_lifecycle():
             assert not list(Path(app_root).rglob("*.tmp"))
 
 
-asyncio.run(api_lifecycle())
-print(json.dumps({"ok": True, "assetId": first_asset["assetId"]}, ensure_ascii=False))
+if __name__ == "__main__":
+    asyncio.run(api_lifecycle())
+    print(json.dumps({"ok": True, "assetId": first_asset["assetId"]}, ensure_ascii=False))
 `;
 
 const harnessDir = mkdtempSync(join(tmpdir(), 'hstara-openshop-storage-test-'));
