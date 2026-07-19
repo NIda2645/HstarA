@@ -33,6 +33,13 @@
     return value === VERTICAL ? VERTICAL : HORIZONTAL;
   }
 
+  function normalizeStyles(fabric, styles, text) {
+    if(Array.isArray(styles) && fabric && fabric.util && typeof fabric.util.stylesFromArray === 'function') {
+      return fabric.util.stylesFromArray(styles, text);
+    }
+    return styles;
+  }
+
   function positiveNumber(value, fallback) {
     const number = Number(value);
     return Number.isFinite(number) && number > 0 ? number : fallback;
@@ -170,14 +177,16 @@
       hstarWritingMode:VERTICAL,
 
       initialize(text, options = {}) {
-        if(typeof this.callSuper === 'function') this.callSuper('initialize', options);
+        const config = Object.assign({}, options, {styles:normalizeStyles(fabric, options.styles, text)});
+        if(typeof this.callSuper === 'function') this.callSuper('initialize', config);
         else if(fabric.Object && fabric.Object.prototype && typeof fabric.Object.prototype.initialize === 'function') {
-          fabric.Object.prototype.initialize.call(this, options);
+          fabric.Object.prototype.initialize.call(this, config);
         } else {
-          Object.assign(this, options);
+          Object.assign(this, config);
         }
         this.type = VERTICAL_TYPE;
         this.text = String(text);
+        this.styles = normalizeStyles(fabric, this.styles, this.text);
         this.hstarWritingMode = VERTICAL;
         applyVerticalDimensions(this);
         return this;
@@ -231,8 +240,11 @@
           context.font = fontString(style);
           setPaintStyles(context, this, style);
           if(typeof style.textBackgroundColor === 'string' && context.fillRect) {
+            if(context.save) context.save();
             context.fillStyle = style.textBackgroundColor;
             context.fillRect(x - (size / 2), y, size, size);
+            if(context.restore) context.restore();
+            setPaintStyles(context, this, style);
           }
           const fill = () => {
             if(style.fill != null && context.fillText) context.fillText(glyph.character, x, y);
@@ -315,13 +327,16 @@
     HstarVerticalText.prototype.type = VERTICAL_TYPE;
     HstarVerticalText.prototype.hstarWritingMode = VERTICAL;
     HstarVerticalText.fromObject = function fromObject(object, callback) {
+      const normalizedObject = Object.assign({}, object, {
+        styles:normalizeStyles(fabric, object && object.styles, object && object.text),
+      });
       if(fabric.Object && typeof fabric.Object._fromObject === 'function') {
-        return fabric.Object._fromObject('HstarVerticalText', object, callback, 'text');
+        return fabric.Object._fromObject('HstarVerticalText', normalizedObject, callback, 'text');
       }
-      const text = object && object.text;
+      const text = normalizedObject.text;
       const options = Object.assign(
         {},
-        collectSerializableOptions(object),
+        collectSerializableOptions(normalizedObject),
       );
       const instance = new HstarVerticalText(text, options);
       if(typeof callback === 'function') callback(instance);
@@ -384,6 +399,7 @@
   function convertTextObject(fabric, source, mode) {
     const text = source && source.text !== undefined ? source.text : '';
     const options = copyConvertibleOptions(source);
+    options.styles = normalizeStyles(fabric, options.styles, text);
     options.hstarWritingMode = normalizeWritingMode(mode);
     return createTextObject(fabric, text, options);
   }

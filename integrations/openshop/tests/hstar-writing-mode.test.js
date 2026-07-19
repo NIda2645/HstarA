@@ -556,6 +556,25 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(rects.length).toBeGreaterThan(2);
   });
 
+  it('restores glyph paint after drawing a text background', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {
+      hstarWritingMode:'vertical',
+      fill:'#ff0000',
+      textBackgroundColor:'#eeeeee',
+    });
+    const fills = [];
+    const context = {
+      save() {}, restore() {}, fillRect() {},
+      set fillStyle(value) { this.currentFill = value; },
+      fillText() { fills.push(this.currentFill); },
+    };
+
+    vertical._render(context);
+
+    expect(fills).toEqual(['#ff0000']);
+  });
+
   it('uses real Fabric enlivening for vertical object reconstruction', async () => {
     new Function(readFileSync(vendorFabricPath, 'utf8'))();
     const realFabric = window.fabric;
@@ -576,6 +595,31 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(() => reconstructed._render(context)).not.toThrow();
     expect(() => reconstructed.drawObject(context)).not.toThrow();
     fromObject.mockRestore();
+    delete window.fabric;
+  });
+
+  it('normalizes real Fabric serialized style ranges for vertical glyph layout and paint', () => {
+    new Function(readFileSync(vendorFabricPath, 'utf8'))();
+    const realFabric = window.fabric;
+    runtime.registerFabricClass(realFabric);
+    const source = new realFabric.IText('AB', {
+      fontSize:20,
+      fill:'#111111',
+      styles:{0:{1:{fontSize:36, fill:'#ff0000'}}},
+    });
+    const serialized = source.toObject();
+    const vertical = runtime.convertTextObject(realFabric, source, 'vertical');
+    const fills = [];
+    const context = {
+      save() {}, restore() {}, fillRect() {}, strokeText() {},
+      set fillStyle(value) { this.currentFill = value; },
+      fillText() { fills.push(this.currentFill); },
+    };
+
+    expect(Array.isArray(serialized.styles)).toBe(true);
+    expect(vertical._hstarVerticalLayout.glyphs[1]).toMatchObject({width:36, height:36});
+    vertical._render(context);
+    expect(fills).toContain('#ff0000');
     delete window.fabric;
   });
 
