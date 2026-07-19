@@ -56,6 +56,7 @@ const runtimeFiles = [...new Set([
   'host/openshop-pixel-fill.js',
   'host/openshop-project-adapter.js',
   'host/openshop-snap-engine.js',
+  'host/openshop-export-service.js',
   'host/openshop-host-runtime.js',
   'host/openshop-ai-client.js',
   'host/openshop-font-catalog.js',
