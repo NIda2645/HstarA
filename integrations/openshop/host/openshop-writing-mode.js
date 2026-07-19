@@ -136,14 +136,24 @@
 
   function setFillStyles(context, object, style) {
     let offset;
-    try { if(typeof object._setFillStyles === 'function') offset = object._setFillStyles(context, style); } catch(error) {}
+    try { if(typeof object._setFillStyles === 'function') object._setFillStyles(context, style); } catch(error) {}
+    try {
+      if(typeof object._applyPatternGradientTransform === 'function') {
+        offset = object._applyPatternGradientTransform(context, style.fill);
+      }
+    } catch(error) {}
     if(typeof style.fill === 'string') context.fillStyle = style.fill;
     return paintOffset(offset);
   }
 
   function setStrokeStyles(context, object, style) {
     let offset;
-    try { if(typeof object._setStrokeStyles === 'function') offset = object._setStrokeStyles(context, style); } catch(error) {}
+    try { if(typeof object._setStrokeStyles === 'function') object._setStrokeStyles(context, style); } catch(error) {}
+    try {
+      if(typeof object._applyPatternGradientTransform === 'function') {
+        offset = object._applyPatternGradientTransform(context, style.stroke);
+      }
+    } catch(error) {}
     if(typeof style.stroke === 'string') context.strokeStyle = style.stroke;
     if(style.strokeWidth != null) context.lineWidth = style.strokeWidth;
     if(typeof context.setLineDash === 'function') context.setLineDash(style.strokeDashArray || []);

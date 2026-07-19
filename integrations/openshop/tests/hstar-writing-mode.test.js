@@ -601,8 +601,11 @@ describe('Hstar OpenShop writing mode runtime', () => {
     const vertical = runtime.createTextObject(fabric, 'A', {
       hstarWritingMode:'vertical', fill:'#ff0000', stroke:'#111111', strokeWidth:2,
     });
-    vertical._setFillStyles = vi.fn(() => ({offsetX:2, offsetY:3}));
-    vertical._setStrokeStyles = vi.fn(() => [4, 5]);
+    vertical._setFillStyles = vi.fn();
+    vertical._setStrokeStyles = vi.fn();
+    vertical._applyPatternGradientTransform = vi.fn((context, paint) => (
+      paint === '#ff0000' ? {offsetX:2, offsetY:3} : [4, 5]
+    ));
     const fillCalls = [];
     const strokeCalls = [];
     let saves = 0;
@@ -621,6 +624,8 @@ describe('Hstar OpenShop writing mode runtime', () => {
 
     expect(fillCalls[0]).toEqual(['A', glyphX - 2, glyphY - 3]);
     expect(strokeCalls[0]).toEqual(['A', glyphX - 4, glyphY - 5]);
+    expect(vertical._applyPatternGradientTransform).toHaveBeenCalledWith(context, '#ff0000');
+    expect(vertical._applyPatternGradientTransform).toHaveBeenCalledWith(context, '#111111');
     expect(saves).toBe(restores);
     expect(saves).toBeGreaterThanOrEqual(3);
   });
@@ -658,6 +663,9 @@ describe('Hstar OpenShop writing mode runtime', () => {
     runtime.registerFabricClass(realFabric);
     const original = new realFabric.HstarVerticalText('A', {
       fontSize:28,
+      fill:'#123456',
+      stroke:'#abcdef',
+      strokeWidth:1,
       shadow:new realFabric.Shadow({color:'#000000', blur:3, offsetX:1, offsetY:2}),
     });
     const serialized = original.toObject();
@@ -666,10 +674,13 @@ describe('Hstar OpenShop writing mode runtime', () => {
       realFabric.HstarVerticalText.fromObject(serialized, resolveObject);
     });
     const context = {save() {}, restore() {}, fillText() {}, strokeText() {}, fillRect() {}};
+    const patternTransform = vi.spyOn(reconstructed, '_applyPatternGradientTransform');
 
     expect(fromObject).toHaveBeenCalledWith('HstarVerticalText', serialized, expect.any(Function), 'text');
+    expect(typeof realFabric.Object.prototype._applyPatternGradientTransform).toBe('function');
     expect(reconstructed.shadow).toBeInstanceOf(realFabric.Shadow);
     expect(() => reconstructed._render(context)).not.toThrow();
+    expect(patternTransform).toHaveBeenCalledWith(context, '#123456');
     expect(() => reconstructed.drawObject(context)).not.toThrow();
     fromObject.mockRestore();
     delete window.fabric;
