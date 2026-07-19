@@ -66,6 +66,10 @@ function createFabricMock({withCreateClass = true} = {}) {
     }
   }
 
+  Object.assign(FabricObject.prototype, {
+    baseTextOption:'from-fabric-object',
+  });
+
   Object.assign(IText.prototype, {
     fontFamily:'Prototype Sans',
     fontSize:31,
@@ -93,6 +97,15 @@ function createFabricMock({withCreateClass = true} = {}) {
     visible:true,
     selectable:true,
     evented:true,
+    direction:'rtl',
+    paintFirst:'stroke',
+    strokeUniform:true,
+    strokeDashArray:[6, 3],
+    strokeDashOffset:2,
+    strokeLineCap:'round',
+    strokeLineJoin:'bevel',
+    strokeMiterLimit:9,
+    futureTextOption:{source:'prototype'},
   });
 
   const fabric = {Object:FabricObject, IText};
@@ -269,6 +282,49 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(vertical.shadow).not.toBe(source.shadow);
     expect(vertical.hstarHandler).toBeUndefined();
     expect(vertical._hstarRuntime).toBeUndefined();
+  });
+
+  it('collects inherited Fabric text options without copying runtime state', () => {
+    const fabric = createFabricMock();
+    const source = new fabric.IText('full inherited options');
+    source.canvas = {requestRenderAll() {}};
+    source.group = {objects:[]};
+    source.aCoords = {tl:{x:0, y:0}};
+    source.matrixCache = {key:'runtime'};
+    source.cacheKey = 'runtime-cache';
+    source.runtimeCallback = () => 'omit';
+    source._privateRuntime = 'omit';
+
+    const vertical = runtime.convertTextObject(fabric, source, 'vertical');
+    const serialized = vertical.toObject();
+    const reconstructed = fabric.HstarVerticalText.fromObject(serialized);
+    const expected = {
+      baseTextOption:'from-fabric-object',
+      direction:'rtl',
+      paintFirst:'stroke',
+      strokeUniform:true,
+      strokeDashArray:[6, 3],
+      strokeDashOffset:2,
+      strokeLineCap:'round',
+      strokeLineJoin:'bevel',
+      strokeMiterLimit:9,
+      futureTextOption:{source:'prototype'},
+    };
+
+    for(const object of [vertical, serialized, reconstructed]) {
+      expect(object).toMatchObject(expected);
+      expect(object.canvas).toBeUndefined();
+      expect(object.group).toBeUndefined();
+      expect(object.aCoords).toBeUndefined();
+      expect(object.matrixCache).toBeUndefined();
+      expect(object.cacheKey).toBeUndefined();
+      expect(object.runtimeCallback).toBeUndefined();
+      expect(object._privateRuntime).toBeUndefined();
+    }
+    expect(vertical.strokeDashArray).not.toBe(source.strokeDashArray);
+    expect(vertical.futureTextOption).not.toBe(source.futureTextOption);
+    expect(reconstructed.strokeDashArray).not.toBe(serialized.strokeDashArray);
+    expect(reconstructed.futureTextOption).not.toBe(serialized.futureTextOption);
   });
 
   it('renders every glyph in vertical top-to-bottom and right-to-left coordinate order', () => {
