@@ -65,20 +65,54 @@ test('edits mixed-language text with installed fonts and preserves the project s
     tab.parentElement === document.getElementById('ptg2-color')?.parentElement?.querySelector('.panel-tabs')
   ))).toBe(true);
   const familyTrigger = frame.locator('[data-text-family="zh"]');
+  const otherTrigger = frame.locator('[data-text-family="other"]');
+  const fontList = frame.locator('[data-text-font-list]');
+  const selectors = frame.locator('[data-text-font-selectors]');
+  await expect(familyTrigger).toBeVisible();
+  await expect(otherTrigger).toBeVisible();
   await expect(familyTrigger).toHaveJSProperty('tagName', 'BUTTON');
   await familyTrigger.click();
-  await expect(frame.locator('[data-text-font-list]')).toBeVisible();
-  const listMetrics = await frame.locator('[data-text-font-list]').evaluate(list => ({
+  await expect(fontList).toBeVisible();
+  await expect(familyTrigger).toHaveAttribute('aria-expanded', 'true');
+  const listMetrics = await fontList.evaluate(list => ({
     clientHeight:list.clientHeight,
     scrollHeight:list.scrollHeight,
   }));
   expect(listMetrics.scrollHeight).toBeGreaterThan(listMetrics.clientHeight);
   await expect(frame.locator(`[data-family="${selectedFamily.replaceAll('"', '\\"')}"]`).first()).toHaveAttribute('aria-selected', 'true');
+  await otherTrigger.click();
+  await expect(fontList).toBeVisible();
+  await expect(familyTrigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(otherTrigger).toHaveAttribute('aria-expanded', 'true');
+  const [selectorsBox, listBox, familyBox, otherBox] = await Promise.all([
+    selectors.boundingBox(),
+    fontList.boundingBox(),
+    familyTrigger.boundingBox(),
+    otherTrigger.boundingBox(),
+  ]);
+  expect(selectorsBox).not.toBeNull();
+  expect(listBox).not.toBeNull();
+  expect(familyBox).not.toBeNull();
+  expect(otherBox).not.toBeNull();
+  expect(await fontList.evaluate(element => getComputedStyle(element).position)).toBe('fixed');
+  expect(listBox.y).toBeGreaterThan(selectorsBox.y + selectorsBox.height);
+  expect(listBox.width).toBeCloseTo(selectorsBox.width, 1);
+  for (const triggerBox of [familyBox, otherBox]) {
+    const overlaps = listBox.x < triggerBox.x + triggerBox.width
+      && listBox.x + listBox.width > triggerBox.x
+      && listBox.y < triggerBox.y + triggerBox.height
+      && listBox.y + listBox.height > triggerBox.y;
+    expect(overlaps).toBe(false);
+  }
+  await otherTrigger.click();
+  await expect(fontList).toBeHidden();
+  await expect(familyTrigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(otherTrigger).toHaveAttribute('aria-expanded', 'false');
   await frame.locator('#tool-options').click({position:{x:4, y:4}});
-  await expect(frame.locator('[data-text-font-list]')).toBeHidden();
+  await expect(fontList).toBeHidden();
   await familyTrigger.click();
   await frame.locator(`[data-family="${selectedFamily.replaceAll('"', '\\"')}"]`).first().click();
-  await expect(frame.locator('[data-text-font-list]')).toBeHidden();
+  await expect(fontList).toBeHidden();
 
   await frame.locator('[data-text-size]').fill('48');
   await frame.locator('[data-text-size]').dispatchEvent('change');
@@ -229,7 +263,8 @@ test('edits mixed-language text with installed fonts and preserves the project s
   });
 
   for (const viewport of [
-    {width:1440, height:1000, name:'desktop'},
+    {width:1440, height:900, name:'desktop'},
+    {width:768, height:900, name:'narrow'},
     {width:1920, height:1080, name:'wide'},
     {width:430, height:932, name:'mobile'},
     {width:4096, height:2160, name:'4k'},
@@ -246,7 +281,7 @@ test('edits mixed-language text with installed fonts and preserves the project s
           && Math.abs(rect.right - window.innerWidth) < 0.01;
       });
     }
-    if (viewport.name === 'desktop' || viewport.name === 'mobile') {
+    if (viewport.name === 'desktop' || viewport.name === 'narrow' || viewport.name === 'mobile') {
       await familyTrigger.click();
       const fontList = frame.locator('[data-text-font-list]');
       await expect(fontList).toBeVisible();
@@ -259,6 +294,15 @@ test('edits mixed-language text with installed fonts and preserves the project s
         path:`test-results/hstar-font-dropdown-${viewport.name}.png`,
       });
       expect(dropdownScreenshot.length).toBeGreaterThan(1000);
+      const dualSelectorScreenshotPath = viewport.name === 'desktop'
+        ? 'test-results/dual-font-selectors-desktop.png'
+        : viewport.name === 'narrow'
+          ? 'test-results/dual-font-selectors-narrow.png'
+          : null;
+      if (dualSelectorScreenshotPath) {
+        const dualSelectorScreenshot = await page.screenshot({path:dualSelectorScreenshotPath});
+        expect(dualSelectorScreenshot.length).toBeGreaterThan(1000);
+      }
       await familyTrigger.click();
     }
     const panel = frame.locator('#hstar-text-properties-panel');
