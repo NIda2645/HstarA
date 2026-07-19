@@ -129,19 +129,6 @@
   function setPaintStyles(context, object, style) {
     try { if(typeof object._setFillStyles === 'function') object._setFillStyles(context, style); } catch(error) {}
     try { if(typeof object._setStrokeStyles === 'function') object._setStrokeStyles(context, style); } catch(error) {}
-    let shadowApplied = false;
-    try {
-      if(style.shadow && typeof object._setShadow === 'function') {
-        object._setShadow(context, style.shadow);
-        shadowApplied = true;
-      }
-    } catch(error) {}
-    if(style.shadow && !shadowApplied) {
-      context.shadowColor = style.shadow.color || 'transparent';
-      context.shadowBlur = style.shadow.blur || 0;
-      context.shadowOffsetX = style.shadow.offsetX || 0;
-      context.shadowOffsetY = style.shadow.offsetY || 0;
-    }
     if(typeof style.fill === 'string') context.fillStyle = style.fill;
     if(typeof style.stroke === 'string') context.strokeStyle = style.stroke;
     if(style.strokeWidth != null) context.lineWidth = style.strokeWidth;
@@ -197,6 +184,10 @@
       },
 
       _set(key, value) {
+        if(key === 'styles') {
+          const normalized = normalizeStyles(fabric, value, this.text);
+          value = cloneSerializable(normalized) || {};
+        }
         let result;
         if(typeof this.callSuper === 'function') result = this.callSuper('_set', key, value);
         else if(fabric.Object && fabric.Object.prototype && typeof fabric.Object.prototype._set === 'function') {
@@ -238,14 +229,13 @@
           const y = offsetY + glyph.y;
           if(context.save) context.save();
           context.font = fontString(style);
-          setPaintStyles(context, this, style);
           if(typeof style.textBackgroundColor === 'string' && context.fillRect) {
             if(context.save) context.save();
             context.fillStyle = style.textBackgroundColor;
             context.fillRect(x - (size / 2), y, size, size);
             if(context.restore) context.restore();
-            setPaintStyles(context, this, style);
           }
+          setPaintStyles(context, this, style);
           const fill = () => {
             if(style.fill != null && context.fillText) context.fillText(glyph.character, x, y);
           };
@@ -392,6 +382,23 @@
     return properties;
   }
 
+  function setGlyphStyle(object, columnIndex, rowIndex, stylePatch) {
+    if(!object) throw new Error('Text object is required');
+    const styles = cloneSerializable(object.styles) || {};
+    const column = Object.assign({}, styles[columnIndex] || {});
+    column[rowIndex] = Object.assign({}, column[rowIndex] || {}, cloneSerializable(stylePatch) || {});
+    styles[columnIndex] = column;
+    if(typeof object.set === 'function') object.set('styles', styles);
+    else {
+      object.styles = styles;
+      applyVerticalDimensions(object);
+      object.dirty = true;
+      if(typeof object.setCoords === 'function') object.setCoords();
+    }
+    if(object.canvas && typeof object.canvas.requestRenderAll === 'function') object.canvas.requestRenderAll();
+    return object;
+  }
+
   function writingModeFor(object) {
     return normalizeWritingMode(object && object.hstarWritingMode);
   }
@@ -415,6 +422,7 @@
     writingModeFor,
     createTextObject,
     convertTextObject,
+    setGlyphStyle,
     destroy,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

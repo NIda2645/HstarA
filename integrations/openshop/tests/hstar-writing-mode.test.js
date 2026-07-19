@@ -552,7 +552,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(fills).toContain('#ff0000');
     expect(strokes).toContain('#222222');
     expect(lineWidths).toContain(2);
-    expect(shadows).toContain('#334155');
+    expect(shadows).toEqual([]);
     expect(rects.length).toBeGreaterThan(2);
   });
 
@@ -573,6 +573,54 @@ describe('Hstar OpenShop writing mode runtime', () => {
     vertical._render(context);
 
     expect(fills).toEqual(['#ff0000']);
+  });
+
+  it('applies Fabric glyph paint helpers once after a text background without glyph shadows', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {
+      hstarWritingMode:'vertical', fill:'#ff0000', stroke:'#111111', strokeWidth:2,
+      textBackgroundColor:'#eeeeee', shadow:{color:'#000000', blur:2},
+    });
+    const fillSetup = vi.fn((context, style) => { context.fillStyle = style.fill; });
+    const strokeSetup = vi.fn((context, style) => { context.strokeStyle = style.stroke; });
+    const shadowSetup = vi.fn();
+    vertical._setFillStyles = fillSetup;
+    vertical._setStrokeStyles = strokeSetup;
+    vertical._setShadow = shadowSetup;
+    const context = {save() {}, restore() {}, fillRect() {}, fillText() {}, strokeText() {}};
+
+    vertical._render(context);
+
+    expect(fillSetup).toHaveBeenCalledOnce();
+    expect(strokeSetup).toHaveBeenCalledOnce();
+    expect(shadowSetup).not.toHaveBeenCalled();
+  });
+
+  it('updates one glyph style through the runtime API', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB', {hstarWritingMode:'vertical', fontSize:12, fill:'#111111'});
+    const requestRenderAll = vi.fn();
+    const setCoords = vi.fn();
+    vertical.canvas = {requestRenderAll};
+    vertical.setCoords = setCoords;
+    const beforeHeight = vertical.height;
+    const fills = [];
+    const context = {
+      save() {}, restore() {}, fillRect() {}, strokeText() {},
+      set fillStyle(value) { this.currentFill = value; },
+      fillText() { fills.push(this.currentFill); },
+    };
+
+    runtime.setGlyphStyle(vertical, 0, 1, {fontSize:36, fill:'#00aa00'});
+    vertical._render(context);
+
+    expect(vertical.dirty).toBe(true);
+    expect(vertical.height).toBeGreaterThan(beforeHeight);
+    expect(vertical._hstarVerticalLayout.glyphs[1]).toMatchObject({width:36, height:36});
+    expect(vertical.styles[0][1]).toMatchObject({fontSize:36, fill:'#00aa00'});
+    expect(setCoords).toHaveBeenCalled();
+    expect(requestRenderAll).toHaveBeenCalledOnce();
+    expect(fills).toContain('#00aa00');
   });
 
   it('uses real Fabric enlivening for vertical object reconstruction', async () => {
