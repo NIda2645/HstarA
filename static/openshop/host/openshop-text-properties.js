@@ -121,12 +121,12 @@
 
     function sectionForFamily(family){
       const target = clean(family).toLowerCase();
-      let section = 'zh';
+      let section = 'other';
       for(const row of allFontRows){
         if(row.kind === 'section') section = row.key === 'section-zh' ? 'zh' : 'other';
         if(row.kind === 'font' && clean(row.family).toLowerCase() === target) return section;
       }
-      return 'zh';
+      return 'other';
     }
 
     function syncFamilyControl(value){
@@ -355,6 +355,7 @@
       if(fontList) fontList.hidden = true;
       fontList?.removeAttribute('aria-activedescendant');
       fontTriggers.forEach(trigger => trigger.setAttribute('aria-expanded', 'false'));
+      resetFontListPosition();
       if(restoreFocus && !activeTextObject()?.isEditing) activeFontTrigger?.focus?.({preventScroll:true});
     }
 
@@ -479,6 +480,27 @@
       }
     }
 
+    function positionFontList(){
+      if(!fontList || fontList.hidden) return;
+      const selectors = documentRef.querySelector('[data-text-font-selectors]');
+      const rect = selectors?.getBoundingClientRect?.();
+      if(!rect) return;
+      fontList.style.position = 'fixed';
+      fontList.style.top = `${rect.bottom + 4}px`;
+      fontList.style.left = `${rect.left}px`;
+      fontList.style.width = `${rect.width}px`;
+      fontList.style.right = 'auto';
+    }
+
+    function resetFontListPosition(){
+      if(!fontList) return;
+      fontList.style.position = '';
+      fontList.style.top = '';
+      fontList.style.left = '';
+      fontList.style.width = '';
+      fontList.style.right = '';
+    }
+
     function setActiveFontIndex(index){
       if(!fontList || fontRows[index]?.kind !== 'font') return;
       fontActiveIndex = index;
@@ -506,6 +528,7 @@
       cancelFontRender();
       fontList.hidden = false;
       fontTriggers.forEach(item => item.setAttribute('aria-expanded', item === trigger ? 'true' : 'false'));
+      positionFontList();
       const selectedIndex = selectedFontIndex();
       fontActiveIndex = fontRows[activeIndex]?.kind === 'font'
         ? activeIndex
@@ -635,6 +658,8 @@
         });
       });
       addDomListener(fontList, 'scroll', scheduleFontRender);
+      addDomListener(state.panel, 'scroll', positionFontList);
+      addDomListener(root, 'resize', positionFontList);
       addDomListener(fontList, 'keydown', event => {
         let targetIndex = -1;
         if(event.key === 'ArrowDown') targetIndex = findFontIndex(fontActiveIndex + 1, 1);

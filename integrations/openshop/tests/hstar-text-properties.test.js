@@ -813,7 +813,7 @@ describe('Hstar OpenShop text properties', () => {
     await controller.start();
     canvas.fire('selection:created', {selected:[textObject]});
 
-    expect(document.querySelector('[data-text-family-label]').textContent).toBe('DengXian');
+    expect(document.querySelector('[data-text-family="other"] [data-text-family-label]').textContent).toBe('DengXian');
     const style = document.querySelector('[data-text-style]');
     expect(style.value).toBe('dengxian-light');
 
@@ -841,7 +841,7 @@ describe('Hstar OpenShop text properties', () => {
     await controller.start();
     canvas.fire('selection:created', {selected:[textObject]});
 
-    expect(document.querySelector('[data-text-family-label]').textContent).toBe('Cambria');
+    expect(document.querySelector('[data-text-family="other"] [data-text-family-label]').textContent).toBe('Cambria');
     expect([...document.querySelector('[data-text-style]').options].map(option => option.textContent))
       .toEqual(['默认', 'Math']);
     controller.destroy();

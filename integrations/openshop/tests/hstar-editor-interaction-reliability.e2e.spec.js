@@ -52,7 +52,7 @@ test('closes and sorts the font list while editing existing text in place', asyn
     OS.canvas.fire('selection:created', {selected:[text], target:text});
   });
 
-  const trigger = page.locator('[data-text-family]');
+  const trigger = page.locator('[data-text-family="zh"]');
   const list = page.locator('[data-text-font-list]');
   await trigger.click();
   await expect(list).toBeVisible();
@@ -102,7 +102,7 @@ test('closes and sorts the font list while editing existing text in place', asyn
   await expect(dengXian).toHaveCount(1);
   await expect(list.locator('[data-family="\u7b49\u7ebf Light"]')).toHaveCount(0);
   await dengXian.click();
-  await expect(page.locator('[data-text-family-label]')).toHaveText('\u7b49\u7ebf');
+  await expect(trigger.locator('[data-text-family-label]')).toHaveText('\u7b49\u7ebf');
   const styleLabels = await page.locator('[data-text-style] option').allTextContents();
   expect(styleLabels).toEqual(expect.arrayContaining(['Regular', 'Light']));
   await page.locator('[data-text-style]').selectOption({label:'Light'});
@@ -218,7 +218,8 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
     OS.canvas.fire('text:selection:changed', {target:text});
   });
 
-  const trigger = page.locator('[data-text-family]');
+  const trigger = page.locator('[data-text-family="zh"]');
+  const otherTrigger = page.locator('[data-text-family="other"]');
   const list = page.locator('[data-text-font-list]');
   const catalogAudit = await page.evaluate(() => {
     const rows = window.__hstarVirtualFontManager.catalogRows();
@@ -282,7 +283,7 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
   await expect(list).toBeHidden();
   expect(await editingFocusState()).toEqual(expectedEditingFocus);
   const openMetrics = await page.evaluate(() => {
-    const triggerElement = document.querySelector('[data-text-family]');
+    const triggerElement = document.querySelector('[data-text-family="zh"]');
     const listElement = document.querySelector('[data-text-font-list]');
     let scrollingAncestor = triggerElement.parentElement;
     while(scrollingAncestor) {
@@ -300,6 +301,8 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
     triggerElement.click();
     const duration = performance.now() - startedAt;
     const afterRect = scrollingAncestor.getBoundingClientRect();
+    const rows = window.__hstarVirtualFontManager.catalogRows();
+    const englishSectionIndex = rows.findIndex(row => row.key === 'section-en');
     return {
       duration,
       scrollingAncestorId:scrollingAncestor.id,
@@ -311,7 +314,7 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
       afterRect:{top:afterRect.top, left:afterRect.left, width:afterRect.width, height:afterRect.height},
       mounted:listElement.querySelectorAll('[role="option"]').length,
       spacerHeight:listElement.querySelector('[data-font-spacer]')?.style.height,
-      rowCount:window.__hstarVirtualFontManager.catalogRows().length,
+      activeRowCount:englishSectionIndex < 0 ? rows.filter(row => row.kind === 'font').length : englishSectionIndex,
     };
   });
   expect(openMetrics.duration).toBeLessThan(250);
@@ -323,13 +326,16 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
   expect(openMetrics.beforeScrollTop).toBeGreaterThan(0);
   expect(openMetrics.afterScrollTop).toBe(openMetrics.beforeScrollTop);
   expect(openMetrics.afterRect).toEqual(openMetrics.beforeRect);
-  expect(openMetrics.spacerHeight).toBe(`${openMetrics.rowCount * 30}px`);
+  expect(openMetrics.spacerHeight).toBe(`${openMetrics.activeRowCount * 30}px`);
   await expect(list).toBeVisible();
 
   const targetFamily = 'English Other 2000';
+  await otherTrigger.click();
+  await expect(list).toBeVisible();
   await list.evaluate((element, family) => {
     const rows = window.__hstarVirtualFontManager.catalogRows();
-    const index = rows.findIndex(row => row.kind === 'font' && row.family === family);
+    const sectionStart = rows.findIndex(row => row.key === 'section-en');
+    const index = rows.slice(sectionStart).findIndex(row => row.kind === 'font' && row.family === family);
     if(index < 0) throw new Error(`Missing deterministic font row: ${family}`);
     element.scrollTop = index * 30;
     element.dispatchEvent(new Event('scroll'));
@@ -360,7 +366,7 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
     caretFamily:targetFamily,
   });
 
-  await trigger.click();
+  await otherTrigger.click();
   await expect(list).toBeVisible();
   await page.locator('#statusbar').dispatchEvent('mousedown');
   await expect(list).toBeHidden();
@@ -369,7 +375,7 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
     const text = OS.canvas.getObjects().find(object => object.type === 'i-text');
     text.exitEditing();
     OS.canvas.fire('text:editing:exited', {target:text});
-    document.querySelector('[data-text-family]').focus();
+    document.querySelector('[data-text-family="other"]').focus();
   });
   await page.keyboard.press('ArrowDown');
   await expect(list).toBeVisible();
@@ -389,7 +395,7 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
   expect(keyboardEnd.mounted).toBeLessThanOrEqual(16);
   await page.keyboard.press('Enter');
   await expect(list).toBeHidden();
-  expect(await trigger.evaluate(element => document.activeElement === element)).toBe(true);
+  expect(await otherTrigger.evaluate(element => document.activeElement === element)).toBe(true);
   expect(await page.evaluate(() => (
     OS.canvas.getObjects().find(object => object.type === 'i-text')?.fontFamily
   ))).toBe(keyboardEnd.expectedFamily);

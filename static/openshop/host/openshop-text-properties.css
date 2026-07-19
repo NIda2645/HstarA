@@ -16,7 +16,7 @@
 .hstar-text-property-toggles label{display:flex;align-items:center;gap:5px;min-height:24px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg-depth-2);white-space:nowrap}
 .hstar-text-property-toggles input{accent-color:var(--accent);margin:0}
 .hstar-font-list{position:absolute;z-index:30;top:46px;left:0;right:0;box-sizing:border-box;height:210px;max-height:210px;overflow-y:auto;overflow-x:hidden;padding:0;contain:layout paint;overscroll-behavior:contain;scrollbar-gutter:stable;border:1px solid var(--border-strong,var(--border));border-radius:4px;background:var(--bg-depth-1);box-shadow:0 8px 18px rgba(0,0,0,.28)}
-.hstar-font-selectors>.hstar-font-list{top:calc(100% + 4px)}
+.hstar-font-selectors>.hstar-font-list{top:calc(100% + 4px);z-index:30}
 .hstar-font-list[hidden]{display:none!important}
 .hstar-font-spacer{width:1px;pointer-events:none}
 .hstar-font-rows{position:absolute;top:0;left:0;right:0}

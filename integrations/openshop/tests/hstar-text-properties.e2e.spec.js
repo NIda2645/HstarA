@@ -64,7 +64,7 @@ test('edits mixed-language text with installed fonts and preserves the project s
   expect(await frame.locator('[data-hstar-text-properties-tab]').evaluate(tab => (
     tab.parentElement === document.getElementById('ptg2-color')?.parentElement?.querySelector('.panel-tabs')
   ))).toBe(true);
-  const familyTrigger = frame.locator('[data-text-family]');
+  const familyTrigger = frame.locator('[data-text-family="zh"]');
   await expect(familyTrigger).toHaveJSProperty('tagName', 'BUTTON');
   await familyTrigger.click();
   await expect(frame.locator('[data-text-font-list]')).toBeVisible();
