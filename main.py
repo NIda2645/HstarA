@@ -205,6 +205,14 @@ GLOBAL_LOOP = None
 COLLABORATION_KEY = secrets.token_urlsafe(24)
 COLLABORATION_LOCK = Lock()
 APP_VERSION = "2026.06.03"
+OPENSHOP_RUNTIME_REVISION = "2026.07.19.1784476800000"
+OPENSHOP_ENTRY_ASSET_URLS = frozenset({
+    "/static/css/openshop-host.css",
+    "/static/openshop/host/openshop-protocol.js",
+    "/static/js/openshop-host.js",
+    "/static/js/canvas-openshop.js",
+    "/static/js/smart-canvas-openshop.js",
+})
 GITHUB_REPO_URL = "https://github.com/hero8152/Infinite-Canvas"
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/hero8152/Infinite-Canvas/main/VERSION"
 GITHUB_TREE_URL = "https://api.github.com/repos/hero8152/Infinite-Canvas/git/trees/main?recursive=1"
@@ -1695,7 +1703,9 @@ def versioned_static_html(html: str) -> str:
     pattern = re.compile(r'(?P<prefix>(?:src|href)=["\']|@import\s+url\(["\'])(?P<url>/static/[^"\')?#]+(?:\.(?:js|css|html)))(?:\?v=[^"\')#]*)?', re.I)
     def replace(match):
         url = match.group("url")
-        cache_version = safe_version
+        cache_version = OPENSHOP_RUNTIME_REVISION if url in OPENSHOP_ENTRY_ASSET_URLS else safe_version
+        if url in OPENSHOP_ENTRY_ASSET_URLS:
+            return f"{match.group('prefix')}{url}?v={cache_version}"
         try:
             rel = urllib.parse.unquote(url[len("/static/"):]).replace("/", os.sep)
             path = os.path.abspath(os.path.join(STATIC_DIR, rel))
