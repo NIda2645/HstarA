@@ -596,6 +596,35 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(shadowSetup).not.toHaveBeenCalled();
   });
 
+  it('applies separate Fabric paint offsets without leaking glyph transforms', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {
+      hstarWritingMode:'vertical', fill:'#ff0000', stroke:'#111111', strokeWidth:2,
+    });
+    vertical._setFillStyles = vi.fn(() => ({offsetX:2, offsetY:3}));
+    vertical._setStrokeStyles = vi.fn(() => [4, 5]);
+    const fillCalls = [];
+    const strokeCalls = [];
+    let saves = 0;
+    let restores = 0;
+    const context = {
+      save() { saves += 1; },
+      restore() { restores += 1; },
+      fillText(...args) { fillCalls.push(args); },
+      strokeText(...args) { strokeCalls.push(args); },
+    };
+    const glyph = vertical._hstarVerticalLayout.glyphs[0];
+    const glyphX = (-vertical.width / 2) + glyph.x;
+    const glyphY = (-vertical.height / 2) + glyph.y;
+
+    vertical._render(context);
+
+    expect(fillCalls[0]).toEqual(['A', glyphX - 2, glyphY - 3]);
+    expect(strokeCalls[0]).toEqual(['A', glyphX - 4, glyphY - 5]);
+    expect(saves).toBe(restores);
+    expect(saves).toBeGreaterThanOrEqual(3);
+  });
+
   it('updates one glyph style through the runtime API', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, 'AB', {hstarWritingMode:'vertical', fontSize:12, fill:'#111111'});

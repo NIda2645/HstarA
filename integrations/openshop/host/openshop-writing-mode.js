@@ -126,10 +126,24 @@
     return `${style.fontStyle || 'normal'} ${style.fontWeight || 'normal'} ${positiveNumber(style.fontSize, 40)}px ${style.fontFamily || 'sans-serif'}`;
   }
 
-  function setPaintStyles(context, object, style) {
-    try { if(typeof object._setFillStyles === 'function') object._setFillStyles(context, style); } catch(error) {}
-    try { if(typeof object._setStrokeStyles === 'function') object._setStrokeStyles(context, style); } catch(error) {}
+  function paintOffset(value) {
+    if(Array.isArray(value)) return {offsetX:Number(value[0]) || 0, offsetY:Number(value[1]) || 0};
+    if(value && typeof value === 'object') {
+      return {offsetX:Number(value.offsetX) || 0, offsetY:Number(value.offsetY) || 0};
+    }
+    return {offsetX:0, offsetY:0};
+  }
+
+  function setFillStyles(context, object, style) {
+    let offset;
+    try { if(typeof object._setFillStyles === 'function') offset = object._setFillStyles(context, style); } catch(error) {}
     if(typeof style.fill === 'string') context.fillStyle = style.fill;
+    return paintOffset(offset);
+  }
+
+  function setStrokeStyles(context, object, style) {
+    let offset;
+    try { if(typeof object._setStrokeStyles === 'function') offset = object._setStrokeStyles(context, style); } catch(error) {}
     if(typeof style.stroke === 'string') context.strokeStyle = style.stroke;
     if(style.strokeWidth != null) context.lineWidth = style.strokeWidth;
     if(typeof context.setLineDash === 'function') context.setLineDash(style.strokeDashArray || []);
@@ -137,6 +151,7 @@
     if(style.strokeLineCap) context.lineCap = style.strokeLineCap;
     if(style.strokeLineJoin) context.lineJoin = style.strokeLineJoin;
     if(style.strokeMiterLimit != null) context.miterLimit = style.strokeMiterLimit;
+    return paintOffset(offset);
   }
 
   function collectSerializableOptions(source) {
@@ -235,12 +250,19 @@
             context.fillRect(x - (size / 2), y, size, size);
             if(context.restore) context.restore();
           }
-          setPaintStyles(context, this, style);
           const fill = () => {
-            if(style.fill != null && context.fillText) context.fillText(glyph.character, x, y);
+            if(style.fill == null || !context.fillText) return;
+            if(context.save) context.save();
+            const offset = setFillStyles(context, this, style);
+            context.fillText(glyph.character, x - offset.offsetX, y - offset.offsetY);
+            if(context.restore) context.restore();
           };
           const stroke = () => {
-            if(style.stroke && Number(style.strokeWidth) > 0 && context.strokeText) context.strokeText(glyph.character, x, y);
+            if(!style.stroke || Number(style.strokeWidth) <= 0 || !context.strokeText) return;
+            if(context.save) context.save();
+            const offset = setStrokeStyles(context, this, style);
+            context.strokeText(glyph.character, x - offset.offsetX, y - offset.offsetY);
+            if(context.restore) context.restore();
           };
           if(style.paintFirst === 'stroke') {
             stroke();
@@ -250,11 +272,13 @@
             stroke();
           }
           if(context.fillRect && (style.underline || style.overline || style.linethrough)) {
+            if(context.save) context.save();
             const lineWidth = Math.max(1, Number(style.strokeWidth) || 1);
             if(typeof style.fill === 'string') context.fillStyle = style.fill;
             if(style.underline) context.fillRect(x - (size / 2), y + size - lineWidth, size, lineWidth);
             if(style.overline) context.fillRect(x - (size / 2), y, size, lineWidth);
             if(style.linethrough) context.fillRect(x - (size / 2), y + (size / 2), size, lineWidth);
+            if(context.restore) context.restore();
           }
           if(context.restore) context.restore();
         });
