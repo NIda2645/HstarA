@@ -898,12 +898,24 @@ describe('Hstar OpenShop text properties', () => {
     await controller.start();
     canvas.fire('selection:created', {selected:[textObject]});
 
+    controller.applyProperty('fontFamily', 'Century Gothic');
+    const chinese = document.querySelector('[data-text-family="zh"]');
+    const other = document.querySelector('[data-text-family="other"]');
+    expect(chinese.querySelector('[data-text-family-label]').textContent).toBe('选择字体');
+    expect(other.querySelector('[data-text-family-label]').textContent).toBe('Century Gothic');
+    other.click();
+    expect(document.querySelector('[data-family="Century Gothic"]').getAttribute('aria-selected')).toBe('true');
+    other.click();
+
     controller.applyProperty('fill', '#ef4444');
     textObject.text = 'abcX';
     textObject.selectionStart = textObject.selectionEnd = 4;
     canvas.fire('text:changed', {target:textObject});
 
-    expect(textObject.setSelectionStyles).toHaveBeenCalledWith({fill:'#ef4444'}, 3, 4);
+    expect(textObject.setSelectionStyles).toHaveBeenCalledWith({
+      fontFamily:'Century Gothic',
+      fill:'#ef4444',
+    }, 3, 4);
     expect(textObject.set).not.toHaveBeenCalled();
     controller.destroy();
   });

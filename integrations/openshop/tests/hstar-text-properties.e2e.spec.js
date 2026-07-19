@@ -145,6 +145,38 @@ test('edits mixed-language text with installed fonts and preserves the project s
   expect(Math.abs(scrolledListBox.width - scrolledSelectorsBox.width)).toBeLessThanOrEqual(1);
   expect(rectanglesIntersect(scrolledListBox, styleBox)).toBe(false);
   expect(rectanglesIntersect(scrolledListBox, sizeBox)).toBe(false);
+  const panelResize = await frame.evaluate(() => {
+    const controller = OS._panelSplitter;
+    const before = controller.getState().secondaryHeight;
+    const target = before > 180 ? before - 40 : before + 40;
+    const after = controller.setSecondaryHeight(target, {persistValue:false});
+    return {before, after};
+  });
+  expect(panelResize.after).not.toBe(panelResize.before);
+  await expect.poll(async () => {
+    const [currentListBox, currentLabelBox] = await Promise.all([
+      fontList.boundingBox(),
+      secondFontLabel.boundingBox(),
+    ]);
+    if(!currentListBox || !currentLabelBox) return Number.POSITIVE_INFINITY;
+    return Math.abs(currentListBox.y - (currentLabelBox.y + currentLabelBox.height + 4));
+  }).toBeLessThanOrEqual(1);
+  const [resizedListBox, resizedLabelBox, resizedSelectorsBox, resizedStyleBox, resizedSizeBox] = await Promise.all([
+    fontList.boundingBox(),
+    secondFontLabel.boundingBox(),
+    selectors.boundingBox(),
+    frame.locator('[data-text-style]').boundingBox(),
+    frame.locator('[data-text-size]').boundingBox(),
+  ]);
+  expect(Math.abs(resizedListBox.y - (resizedLabelBox.y + resizedLabelBox.height + 4)))
+    .toBeLessThanOrEqual(1);
+  expect(Math.abs(resizedListBox.x - resizedSelectorsBox.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(resizedListBox.width - resizedSelectorsBox.width)).toBeLessThanOrEqual(1);
+  expect(rectanglesIntersect(resizedListBox, resizedStyleBox)).toBe(false);
+  expect(rectanglesIntersect(resizedListBox, resizedSizeBox)).toBe(false);
+  await frame.evaluate(height => {
+    OS._panelSplitter.setSecondaryHeight(height, {persistValue:false});
+  }, panelResize.before);
   await otherTrigger.click();
   await expect(fontList).toBeHidden();
   await expect(familyTrigger).toHaveAttribute('aria-expanded', 'false');

@@ -57,6 +57,7 @@
     let fontRowsLayer = null;
     let fontRenderFrame = null;
     let fontActiveIndex = -1;
+    let fontListResizeObserver = null;
 
     function addListener(target, event, listener){
       target?.on?.(event, listener);
@@ -87,7 +88,13 @@
 
     function selectionValue(target, property){
       const range = editingRange(target);
-      if(!range || range.start >= range.end || typeof target.getSelectionStyles !== 'function') {
+      if(!range) return target[property];
+      if(range.start === range.end) {
+        return Object.prototype.hasOwnProperty.call(state.caretStyles, property)
+          ? state.caretStyles[property]
+          : target[property];
+      }
+      if(typeof target.getSelectionStyles !== 'function') {
         return target[property];
       }
       const styles = target.getSelectionStyles(range.start, range.end, true) || [];
@@ -504,6 +511,16 @@
       fontList.style.right = '';
     }
 
+    function observeFontListLayout(){
+      const ResizeObserverCtor = root.ResizeObserver;
+      if(typeof ResizeObserverCtor !== 'function') return;
+      fontListResizeObserver?.disconnect?.();
+      fontListResizeObserver = new ResizeObserverCtor(() => positionFontList());
+      [state.panel, state.panel?.parentElement].forEach(element => {
+        if(element) fontListResizeObserver.observe(element);
+      });
+    }
+
     function setActiveFontIndex(index){
       if(!fontList || fontRows[index]?.kind !== 'font') return;
       fontActiveIndex = index;
@@ -627,6 +644,7 @@
       fontRowsLayer.className = 'hstar-font-rows';
       fontRowsLayer.dataset.fontRows = 'true';
       fontList?.replaceChildren(fontSpacer, fontRowsLayer);
+      observeFontListLayout();
 
       fontTriggers.forEach(trigger => {
         addDomListener(trigger, 'mousedown', event => {
@@ -839,6 +857,8 @@
       if(state.destroyed) return;
       state.destroyed = true;
       closeFontList();
+      fontListResizeObserver?.disconnect?.();
+      fontListResizeObserver = null;
       state.listeners.splice(0).forEach(remove => remove());
       state.unsubscribeFonts?.();
       state.tab?.remove();

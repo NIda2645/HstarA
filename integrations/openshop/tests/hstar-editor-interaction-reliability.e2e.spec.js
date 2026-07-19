@@ -365,6 +365,8 @@ test('virtualizes a deterministic 2500-font catalog without moving the parent pa
     hiddenTextareaFocused:true,
     caretFamily:targetFamily,
   });
+  await expect(trigger.locator('[data-text-family-label]')).toHaveText('选择字体');
+  await expect(otherTrigger.locator('[data-text-family-label]')).toHaveText(targetFamily);
 
   await otherTrigger.click();
   await expect(list).toBeVisible();
