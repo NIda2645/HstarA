@@ -265,33 +265,54 @@ describe('Hstar OpenShop text properties', () => {
 
   it('uses separate Chinese and English-or-other font selectors with one shared listbox', async () => {
     const rows = createSectionedCatalogRows();
-    const {controller} = createHarness({catalogRows:rows});
+    const {controller, textObject} = createHarness({catalogRows:rows});
+    const firstChineseFont = rows.findIndex(row => row.family === 'Virtual Font 0000');
+    rows.splice(firstChineseFont, 0, {
+      kind:'font',
+      key:`font:${textObject.fontFamily}`,
+      family:textObject.fontFamily,
+      font:{family:textObject.fontFamily, label:textObject.fontFamily, status:'available', styles:[]},
+    });
     await controller.start();
 
     const triggers = document.querySelectorAll('[data-text-family]');
     const chinese = document.querySelector('[data-text-family="zh"]');
     const other = document.querySelector('[data-text-family="other"]');
     const lists = document.querySelectorAll('[data-text-font-list]');
-    const list = lists[0];
+    const list = document.querySelector('[data-text-font-list]');
 
     expect(triggers).toHaveLength(2);
     expect(chinese).not.toBeNull();
     expect(other).not.toBeNull();
     expect(lists).toHaveLength(1);
+    expect(list).not.toBeNull();
+    expect(chinese.getAttribute('aria-controls')).toBe(other.getAttribute('aria-controls'));
+    expect(chinese.getAttribute('aria-controls')).toBe(list.id);
     expect(chinese.querySelector('[data-text-family-label]').textContent).toBe('Microsoft YaHei UI');
     expect(other.querySelector('[data-text-family-label]').textContent).toBe('选择字体');
 
     chinese.click();
     expect(list.hidden).toBe(false);
-    expect(list.closest('label')).toBe(chinese.closest('label'));
+    expect(chinese.getAttribute('aria-expanded')).toBe('true');
+    expect(other.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelector('[data-text-font-list]')).toBe(list);
     expect(list.querySelector('[data-family="Virtual Font 0000"]')).not.toBeNull();
     expect(list.querySelector('[data-family="Virtual Font 1250"]')).toBeNull();
+    const activeOption = () => document.getElementById(list.getAttribute('aria-activedescendant'));
+    list.dispatchEvent(new KeyboardEvent('keydown', {key:'End', bubbles:true, cancelable:true}));
+    expect(activeOption().dataset.family).toBe('Virtual Font 1249');
 
+    other.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true}));
+    expect(list.hidden).toBe(false);
     other.click();
     expect(list.hidden).toBe(false);
-    expect(list.closest('label')).toBe(other.closest('label'));
+    expect(chinese.getAttribute('aria-expanded')).toBe('false');
+    expect(other.getAttribute('aria-expanded')).toBe('true');
+    expect(document.querySelector('[data-text-font-list]')).toBe(list);
     expect(list.querySelector('[data-family="Virtual Font 1250"]')).not.toBeNull();
     expect(list.querySelector('[data-family="Virtual Font 0000"]')).toBeNull();
+    list.dispatchEvent(new KeyboardEvent('keydown', {key:'Home', bubbles:true, cancelable:true}));
+    expect(activeOption().dataset.family).toBe('Virtual Font 1250');
     controller.destroy();
   });
 
