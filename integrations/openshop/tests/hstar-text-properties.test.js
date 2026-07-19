@@ -280,12 +280,14 @@ describe('Hstar OpenShop text properties', () => {
     const other = document.querySelector('[data-text-family="other"]');
     const lists = document.querySelectorAll('[data-text-font-list]');
     const list = document.querySelector('[data-text-font-list]');
+    const listSpace = document.querySelector('[data-text-font-space]');
 
     expect(triggers).toHaveLength(2);
     expect(chinese).not.toBeNull();
     expect(other).not.toBeNull();
     expect(lists).toHaveLength(1);
     expect(list).not.toBeNull();
+    expect(listSpace.style.height).toBe('0px');
     expect(chinese.getAttribute('aria-controls')).toBe(other.getAttribute('aria-controls'));
     expect(chinese.getAttribute('aria-controls')).toBe(list.id);
     expect(chinese.querySelector('[data-text-family-label]').textContent).toBe('Microsoft YaHei UI');
@@ -293,6 +295,7 @@ describe('Hstar OpenShop text properties', () => {
 
     chinese.click();
     expect(list.hidden).toBe(false);
+    expect(listSpace.style.height).toBe(`${FONT_VIEWPORT_HEIGHT + 4}px`);
     expect(chinese.getAttribute('aria-expanded')).toBe('true');
     expect(other.getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelector('[data-text-font-list]')).toBe(list);
@@ -314,6 +317,7 @@ describe('Hstar OpenShop text properties', () => {
     list.dispatchEvent(new KeyboardEvent('keydown', {key:'Home', bubbles:true, cancelable:true}));
     expect(activeOption().dataset.family).toBe('Virtual Font 1250');
     controller.destroy();
+    expect(listSpace.style.height).toBe('0px');
   });
 
   it('uses catalogRows once per subscription update and never calls scrollIntoView on open', async () => {

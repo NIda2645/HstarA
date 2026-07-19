@@ -53,6 +53,7 @@
     let activeFontSection = 'zh';
     let fontList = null;
     let fontSpacer = null;
+    let fontListSpace = null;
     let fontRowsLayer = null;
     let fontRenderFrame = null;
     let fontActiveIndex = -1;
@@ -355,6 +356,7 @@
       if(fontList) fontList.hidden = true;
       fontList?.removeAttribute('aria-activedescendant');
       fontTriggers.forEach(trigger => trigger.setAttribute('aria-expanded', 'false'));
+      if(fontListSpace) fontListSpace.style.height = '0px';
       resetFontListPosition();
       if(restoreFocus && !activeTextObject()?.isEditing) activeFontTrigger?.focus?.({preventScroll:true});
     }
@@ -482,8 +484,9 @@
 
     function positionFontList(){
       if(!fontList || fontList.hidden) return;
-      const selectors = documentRef.querySelector('[data-text-font-selectors]');
-      const rect = selectors?.getBoundingClientRect?.();
+      const otherTrigger = fontTriggers.find(trigger => trigger.dataset.textFamily === 'other') || fontTriggers[1];
+      const anchor = otherTrigger?.closest('label');
+      const rect = anchor?.getBoundingClientRect?.();
       if(!rect) return;
       fontList.style.position = 'fixed';
       fontList.style.top = `${rect.bottom + 4}px`;
@@ -528,6 +531,7 @@
       cancelFontRender();
       fontList.hidden = false;
       fontTriggers.forEach(item => item.setAttribute('aria-expanded', item === trigger ? 'true' : 'false'));
+      if(fontListSpace) fontListSpace.style.height = `${FONT_VIEWPORT_HEIGHT + 4}px`;
       positionFontList();
       const selectedIndex = selectedFontIndex();
       fontActiveIndex = fontRows[activeIndex]?.kind === 'font'
@@ -574,6 +578,7 @@
                 </button>
               </label>
               <div class="hstar-font-list" data-text-font-list role="listbox" hidden></div>
+              <div class="hstar-font-list-space" data-text-font-space aria-hidden="true"></div>
             </div>
             <label>字形 <select data-text-style></select></label>
             <label>字号 <input type="number" data-text-size min="1" max="1296" step="0.1"></label>
@@ -609,6 +614,8 @@
     function bindPanelControls(){
       fontTriggers = [...documentRef.querySelectorAll('[data-text-family]')];
       fontList = documentRef.querySelector('[data-text-font-list]');
+      fontListSpace = documentRef.querySelector('[data-text-font-space]');
+      if(fontListSpace) fontListSpace.style.height = '0px';
       fontList.id = 'hstar-font-listbox';
       fontList.tabIndex = -1;
       fontTriggers.forEach(trigger => trigger.setAttribute('aria-controls', fontList.id));
@@ -844,6 +851,7 @@
       fontActiveIndex = -1;
       fontList = null;
       fontSpacer = null;
+      fontListSpace = null;
       fontRowsLayer = null;
     }
 

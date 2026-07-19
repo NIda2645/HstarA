@@ -95,7 +95,7 @@ test('edits mixed-language text with installed fonts and preserves the project s
   expect(familyBox).not.toBeNull();
   expect(otherBox).not.toBeNull();
   expect(await fontList.evaluate(element => getComputedStyle(element).position)).toBe('fixed');
-  expect(listBox.y).toBeGreaterThan(selectorsBox.y + selectorsBox.height);
+  expect(listBox.y).toBeGreaterThan(otherBox.y + otherBox.height);
   expect(listBox.width).toBeCloseTo(selectorsBox.width, 1);
   for (const triggerBox of [familyBox, otherBox]) {
     const overlaps = listBox.x < triggerBox.x + triggerBox.width

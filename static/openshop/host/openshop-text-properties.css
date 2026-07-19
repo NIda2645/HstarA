@@ -18,6 +18,7 @@
 .hstar-font-list{position:absolute;z-index:30;top:46px;left:0;right:0;box-sizing:border-box;height:210px;max-height:210px;overflow-y:auto;overflow-x:hidden;padding:0;contain:layout paint;overscroll-behavior:contain;scrollbar-gutter:stable;border:1px solid var(--border-strong,var(--border));border-radius:4px;background:var(--bg-depth-1);box-shadow:0 8px 18px rgba(0,0,0,.28)}
 .hstar-font-selectors>.hstar-font-list{top:calc(100% + 4px);z-index:30}
 .hstar-font-list[hidden]{display:none!important}
+.hstar-font-list-space{grid-column:1/-1;height:0;min-height:0;pointer-events:none}
 .hstar-font-spacer{width:1px;pointer-events:none}
 .hstar-font-rows{position:absolute;top:0;left:0;right:0}
 .hstar-font-option,.hstar-font-heading{box-sizing:border-box;height:30px;min-height:30px;max-height:30px;overflow:hidden;white-space:nowrap}
