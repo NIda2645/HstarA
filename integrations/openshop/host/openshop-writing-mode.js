@@ -7,7 +7,10 @@
   const RUNTIME_PROPERTIES = new Set([
     'canvas', 'group', 'aCoords', 'oCoords', 'lineCoords', 'matrixCache', 'ownMatrixCache',
     'cacheKey', 'dirty', 'stateProperties', 'cacheProperties', 'colorProperties', 'ownDefaults',
-    'width', 'height', 'type', 'text', 'hstarWritingMode',
+    'selectionStart', 'selectionEnd', 'isEditing', 'hiddenTextarea', 'hiddenTextareaContainer',
+    'cursorDuration', '_currentCursorOpacity', '__skipDimension', '_textLines',
+    '_unwrappedTextLines', '_styleMap', 'dynamicMinWidth', '__corner', 'pathOffset', 'width',
+    'height', 'type', 'text', 'hstarWritingMode',
   ]);
 
   function normalizeWritingMode(value) {

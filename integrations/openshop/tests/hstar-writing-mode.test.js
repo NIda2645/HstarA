@@ -327,6 +327,29 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(reconstructed.futureTextOption).not.toBe(serialized.futureTextOption);
   });
 
+  it('omits Fabric editor runtime state during text conversion', () => {
+    const fabric = createFabricMock();
+    const source = new fabric.IText('editor state', {
+      direction:'ltr',
+      selectionStart:2,
+      selectionEnd:5,
+      isEditing:true,
+      hiddenTextarea:{value:'editor state'},
+      hiddenTextareaContainer:{remove() {}},
+      cursorDuration:600,
+    });
+
+    const vertical = runtime.convertTextObject(fabric, source, 'vertical');
+
+    expect(vertical).toMatchObject({text:'editor state', direction:'ltr'});
+    for(const key of [
+      'selectionStart', 'selectionEnd', 'isEditing', 'hiddenTextarea',
+      'hiddenTextareaContainer', 'cursorDuration',
+    ]) {
+      expect(vertical[key]).toBeUndefined();
+    }
+  });
+
   it('renders every glyph in vertical top-to-bottom and right-to-left coordinate order', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, 'AB\nC', {
