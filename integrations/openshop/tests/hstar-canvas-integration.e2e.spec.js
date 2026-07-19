@@ -2,7 +2,8 @@ import { expect, test } from '@playwright/test';
 import { createTestCanvasCleanup } from './hstar-test-canvas-cleanup.js';
 
 const baseUrl = process.env.HSTAR_BASE_URL || 'http://127.0.0.1:3010';
-const canvasCleanup = createTestCanvasCleanup(baseUrl);
+const TEST_ID_PREFIX = 'codex-e2e-openshop-';
+const canvasCleanup = createTestCanvasCleanup(baseUrl, {requiredPrefix:TEST_ID_PREFIX});
 const imageUrls = [
   '/static/images/logo.png',
   '/static/images/RunningHub-B.png',
@@ -24,9 +25,11 @@ async function apiJson(response){
 
 async function createCanvas(request, {kind, title, nodes, connections}){
   await canvasCleanup.assertStorageIsolated(request);
+  const id = `${TEST_ID_PREFIX}${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const created = await apiJson(await request.post(`${baseUrl}/api/canvases`, {
-    data:{kind, title, icon:kind === 'smart' ? 'sparkles' : 'layers'},
+    data:{id, kind, title, icon:kind === 'smart' ? 'sparkles' : 'layers'},
   }));
+  expect(created.canvas.id).toBe(id);
   canvasCleanup.track(created.canvas);
   const canvas = created.canvas;
   const saved = await apiJson(await request.put(`${baseUrl}/api/canvases/${canvas.id}`, {
