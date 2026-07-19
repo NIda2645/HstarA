@@ -12605,6 +12605,45 @@ def last_output_download_folder() -> str:
     folder = os.path.abspath(os.path.expanduser(os.path.expandvars(folder)))
     return folder if os.path.isdir(folder) else ""
 
+NATIVE_EXPORT_FILTERS = {
+    ".png": "PNG Image (*.png)|*.png",
+    ".jpg": "JPEG Image (*.jpg;*.jpeg)|*.jpg;*.jpeg",
+    ".jpeg": "JPEG Image (*.jpg;*.jpeg)|*.jpg;*.jpeg",
+    ".webp": "WebP Image (*.webp)|*.webp",
+    ".svg": "SVG Image (*.svg)|*.svg",
+    ".pdf": "PDF Document (*.pdf)|*.pdf",
+    ".psd": "Photoshop Document (*.psd)|*.psd",
+}
+
+def require_local_same_origin(request: Request) -> None:
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
+    if not is_gemini_cli_loopback_hostname(client_host):
+        raise HTTPException(status_code=403, detail="Native save is available to local requests only")
+    ensure_same_origin_request(request)
+
+def native_export_dialog_filter(suggested_name: str) -> str:
+    extension = os.path.splitext(str(suggested_name or ""))[1].lower()
+    specific = NATIVE_EXPORT_FILTERS.get(extension)
+    return f"{specific}|All Files (*.*)|*.*" if specific else "All Files (*.*)|*.*"
+
+def decode_output_item(item: Dict[str, Any], index: int) -> tuple[bytes, str]:
+    requested = str(item.get("name") or "").strip()
+    encoded = str(item.get("content_base64") or "").strip()
+    url = str(item.get("url") or "").strip()
+    if encoded:
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid file content encoding at item {index}") from exc
+        fallback = requested or f"output-{index}.bin"
+    elif url:
+        content, _content_type, source_name = media_bytes_from_url(url)
+        fallback = source_name or requested or f"output-{index}.png"
+    else:
+        raise HTTPException(status_code=400, detail=f"Missing file content at item {index}")
+    name = sanitize_export_filename(os.path.basename(requested) if requested else fallback, fallback)
+    return content, name
+
 def choose_save_output_path(suggested_name: str, initial_dir: str = "") -> tuple[str, str]:
     suggested_name = sanitize_export_filename(suggested_name or "output.png", "output.png")
     if os.name != "nt":
@@ -12616,6 +12655,7 @@ def choose_save_output_path(suggested_name: str, initial_dir: str = "") -> tuple
         initial_dir = last_output_download_folder()
     escaped_name = suggested_name.replace("'", "''")
     escaped_dir = initial_dir.replace("'", "''")
+    escaped_filter = native_export_dialog_filter(suggested_name).replace("'", "''")
     ps = f"""
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -12654,7 +12694,7 @@ $null = [HstarNativeWindow]::SetForegroundWindow($owner.Handle)
 $dialog = New-Object System.Windows.Forms.SaveFileDialog
 $dialog.Title = 'Save output'
 $dialog.FileName = '{escaped_name}'
-$dialog.Filter = 'Image Files (*.png;*.jpg;*.jpeg;*.webp;*.gif)|*.png;*.jpg;*.jpeg;*.webp;*.gif|ZIP Archive (*.zip)|*.zip|Video Files (*.mp4;*.webm;*.mov;*.m4v)|*.mp4;*.webm;*.mov;*.m4v|Audio Files (*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac)|*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac|Text Files (*.txt)|*.txt|All Files (*.*)|*.*'
+$dialog.Filter = '{escaped_filter}'
 $dialog.OverwritePrompt = $true
 $dialog.AddExtension = $true
 if ('{escaped_dir}') {{ $dialog.InitialDirectory = '{escaped_dir}' }}
@@ -12772,25 +12812,25 @@ def choose_native_folder(payload: NativeFolderRequest):
     return {"path": choose_folder_path("Select output folder", initial_dir)}
 
 @app.post("/api/native/save-output-batch")
-def save_output_batch(payload: SaveOutputBatchRequest):
-    items = [item for item in (payload.items or []) if isinstance(item, dict) and str(item.get("url") or "").strip()]
-    if not items:
-        raise HTTPException(status_code=400, detail="No images to save")
+def save_output_batch(payload: SaveOutputBatchRequest, request: Request):
+    require_local_same_origin(request)
+    prepared = [
+        decode_output_item(item, index)
+        for index, item in enumerate(payload.items or [], 1)
+        if isinstance(item, dict)
+    ]
+    if not prepared:
+        raise HTTPException(status_code=400, detail="No files to save")
     folder = choose_folder_path("Select output folder", payload.initial_dir or last_output_download_folder())
     if not folder:
         return {"ok": False, "cancelled": True, "count": 0}
     os.makedirs(folder, exist_ok=True)
     saved = []
     used = set()
-    for index, item in enumerate(items, 1):
-        url = str(item.get("url") or "")
-        requested = str(item.get("name") or "").strip()
-        content, _content_type, source_name = media_bytes_from_url(url)
-        fallback = source_name or f"output-{index}.png"
-        name = sanitize_export_filename(os.path.basename(requested) if requested else fallback, fallback)
+    for index, (content, name) in enumerate(prepared, 1):
         stem, ext = os.path.splitext(name)
         if not ext:
-            ext = os.path.splitext(fallback)[1] or ".png"
+            ext = ".bin"
         candidate = f"{stem or 'output'}{ext}"
         n = 2
         while candidate.lower() in used or os.path.exists(os.path.join(folder, candidate)):
@@ -12805,7 +12845,8 @@ def save_output_batch(payload: SaveOutputBatchRequest):
     return {"ok": True, "cancelled": False, "folder": folder, "count": len(saved), "files": saved}
 
 @app.post("/api/native/save-output-as")
-def save_output_as(payload: SaveOutputAsRequest):
+def save_output_as(payload: SaveOutputAsRequest, request: Request):
+    require_local_same_origin(request)
     if payload.content_base64:
         try:
             content = base64.b64decode(payload.content_base64, validate=True)
