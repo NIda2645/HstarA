@@ -4,10 +4,12 @@
   const HORIZONTAL = 'horizontal';
   const VERTICAL = 'vertical';
   const VERTICAL_TYPE = 'hstar-vertical-text';
-  const VISUAL_TEXT_PROPERTIES = [
+  const TEXT_PROPERTIES = [
     'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
-    'charSpacing', 'lineHeight', 'opacity', 'angle', 'left', 'top', 'scaleX', 'scaleY',
-    'originX', 'originY', 'visible', 'selectable', 'evented',
+    'charSpacing', 'lineHeight', 'textAlign', 'textBackgroundColor', 'backgroundColor',
+    'underline', 'overline', 'linethrough', 'shadow', 'styles', 'opacity', 'angle', 'left',
+    'top', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY', 'originX', 'originY',
+    'visible', 'selectable', 'evented',
   ];
 
   function normalizeWritingMode(value) {
@@ -69,9 +71,9 @@
     return metadata;
   }
 
-  function serializableVisualProperties(source) {
+  function serializableTextProperties(source) {
     const properties = {};
-    VISUAL_TEXT_PROPERTIES.forEach(key => {
+    TEXT_PROPERTIES.forEach(key => {
       if(source && source[key] !== undefined) {
         const value = cloneSerializable(source[key]);
         if(value !== undefined) properties[key] = value;
@@ -122,12 +124,12 @@
         const parent = fabric.Object && fabric.Object.prototype && fabric.Object.prototype.toObject;
         const metadata = serializableHstarMetadata(this);
         const included = [...new Set([
-          ...VISUAL_TEXT_PROPERTIES,
+          ...TEXT_PROPERTIES,
           ...Object.keys(metadata),
           ...(Array.isArray(extra) ? extra : []),
         ])];
         const object = typeof parent === 'function' ? parent.call(this, included) : {};
-        Object.assign(object, serializableVisualProperties(this), metadata);
+        Object.assign(object, serializableTextProperties(this), metadata);
         object.type = VERTICAL_TYPE;
         object.text = this.text;
         object.hstarWritingMode = VERTICAL;
@@ -161,7 +163,7 @@
       const text = object && object.text;
       const options = Object.assign(
         {},
-        serializableVisualProperties(object),
+        serializableTextProperties(object),
         serializableHstarMetadata(object),
       );
       const instance = new HstarVerticalText(text, options);
@@ -187,14 +189,15 @@
     if(value == null || ['string', 'number', 'boolean'].includes(typeof value)) return value;
     if(typeof value === 'function') return undefined;
     if(Array.isArray(value)) return value.map(cloneSerializable).filter(value => value !== undefined);
-    if(Object.prototype.toString.call(value) !== '[object Object]') return value;
+    const prototype = Object.getPrototypeOf(value);
+    if(prototype !== Object.prototype && prototype !== null) return value;
     return Object.fromEntries(Object.entries(value)
       .map(([key, child]) => [key, cloneSerializable(child)])
       .filter(([, child]) => child !== undefined));
   }
 
   function copyConvertibleOptions(source) {
-    return Object.assign({}, serializableVisualProperties(source), serializableHstarMetadata(source));
+    return Object.assign({}, serializableTextProperties(source), serializableHstarMetadata(source));
   }
 
   function writingModeFor(object) {

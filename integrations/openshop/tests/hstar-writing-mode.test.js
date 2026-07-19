@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const runtimePath = resolve(testDir, '..', 'host', 'openshop-writing-mode.js');
-const VISUAL_TEXT_PROPERTIES = [
+const TEXT_PROPERTIES = [
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
-  'charSpacing', 'lineHeight', 'opacity', 'angle', 'left', 'top', 'scaleX', 'scaleY',
-  'originX', 'originY', 'visible', 'selectable', 'evented',
+  'charSpacing', 'lineHeight', 'textAlign', 'textBackgroundColor', 'backgroundColor',
+  'underline', 'overline', 'linethrough', 'shadow', 'styles', 'opacity', 'angle', 'left',
+  'top', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY', 'originX', 'originY',
+  'visible', 'selectable', 'evented',
 ];
 const BASE_OBJECT_PROPERTIES = [
   'type', 'left', 'top', 'scaleX', 'scaleY', 'angle', 'opacity', 'originX', 'originY',
@@ -74,6 +76,18 @@ function createFabricMock({withCreateClass = true} = {}) {
     strokeWidth:3,
     charSpacing:48,
     lineHeight:1.4,
+    textAlign:'right',
+    textBackgroundColor:'#f8fafc',
+    backgroundColor:'#0f172a',
+    underline:true,
+    overline:true,
+    linethrough:true,
+    shadow:{color:'#000000', blur:4, offsetX:2, offsetY:3},
+    styles:{0:{0:{fill:'#ef4444'}}},
+    skewX:6,
+    skewY:-4,
+    flipX:true,
+    flipY:true,
     originX:'center',
     originY:'center',
     visible:true,
@@ -245,12 +259,14 @@ describe('Hstar OpenShop writing mode runtime', () => {
       left:12,
       top:24,
       opacity:0.75,
-      ...Object.fromEntries(VISUAL_TEXT_PROPERTIES
+      ...Object.fromEntries(TEXT_PROPERTIES
         .filter(key => key in source && !['left', 'top', 'opacity'].includes(key))
         .map(key => [key, source[key]])),
       hstarOrigin:{kind:'prototype-test'},
     });
     expect(Object.hasOwn(vertical, 'fontFamily')).toBe(true);
+    expect(vertical.styles).not.toBe(source.styles);
+    expect(vertical.shadow).not.toBe(source.shadow);
     expect(vertical.hstarHandler).toBeUndefined();
     expect(vertical._hstarRuntime).toBeUndefined();
   });
@@ -296,10 +312,22 @@ describe('Hstar OpenShop writing mode runtime', () => {
       strokeWidth:2,
       charSpacing:36,
       lineHeight:1.5,
+      textAlign:'center',
+      textBackgroundColor:'#fef3c7',
+      backgroundColor:'#111827',
+      underline:true,
+      overline:true,
+      linethrough:true,
+      shadow:{color:'#334155', blur:5, offsetX:2, offsetY:4},
+      styles:{0:{0:{fill:'#f97316', fontWeight:700}}},
       opacity:0.65,
       angle:14,
       scaleX:1.25,
       scaleY:0.8,
+      skewX:7,
+      skewY:-3,
+      flipX:true,
+      flipY:true,
       originX:'right',
       originY:'bottom',
       visible:false,
@@ -316,7 +344,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
       type:'hstar-vertical-text',
       text:'A\nB',
       hstarWritingMode:'vertical',
-      ...Object.fromEntries(VISUAL_TEXT_PROPERTIES.map(key => [key, original[key]])),
+      ...Object.fromEntries(TEXT_PROPERTIES.map(key => [key, original[key]])),
       hstarLayerId:'vertical-title',
       hstarData:{tags:['title']},
     });
@@ -324,12 +352,16 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(reconstructed).toMatchObject({
       text:'A\nB',
       hstarWritingMode:'vertical',
-      ...Object.fromEntries(VISUAL_TEXT_PROPERTIES.map(key => [key, original[key]])),
+      ...Object.fromEntries(TEXT_PROPERTIES.map(key => [key, original[key]])),
       hstarLayerId:'vertical-title',
       hstarData:{tags:['title']},
     });
     expect(reconstructed.width).toBeCloseTo(original.width, 8);
     expect(reconstructed.height).toBeCloseTo(original.height, 8);
+    expect(serialized.styles).not.toBe(original.styles);
+    expect(serialized.shadow).not.toBe(original.shadow);
+    expect(reconstructed.styles).not.toBe(serialized.styles);
+    expect(reconstructed.shadow).not.toBe(serialized.shadow);
   });
 
   it('honors explicit writing modes and defaults legacy objects to horizontal', () => {
