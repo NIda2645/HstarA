@@ -2765,6 +2765,7 @@ class ConversationCreateRequest(BaseModel):
     title: str = "新对话"
 
 class CanvasCreateRequest(BaseModel):
+    id: Optional[str] = None
     title: str = "未命名画布"
     icon: str = "🧩"
     kind: str = "classic"
@@ -3580,11 +3581,19 @@ def list_projects():
         out.append(rec)
     return out
 
-def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None):
+def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None, canvas_id=None):
     timestamp = now_ms()
     canvas_kind = normalize_canvas_kind(kind)
+    requested_id = str(canvas_id or "").strip()
+    if requested_id:
+        if len(requested_id) > 120 or not re.fullmatch(
+            r"codex-e2e-openshop-[A-Za-z0-9_-]+", requested_id
+        ):
+            raise HTTPException(status_code=400, detail="无效的画布 ID")
+    else:
+        requested_id = uuid.uuid4().hex
     canvas = {
-        "id": uuid.uuid4().hex,
+        "id": requested_id,
         "title": (title or ("智能画布" if canvas_kind == "smart" else "未命名画布"))[:80],
         "icon": (icon or ("sparkles" if canvas_kind == "smart" else "🧩"))[:32],
         "kind": canvas_kind,
@@ -3602,7 +3611,10 @@ def new_canvas(title="未命名画布", icon="layers", kind="classic", project=N
         canvas["board_x"] = float(board_x)
     if board_y is not None:
         canvas["board_y"] = float(board_y)
-    save_canvas(canvas)
+    with CANVAS_LOCK:
+        if os.path.exists(canvas_path(requested_id)):
+            raise HTTPException(status_code=409, detail="画布 ID 已存在")
+        save_canvas(canvas)
     return canvas
 
 def load_canvas(canvas_id):
@@ -18171,7 +18183,15 @@ async def trashed_canvases():
 
 @app.post("/api/canvases")
 async def create_canvas(payload: CanvasCreateRequest):
-    return {"canvas": new_canvas(payload.title, payload.icon, payload.kind, payload.project, payload.board_x, payload.board_y)}
+    return {"canvas": new_canvas(
+        payload.title,
+        payload.icon,
+        payload.kind,
+        payload.project,
+        payload.board_x,
+        payload.board_y,
+        canvas_id=payload.id,
+    )}
 
 @app.get("/api/canvases/{canvas_id}/meta")
 async def get_canvas_meta(canvas_id: str):

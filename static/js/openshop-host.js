@@ -434,9 +434,13 @@
         return true;
     }
 
-    function showOverlay(){
+    function showOverlay({forceVisibility = false} = {}){
         const overlay = getOverlay();
         overlay.classList.add('is-open');
+        if(forceVisibility){
+            const session = activeSession();
+            if(session) session.pollingVisible = null;
+        }
         syncPageVisibility();
     }
 
@@ -477,7 +481,7 @@
         session.idleSince = 0;
         ui('[data-openshop-title]').textContent = context.projectName;
         renderSourcePanel(session, session.project);
-        showOverlay();
+        showOverlay({forceVisibility:true});
         setStatus(session, session.status || 'loading', session.error);
         if(sourcesChanged && session.editorReady && session.project) void refreshSessionSources(session);
         collectIdleSessions();

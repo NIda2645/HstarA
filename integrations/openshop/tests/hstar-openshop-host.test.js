@@ -50,6 +50,32 @@ function dispatchEditorReady(host, frame) {
   window.dispatchEvent(event);
 }
 
+function dispatchProjectChanged(host, frame, requestId, reason = 'sources-synchronized') {
+  const activeSession = host.getState().activeSession;
+  const changed = window.HstarOpenShopProtocol.createEnvelope({
+    type:window.HstarOpenShopProtocol.TYPES.PROJECT_CHANGED,
+    sessionId:activeSession.sessionId,
+    requestId,
+    context:activeSession.context,
+    payload:{reason, project:{
+      projectId:activeSession.context.projectId,
+      owner:{
+        canvasType:activeSession.context.canvasType,
+        canvasId:activeSession.context.canvasId,
+        nodeId:activeSession.context.nodeId,
+      },
+      aiTaskRecords:[], sourceBindings:[],
+    }},
+  });
+  const event = new Event('message');
+  Object.defineProperties(event, {
+    origin:{value:window.location.origin},
+    source:{value:frame.contentWindow},
+    data:{value:changed},
+  });
+  window.dispatchEvent(event);
+}
+
 describe('Hstar OpenShop host page visibility', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -130,6 +156,59 @@ describe('Hstar OpenShop host page visibility', () => {
       message.type === window.HstarOpenShopProtocol.TYPES.SESSION_VISIBILITY
       && message.payload?.visible === false
     ))).toBe(true);
+  });
+
+  it('resumes the existing same-node editor after an explicit hide', async () => {
+    const host = await mountHost();
+    const context = {
+      canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1', projectId:'project-1',
+      projectName:'Layered text', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
+    };
+    const sources = [{
+      edgeId:'edge-1', sourceNodeId:'source-1', assetId:'a'.repeat(64),
+      assetVersion:'source-v1', name:'source.png', url:'/api/openshop/assets/source', sequence:0,
+    }];
+    host.openNodeSession(context, sources);
+    const frame = document.querySelector('iframe.openshop-session-frame');
+    const editorWindow = frame.contentWindow;
+    const sessionBefore = host.getState().activeSession;
+    const postMessage = vi.spyOn(editorWindow, 'postMessage');
+    dispatchProjectChanged(host, frame, 'project-ready');
+    await flushMutations();
+    expect(frame.hidden).toBe(false);
+    expect(postMessage.mock.calls.some(([message]) => (
+      message.type === window.HstarOpenShopProtocol.TYPES.SESSION_VISIBILITY
+      && message.payload?.visible === true
+    ))).toBe(true);
+
+    postMessage.mockClear();
+    host.close();
+    expect(postMessage.mock.calls.some(([message]) => (
+      message.type === window.HstarOpenShopProtocol.TYPES.SESSION_VISIBILITY
+      && message.payload?.visible === false
+    ))).toBe(true);
+
+    postMessage.mockClear();
+    host.openNodeSession(context, sources);
+
+    expect(host.getState().activeSession).toEqual(sessionBefore);
+    expect(document.querySelector('iframe.openshop-session-frame')).toBe(frame);
+    expect(frame.contentWindow).toBe(editorWindow);
+    expect(postMessage.mock.calls.some(([message]) => (
+      message.type === window.HstarOpenShopProtocol.TYPES.SESSION_VISIBILITY
+      && message.payload?.visible === true
+    ))).toBe(true);
+    expect(postMessage.mock.calls.some(([message]) => (
+      message.type === window.HstarOpenShopProtocol.TYPES.CLOSE
+    ))).toBe(false);
+
+    postMessage.mockClear();
+    host.openNodeSession(context, sources);
+    expect(postMessage.mock.calls.some(([message]) => (
+      message.type === window.HstarOpenShopProtocol.TYPES.SESSION_VISIBILITY
+      && message.payload?.visible === true
+    ))).toBe(true);
+    expect(document.querySelectorAll('iframe.openshop-session-frame')).toHaveLength(1);
   });
 
   it('counts queued artistic-font records as active background work', async () => {

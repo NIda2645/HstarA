@@ -14,6 +14,8 @@ export function createTestCanvasCleanup(baseUrl, options = {}) {
   const endpoint = String(baseUrl || '').replace(/\/+$/, '');
   if(!endpoint) throw new TypeError('HSTAR_BASE_URL is required');
   const ids = new Set();
+  const projects = new Map();
+  const requiredPrefix = String(options.requiredPrefix || '').trim();
   const retries = Math.max(0, Number.parseInt(options.retries ?? 3, 10) || 0);
   const retryDelayMs = Math.max(0, Number(options.retryDelayMs ?? 120) || 0);
   const sleep = typeof options.sleep === 'function'
@@ -43,12 +45,39 @@ export function createTestCanvasCleanup(baseUrl, options = {}) {
     },
 
     track(canvasOrId) {
-      ids.add(exactCanvasId(canvasOrId));
+      const id = exactCanvasId(canvasOrId);
+      if(requiredPrefix && !id.startsWith(requiredPrefix)) {
+        throw new TypeError(`Refusing to track E2E canvas outside ${requiredPrefix}: ${id}`);
+      }
+      ids.add(id);
       return canvasOrId;
     },
 
     pendingIds() {
       return [...ids];
+    },
+
+    trackProject(value) {
+      const projectId = exactCanvasId(value?.projectId);
+      const canvasId = exactCanvasId(value?.canvasId);
+      const canvasType = String(value?.canvasType || '').trim();
+      const nodeId = exactCanvasId(value?.nodeId);
+      if(!['classic', 'smart'].includes(canvasType)) {
+        throw new TypeError(`Invalid E2E canvas type: ${canvasType || 'missing'}`);
+      }
+      for(const [label, id] of [['project', projectId], ['canvas', canvasId], ['node', nodeId]]) {
+        if(requiredPrefix && !id.startsWith(requiredPrefix)) {
+          throw new TypeError(`Refusing to track E2E ${label} outside ${requiredPrefix}: ${id}`);
+        }
+      }
+      projects.set(`${canvasType}:${canvasId}:${nodeId}:${projectId}`, {
+        projectId, canvasId, canvasType, nodeId,
+      });
+      return value;
+    },
+
+    pendingProjectIds() {
+      return [...projects.values()].map(project => project.projectId);
     },
 
     async purgeAll(request) {
@@ -79,6 +108,24 @@ export function createTestCanvasCleanup(baseUrl, options = {}) {
       }
       if(failures.length) {
         throw new Error(`Failed to purge HstarA E2E canvases:\n${failures.join('\n')}`);
+      }
+      for(const [key, project] of [...projects]) {
+        const params = new URLSearchParams({
+          canvas_type:project.canvasType,
+          canvas_id:project.canvasId,
+          node_id:project.nodeId,
+        });
+        const result = await request.get(
+          `${endpoint}/api/openshop/projects/${encodeURIComponent(project.projectId)}?${params}`
+        );
+        if(result.status() !== 404) {
+          failures.push(`${project.projectId}: project survived canvas purge (HTTP ${result.status()})`);
+          continue;
+        }
+        projects.delete(key);
+      }
+      if(failures.length) {
+        throw new Error(`Failed to verify HstarA E2E cleanup:\n${failures.join('\n')}`);
       }
     },
   };

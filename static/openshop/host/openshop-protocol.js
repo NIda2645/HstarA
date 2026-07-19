@@ -16,6 +16,7 @@
     SEND_TO_CANVAS: `${PREFIX}send-to-canvas`,
     OPEN_API_SETTINGS: `${PREFIX}open-api-settings`,
     PROJECT_CHANGED: `${PREFIX}project-changed`,
+    SESSION_VISIBILITY: `${PREFIX}session-visibility`,
     CLOSE: `${PREFIX}close`,
     ERROR: `${PREFIX}error`,
   });

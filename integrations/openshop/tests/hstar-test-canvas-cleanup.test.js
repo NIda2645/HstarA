@@ -57,6 +57,60 @@ describe('HstarA E2E canvas cleanup', () => {
     expect(cleanup.pendingIds()).toEqual([]);
   });
 
+  it('refuses to register a canvas outside the configured engineering prefix', () => {
+    const cleanup = createTestCanvasCleanup('http://127.0.0.1:3000', {
+      requiredPrefix:'codex-e2e-openshop-',
+    });
+
+    expect(() => cleanup.track('unrelated-canvas')).toThrow(
+      'Refusing to track E2E canvas outside codex-e2e-openshop-: unrelated-canvas'
+    );
+    expect(cleanup.track('codex-e2e-openshop-owned')).toBe('codex-e2e-openshop-owned');
+    expect(cleanup.pendingIds()).toEqual(['codex-e2e-openshop-owned']);
+  });
+
+  it('registers exact prefixed project scopes and rejects unrelated nodes', () => {
+    const cleanup = createTestCanvasCleanup('http://127.0.0.1:3000', {
+      requiredPrefix:'codex-e2e-openshop-',
+    });
+    const project = {
+      canvasType:'classic',
+      canvasId:'codex-e2e-openshop-canvas',
+      nodeId:'codex-e2e-openshop-node',
+      projectId:'codex-e2e-openshop-project',
+    };
+
+    expect(cleanup.trackProject(project)).toBe(project);
+    expect(cleanup.pendingProjectIds()).toEqual(['codex-e2e-openshop-project']);
+    expect(() => cleanup.trackProject({...project, nodeId:'unrelated-node'})).toThrow(
+      'Refusing to track E2E node outside codex-e2e-openshop-: unrelated-node'
+    );
+  });
+
+  it('verifies registered projects are gone after their canvas is purged', async () => {
+    const cleanup = createTestCanvasCleanup('http://127.0.0.1:3000', {
+      requiredPrefix:'codex-e2e-openshop-',
+    });
+    cleanup.track('codex-e2e-openshop-canvas');
+    cleanup.trackProject({
+      canvasType:'classic',
+      canvasId:'codex-e2e-openshop-canvas',
+      nodeId:'codex-e2e-openshop-node',
+      projectId:'codex-e2e-openshop-project',
+    });
+    const request = {
+      delete:vi.fn(async () => response({ok:true, status:200})),
+      get:vi.fn(async () => response({ok:false, status:404})),
+    };
+
+    await cleanup.purgeAll(request);
+
+    expect(request.get).toHaveBeenCalledWith(
+      'http://127.0.0.1:3000/api/openshop/projects/codex-e2e-openshop-project?canvas_type=classic&canvas_id=codex-e2e-openshop-canvas&node_id=codex-e2e-openshop-node'
+    );
+    expect(cleanup.pendingProjectIds()).toEqual([]);
+  });
+
   it('retries a transient purge failure before leaving test data behind', async () => {
     const sleep = vi.fn(async () => {});
     const cleanup = createTestCanvasCleanup('http://127.0.0.1:3000', {
@@ -131,15 +185,17 @@ describe('HstarA E2E canvas cleanup', () => {
     expect(source).toContain(
       "import { createTestCanvasCleanup } from './hstar-test-canvas-cleanup.js';"
     );
-    expect(source).toContain('const canvasCleanup = createTestCanvasCleanup(baseUrl);');
+    expect(source).toMatch(
+      /const canvasCleanup = createTestCanvasCleanup\(baseUrl(?:, \{requiredPrefix:TEST_ID_PREFIX\})?\);/
+    );
     expect(source).toMatch(
       /test\.afterEach\(async \(\{page, request\}\) => \{\s*await page\.close\(\);\s*await canvasCleanup\.purgeAll\(request\);\s*\}\);/
     );
     expect(source).toMatch(
-      /async function createCanvas\([\s\S]*?await canvasCleanup\.assertStorageIsolated\(request\);\s*const created = await apiJson\(await request\.post/
+      /async function createCanvas\([\s\S]*?await canvasCleanup\.assertStorageIsolated\(request\);[\s\S]*?const created = await apiJson\(await request\.post/
     );
     expect(source).toMatch(
-      /const created = await apiJson\(await request\.post\([\s\S]*?\}\)\);\s*canvasCleanup\.track\(created\.canvas\);/
+      /const created = await apiJson\(await request\.post\([\s\S]*?canvasCleanup\.track\(created\.canvas\);/
     );
   });
 });

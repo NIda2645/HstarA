@@ -1147,12 +1147,49 @@ async def api_lifecycle():
         output_data = png_bytes((190, 72, 44, 255))
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            random_canvas_response = await client.post(
+                "/api/canvases",
+                json={"title": "Random ID canvas", "icon": "layers", "kind": "classic"},
+            )
+            assert random_canvas_response.status_code == 200, random_canvas_response.text
+            random_canvas_id = random_canvas_response.json()["canvas"]["id"]
+            assert len(random_canvas_id) == 32
+            assert all(character in "0123456789abcdef" for character in random_canvas_id)
+
+            rejected_custom_id = await client.post(
+                "/api/canvases",
+                json={
+                    "id": "caller-selected-canvas-id",
+                    "title": "Rejected custom ID",
+                    "icon": "layers",
+                    "kind": "classic",
+                },
+            )
+            assert rejected_custom_id.status_code == 400, rejected_custom_id.text
+
+            engineering_canvas_id = "codex-e2e-openshop-project-storage"
             canvas_response = await client.post(
                 "/api/canvases",
-                json={"title": "OpenShop API canvas", "icon": "layers", "kind": "classic"},
+                json={
+                    "id": engineering_canvas_id,
+                    "title": "OpenShop API canvas",
+                    "icon": "layers",
+                    "kind": "classic",
+                },
             )
             assert canvas_response.status_code == 200
             canvas = canvas_response.json()["canvas"]
+            assert canvas["id"] == engineering_canvas_id
+            duplicate_canvas_response = await client.post(
+                "/api/canvases",
+                json={
+                    "id": engineering_canvas_id,
+                    "title": "Duplicate engineering canvas",
+                    "icon": "layers",
+                    "kind": "classic",
+                },
+            )
+            assert duplicate_canvas_response.status_code == 409, duplicate_canvas_response.text
             owner = {"canvasType": "classic", "canvasId": canvas["id"], "nodeId": "node-api"}
 
             init = await client.post(

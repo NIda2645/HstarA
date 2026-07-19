@@ -4,6 +4,11 @@
   ]);
   const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
   const FONT_COLLATOR = new Intl.Collator('zh-CN', {numeric:true, sensitivity:'base'});
+  const FALLBACK_FAMILY = '阿里巴巴普惠体 3.0';
+  const SCRIPT_CATEGORY = Object.freeze({'zh-hans':'01', 'zh-hant':'02', en:'03'});
+  // Below this normalized family-name score, a visually unrelated font is less safe than the fallback.
+  const OCR_MATCH_THRESHOLD = 0.72;
+  const OCR_MATCH_TIER = Object.freeze({none:0, partial:1, normalized:2, raw:3});
   const COMMON_FONTS = [
     {family:'Microsoft YaHei UI', label:'微软雅黑 UI', language:'zh'},
     {family:'Microsoft YaHei', label:'微软雅黑', language:'zh'},
@@ -18,6 +23,13 @@
     {family:'Courier New', label:'Courier New', language:'en'},
     {family:'Consolas', label:'Consolas', language:'en'},
     {family:'Impact', label:'Impact', language:'en'},
+  ];
+  const CATALOG_GROUPS = [
+    {section:'zh', key:'zh-unprefixed', label:'常用中文', test:font => font.languageGroup.startsWith('zh') && !font.freeCommercialCategory},
+    {section:'zh', key:'01', label:'01免 简体中文', test:font => font.freeCommercialCategory === '01'},
+    {section:'zh', key:'02', label:'02免 繁体中文', test:font => font.freeCommercialCategory === '02'},
+    {section:'en', key:'03', label:'03免 英文字体', test:font => font.freeCommercialCategory === '03'},
+    {section:'en', key:'en-unprefixed', label:'其他英文字体', test:font => !font.languageGroup.startsWith('zh') && !font.freeCommercialCategory},
   ];
 
   function cleanFamily(value){
@@ -90,6 +102,28 @@
     };
   }
 
+  function inferredMetadata(value){
+    const family = cleanFamily(value?.family);
+    const prefix = /^(0[123])免\s*/u.exec(family);
+    const freeCommercialCategory = cleanFamily(value?.freeCommercialCategory) || prefix?.[1] || '';
+    const sortName = cleanFamily(value?.sortName)
+      || family.slice(prefix?.[0]?.length || 0).trim()
+      || family;
+    const supplied = cleanFamily(value?.languageGroup).toLowerCase();
+    const legacy = cleanFamily(value?.language).toLowerCase();
+    let languageGroup = supplied;
+    if(!languageGroup){
+      if(freeCommercialCategory === '01') languageGroup = 'zh-hans';
+      else if(freeCommercialCategory === '02') languageGroup = 'zh-hant';
+      else if(freeCommercialCategory === '03') languageGroup = 'en';
+      else if(/^(?:zh-hant|zh-tw|zh-hk|zh-mo)/u.test(legacy)) languageGroup = 'zh-hant';
+      else if(legacy.startsWith('zh')) languageGroup = 'zh-hans';
+      else if(legacy.startsWith('en')) languageGroup = 'en';
+      else languageGroup = CJK_RE.test(`${sortName} ${cleanFamily(value?.label)}`) ? 'zh-hans' : 'en';
+    }
+    return {languageGroup, freeCommercialCategory, sortName};
+  }
+
   function normalizeFont(value, status = 'available'){
     const family = cleanFamily(value?.family);
     if(!family) return null;
@@ -101,6 +135,7 @@
       family,
       label:cleanFamily(value?.label) || family,
       language:cleanFamily(value?.language),
+      ...inferredMetadata(value),
       status,
       styles:[...deduplicated.values()].sort((left, right) => left.weight - right.weight || Number(left.italic) - Number(right.italic)),
     };
@@ -114,8 +149,15 @@
   }
 
   function isChineseFont(font){
+    const languageGroup = cleanFamily(font?.languageGroup).toLowerCase();
+    if(languageGroup) return languageGroup.startsWith('zh');
     return cleanFamily(font?.language).toLowerCase().startsWith('zh')
       || CJK_RE.test(`${cleanFamily(font?.label)} ${cleanFamily(font?.family)}`);
+  }
+
+  function compareSubgroupFonts(left, right){
+    return FONT_COLLATOR.compare(left.sortName || left.family, right.sortName || right.family)
+      || FONT_COLLATOR.compare(left.family, right.family);
   }
 
   function compareFonts(left, right){
@@ -123,6 +165,173 @@
     return group
       || FONT_COLLATOR.compare(left.label || left.family, right.label || right.family)
       || FONT_COLLATOR.compare(left.family, right.family);
+  }
+
+  function buildCatalogRows(fonts){
+    const rows = [];
+    for(const section of [{key:'zh', label:'中文字体'}, {key:'en', label:'英文字体'}]){
+      const groups = CATALOG_GROUPS
+        .filter(group => group.section === section.key)
+        .map(group => ({...group, fonts:fonts.filter(group.test).sort(compareSubgroupFonts)}))
+        .filter(group => group.fonts.length);
+      if(!groups.length) continue;
+      rows.push({kind:'section', key:`section-${section.key}`, label:section.label});
+      groups.forEach(group => {
+        rows.push({kind:'group', key:`group-${group.key}`, label:group.label});
+        group.fonts.forEach(font => rows.push({kind:'font', key:`font:${font.family}`, family:font.family, font}));
+      });
+    }
+    return rows;
+  }
+
+  function cloneCatalogRow(row){
+    return row.kind === 'font' ? {...row, font:cloneFont(row.font)} : {...row};
+  }
+
+  function rawMatchName(value){
+    return cleanFamily(value)
+      .replace(/^(?:01|02|03)免/u, '')
+      .trim()
+      .toLocaleLowerCase('zh-CN');
+  }
+
+  function normalizedMatchName(value){
+    let normalized = cleanFamily(value)
+      .replace(/^(?:01|02|03)免\s*/u, '')
+      .replace(/\s*\[(?:\d+|other-\d+)\]\s*$/iu, '')
+      .replace(/\s*\((?:truetype|opentype)\)\s*$/iu, '')
+      .trim();
+    const styleSuffix = /(?:[\s._-]+)(?:\d{2,3}[\s._-]+)?(?:thin|extra\s*light|ultra\s*light|light|regular|normal|medium|semi\s*bold|demi\s*bold|bold|extra\s*bold|ultra\s*bold|black|heavy|italic|oblique)(?:[\s._-]+(?:italic|oblique))?$/iu;
+    let previous = '';
+    while(normalized !== previous){
+      previous = normalized;
+      normalized = normalized.replace(styleSuffix, '').trim();
+    }
+    return normalized
+      .replace(/\b(?:version|ver|v)[\s._-]*(\d+)\b/giu, '$1')
+      .replace(/(\d+)\.0+\b/gu, '$1')
+      .replace(/[\p{P}\p{S}\s]+/gu, '')
+      .toLocaleLowerCase('zh-CN');
+  }
+
+  function fontAliases(font){
+    return [
+      font.family,
+      font.label,
+      font.sortName,
+      ...font.styles.flatMap(style => [style.family, ...(style.localNames || [])]),
+    ];
+  }
+
+  function buildSystemFontMatchIndex(fonts){
+    const pools = {'01':[], '02':[], '03':[]};
+    let fallbackFont = null;
+    fonts.forEach(font => {
+      if(font.family === FALLBACK_FAMILY) fallbackFont = font;
+      const pool = pools[font.freeCommercialCategory];
+      if(!pool) return;
+      const aliases = fontAliases(font);
+      pool.push({
+        font,
+        rawAliases:new Set(aliases.map(rawMatchName).filter(Boolean)),
+        normalizedAliases:new Set(aliases.map(normalizedMatchName).filter(Boolean)),
+        descriptorHaystack:`${font.family} ${font.label} ${font.sortName}`.toLocaleLowerCase('en-US'),
+      });
+    });
+    return {pools, fallbackFont};
+  }
+
+  function partialNameScore(expected, aliases){
+    if(!expected) return 0;
+    let score = 0;
+    aliases.forEach(alias => {
+      if(alias.includes(expected) || expected.includes(alias)){
+        score = Math.max(score, Math.min(alias.length, expected.length) / Math.max(alias.length, expected.length));
+      }
+    });
+    return score;
+  }
+
+  function descriptorWords(description){
+    return cleanFamily(description).toLocaleLowerCase('en-US').match(/[\p{L}\p{N}]+/gu) || [];
+  }
+
+  function descriptorScore(words, entry){
+    if(!words.length) return 0;
+    return words.filter(word => word.length > 2 && entry.descriptorHaystack.includes(word)).length / words.length;
+  }
+
+  function bestNameMatch(candidates, entry){
+    let best = {tier:OCR_MATCH_TIER.none, score:0, candidateIndex:Number.MAX_SAFE_INTEGER};
+    candidates.forEach(candidate => {
+      let tier = OCR_MATCH_TIER.none;
+      let score = 0;
+      if(candidate.raw && entry.rawAliases.has(candidate.raw)){
+        tier = OCR_MATCH_TIER.raw;
+        score = 1;
+      } else if(candidate.normalized && entry.normalizedAliases.has(candidate.normalized)){
+        tier = OCR_MATCH_TIER.normalized;
+        score = 1;
+      } else {
+        score = partialNameScore(candidate.normalized, entry.normalizedAliases);
+        if(score > 0) tier = OCR_MATCH_TIER.partial;
+      }
+      if(
+        tier > best.tier
+        || (tier === best.tier && score > best.score)
+        || (tier === best.tier && score === best.score && candidate.index < best.candidateIndex)
+      ){
+        best = {tier, score, candidateIndex:candidate.index};
+      }
+    });
+    return best;
+  }
+
+  function betterFontMatch(candidate, current){
+    if(!current) return true;
+    if(candidate.tier !== current.tier) return candidate.tier > current.tier;
+    if(candidate.score !== current.score) return candidate.score > current.score;
+    if(candidate.candidateIndex !== current.candidateIndex){
+      return candidate.candidateIndex < current.candidateIndex;
+    }
+    if(candidate.descriptionScore !== current.descriptionScore){
+      return candidate.descriptionScore > current.descriptionScore;
+    }
+    return compareSubgroupFonts(candidate.entry.font, current.entry.font) < 0;
+  }
+
+  function nearestStyle(styles, weight, italic){
+    const parsedWeight = Number(weight);
+    const targetWeight = Number.isFinite(parsedWeight)
+      ? Math.max(100, Math.min(900, parsedWeight))
+      : 400;
+    return [...styles].sort((left, right) => (
+      Number(Boolean(left.italic) !== italic) * 1000 + Math.abs(left.weight - targetWeight)
+      - (Number(Boolean(right.italic) !== italic) * 1000 + Math.abs(right.weight - targetWeight))
+      || left.weight - right.weight
+      || FONT_COLLATOR.compare(left.family, right.family)
+    ))[0] || null;
+  }
+
+  function normalizedScript(value){
+    const script = cleanFamily(value).toLowerCase();
+    if(['zh-hans', 'zh-cn', 'zh-sg', 'zh', 'cn'].includes(script)) return 'zh-hans';
+    if(['zh-hant', 'zh-tw', 'zh-hk', 'zh-mo'].includes(script)) return 'zh-hant';
+    if(['en', 'english'].includes(script)) return 'en';
+    return script === 'mixed' ? 'mixed' : '';
+  }
+
+  function categoryForBlock(block){
+    const script = normalizedScript(block?.script);
+    if(SCRIPT_CATEGORY[script]) return SCRIPT_CATEGORY[script];
+    const reported = [
+      block?.dominantScript,
+      block?.reportedScript,
+      block?.reportedDominantScript,
+      block?.font?.dominantScript,
+      block?.language,
+    ].map(normalizedScript).find(value => SCRIPT_CATEGORY[value]);
+    return SCRIPT_CATEGORY[reported] || '';
   }
 
   function createManager(options = {}){
@@ -140,6 +349,10 @@
       fonts:[],
       systemFonts:[],
       projectRefs:[],
+      catalogRows:[],
+      catalogSignature:'',
+      matchPools:{'01':[], '02':[], '03':[]},
+      fallbackSystemFont:null,
       loaded:false,
       loading:false,
       error:'',
@@ -202,7 +415,13 @@
           ...(status === 'substituted' && replacementFamily ? {replacementFamily} : {}),
         });
       });
-      state.fonts = [...merged.values()].sort(compareFonts);
+      const fonts = [...merged.values()].sort(compareFonts);
+      const signature = JSON.stringify(fonts);
+      state.fonts = fonts;
+      if(signature !== state.catalogSignature){
+        state.catalogSignature = signature;
+        state.catalogRows = buildCatalogRows(fonts);
+      }
     }
 
     function getState(){
@@ -243,6 +462,9 @@
           state.systemFonts = (Array.isArray(payload?.fonts) ? payload.fonts : [])
             .map(value => normalizeFont(value, 'available'))
             .filter(Boolean);
+          const matchIndex = buildSystemFontMatchIndex(state.systemFonts);
+          state.matchPools = matchIndex.pools;
+          state.fallbackSystemFont = matchIndex.fallbackFont;
           state.platform = cleanFamily(payload?.platform);
           state.cached = Boolean(payload?.cached);
           state.loaded = true;
@@ -270,10 +492,14 @@
       const term = cleanFamily(query).toLowerCase();
       return state.fonts.filter(font => {
         if(!term) return true;
-        const names = [font.family, font.label];
+        const names = [font.family, font.label, font.sortName];
         font.styles.forEach(style => names.push(...style.localNames));
         return names.some(name => String(name || '').toLowerCase().includes(term));
       }).map(cloneFont);
+    }
+
+    function catalogRows(){
+      return state.catalogRows.map(cloneCatalogRow);
     }
 
     function fontForFace(family){
@@ -310,6 +536,57 @@
       const exact = font.styles.find(style => style.family.toLowerCase() === normalized);
       const style = exact || (font.family.toLowerCase() === normalized ? defaultStyleFor(font.family) : null);
       return style ? {...style, localNames:[...style.localNames]} : null;
+    }
+
+    function matchOcrFont(block = {}){
+      const profile = block.font && typeof block.font === 'object' ? block.font : {};
+      const requestedStyle = cleanFamily(profile.style).toLowerCase();
+      const italic = profile.italic === true || ['italic', 'oblique'].includes(requestedStyle);
+      const fallbackFont = state.fallbackSystemFont;
+      let selected = null;
+      let fallback = Boolean(profile.artistic);
+
+      if(!profile.artistic){
+        const category = categoryForBlock(block);
+        const pool = state.matchPools[category] || [];
+        const candidates = Array.isArray(profile.familyCandidates)
+          ? profile.familyCandidates.map((value, index) => {
+            const cleaned = cleanFamily(value);
+            return {index, raw:rawMatchName(cleaned), normalized:normalizedMatchName(cleaned)};
+          }).filter(candidate => candidate.raw || candidate.normalized)
+          : [];
+        const words = descriptorWords(profile.styleDescription);
+        let best = null;
+        pool.forEach(entry => {
+          const nameMatch = bestNameMatch(candidates, entry);
+          const candidate = {
+            entry,
+            ...nameMatch,
+            descriptionScore:descriptorScore(words, entry),
+          };
+          if(betterFontMatch(candidate, best)) best = candidate;
+        });
+        if(best && (
+          best.tier >= OCR_MATCH_TIER.normalized
+          || (best.tier === OCR_MATCH_TIER.partial && best.score >= OCR_MATCH_THRESHOLD)
+        )){
+          selected = best.entry.font;
+        }
+        else fallback = true;
+      }
+
+      if(!selected) selected = fallbackFont;
+      if(!selected) throw new Error(`未安装必需的回退字体：${FALLBACK_FAMILY}`);
+      const style = nearestStyle(selected.styles, profile.weight, italic);
+      if(!style) throw new Error(`字体 ${selected.family} 没有可用字型`);
+      return {
+        family:selected.family,
+        faceFamily:style.family,
+        styleId:style.id,
+        weight:style.weight,
+        italic:style.italic,
+        fallback,
+      };
     }
 
     function addRef(target, seen, value){
@@ -397,6 +674,8 @@
       loadSystemFonts,
       refreshSystemFonts,
       searchFonts,
+      catalogRows,
+      matchOcrFont,
       stylesFor,
       resolveFamily,
       defaultStyleFor,
