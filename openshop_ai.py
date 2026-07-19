@@ -35,6 +35,8 @@ OPENSHOP_REFERENCE_SOURCE_TYPES = {"primary", "selection", "layer", "library", "
 OPENSHOP_DEFAULT_MAX_REFERENCES = 8
 OPENSHOP_DEFAULT_MAX_OUTPUTS = 8
 OPENSHOP_HARD_MAX_OUTPUTS = 64
+OPENSHOP_OCR_MAX_BLOCKS = 500
+OPENSHOP_OCR_MAX_WARNINGS = 50
 
 _CLI_PROTOCOLS = {"codex", "gemini-cli"}
 _ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -516,6 +518,17 @@ def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[st
     return block
 
 
+def _ocr_warning_code(error: Exception) -> str:
+    message = str(error).lower()
+    if "confidence" in message:
+        return "invalid_confidence"
+    if "text" in message:
+        return "invalid_text"
+    if "quad" in message or "bbox" in message or "position" in message:
+        return "invalid_geometry"
+    return "invalid_block"
+
+
 def normalize_ocr_layout(raw_text: Any, width: int, height: int) -> dict[str, Any]:
     width = _positive_dimension(width, "width")
     height = _positive_dimension(height, "height")
@@ -523,13 +536,71 @@ def normalize_ocr_layout(raw_text: Any, width: int, height: int) -> dict[str, An
     values = payload.get("blocks")
     if not isinstance(values, list) or not values:
         raise OpenShopAiValidationError("OCR model did not return reliable text positions")
-    blocks = [_normalize_block(value, index, width, height) for index, value in enumerate(values[:500])]
+    blocks: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    invalid_block_count = 0
+    for index, value in enumerate(values[:OPENSHOP_OCR_MAX_BLOCKS]):
+        try:
+            blocks.append(_normalize_block(value, index, width, height))
+        except (OpenShopAiValidationError, TypeError, ValueError, OverflowError) as exc:
+            invalid_block_count += 1
+            if len(warnings) < OPENSHOP_OCR_MAX_WARNINGS - 1:
+                warnings.append({
+                    "blockIndex": index,
+                    "code": _ocr_warning_code(exc),
+                })
+    if not blocks:
+        raise OpenShopAiValidationError("OCR model did not return reliable text positions")
+    if invalid_block_count > OPENSHOP_OCR_MAX_WARNINGS - 1:
+        warnings.append({
+            "code": "additional_invalid_blocks",
+            "count": invalid_block_count - (OPENSHOP_OCR_MAX_WARNINGS - 1),
+        })
     return {
         "schemaVersion": 2,
         "width": width,
         "height": height,
         "blocks": blocks,
+        "warnings": warnings,
     }
+
+
+def _normalize_ocr_warnings(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    warnings: list[dict[str, Any]] = []
+    valid_codes = {
+        "invalid_block",
+        "invalid_confidence",
+        "invalid_geometry",
+        "invalid_text",
+    }
+    for raw_warning in value:
+        if not isinstance(raw_warning, dict):
+            continue
+        code = str(raw_warning.get("code") or "").strip()
+        if code == "additional_invalid_blocks":
+            try:
+                count = int(raw_warning.get("count"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if count < 1:
+                continue
+            warnings.append({
+                "code": code,
+                "count": min(OPENSHOP_OCR_MAX_BLOCKS, count),
+            })
+        elif code in valid_codes:
+            try:
+                block_index = int(raw_warning.get("blockIndex"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if block_index < 0 or block_index >= OPENSHOP_OCR_MAX_BLOCKS:
+                continue
+            warnings.append({"blockIndex": block_index, "code": code})
+        if len(warnings) >= OPENSHOP_OCR_MAX_WARNINGS:
+            break
+    return warnings
 
 
 def _task_asset_id(value: Any, label: str) -> str:
@@ -1070,7 +1141,11 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
     elif isinstance(result, dict) and isinstance(result.get("blocks"), list):
         width = _positive_dimension(result.get("width"), "result width")
         height = _positive_dimension(result.get("height"), "result height")
-        record["result"] = normalize_ocr_layout(json.dumps(result), width, height)
+        normalized_result = normalize_ocr_layout(json.dumps(result), width, height)
+        normalized_warnings = _normalize_ocr_warnings(result.get("warnings"))
+        if normalized_warnings:
+            normalized_result["warnings"] = normalized_warnings
+        record["result"] = normalized_result
     return record
 
 

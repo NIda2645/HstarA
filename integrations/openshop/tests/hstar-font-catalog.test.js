@@ -655,6 +655,38 @@ describe('Hstar OpenShop font catalog', () => {
     unsubscribe();
   });
 
+  it('keeps the previous system font catalog and exposes the error when refresh fails', async () => {
+    const family = 'Refresh Fixture Sans';
+    const fetchImpl = vi.fn(async url => {
+      if(String(url).includes('refresh=1')) throw new Error('refresh offline');
+      return {
+        ok:true,
+        json:async () => ({
+          platform:'windows',
+          fonts:[{family, label:family}],
+        }),
+      };
+    });
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fetchImpl,
+      fontProbe:() => false,
+    });
+
+    await manager.loadSystemFonts();
+    const previousRows = manager.catalogRows();
+
+    await expect(manager.refreshSystemFonts()).resolves.toEqual([]);
+
+    expect(manager.catalogRows()).toEqual(previousRows);
+    expect(manager.getState()).toMatchObject({
+      loaded:true,
+      loading:false,
+      error:'refresh offline',
+      platform:'windows',
+    });
+    expect(manager.getState().fonts).toContainEqual(expect.objectContaining({family, status:'available'}));
+  });
+
   it('keeps common and project fonts usable when the system endpoint fails', async () => {
     const manager = window.HstarOpenShopFontCatalog.createManager({
       fetchImpl:async () => { throw new Error('offline'); },

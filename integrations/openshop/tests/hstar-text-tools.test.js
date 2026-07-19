@@ -1494,6 +1494,40 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
+  it('retries an aborted POST once through the reopened visible session', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient} = harness;
+    addArtCarrier(harness);
+    const firstPost = createDeferred();
+    aiClient.createTask.mockReturnValueOnce(firstPost.promise).mockResolvedValueOnce({
+      task_id:'task-after-abort-retry', status:'queued',
+    });
+    aiClient.pollTask.mockResolvedValue({
+      taskId:'task-after-abort-retry', status:'succeeded', result:artResult(),
+    });
+    await controller.start();
+
+    const creating = controller.restoreArtFont('text-layer-1');
+    await vi.waitFor(() => expect(aiClient.createTask).toHaveBeenCalledOnce());
+    const clientRequestId = aiClient.createTask.mock.calls[0][1].clientRequestId;
+
+    window.dispatchEvent(new CustomEvent('openshop:session-stopped', {detail:{context}}));
+    window.dispatchEvent(new CustomEvent('openshop:session-opened', {detail:{session:{context}}}));
+    window.dispatchEvent(new CustomEvent('openshop:session-visible', {detail:{context}}));
+    const concurrentRestore = controller.restorePendingArtTasks();
+    firstPost.reject(new DOMException('session stopped', 'AbortError'));
+    await Promise.all([creating, concurrentRestore]);
+
+    await vi.waitFor(() => expect(editor.__hstarAiTaskRecords[0].reconcileState).toBe('applied'));
+    expect(aiClient.createTask).toHaveBeenCalledTimes(2);
+    expect(aiClient.createTask.mock.calls.map(([, request]) => request.clientRequestId)).toEqual([
+      clientRequestId, clientRequestId,
+    ]);
+    expect(aiClient.pollTask).toHaveBeenCalledOnce();
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(1);
+    controller.destroy();
+  });
+
   it('keeps the persisted provisional record in A when a late create response crosses into B', async () => {
     const harness = createHarness();
     const {controller, editor, aiClient, runtime} = harness;

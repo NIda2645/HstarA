@@ -686,8 +686,13 @@
           return;
         }
         if(state.destroyed) return;
+        const refreshState = fontManager.getState?.();
         const status = documentRef.querySelector('[data-font-status]');
         if(!status) return;
+        if(refreshState?.error){
+          status.textContent = '本机字体刷新失败';
+          return;
+        }
         status.textContent = '本机字体已刷新';
         syncControls();
       });

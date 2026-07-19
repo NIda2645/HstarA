@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const controllerPath = resolve(testDir, '..', 'host', 'openshop-text-properties.js');
 const controllerCssPath = resolve(testDir, '..', 'host', 'openshop-text-properties.css');
+const fontCatalogPath = resolve(testDir, '..', 'host', 'openshop-font-catalog.js');
 const FONT_ROW_HEIGHT = 30;
 const FONT_VIEWPORT_HEIGHT = 210;
 const FONT_OVERSCAN = 4;
@@ -158,7 +159,7 @@ function createHarness(options = {}) {
       font:{family:'Century Gothic', label:'Century Gothic', status:'available', styles:[]},
     },
   ];
-  const fontManager = {
+  const fontManager = options.fontManager || {
     loadSystemFonts:vi.fn(async () => [
       {family:'Microsoft YaHei UI', label:'微软雅黑 UI', status:'available', styles:[
         {id:'yahei-400-normal', label:'常规', weight:400, italic:false, localNames:['Microsoft YaHei UI']},
@@ -169,6 +170,7 @@ function createHarness(options = {}) {
       ]},
     ]),
     refreshSystemFonts:vi.fn(async () => []),
+    getState:vi.fn(() => ({error:''})),
     searchFonts:vi.fn(() => catalogRows.filter(row => row.kind === 'font').map(row => row.font)),
     catalogRows:vi.fn(() => catalogRows),
     stylesFor:vi.fn(() => [{id:'yahei-400-normal', label:'常规', weight:400, italic:false, localNames:['Microsoft YaHei UI']}]),
@@ -589,11 +591,33 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
+  it('shows a failed refresh when the font manager captures a fetch error', async () => {
+    delete window.HstarOpenShopFontCatalog;
+    await import(`${pathToFileURL(fontCatalogPath).href}?test=${Date.now()}-${Math.random()}`);
+    const fetchImpl = vi.fn(async () => { throw new Error('refresh offline'); });
+    const fontManager = window.HstarOpenShopFontCatalog.createManager({
+      fetchImpl,
+      fontProbe:() => true,
+    });
+    const {controller} = createHarness({fontManager});
+    await controller.start();
+
+    document.querySelector('[data-font-refresh]').click();
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-font-status]').textContent).toBe('本机字体刷新失败');
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fontManager.getState().error).toContain('refresh offline');
+    controller.destroy();
+  });
+
   it('ignores an in-flight refresh that resolves after destroy', async () => {
     const deferred = createDeferred();
     const {controller, fontManager} = createHarness();
     fontManager.refreshSystemFonts.mockReturnValue(deferred.promise);
     await controller.start();
+    const status = document.querySelector('[data-font-status]');
     document.querySelector('[data-font-refresh]').click();
     controller.destroy();
 
@@ -601,6 +625,8 @@ describe('Hstar OpenShop text properties', () => {
     await settleAsyncEvent();
 
     expect(document.getElementById('hstar-text-properties-panel')).toBeNull();
+    expect(fontManager.getState).not.toHaveBeenCalled();
+    expect(status.textContent).toBe('');
   });
 
   it('handles an in-flight refresh rejection after destroy', async () => {

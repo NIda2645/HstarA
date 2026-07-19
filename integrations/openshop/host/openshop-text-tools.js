@@ -1240,7 +1240,10 @@
       return run.promise;
     }
 
-    function resumeArtCreationRecord(record, scope, {allowRegistryRecreate = true} = {}){
+    function resumeArtCreationRecord(record, scope, {
+      allowRegistryRecreate = true,
+      allowCreateAbortRetry = true,
+    } = {}){
       const clientRequestId = clean(record?.clientRequestId);
       if(!clientRequestId) return Promise.resolve(record);
       const existing = state.artCreatesByClientRequestId.get(clientRequestId);
@@ -1248,7 +1251,24 @@
       const run = {record, promise:null};
       run.promise = (async () => {
         if(!artScopeIsCurrent(scope) || !artRecordScopeMatches(record, scope.context)) return record;
-        const created = await aiClient.createTask(scope.context, artRequestFromRecord(record));
+        let created;
+        try {
+          created = await aiClient.createTask(scope.context, artRequestFromRecord(record));
+        } catch(error){
+          const retryScope = (
+            allowCreateAbortRetry
+            && error?.name === 'AbortError'
+            && !artScopeIsCurrent(scope)
+            && taskRecords().includes(record)
+            && state.artCreatesByClientRequestId.get(clientRequestId) === run
+          ) ? currentArtScopeForRecord(record) : null;
+          if(!retryScope) throw error;
+          state.artCreatesByClientRequestId.delete(clientRequestId);
+          return resumeArtCreationRecord(record, retryScope, {
+            allowRegistryRecreate,
+            allowCreateAbortRetry:false,
+          });
+        }
         if(!taskRecords().includes(record)) return record;
         const creationScope = artScopeIsCurrent(scope) ? scope : currentArtScopeForRecord(record);
         if(!creationScope) return record;

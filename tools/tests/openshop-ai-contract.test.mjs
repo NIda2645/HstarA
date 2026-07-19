@@ -35,6 +35,7 @@ import sys
 
 sys.path.insert(0, os.getcwd())
 
+import openshop_ai as openshop_ai_module
 from openshop_ai import (
     OPENSHOP_AI_TOOL_IDS,
     OPENSHOP_GENERATIVE_TOOL_IDS,
@@ -267,6 +268,95 @@ assert layout["blocks"][3]["font"]["shadow"] == {
     "color": "#00000000", "blur": 8.0, "offsetX": -2.0, "offsetY": 3.0,
 }
 
+mixed = json.dumps({
+    "blocks": [
+        {"text": "Keep this block", "bbox": {"x": 10, "y": 10, "width": 200, "height": 40}},
+        {
+            "text": "FULL OCR TEXT MUST NOT APPEAR IN WARNINGS",
+            "quad": [{"x": -1, "y": 0}] * 4,
+        },
+        {
+            "text": "\u0000\u0001",
+            "bbox": {"x": 10, "y": 60, "width": 200, "height": 40},
+            "confidence": 0.8,
+        },
+        {
+            "text": "Bad confidence must be skipped",
+            "bbox": {"x": 10, "y": 110, "width": 200, "height": 40},
+            "confidence": "not-a-number",
+        },
+        {"text": "Keep this block too", "bbox": {"x": 10, "y": 160, "width": 200, "height": 40}},
+    ],
+}, ensure_ascii=False)
+mixed_layout = normalize_ocr_layout(mixed, width=800, height=600)
+assert [block["text"] for block in mixed_layout["blocks"]] == [
+    "Keep this block", "Keep this block too",
+]
+assert [warning["blockIndex"] for warning in mixed_layout["warnings"]] == [1, 2, 3]
+assert [warning["code"] for warning in mixed_layout["warnings"]] == [
+    "invalid_geometry", "invalid_text", "invalid_confidence",
+]
+assert len(mixed_layout["warnings"]) <= 50
+assert "FULL OCR TEXT MUST NOT APPEAR IN WARNINGS" not in json.dumps(
+    mixed_layout["warnings"], ensure_ascii=False,
+)
+
+warning_bound = normalize_ocr_layout(json.dumps({
+    "blocks": [
+        {"text": "Keep one", "bbox": {"x": 10, "y": 10, "width": 20, "height": 20}},
+        *[
+            {
+                "text": f"secret invalid block {index}",
+                "bbox": {"x": 10, "y": 40, "width": 20, "height": 20},
+                "confidence": "invalid",
+            }
+            for index in range(60)
+        ],
+    ]
+}), width=800, height=600)
+assert len(warning_bound["blocks"]) == 1
+assert len(warning_bound["warnings"]) == 50
+assert warning_bound["warnings"][-1] == {
+    "code": "additional_invalid_blocks",
+    "count": 11,
+}
+assert "secret invalid block" not in json.dumps(warning_bound["warnings"])
+
+limited = normalize_ocr_layout(json.dumps({
+    "blocks": [
+        {"text": f"line {index}", "bbox": {"x": 10, "y": 10, "width": 20, "height": 20}}
+        for index in range(501)
+    ]
+}), width=800, height=600)
+assert len(limited["blocks"]) == 500
+assert limited["warnings"] == []
+
+for invalid in (
+    "just plain text without coordinates",
+    json.dumps({"blocks": []}),
+    json.dumps({"blocks": [{"text": "No location"}]}),
+    json.dumps({"blocks": [{"text": "Out", "quad": [{"x": -1, "y": 0}] * 4}]}),
+    json.dumps({"blocks": [{"text": "", "bbox": {"x": 1, "y": 1, "width": 10, "height": 10}}]}),
+):
+    try:
+        normalize_ocr_layout(invalid, width=1920, height=1080)
+        raise AssertionError("invalid OCR layout should fail")
+    except OpenShopAiValidationError:
+        pass
+
+original_normalize_block = openshop_ai_module._normalize_block
+openshop_ai_module._normalize_block = lambda *args: (_ for _ in ()).throw(RuntimeError("system failure"))
+try:
+    try:
+        normalize_ocr_layout(json.dumps({
+            "blocks": [{"text": "System error", "bbox": {"x": 10, "y": 10, "width": 20, "height": 20}}]
+        }), width=800, height=600)
+        raise AssertionError("system exceptions must not be swallowed")
+    except RuntimeError:
+        pass
+finally:
+    openshop_ai_module._normalize_block = original_normalize_block
+
 ocr_record = normalize_ai_task_record({
     "taskId": "task-ocr-v2",
     "toolId": "text-extract",
@@ -275,6 +365,15 @@ ocr_record = normalize_ai_task_record({
     "result": layout,
 })
 assert ocr_record["result"] == layout
+
+mixed_ocr_record = normalize_ai_task_record({
+    "taskId": "task-ocr-mixed",
+    "toolId": "text-extract",
+    "status": "succeeded",
+    "sourceAssetId": "d" * 64,
+    "result": mixed_layout,
+})
+assert mixed_ocr_record["result"] == mixed_layout
 
 legacy_record = normalize_ai_task_record({
     "taskId": "task-ocr-v1",
@@ -343,18 +442,6 @@ weight_boundaries = normalize_ocr_layout(json.dumps({
     ],
 }), width=800, height=600)
 assert [block["font"]["weight"] for block in weight_boundaries["blocks"]] == [100, 900]
-
-for invalid in (
-    "just plain text without coordinates",
-    json.dumps({"blocks": [{"text": "No location"}]}),
-    json.dumps({"blocks": [{"text": "Out", "quad": [{"x": -1, "y": 0}] * 4}]}),
-    json.dumps({"blocks": [{"text": "", "bbox": {"x": 1, "y": 1, "width": 10, "height": 10}}]}),
-):
-    try:
-        normalize_ocr_layout(invalid, width=1920, height=1080)
-        raise AssertionError("invalid OCR layout should fail")
-    except OpenShopAiValidationError:
-        pass
 
 record = normalize_ai_task_record({
     "taskId": "task-1",
