@@ -738,6 +738,92 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   expect(pageErrors).toEqual([]);
 });
 
+test('native export preserves document dimensions and routes all formats through native save', async ({page, request}) => {
+  test.setTimeout(180000);
+  const singleRequests = [];
+  const batchRequests = [];
+  await page.route('**/api/native/save-output-as', async route => {
+    singleRequests.push(route.request().postDataJSON());
+    await route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({ok:true, cancelled:false, filename:'native-export.png', folder:'C:/test-output'}),
+    });
+  });
+  await page.route('**/api/native/save-output-batch', async route => {
+    const body = route.request().postDataJSON();
+    batchRequests.push(body);
+    await route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({ok:true, cancelled:false, count:body.items?.length || 0, folder:'C:/test-output'}),
+    });
+  });
+
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const node = {
+    id:`${TEST_ID_PREFIX}native-export-${runId}`, type:'openshop-layered',
+    projectId:`${TEST_ID_PREFIX}native-export-project-${runId}`, projectName:'原生导出',
+    x:200, y:180, w:340, h:260, documentWidth:1600, documentHeight:900, saveState:'new', created_at:Date.now(),
+  };
+  const canvas = await createCanvas(request, {kind:'classic', title:'OpenShop native export', nodes:[node], connections:[]});
+  const frame = await mountCanvas(page, 'classic', canvas.id);
+  const editor = await openNode(page, frame, 'classic', node.id, 0);
+  await editor.evaluate(() => {
+    OS.dismissWelcome();
+    OS.createNewDocument(1600, 900);
+  });
+  await expect(editor.locator('#welcome-overlay')).toBeHidden();
+
+  await page.locator('[data-openshop-download]').click();
+  await expect.poll(() => singleRequests.length).toBe(1);
+  await expect(page.locator('[data-openshop-notice]')).toHaveText('已保存：native-export.png');
+
+  const pngRequest = singleRequests[0];
+  const png = Buffer.from(pngRequest.content_base64, 'base64');
+  expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  expect(png.readUInt32BE(16)).toBe(1600);
+  expect(png.readUInt32BE(20)).toBe(900);
+
+  await page.setViewportSize({width:720, height:700});
+  const downloadBox = await page.locator('[data-openshop-download]').boundingBox();
+  const sendBox = await page.locator('[data-openshop-send]').boundingBox();
+  expect(downloadBox).not.toBeNull();
+  expect(sendBox).not.toBeNull();
+  expect(downloadBox.x + downloadBox.width).toBeLessThanOrEqual(sendBox.x);
+  expect(sendBox.x + sendBox.width).toBeLessThanOrEqual(720);
+
+  await page.setViewportSize({width:1280, height:800});
+  const fileMenu = editor.locator('#topbar > .menu-item').first();
+  const exportSubmenu = fileMenu.locator('.dd-sub').first();
+  const exportItems = exportSubmenu.locator(':scope > .menu-dropdown > .dd-item');
+  await expect(exportItems).toHaveCount(6);
+  for(let index = 0; index < 6; index += 1){
+    const before = singleRequests.length;
+    await fileMenu.hover();
+    await exportSubmenu.hover();
+    await exportItems.nth(index).click();
+    await expect.poll(() => singleRequests.length).toBe(before + 1);
+  }
+
+  const singleNames = singleRequests.map(item => item.name);
+  for(const extension of ['.png', '.jpg', '.webp', '.svg', '.pdf', '.psd']){
+    expect(singleNames.some(name => name.endsWith(extension))).toBe(true);
+  }
+
+  await editor.evaluate(() => OS._saveBatchFormats(['png', 'jpeg', 'webp', 'svg', 'pdf', 'psd']));
+  expect(batchRequests).toHaveLength(1);
+  expect(batchRequests[0].items).toHaveLength(6);
+  expect(batchRequests[0].items.map(item => item.name)).toEqual(expect.arrayContaining([
+    expect.stringMatching(/\.png$/),
+    expect.stringMatching(/\.jpg$/),
+    expect.stringMatching(/\.webp$/),
+    expect.stringMatching(/\.svg$/),
+    expect.stringMatching(/\.pdf$/),
+    expect.stringMatching(/\.psd$/),
+  ]));
+});
+
 test('classic and smart canvases receive every OpenShop output as new image nodes', async ({page, request}) => {
   test.setTimeout(180000);
   const pageErrors = [];
@@ -753,8 +839,18 @@ test('classic and smart canvases receive every OpenShop output as new image node
   let frame = await mountCanvas(page, 'classic', classic.id);
   let editor = await openNode(page, frame, 'classic', classicNode.id, 0);
   await editor.evaluate(() => OS.createNewDocument(1600, 900));
-  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
-  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
+  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas({requestId:'classic-send-ack-1'}));
+  await expect.poll(async () => (await canvasRecord(request, classic.id)).nodes
+    .some(node => node.openshopRequestId === 'classic-send-ack-1')).toBe(true);
+  await expect(page.locator('[data-openshop-notice]')).toHaveText('已发送到画布');
+  await page.locator('[data-openshop-notice]').evaluate(element => {
+    element.hidden = true;
+    element.textContent = '';
+  });
+  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas({requestId:'classic-send-ack-2'}));
+  await expect.poll(async () => (await canvasRecord(request, classic.id)).nodes
+    .some(node => node.openshopRequestId === 'classic-send-ack-2')).toBe(true);
+  await expect(page.locator('[data-openshop-notice]')).toHaveText('已发送到画布');
   await expect.poll(() => frame.evaluate(() => window.HstarClassicOpenShopHooks.getNodes().filter(node => node.sourceType === 'openshop-layered').length)).toBe(2);
   const classicRecord = await canvasRecord(request, classic.id);
   const classicOutputs = classicRecord.nodes.filter(node => node.sourceType === 'openshop-layered');
@@ -781,8 +877,22 @@ test('classic and smart canvases receive every OpenShop output as new image node
   });
   frame = await mountCanvas(page, 'smart', smart.id);
   editor = await openNode(page, frame, 'smart', smartNode.id, 1);
-  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
-  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas());
+  await page.locator('[data-openshop-notice]').evaluate(element => {
+    element.hidden = true;
+    element.textContent = '';
+  });
+  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas({requestId:'smart-send-ack-1'}));
+  await expect.poll(async () => (await canvasRecord(request, smart.id)).nodes
+    .some(node => node.openshopRequestId === 'smart-send-ack-1')).toBe(true);
+  await expect(page.locator('[data-openshop-notice]')).toHaveText('已发送到画布');
+  await page.locator('[data-openshop-notice]').evaluate(element => {
+    element.hidden = true;
+    element.textContent = '';
+  });
+  await editor.evaluate(() => window.HstarOpenShopRuntime.requestSendToCanvas({requestId:'smart-send-ack-2'}));
+  await expect.poll(async () => (await canvasRecord(request, smart.id)).nodes
+    .some(node => node.openshopRequestId === 'smart-send-ack-2')).toBe(true);
+  await expect(page.locator('[data-openshop-notice]')).toHaveText('已发送到画布');
   await expect.poll(() => frame.evaluate(nodeId => {
     const hooks = window.HstarSmartCanvasOpenShopHooks;
     return [nodeId].flatMap(id => {
