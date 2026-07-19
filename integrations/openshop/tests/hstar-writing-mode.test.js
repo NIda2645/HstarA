@@ -67,7 +67,7 @@ function createFabricMock({withCreateClass = true} = {}) {
       names.forEach(key => {
         if(key.startsWith('_') || MOCK_RUNTIME_PROPERTIES.has(key)) return;
         const value = this[key];
-        const serializable = cloneMockValue(value);
+        const serializable = key.startsWith('hstar') ? value : cloneMockValue(value);
         if(serializable !== undefined) output[key] = serializable;
       });
       return output;
@@ -473,6 +473,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
     });
     original.hstarLayerId = 'vertical-title';
     original.hstarData = {tags:['title']};
+    original.hstarRuntime = () => 'omit';
     const serialized = original.toObject();
     let reconstructed;
     fabric.HstarVerticalText.fromObject(serialized, instance => { reconstructed = instance; });
@@ -498,6 +499,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(serialized.styles).not.toBe(original.styles);
     expect(serialized.shadow).not.toBe(original.shadow);
     expect(serialized.controls).toBeUndefined();
+    expect(serialized.hstarRuntime).toBeUndefined();
     expect(reconstructed.styles).not.toBe(serialized.styles);
     expect(reconstructed.shadow).not.toBe(serialized.shadow);
   });

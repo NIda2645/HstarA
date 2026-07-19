@@ -128,15 +128,26 @@
 
       toObject(extra) {
         const parent = fabric.Object && fabric.Object.prototype && fabric.Object.prototype.toObject;
-        const metadata = Object.keys(this).filter(name => name.startsWith('hstar'));
+        const metadata = {};
+        Object.keys(this).forEach(name => {
+          if(!name.startsWith('hstar')) return;
+          const value = cloneSerializable(this[name]);
+          if(value !== undefined) metadata[name] = value;
+        });
         const included = [...new Set([
           ...VERTICAL_TEXT_PROPERTIES,
-          ...metadata,
+          ...Object.keys(metadata),
           ...(Array.isArray(extra) ? extra : []),
         ])];
         const object = typeof parent === 'function'
           ? fabric.Object.prototype.toObject.call(this, included)
           : {};
+        Object.assign(object, metadata);
+        Object.keys(object).forEach(name => {
+          if(name.startsWith('hstar') && (typeof object[name] === 'function' || object[name] === undefined)) {
+            delete object[name];
+          }
+        });
         object.type = VERTICAL_TYPE;
         object.text = this.text;
         object.hstarWritingMode = VERTICAL;
