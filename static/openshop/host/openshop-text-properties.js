@@ -46,8 +46,11 @@
       panel:null,
       tab:null,
     };
+    let allFontRows = [];
     let fontRows = [];
-    let fontTrigger = null;
+    let fontTriggers = [];
+    let activeFontTrigger = null;
+    let activeFontSection = 'zh';
     let fontList = null;
     let fontSpacer = null;
     let fontRowsLayer = null;
@@ -108,15 +111,36 @@
       control.value = points ? String(Number(pixelsToPoints(value).toFixed(2))) : String(value);
     }
 
+    function fontRowsForSection(rows, section){
+      const sectionKey = section === 'zh' ? 'section-zh' : 'section-en';
+      const start = rows.findIndex(row => row.kind === 'section' && row.key === sectionKey);
+      if(start < 0) return rows.filter(row => row.kind === 'font');
+      const end = rows.findIndex((row, index) => index > start && row.kind === 'section');
+      return rows.slice(start, end < 0 ? rows.length : end);
+    }
+
+    function sectionForFamily(family){
+      const target = clean(family).toLowerCase();
+      let section = 'zh';
+      for(const row of allFontRows){
+        if(row.kind === 'section') section = row.key === 'section-zh' ? 'zh' : 'other';
+        if(row.kind === 'font' && clean(row.family).toLowerCase() === target) return section;
+      }
+      return 'zh';
+    }
+
     function syncFamilyControl(value){
-      const control = documentRef.querySelector('[data-text-family]');
-      const label = control?.querySelector('[data-text-family-label]');
-      if(!control || !label) return;
       const mixed = value === MIXED;
       state.familyValue = mixed ? '' : clean(fontManager.resolveFamily?.(value) || value);
-      control.dataset.mixed = mixed ? 'true' : 'false';
-      label.textContent = mixed ? '多种字体' : state.familyValue;
-      control.title = label.textContent;
+      const selectedSection = sectionForFamily(state.familyValue);
+      fontTriggers.forEach(control => {
+        const label = control.querySelector('[data-text-family-label]');
+        if(!label) return;
+        const selected = !mixed && Boolean(state.familyValue) && control.dataset.textFamily === selectedSection;
+        control.dataset.mixed = mixed ? 'true' : 'false';
+        label.textContent = mixed ? '多种字体' : (selected ? state.familyValue : '选择字体');
+        control.title = label.textContent;
+      });
     }
 
     function syncTextColorControl(value){
@@ -330,8 +354,8 @@
       cancelFontRender();
       if(fontList) fontList.hidden = true;
       fontList?.removeAttribute('aria-activedescendant');
-      fontTrigger?.setAttribute('aria-expanded', 'false');
-      if(restoreFocus && !activeTextObject()?.isEditing) fontTrigger?.focus?.({preventScroll:true});
+      fontTriggers.forEach(trigger => trigger.setAttribute('aria-expanded', 'false'));
+      if(restoreFocus && !activeTextObject()?.isEditing) activeFontTrigger?.focus?.({preventScroll:true});
     }
 
     function fontOptionId(index){
@@ -427,7 +451,8 @@
     }
 
     function updateFontRows(){
-      fontRows = fontManager.catalogRows?.() || [];
+      allFontRows = fontManager.catalogRows?.() || [];
+      fontRows = fontRowsForSection(allFontRows, activeFontSection);
       if(fontSpacer) fontSpacer.style.height = `${fontRows.length * FONT_ROW_HEIGHT}px`;
       if(fontRowsLayer) {
         fontRowsLayer.style.transform = 'translateY(0px)';
@@ -435,6 +460,23 @@
       }
       if(fontList) fontList.scrollTop = 0;
       fontActiveIndex = -1;
+    }
+
+    function setActiveFontSection(section, trigger){
+      const nextSection = section === 'other' ? 'other' : 'zh';
+      const changed = activeFontSection !== nextSection;
+      activeFontSection = nextSection;
+      activeFontTrigger = trigger || activeFontTrigger;
+      if(changed) {
+        fontRows = fontRowsForSection(allFontRows, activeFontSection);
+        if(fontSpacer) fontSpacer.style.height = `${fontRows.length * FONT_ROW_HEIGHT}px`;
+        if(fontRowsLayer) {
+          fontRowsLayer.style.transform = 'translateY(0px)';
+          fontRowsLayer.replaceChildren();
+        }
+        if(fontList) fontList.scrollTop = 0;
+        fontActiveIndex = -1;
+      }
     }
 
     function setActiveFontIndex(index){
@@ -458,11 +500,12 @@
       if(!applyFontStyle(style)) applyProperty('fontFamily', normalizedFamily);
     }
 
-    function openFontList({keyboard = false, activeIndex = -1} = {}){
-      if(!fontList || !fontTrigger || !fontSpacer || !fontRowsLayer) return;
+    function openFontList(trigger, {keyboard = false, activeIndex = -1} = {}){
+      if(!fontList || !trigger || !fontSpacer || !fontRowsLayer) return;
+      setActiveFontSection(trigger.dataset.textFamily, trigger);
       cancelFontRender();
       fontList.hidden = false;
-      fontTrigger.setAttribute('aria-expanded', 'true');
+      fontTriggers.forEach(item => item.setAttribute('aria-expanded', item === trigger ? 'true' : 'false'));
       const selectedIndex = selectedFontIndex();
       fontActiveIndex = fontRows[activeIndex]?.kind === 'font'
         ? activeIndex
@@ -496,12 +539,19 @@
       panel.innerHTML = `
         <div class="ptc-inner hstar-text-properties-inner">
           <div class="hstar-text-property-grid">
-            <label class="hstar-text-property-wide">字体
-              <button type="button" class="hstar-font-select" data-text-family aria-haspopup="listbox" aria-expanded="false">
-                <span data-text-family-label></span><span aria-hidden="true">▾</span>
-              </button>
+            <div class="hstar-font-selectors hstar-text-property-wide" data-text-font-selectors>
+              <label>中文字体
+                <button type="button" class="hstar-font-select" data-text-family="zh" aria-haspopup="listbox" aria-expanded="false">
+                  <span data-text-family-label>选择字体</span><span aria-hidden="true">▾</span>
+                </button>
+              </label>
+              <label>英文及其他语言字体
+                <button type="button" class="hstar-font-select" data-text-family="other" aria-haspopup="listbox" aria-expanded="false">
+                  <span data-text-family-label>选择字体</span><span aria-hidden="true">▾</span>
+                </button>
+              </label>
               <div class="hstar-font-list" data-text-font-list role="listbox" hidden></div>
-            </label>
+            </div>
             <label>字形 <select data-text-style></select></label>
             <label>字号 <input type="number" data-text-size min="1" max="1296" step="0.1"></label>
             <label>行距 <input type="number" data-text-line-height min="0.1" max="10" step="0.05"></label>
@@ -534,11 +584,11 @@
     }
 
     function bindPanelControls(){
-      fontTrigger = documentRef.querySelector('[data-text-family]');
+      fontTriggers = [...documentRef.querySelectorAll('[data-text-family]')];
       fontList = documentRef.querySelector('[data-text-font-list]');
       fontList.id = 'hstar-font-listbox';
       fontList.tabIndex = -1;
-      fontTrigger?.setAttribute('aria-controls', fontList.id);
+      fontTriggers.forEach(trigger => trigger.setAttribute('aria-controls', fontList.id));
       fontSpacer = documentRef.createElement('div');
       fontSpacer.className = 'hstar-font-spacer';
       fontSpacer.dataset.fontSpacer = 'true';
@@ -548,37 +598,41 @@
       fontRowsLayer.dataset.fontRows = 'true';
       fontList?.replaceChildren(fontSpacer, fontRowsLayer);
 
-      addDomListener(fontTrigger, 'mousedown', event => {
-        if(activeTextObject()?.isEditing) event.preventDefault();
-      });
-      addDomListener(fontTrigger, 'keydown', event => {
-        if(!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-        event.preventDefault();
-        if(!fontList?.hidden) {
-          let activeIndex = fontActiveIndex;
-          if(event.key === 'ArrowDown') activeIndex = findFontIndex(fontActiveIndex + 1, 1);
-          else if(event.key === 'ArrowUp') activeIndex = findFontIndex(fontActiveIndex - 1, -1);
-          else if(event.key === 'Home') activeIndex = findFontIndex(0, 1);
+      fontTriggers.forEach(trigger => {
+        addDomListener(trigger, 'mousedown', event => {
+          if(activeTextObject()?.isEditing) event.preventDefault();
+        });
+        addDomListener(trigger, 'keydown', event => {
+          if(!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const isOpen = !fontList?.hidden;
+          if(isOpen && activeFontTrigger === trigger) {
+            let activeIndex = fontActiveIndex;
+            if(event.key === 'ArrowDown') activeIndex = findFontIndex(fontActiveIndex + 1, 1);
+            else if(event.key === 'ArrowUp') activeIndex = findFontIndex(fontActiveIndex - 1, -1);
+            else if(event.key === 'Home') activeIndex = findFontIndex(0, 1);
+            else if(event.key === 'End') activeIndex = findFontIndex(fontRows.length - 1, -1);
+            if(activeIndex >= 0) setActiveFontIndex(activeIndex);
+            fontList.focus?.({preventScroll:true});
+            return;
+          }
+          setActiveFontSection(trigger.dataset.textFamily, trigger);
+          const selectedIndex = selectedFontIndex();
+          let activeIndex = selectedIndex;
+          if(event.key === 'Home') activeIndex = findFontIndex(0, 1);
           else if(event.key === 'End') activeIndex = findFontIndex(fontRows.length - 1, -1);
-          if(activeIndex >= 0) setActiveFontIndex(activeIndex);
-          fontList.focus?.({preventScroll:true});
-          return;
-        }
-        const selectedIndex = selectedFontIndex();
-        let activeIndex = selectedIndex;
-        if(event.key === 'Home') activeIndex = findFontIndex(0, 1);
-        else if(event.key === 'End') activeIndex = findFontIndex(fontRows.length - 1, -1);
-        else if(activeIndex < 0) {
-          activeIndex = event.key === 'ArrowUp'
-            ? findFontIndex(fontRows.length - 1, -1)
-            : findFontIndex(0, 1);
-        }
-        openFontList({keyboard:true, activeIndex});
-      });
-      addDomListener(fontTrigger, 'click', event => {
-        const keyboard = event.detail === 0 && !activeTextObject()?.isEditing;
-        if(fontList?.hidden) openFontList({keyboard});
-        else closeFontList({restoreFocus:keyboard});
+          else if(activeIndex < 0) {
+            activeIndex = event.key === 'ArrowUp'
+              ? findFontIndex(fontRows.length - 1, -1)
+              : findFontIndex(0, 1);
+          }
+          openFontList(trigger, {keyboard:true, activeIndex});
+        });
+        addDomListener(trigger, 'click', event => {
+          const keyboard = event.detail === 0 && !activeTextObject()?.isEditing;
+          if(fontList?.hidden || activeFontTrigger !== trigger) openFontList(trigger, {keyboard});
+          else closeFontList({restoreFocus:keyboard});
+        });
       });
       addDomListener(fontList, 'scroll', scheduleFontRender);
       addDomListener(fontList, 'keydown', event => {
@@ -619,7 +673,8 @@
         }
       });
       addDomListener(documentRef, 'mousedown', event => {
-        if(fontList && !fontList.contains(event.target) && !fontTrigger?.contains(event.target)) {
+        const insideTrigger = fontTriggers.some(trigger => trigger.contains(event.target));
+        if(fontList && !fontList.contains(event.target) && !insideTrigger) {
           closeFontList();
         }
       });
@@ -757,7 +812,11 @@
       state.tab?.remove();
       state.panel?.remove();
       fontRows = [];
-      fontTrigger = null;
+      allFontRows = [];
+      fontTriggers = [];
+      activeFontTrigger = null;
+      activeFontSection = 'zh';
+      fontActiveIndex = -1;
       fontList = null;
       fontSpacer = null;
       fontRowsLayer = null;

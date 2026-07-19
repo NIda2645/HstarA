@@ -477,8 +477,6 @@
         if(fontList) fontList.scrollTop = 0;
         fontActiveIndex = -1;
       }
-      const label = activeFontTrigger?.closest('label');
-      if(label && fontList && !label.contains(fontList)) label.append(fontList);
     }
 
     function setActiveFontIndex(index){
