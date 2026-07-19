@@ -62,6 +62,7 @@ describe('Hstar OpenShop editor host runtime', () => {
       zoomFit: vi.fn(),
       dismissWelcome: vi.fn(),
       _setPersistenceMode: vi.fn(),
+      downloadToLocal: vi.fn(),
       canvas: {
         toDataURL: vi.fn(() => 'data:image/png;base64,COMPOSITE_BYTES'),
         discardActiveObject: vi.fn(),
@@ -158,6 +159,53 @@ describe('Hstar OpenShop editor host runtime', () => {
       .map(call => call[0])
       .filter(message => message.type === type);
   }
+
+  it('returns one scoped result for a native download request', async () => {
+    editor.downloadToLocal.mockResolvedValue({ok:true, filename:'design.png'});
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-download'));
+    await flushMessages();
+    parentWindow.postMessage.mockClear();
+
+    dispatch(envelope(protocol.TYPES.REQUEST_DOWNLOAD_LOCAL, 'download-1', {format:'png'}));
+    await flushMessages();
+
+    expect(editor.downloadToLocal).toHaveBeenCalledWith({format:'png', options:{}});
+    expect(posted(protocol.TYPES.DOWNLOAD_LOCAL_RESULT)).toHaveLength(1);
+    expect(posted(protocol.TYPES.DOWNLOAD_LOCAL_RESULT)[0]).toMatchObject({
+      requestId:'download-1',
+      sessionId:'session-1',
+      context,
+      payload:{status:'success', filename:'design.png'},
+    });
+  });
+
+  it('reports native download cancellation without false success', async () => {
+    editor.downloadToLocal.mockResolvedValue({cancelled:true});
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-download-cancel'));
+    await flushMessages();
+
+    dispatch(envelope(protocol.TYPES.REQUEST_DOWNLOAD_LOCAL, 'download-cancel', {format:'png'}));
+    await flushMessages();
+
+    expect(posted(protocol.TYPES.DOWNLOAD_LOCAL_RESULT).at(-1)).toMatchObject({
+      requestId:'download-cancel',
+      payload:{status:'cancelled'},
+    });
+  });
+
+  it('reports bounded native download errors with the same request id', async () => {
+    editor.downloadToLocal.mockRejectedValue(new Error('disk failed\nwith details'));
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-download-error'));
+    await flushMessages();
+
+    dispatch(envelope(protocol.TYPES.REQUEST_DOWNLOAD_LOCAL, 'download-error', {format:'png'}));
+    await flushMessages();
+
+    expect(posted(protocol.TYPES.DOWNLOAD_LOCAL_RESULT).at(-1)).toMatchObject({
+      requestId:'download-error',
+      payload:{status:'error', message:'disk failed with details'},
+    });
+  });
 
   it('dispatches scoped hidden and visible events from session visibility envelopes', async () => {
     const hidden = vi.fn();

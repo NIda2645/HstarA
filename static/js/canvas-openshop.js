@@ -265,6 +265,22 @@
         );
     }
 
+    function acknowledgeOutput(data, status, details={}){
+        const source = nodeList().find(candidate => (
+            candidate.id === data?.context?.nodeId && candidate.type === 'openshop-layered'
+        ));
+        if(!clean(data?.requestId) || !source || !matchingContext(data?.context, source)) return false;
+        root.parent?.postMessage?.({
+            type:'hstar-openshop-output-applied',
+            requestId:clean(data.requestId),
+            context:{...data.context},
+            status,
+            ...(details.nodeId ? {nodeId:clean(details.nodeId)} : {}),
+            ...(details.message ? {message:clean(details.message).slice(0, 180)} : {}),
+        }, root.location.origin);
+        return true;
+    }
+
     function applyNodeMeta(data){
         const node = nodeList().find(candidate => candidate.id === data?.context?.nodeId && candidate.type === 'openshop-layered');
         if(!node || !matchingContext(data.context, node)) return false;
@@ -300,38 +316,44 @@
         const url = clean(output.url);
         if(!clean(output.assetId) || !url || /^(?:data:image\/|blob:)/i.test(url)) return null;
         if(requestId) appliedOutputRequests.add(requestId);
-        hooks().pushUndo?.();
-        const existingCount = nodeList().filter(node => node.openshopSourceNodeId === source.id).length;
-        const naturalWidth = Math.max(0, Number(output.width || 0));
-        const naturalHeight = Math.max(0, Number(output.height || 0));
-        const image = {
-            id:hooks().uid?.('img') || `img_${Date.now()}`,
-            type:'image',
-            x:Number(source.x || 0) + Number(source.w || 340) + 90,
-            y:Number(source.y || 0) + existingCount * 34,
-            w:260,
-            h:336,
-            url,
-            name:clean(output.name) || '图文分层输出.png',
-            mediaKind:'image',
-            ...(naturalWidth && naturalHeight ? {natural_w:naturalWidth, natural_h:naturalHeight} : {}),
-            openshopAssetId:clean(output.assetId),
-            openshopSourceNodeId:source.id,
-            openshopProjectId:source.projectId,
-            openshopRequestId:requestId,
-            sourceType:'openshop-layered',
-        };
-        hooks().addNode?.(image);
-        hooks().addConnection?.({
-            id:hooks().uid?.('c') || `c_${Date.now()}`,
-            from:source.id,
-            to:image.id,
-        });
-        hooks().selectOnly?.(image.id);
-        hooks().render?.();
-        hooks().scheduleSave?.();
-        await hooks().saveCanvas?.();
-        return image;
+        try {
+            hooks().pushUndo?.();
+            const existingCount = nodeList().filter(node => node.openshopSourceNodeId === source.id).length;
+            const naturalWidth = Math.max(0, Number(output.width || 0));
+            const naturalHeight = Math.max(0, Number(output.height || 0));
+            const image = {
+                id:hooks().uid?.('img') || `img_${Date.now()}`,
+                type:'image',
+                x:Number(source.x || 0) + Number(source.w || 340) + 90,
+                y:Number(source.y || 0) + existingCount * 34,
+                w:260,
+                h:336,
+                url,
+                name:clean(output.name) || '图文分层输出.png',
+                mediaKind:'image',
+                ...(naturalWidth && naturalHeight ? {natural_w:naturalWidth, natural_h:naturalHeight} : {}),
+                openshopAssetId:clean(output.assetId),
+                openshopSourceNodeId:source.id,
+                openshopProjectId:source.projectId,
+                openshopRequestId:requestId,
+                sourceType:'openshop-layered',
+            };
+            hooks().addNode?.(image);
+            hooks().addConnection?.({
+                id:hooks().uid?.('c') || `c_${Date.now()}`,
+                from:source.id,
+                to:image.id,
+            });
+            hooks().selectOnly?.(image.id);
+            hooks().render?.();
+            hooks().scheduleSave?.();
+            await hooks().saveCanvas?.();
+            acknowledgeOutput(data, 'success', {nodeId:image.id});
+            return image;
+        } catch(error){
+            acknowledgeOutput(data, 'error', {message:error?.message || '图文分层输出导入失败'});
+            throw error;
+        }
     }
 
     function handleMessage(event){

@@ -246,6 +246,24 @@
         );
     }
 
+    function acknowledgeOutput(data, status, details={}){
+        const source = nodeFor(data?.context?.nodeId);
+        if(
+            !clean(data?.requestId)
+            || source?.type !== 'openshop-layered'
+            || !matchingContext(data?.context, source)
+        ) return false;
+        root.parent?.postMessage?.({
+            type:'hstar-openshop-output-applied',
+            requestId:clean(data.requestId),
+            context:{...data.context},
+            status,
+            ...(details.nodeId ? {nodeId:clean(details.nodeId)} : {}),
+            ...(details.message ? {message:clean(details.message).slice(0, 180)} : {}),
+        }, root.location.origin);
+        return true;
+    }
+
     function applyNodeMeta(data){
         const node = nodeFor(data?.context?.nodeId);
         if(!node || node.type !== 'openshop-layered' || !matchingContext(data.context, node)) return false;
@@ -281,14 +299,20 @@
         const url = clean(output.url);
         if(!clean(output.assetId) || !url || /^(?:data:image\/|blob:)/i.test(url)) return null;
         if(requestId) appliedOutputRequests.add(requestId);
-        hooks().pushUndo?.();
-        const created = hooks().createImageOutput?.({sourceNode:source, output:{...output, url}, requestId});
-        if(!created) return null;
-        hooks().selectOnly?.(created.id);
-        hooks().render?.();
-        hooks().scheduleSave?.();
-        await hooks().saveCanvas?.();
-        return created;
+        try {
+            hooks().pushUndo?.();
+            const created = hooks().createImageOutput?.({sourceNode:source, output:{...output, url}, requestId});
+            if(!created) throw new Error('图文分层输出节点创建失败');
+            hooks().selectOnly?.(created.id);
+            hooks().render?.();
+            hooks().scheduleSave?.();
+            await hooks().saveCanvas?.();
+            acknowledgeOutput(data, 'success', {nodeId:created.id});
+            return created;
+        } catch(error){
+            acknowledgeOutput(data, 'error', {message:error?.message || '图文分层输出导入失败'});
+            throw error;
+        }
     }
 
     function handleMessage(event){

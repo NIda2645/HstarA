@@ -26,6 +26,8 @@ describe('Hstar OpenShop protocol', () => {
       SAVE_CONFIRMED: 'hstar:openshop:save-confirmed',
       REQUEST_SEND_TO_CANVAS: 'hstar:openshop:request-send-to-canvas',
       SEND_TO_CANVAS: 'hstar:openshop:send-to-canvas',
+      REQUEST_DOWNLOAD_LOCAL: 'hstar:openshop:request-download-local',
+      DOWNLOAD_LOCAL_RESULT: 'hstar:openshop:download-local-result',
       OPEN_API_SETTINGS: 'hstar:openshop:open-api-settings',
       SESSION_VISIBILITY: 'hstar:openshop:session-visibility',
     });
