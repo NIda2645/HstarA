@@ -169,6 +169,8 @@ function attachEditingCanvas(object, {
   objectRect = {left:10, top:20, width:80, height:120},
   canvasRect = {left:100, top:50, width:800, height:600},
   viewportTransform = [1, 0, 0, 1, 0, 0],
+  logicalWidth = 800,
+  logicalHeight = 600,
 } = {}) {
   const upperCanvasEl = document.createElement('canvas');
   upperCanvasEl.dataset.hstarWritingModeTest = '';
@@ -180,6 +182,8 @@ function attachEditingCanvas(object, {
   object.canvas = {
     upperCanvasEl,
     viewportTransform,
+    getWidth:vi.fn(() => logicalWidth),
+    getHeight:vi.fn(() => logicalHeight),
     requestRenderAll:vi.fn(),
   };
   return object.canvas;
@@ -279,7 +283,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
       lineHeight:1.4,
       angle:17,
     });
-    attachEditingCanvas(vertical, {viewportTransform:[2, 0, 0, 2, 0, 0]});
+    attachEditingCanvas(vertical);
 
     vertical.enterEditing();
 
@@ -299,10 +303,10 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(editor.style.color).toBe('red');
     expect(editor.style.lineHeight).toBe('1.4');
     expect(editor.style.transform).toBe('rotate(17deg)');
-    expect(editor.style.left).toBe('120px');
-    expect(editor.style.top).toBe('90px');
-    expect(editor.style.width).toBe('160px');
-    expect(editor.style.height).toBe('240px');
+    expect(editor.style.left).toBe('110px');
+    expect(editor.style.top).toBe('70px');
+    expect(editor.style.width).toBe('80px');
+    expect(editor.style.height).toBe('120px');
     expect(Number(editor.style.zIndex)).toBeGreaterThanOrEqual(10000);
     expect(vertical.isEditing).toBe(true);
     expect(runtime.activeEditorObject()).toBe(vertical);
@@ -316,6 +320,26 @@ describe('Hstar OpenShop writing mode runtime', () => {
 
     expect(document.querySelectorAll('textarea[data-hstar-vertical-editor]')).toHaveLength(1);
     expect(document.querySelector('textarea[data-hstar-vertical-editor]')).toBe(editor);
+  });
+
+  it('uses CSS canvas ratios without applying viewport zoom twice to transformed bounds', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'zoomed', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(vertical, {
+      objectRect:{left:40, top:60, width:100, height:160},
+      canvasRect:{left:25, top:35, width:600, height:500},
+      viewportTransform:[2, 0, 0, 2, 0, 0],
+      logicalWidth:400,
+      logicalHeight:400,
+    });
+
+    vertical.enterEditing();
+
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect(editor.style.left).toBe('85px');
+    expect(editor.style.top).toBe('110px');
+    expect(editor.style.width).toBe('150px');
+    expect(editor.style.height).toBe('200px');
   });
 
   it('syncs textarea input to the object dimensions and canvas immediately', () => {

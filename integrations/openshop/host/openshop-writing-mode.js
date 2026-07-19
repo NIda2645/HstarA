@@ -53,29 +53,41 @@
     return Number.isFinite(number) ? number : fallback;
   }
 
-  function viewportScale(canvas) {
-    if(canvas && typeof canvas.getZoom === 'function') {
+  function logicalCanvasDimension(canvas, canvasElement, axis) {
+    const getter = axis === 'width' ? 'getWidth' : 'getHeight';
+    if(canvas && typeof canvas[getter] === 'function') {
       try {
-        const zoom = Number(canvas.getZoom());
-        if(Number.isFinite(zoom) && zoom > 0) return {x:zoom, y:zoom};
+        const value = Number(canvas[getter]());
+        if(Number.isFinite(value) && value > 0) return value;
       } catch(error) {
-        // Fall back to the viewport matrix when Fabric's zoom accessor is unavailable.
+        // Fall through to the logical canvas element dimensions.
       }
     }
-    const transform = canvas && Array.isArray(canvas.viewportTransform)
-      ? canvas.viewportTransform : null;
-    if(!transform) return {x:1, y:1};
-    const x = Math.hypot(finiteValue(transform[0], 1), finiteValue(transform[1]));
-    const y = Math.hypot(finiteValue(transform[2]), finiteValue(transform[3], 1));
-    return {x:x > 0 ? x : 1, y:y > 0 ? y : 1};
+    const lowerCanvasValue = Number(canvas && canvas.lowerCanvasEl && canvas.lowerCanvasEl[axis]);
+    if(Number.isFinite(lowerCanvasValue) && lowerCanvasValue > 0) return lowerCanvasValue;
+    const elementValue = Number(canvasElement && canvasElement[axis]);
+    return Number.isFinite(elementValue) && elementValue > 0 ? elementValue : null;
+  }
+
+  function canvasCssRatio(canvas, canvasElement, canvasRect) {
+    const logicalWidth = logicalCanvasDimension(canvas, canvasElement, 'width');
+    const logicalHeight = logicalCanvasDimension(canvas, canvasElement, 'height');
+    const cssWidth = finiteValue(canvasRect && canvasRect.width);
+    const cssHeight = finiteValue(canvasRect && canvasRect.height);
+    return {
+      x:logicalWidth && cssWidth > 0 ? cssWidth / logicalWidth : 1,
+      y:logicalHeight && cssHeight > 0 ? cssHeight / logicalHeight : 1,
+    };
   }
 
   function editorGeometry(object) {
     const canvas = object && object.canvas;
     const canvasElements = canvas ? [canvas.upperCanvasEl, canvas.lowerCanvasEl].filter(Boolean) : [];
+    let canvasElement = null;
     let canvasRect = null;
-    for(const canvasElement of canvasElements) {
-      canvasRect = readRect(canvasElement);
+    for(const candidate of canvasElements) {
+      canvasRect = readRect(candidate);
+      canvasElement = candidate;
       if(canvasRect) break;
     }
     canvasRect = canvasRect || {left:0, top:0};
@@ -86,13 +98,13 @@
     } catch(error) {
       objectRect = null;
     }
-    const scale = viewportScale(canvas);
-    const left = finiteValue(objectRect && (objectRect.left ?? objectRect.x), finiteValue(object && object.left)) * scale.x;
-    const top = finiteValue(objectRect && (objectRect.top ?? objectRect.y), finiteValue(object && object.top)) * scale.y;
+    const ratio = canvasCssRatio(canvas, canvasElement, canvasRect);
+    const left = finiteValue(objectRect && (objectRect.left ?? objectRect.x), finiteValue(object && object.left)) * ratio.x;
+    const top = finiteValue(objectRect && (objectRect.top ?? objectRect.y), finiteValue(object && object.top)) * ratio.y;
     const fallbackWidth = finiteValue(object && object.width, MIN_EDITOR_WIDTH);
     const fallbackHeight = finiteValue(object && object.height, MIN_EDITOR_HEIGHT);
-    const width = finiteValue(objectRect && objectRect.width, fallbackWidth) * scale.x;
-    const height = finiteValue(objectRect && objectRect.height, fallbackHeight) * scale.y;
+    const width = finiteValue(objectRect && objectRect.width, fallbackWidth) * ratio.x;
+    const height = finiteValue(objectRect && objectRect.height, fallbackHeight) * ratio.y;
     return {
       left:finiteValue(canvasRect.left) + left,
       top:finiteValue(canvasRect.top) + top,
