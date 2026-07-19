@@ -1,0 +1,16 @@
+.hstar-vertical-text-editor {
+  box-sizing: border-box;
+  display: none;
+  position: fixed;
+  z-index: 2147483647;
+  overflow: hidden;
+  resize: none;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  white-space: pre-wrap;
+  background: transparent;
+  caret-color: currentColor;
+  border: 0;
+  outline: 0;
+  padding: 0;
+}

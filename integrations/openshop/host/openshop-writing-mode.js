@@ -28,6 +28,217 @@
     'strokeLineJoin', 'strokeMiterLimit', 'paintFirst', 'shadow', 'textBackgroundColor',
     'underline', 'overline', 'linethrough', 'opacity', 'styles', 'backgroundColor',
   ]);
+  const VERTICAL_EDITOR_SELECTOR = 'textarea[data-hstar-vertical-editor]';
+  const MIN_EDITOR_WIDTH = 32;
+  const MIN_EDITOR_HEIGHT = 48;
+  let editorElement = null;
+  let activeObject = null;
+  let editorDocument = null;
+
+  function documentForRuntime() {
+    return global && global.document ? global.document : null;
+  }
+
+  function readRect(element) {
+    if(!element || typeof element.getBoundingClientRect !== 'function') return null;
+    try {
+      return element.getBoundingClientRect() || null;
+    } catch(error) {
+      return null;
+    }
+  }
+
+  function finiteValue(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+
+  function viewportScale(canvas) {
+    if(canvas && typeof canvas.getZoom === 'function') {
+      try {
+        const zoom = Number(canvas.getZoom());
+        if(Number.isFinite(zoom) && zoom > 0) return {x:zoom, y:zoom};
+      } catch(error) {
+        // Fall back to the viewport matrix when Fabric's zoom accessor is unavailable.
+      }
+    }
+    const transform = canvas && Array.isArray(canvas.viewportTransform)
+      ? canvas.viewportTransform : null;
+    if(!transform) return {x:1, y:1};
+    const x = Math.hypot(finiteValue(transform[0], 1), finiteValue(transform[1]));
+    const y = Math.hypot(finiteValue(transform[2]), finiteValue(transform[3], 1));
+    return {x:x > 0 ? x : 1, y:y > 0 ? y : 1};
+  }
+
+  function editorGeometry(object) {
+    const canvas = object && object.canvas;
+    const canvasElements = canvas ? [canvas.upperCanvasEl, canvas.lowerCanvasEl].filter(Boolean) : [];
+    let canvasRect = null;
+    for(const canvasElement of canvasElements) {
+      canvasRect = readRect(canvasElement);
+      if(canvasRect) break;
+    }
+    canvasRect = canvasRect || {left:0, top:0};
+    let objectRect = null;
+    try {
+      objectRect = object && typeof object.getBoundingRect === 'function'
+        ? object.getBoundingRect() : null;
+    } catch(error) {
+      objectRect = null;
+    }
+    const scale = viewportScale(canvas);
+    const left = finiteValue(objectRect && (objectRect.left ?? objectRect.x), finiteValue(object && object.left)) * scale.x;
+    const top = finiteValue(objectRect && (objectRect.top ?? objectRect.y), finiteValue(object && object.top)) * scale.y;
+    const fallbackWidth = finiteValue(object && object.width, MIN_EDITOR_WIDTH);
+    const fallbackHeight = finiteValue(object && object.height, MIN_EDITOR_HEIGHT);
+    const width = finiteValue(objectRect && objectRect.width, fallbackWidth) * scale.x;
+    const height = finiteValue(objectRect && objectRect.height, fallbackHeight) * scale.y;
+    return {
+      left:finiteValue(canvasRect.left) + left,
+      top:finiteValue(canvasRect.top) + top,
+      width:Math.max(MIN_EDITOR_WIDTH, width),
+      height:Math.max(MIN_EDITOR_HEIGHT, height),
+    };
+  }
+
+  function applyEditorStyles(object) {
+    if(!editorElement) return;
+    const geometry = editorGeometry(object);
+    const fontSize = positiveNumber(object && object.fontSize, 40);
+    const lineHeight = positiveNumber(object && object.lineHeight, 1.16);
+    const angle = finiteValue(object && object.angle);
+    editorElement.style.display = 'block';
+    editorElement.style.position = 'fixed';
+    editorElement.style.zIndex = '2147483647';
+    editorElement.style.resize = 'none';
+    editorElement.style.writingMode = 'vertical-rl';
+    editorElement.style.textOrientation = 'mixed';
+    editorElement.style.fontFamily = String(object && object.fontFamily || 'sans-serif');
+    editorElement.style.fontSize = `${fontSize}px`;
+    editorElement.style.fontWeight = String(object && object.fontWeight || 'normal');
+    editorElement.style.fontStyle = String(object && object.fontStyle || 'normal');
+    editorElement.style.color = String(object && object.fill || 'currentColor');
+    editorElement.style.lineHeight = String(lineHeight);
+    editorElement.style.transform = `rotate(${angle}deg)`;
+    editorElement.style.transformOrigin = 'top left';
+    editorElement.style.left = `${geometry.left}px`;
+    editorElement.style.top = `${geometry.top}px`;
+    editorElement.style.width = `${geometry.width}px`;
+    editorElement.style.height = `${geometry.height}px`;
+  }
+
+  function requestObjectRender(object) {
+    if(object && object.canvas && typeof object.canvas.requestRenderAll === 'function') {
+      object.canvas.requestRenderAll();
+    }
+  }
+
+  function syncEditorText(object, {force = false, render = true} = {}) {
+    if(!object || !editorElement) return false;
+    const value = editorElement.value;
+    if(!force && object.text === value) return false;
+    if(typeof object.set === 'function') object.set('text', value);
+    else if(typeof object.setTextContent === 'function') object.setTextContent(value);
+    else object.text = value;
+    if(object.text !== value) object.text = value;
+    applyVerticalDimensions(object);
+    object.dirty = true;
+    if(typeof object.setCoords === 'function') object.setCoords();
+    if(render) requestObjectRender(object);
+    return true;
+  }
+
+  function focusCanvas(object) {
+    const canvas = object && object.canvas;
+    const element = canvas && (canvas.upperCanvasEl || canvas.lowerCanvasEl);
+    if(element && typeof element.focus === 'function') {
+      try { element.focus(); } catch(error) { /* jsdom and detached canvases can reject focus */ }
+    }
+  }
+
+  function exitEditing(object) {
+    if(!object) return object;
+    object.isEditing = false;
+    if(activeObject !== object) return object;
+    syncEditorText(object);
+    activeObject = null;
+    if(editorElement) {
+      editorElement.style.display = 'none';
+      editorElement.blur?.();
+    }
+    focusCanvas(object);
+    requestObjectRender(object);
+    return object;
+  }
+
+  function onEditorInput() {
+    if(activeObject) syncEditorText(activeObject, {force:true});
+  }
+
+  function onEditorBlur() {
+    if(activeObject) exitEditing(activeObject);
+  }
+
+  function onDocumentPointer(event) {
+    if(!activeObject || !editorElement) return;
+    const target = event && event.target;
+    if(target !== editorElement && !editorElement.contains?.(target)) exitEditing(activeObject);
+  }
+
+  function detachEditorListeners() {
+    if(editorElement) {
+      editorElement.removeEventListener('input', onEditorInput);
+      editorElement.removeEventListener('blur', onEditorBlur);
+    }
+    if(editorDocument) {
+      editorDocument.removeEventListener('pointerdown', onDocumentPointer, true);
+      editorDocument.removeEventListener('mousedown', onDocumentPointer, true);
+    }
+    editorDocument = null;
+  }
+
+  function ensureEditor() {
+    const documentRef = documentForRuntime();
+    if(!documentRef || !documentRef.body) return null;
+    if(editorElement && editorElement.ownerDocument !== documentRef) {
+      detachEditorListeners();
+      editorElement.remove();
+      editorElement = null;
+    }
+    const existing = [...documentRef.querySelectorAll(VERTICAL_EDITOR_SELECTOR)];
+    if(!editorElement) {
+      editorElement = existing.find(element => element.tagName === 'TEXTAREA') || documentRef.createElement('textarea');
+      editorElement.classList.add('hstar-vertical-text-editor');
+      editorElement.setAttribute('data-hstar-vertical-editor', '');
+      editorElement.autocomplete = 'off';
+      editorElement.spellcheck = false;
+      editorElement.addEventListener('input', onEditorInput);
+      editorElement.addEventListener('blur', onEditorBlur);
+      editorDocument = documentRef;
+      editorDocument.addEventListener('pointerdown', onDocumentPointer, true);
+      editorDocument.addEventListener('mousedown', onDocumentPointer, true);
+    }
+    existing.filter(element => element !== editorElement).forEach(element => element.remove());
+    if(!editorElement.isConnected) documentRef.body.append(editorElement);
+    return editorElement;
+  }
+
+  function enterEditing(object, event) {
+    if(activeObject && activeObject !== object) exitEditing(activeObject);
+    const editor = ensureEditor();
+    activeObject = object;
+    object.isEditing = true;
+    if(!editor) return object;
+    if(editor.value !== String(object.text == null ? '' : object.text) || editor.style.display === 'none') {
+      editor.value = String(object.text == null ? '' : object.text);
+    }
+    applyEditorStyles(object);
+    try { editor.focus({preventScroll:true}); } catch(error) { editor.focus?.(); }
+    if(typeof editor.setSelectionRange === 'function') {
+      editor.setSelectionRange(editor.value.length, editor.value.length);
+    }
+    return object;
+  }
 
   function normalizeWritingMode(value) {
     return value === VERTICAL ? VERTICAL : HORIZONTAL;
@@ -193,6 +404,14 @@
 
       initDimensions() {
         return applyVerticalDimensions(this);
+      },
+
+      enterEditing(event) {
+        return enterEditing(this, event);
+      },
+
+      exitEditing() {
+        return exitEditing(this);
       },
 
       _set(key, value) {
@@ -433,7 +652,17 @@
     return createTextObject(fabric, text, options);
   }
 
-  function destroy() {}
+  function activeEditorObject() {
+    return activeObject;
+  }
+
+  function destroy() {
+    if(activeObject) exitEditing(activeObject);
+    detachEditorListeners();
+    if(editorElement) editorElement.remove();
+    editorElement = null;
+    activeObject = null;
+  }
 
   global.HstarOpenShopWritingMode = {
     HORIZONTAL,
@@ -445,6 +674,7 @@
     createTextObject,
     convertTextObject,
     setGlyphStyle,
+    activeEditorObject,
     destroy,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

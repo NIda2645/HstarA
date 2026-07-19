@@ -165,6 +165,26 @@ function createFabricMock({withCreateClass = true} = {}) {
   return fabric;
 }
 
+function attachEditingCanvas(object, {
+  objectRect = {left:10, top:20, width:80, height:120},
+  canvasRect = {left:100, top:50, width:800, height:600},
+  viewportTransform = [1, 0, 0, 1, 0, 0],
+} = {}) {
+  const upperCanvasEl = document.createElement('canvas');
+  upperCanvasEl.dataset.hstarWritingModeTest = '';
+  upperCanvasEl.getBoundingClientRect = vi.fn(() => canvasRect);
+  upperCanvasEl.focus = vi.fn();
+  document.body.append(upperCanvasEl);
+  object.getBoundingRect = vi.fn(() => objectRect);
+  object.setCoords = vi.fn();
+  object.canvas = {
+    upperCanvasEl,
+    viewportTransform,
+    requestRenderAll:vi.fn(),
+  };
+  return object.canvas;
+}
+
 let runtime;
 
 beforeEach(() => {
@@ -173,6 +193,7 @@ beforeEach(() => {
 
 afterEach(() => {
   runtime?.destroy();
+  document.querySelectorAll('[data-hstar-writing-mode-test]').forEach(element => element.remove());
   delete window.HstarOpenShopWritingMode;
 });
 
@@ -244,6 +265,166 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(vertical).toMatchObject({text:'vertical', hstarWritingMode:'vertical', left:14});
     expect(vertical.width).toBeGreaterThan(0);
     expect(vertical.height).toBeGreaterThan(0);
+  });
+
+  it('opens and reuses one styled vertical textarea without changing its text', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'first\nsecond', {
+      hstarWritingMode:'vertical',
+      fontFamily:'Editor Sans',
+      fontSize:28,
+      fontWeight:700,
+      fontStyle:'italic',
+      fill:'red',
+      lineHeight:1.4,
+      angle:17,
+    });
+    attachEditingCanvas(vertical, {viewportTransform:[2, 0, 0, 2, 0, 0]});
+
+    vertical.enterEditing();
+
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect(editor).not.toBeNull();
+    expect(editor.classList.contains('hstar-vertical-text-editor')).toBe(true);
+    expect(editor.value).toBe('first\nsecond');
+    expect(editor.style.display).toBe('block');
+    expect(editor.style.position).toBe('fixed');
+    expect(editor.style.writingMode).toBe('vertical-rl');
+    expect(editor.style.textOrientation).toBe('mixed');
+    expect(editor.style.resize).toBe('none');
+    expect(editor.style.fontFamily).toContain('Editor Sans');
+    expect(editor.style.fontSize).toBe('28px');
+    expect(editor.style.fontWeight).toBe('700');
+    expect(editor.style.fontStyle).toBe('italic');
+    expect(editor.style.color).toBe('red');
+    expect(editor.style.lineHeight).toBe('1.4');
+    expect(editor.style.transform).toBe('rotate(17deg)');
+    expect(editor.style.left).toBe('120px');
+    expect(editor.style.top).toBe('90px');
+    expect(editor.style.width).toBe('160px');
+    expect(editor.style.height).toBe('240px');
+    expect(Number(editor.style.zIndex)).toBeGreaterThanOrEqual(10000);
+    expect(vertical.isEditing).toBe(true);
+    expect(runtime.activeEditorObject()).toBe(vertical);
+
+    vertical.exitEditing();
+    expect(editor.style.display).toBe('none');
+    const duplicate = document.createElement('textarea');
+    duplicate.setAttribute('data-hstar-vertical-editor', '');
+    document.body.append(duplicate);
+    vertical.enterEditing();
+
+    expect(document.querySelectorAll('textarea[data-hstar-vertical-editor]')).toHaveLength(1);
+    expect(document.querySelector('textarea[data-hstar-vertical-editor]')).toBe(editor);
+  });
+
+  it('syncs textarea input to the object dimensions and canvas immediately', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {hstarWritingMode:'vertical', fontSize:20});
+    const canvas = attachEditingCanvas(vertical);
+    const set = vi.spyOn(vertical, 'set');
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const initialHeight = vertical.height;
+
+    editor.value = 'ABCDE';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(set).toHaveBeenCalledWith('text', 'ABCDE');
+    expect(vertical.text).toBe('ABCDE');
+    expect(vertical.height).toBeGreaterThan(initialHeight);
+    expect(vertical.dirty).toBe(true);
+    expect(vertical.setCoords).toHaveBeenCalled();
+    expect(canvas.requestRenderAll).toHaveBeenCalled();
+  });
+
+  it('commits the first object and hands the same textarea to a second object', () => {
+    const fabric = createFabricMock();
+    const first = runtime.createTextObject(fabric, 'first', {hstarWritingMode:'vertical'});
+    const second = runtime.createTextObject(fabric, 'second', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(first);
+    attachEditingCanvas(second, {objectRect:{left:30, top:40, width:90, height:130}});
+    first.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    editor.value = 'committed first';
+
+    second.enterEditing();
+
+    expect(first.text).toBe('committed first');
+    expect(first.isEditing).toBe(false);
+    expect(second.isEditing).toBe(true);
+    expect(runtime.activeEditorObject()).toBe(second);
+    expect(editor.value).toBe('second');
+    expect(document.querySelectorAll('textarea[data-hstar-vertical-editor]')).toHaveLength(1);
+    expect(document.querySelector('textarea[data-hstar-vertical-editor]')).toBe(editor);
+  });
+
+  it('exits editing on blur and outside pointer or mouse input', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'close me', {hstarWritingMode:'vertical'});
+    const canvas = attachEditingCanvas(vertical);
+    const outside = document.createElement('button');
+    outside.dataset.hstarWritingModeTest = '';
+    document.body.append(outside);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.dispatchEvent(new FocusEvent('blur'));
+
+    expect(vertical.isEditing).toBe(false);
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(editor.style.display).toBe('none');
+    expect(canvas.upperCanvasEl.focus).toHaveBeenCalled();
+    expect(canvas.requestRenderAll).toHaveBeenCalled();
+
+    vertical.enterEditing();
+    outside.dispatchEvent(new MouseEvent('pointerdown', {bubbles:true}));
+    expect(vertical.isEditing).toBe(false);
+
+    vertical.enterEditing();
+    outside.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+    expect(vertical.isEditing).toBe(false);
+  });
+
+  it('uses minimum editor dimensions when canvas and object geometry are unavailable', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '', {hstarWritingMode:'vertical', fontSize:0});
+    const canvas = attachEditingCanvas(vertical);
+    const lowerCanvasEl = document.createElement('canvas');
+    lowerCanvasEl.dataset.hstarWritingModeTest = '';
+    lowerCanvasEl.getBoundingClientRect = vi.fn(() => ({left:25, top:35, width:640, height:480}));
+    document.body.append(lowerCanvasEl);
+    canvas.lowerCanvasEl = lowerCanvasEl;
+    canvas.getZoom = vi.fn(() => { throw new Error('zoom unavailable'); });
+    vertical.getBoundingRect.mockImplementation(() => { throw new Error('geometry unavailable'); });
+    canvas.upperCanvasEl.getBoundingClientRect.mockImplementation(() => { throw new Error('canvas unavailable'); });
+
+    expect(() => vertical.enterEditing()).not.toThrow();
+
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect(Number.parseFloat(editor.style.width)).toBeGreaterThanOrEqual(32);
+    expect(Number.parseFloat(editor.style.height)).toBeGreaterThanOrEqual(48);
+    expect(editor.style.left).toBe('25px');
+    expect(editor.style.top).toBe('35px');
+  });
+
+  it('destroys editor DOM and listeners idempotently while clearing active state', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'destroy me', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const removeEventListener = vi.spyOn(document, 'removeEventListener');
+
+    runtime.destroy();
+
+    expect(vertical.isEditing).toBe(false);
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(editor.isConnected).toBe(false);
+    expect(removeEventListener).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(removeEventListener).toHaveBeenCalledWith('mousedown', expect.any(Function), true);
+    expect(() => runtime.destroy()).not.toThrow();
+    expect(document.querySelector('[data-hstar-vertical-editor]')).toBeNull();
   });
 
   it('converts text while retaining visual fields and enumerable Hstar metadata', () => {
