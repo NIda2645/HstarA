@@ -98,6 +98,8 @@ function createFabricMock({withCreateClass = true} = {}) {
     }
   }
 
+  class Text extends FabricObject {}
+
   Object.assign(FabricObject.prototype, {
     baseTextOption:'from-fabric-object',
     controls:{ml:{cursorStyleHandler() { return 'runtime'; }}},
@@ -141,7 +143,7 @@ function createFabricMock({withCreateClass = true} = {}) {
     futureTextOption:{source:'prototype'},
   });
 
-  const fabric = {Object:FabricObject, IText};
+  const fabric = {Object:FabricObject, IText, Text};
   if(withCreateClass) {
     fabric.util = {
       createClass(Parent, methods) {
@@ -581,18 +583,17 @@ describe('Hstar OpenShop writing mode runtime', () => {
       hstarWritingMode:'vertical', fill:'#ff0000', stroke:'#111111', strokeWidth:2,
       textBackgroundColor:'#eeeeee', shadow:{color:'#000000', blur:2},
     });
-    const fillSetup = vi.fn((context, style) => { context.fillStyle = style.fill; });
-    const strokeSetup = vi.fn((context, style) => { context.strokeStyle = style.stroke; });
+    const handleFiller = vi.fn((context, property, filler) => { context[property] = filler; });
     const shadowSetup = vi.fn();
-    vertical._setFillStyles = fillSetup;
-    vertical._setStrokeStyles = strokeSetup;
+    fabric.Text.prototype.handleFiller = handleFiller;
     vertical._setShadow = shadowSetup;
     const context = {save() {}, restore() {}, fillRect() {}, fillText() {}, strokeText() {}};
 
     vertical._render(context);
 
-    expect(fillSetup).toHaveBeenCalledOnce();
-    expect(strokeSetup).toHaveBeenCalledOnce();
+    expect(handleFiller).toHaveBeenCalledWith(context, 'fillStyle', '#ff0000');
+    expect(handleFiller).toHaveBeenCalledWith(context, 'strokeStyle', '#111111');
+    expect(handleFiller).toHaveBeenCalledTimes(2);
     expect(shadowSetup).not.toHaveBeenCalled();
   });
 
@@ -601,11 +602,13 @@ describe('Hstar OpenShop writing mode runtime', () => {
     const vertical = runtime.createTextObject(fabric, 'A', {
       hstarWritingMode:'vertical', fill:'#ff0000', stroke:'#111111', strokeWidth:2,
     });
+    const handleFiller = vi.fn((context, property, filler) => (
+      property === 'fillStyle' ? {offsetX:2, offsetY:3} : [4, 5]
+    ));
+    fabric.Text.prototype.handleFiller = handleFiller;
     vertical._setFillStyles = vi.fn();
     vertical._setStrokeStyles = vi.fn();
-    vertical._applyPatternGradientTransform = vi.fn((context, paint) => (
-      paint === '#ff0000' ? {offsetX:2, offsetY:3} : [4, 5]
-    ));
+    vertical._applyPatternGradientTransform = vi.fn();
     const fillCalls = [];
     const strokeCalls = [];
     let saves = 0;
@@ -624,8 +627,12 @@ describe('Hstar OpenShop writing mode runtime', () => {
 
     expect(fillCalls[0]).toEqual(['A', glyphX - 2, glyphY - 3]);
     expect(strokeCalls[0]).toEqual(['A', glyphX - 4, glyphY - 5]);
-    expect(vertical._applyPatternGradientTransform).toHaveBeenCalledWith(context, '#ff0000');
-    expect(vertical._applyPatternGradientTransform).toHaveBeenCalledWith(context, '#111111');
+    expect(handleFiller).toHaveBeenCalledWith(context, 'fillStyle', '#ff0000');
+    expect(handleFiller).toHaveBeenCalledWith(context, 'strokeStyle', '#111111');
+    expect(handleFiller).toHaveBeenCalledTimes(2);
+    expect(vertical._setFillStyles).not.toHaveBeenCalled();
+    expect(vertical._setStrokeStyles).not.toHaveBeenCalled();
+    expect(vertical._applyPatternGradientTransform).not.toHaveBeenCalled();
     expect(saves).toBe(restores);
     expect(saves).toBeGreaterThanOrEqual(3);
   });
@@ -674,13 +681,13 @@ describe('Hstar OpenShop writing mode runtime', () => {
       realFabric.HstarVerticalText.fromObject(serialized, resolveObject);
     });
     const context = {save() {}, restore() {}, fillText() {}, strokeText() {}, fillRect() {}};
-    const patternTransform = vi.spyOn(reconstructed, '_applyPatternGradientTransform');
+    const handleFiller = vi.spyOn(realFabric.Text.prototype, 'handleFiller');
 
     expect(fromObject).toHaveBeenCalledWith('HstarVerticalText', serialized, expect.any(Function), 'text');
-    expect(typeof realFabric.Object.prototype._applyPatternGradientTransform).toBe('function');
+    expect(typeof realFabric.Text.prototype.handleFiller).toBe('function');
     expect(reconstructed.shadow).toBeInstanceOf(realFabric.Shadow);
     expect(() => reconstructed._render(context)).not.toThrow();
-    expect(patternTransform).toHaveBeenCalledWith(context, '#123456');
+    expect(handleFiller).toHaveBeenCalledWith(context, 'fillStyle', '#123456');
     expect(() => reconstructed.drawObject(context)).not.toThrow();
     fromObject.mockRestore();
     delete window.fabric;

@@ -134,34 +134,13 @@
     return {offsetX:0, offsetY:0};
   }
 
-  function setFillStyles(context, object, style) {
-    let offset;
-    try { if(typeof object._setFillStyles === 'function') object._setFillStyles(context, style); } catch(error) {}
-    try {
-      if(typeof object._applyPatternGradientTransform === 'function') {
-        offset = object._applyPatternGradientTransform(context, style.fill);
-      }
-    } catch(error) {}
-    if(typeof style.fill === 'string') context.fillStyle = style.fill;
-    return paintOffset(offset);
-  }
-
-  function setStrokeStyles(context, object, style) {
-    let offset;
-    try { if(typeof object._setStrokeStyles === 'function') object._setStrokeStyles(context, style); } catch(error) {}
-    try {
-      if(typeof object._applyPatternGradientTransform === 'function') {
-        offset = object._applyPatternGradientTransform(context, style.stroke);
-      }
-    } catch(error) {}
-    if(typeof style.stroke === 'string') context.strokeStyle = style.stroke;
+  function setStrokeGeometry(context, style) {
     if(style.strokeWidth != null) context.lineWidth = style.strokeWidth;
     if(typeof context.setLineDash === 'function') context.setLineDash(style.strokeDashArray || []);
     if(style.strokeDashOffset != null) context.lineDashOffset = style.strokeDashOffset;
     if(style.strokeLineCap) context.lineCap = style.strokeLineCap;
     if(style.strokeLineJoin) context.lineJoin = style.strokeLineJoin;
     if(style.strokeMiterLimit != null) context.miterLimit = style.strokeMiterLimit;
-    return paintOffset(offset);
   }
 
   function collectSerializableOptions(source) {
@@ -184,6 +163,14 @@
   }
 
   function createVerticalMethods(fabric) {
+    function paintWithFabricTextFiller(context, property, filler) {
+      if(fabric.Text && fabric.Text.prototype && typeof fabric.Text.prototype.handleFiller === 'function') {
+        return paintOffset(fabric.Text.prototype.handleFiller.call(this, context, property, filler));
+      }
+      if(typeof filler === 'string') context[property] = filler;
+      return {offsetX:0, offsetY:0};
+    }
+
     return {
       type:VERTICAL_TYPE,
       hstarWritingMode:VERTICAL,
@@ -263,14 +250,15 @@
           const fill = () => {
             if(style.fill == null || !context.fillText) return;
             if(context.save) context.save();
-            const offset = setFillStyles(context, this, style);
+            const offset = paintWithFabricTextFiller.call(this, context, 'fillStyle', style.fill);
             context.fillText(glyph.character, x - offset.offsetX, y - offset.offsetY);
             if(context.restore) context.restore();
           };
           const stroke = () => {
             if(!style.stroke || Number(style.strokeWidth) <= 0 || !context.strokeText) return;
             if(context.save) context.save();
-            const offset = setStrokeStyles(context, this, style);
+            setStrokeGeometry(context, style);
+            const offset = paintWithFabricTextFiller.call(this, context, 'strokeStyle', style.stroke);
             context.strokeText(glyph.character, x - offset.offsetX, y - offset.offsetY);
             if(context.restore) context.restore();
           };
