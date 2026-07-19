@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const runtimePath = resolve(testDir, '..', 'host', 'openshop-writing-mode.js');
+const editorCssPath = resolve(testDir, '..', 'host', 'openshop-writing-mode.css');
 const vendorFabricPath = resolve(testDir, '..', 'vendor', 'fabric-5.3.1.min.js');
 const TEXT_PROPERTIES = [
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
@@ -179,14 +180,35 @@ function attachEditingCanvas(object, {
   document.body.append(upperCanvasEl);
   object.getBoundingRect = vi.fn(() => objectRect);
   object.setCoords = vi.fn();
-  object.canvas = {
+  const listeners = new Map();
+  const canvas = {
     upperCanvasEl,
     viewportTransform,
     getWidth:vi.fn(() => logicalWidth),
     getHeight:vi.fn(() => logicalHeight),
     requestRenderAll:vi.fn(),
   };
-  return object.canvas;
+  canvas.on = vi.fn((name, handler) => {
+    const handlers = listeners.get(name) || new Set();
+    handlers.add(handler);
+    listeners.set(name, handlers);
+    return canvas;
+  });
+  canvas.off = vi.fn((name, handler) => {
+    listeners.get(name)?.delete(handler);
+    return canvas;
+  });
+  canvas.fire = vi.fn((name, payload) => {
+    [...(listeners.get(name) || [])].forEach(handler => handler(payload || {}));
+    return canvas;
+  });
+  object.canvas = canvas;
+  return canvas;
+}
+
+function cssMatrixValues(transform) {
+  const match = /^matrix\(([^)]+)\)/.exec(transform);
+  return match ? match[1].split(',').map(value => Number(value.trim())) : null;
 }
 
 let runtime;
@@ -302,7 +324,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(editor.style.fontStyle).toBe('italic');
     expect(editor.style.color).toBe('red');
     expect(editor.style.lineHeight).toBe('1.4');
-    expect(editor.style.transform).toBe('rotate(17deg)');
+    expect(editor.style.transform).toBe('none');
     expect(editor.style.left).toBe('110px');
     expect(editor.style.top).toBe('70px');
     expect(editor.style.width).toBe('80px');
@@ -340,6 +362,157 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(editor.style.top).toBe('110px');
     expect(editor.style.width).toBe('150px');
     expect(editor.style.height).toBe('200px');
+  });
+
+  it('composes the Fabric viewport and object matrices once with CSS canvas ratios', () => {
+    new Function(readFileSync(vendorFabricPath, 'utf8'))();
+    const realFabric = window.fabric;
+    runtime.registerFabricClass(realFabric);
+    const vertical = new realFabric.HstarVerticalText('matrix', {
+      left:140,
+      top:90,
+      fontSize:40,
+      scaleX:1.4,
+      scaleY:0.65,
+      angle:29,
+      skewX:13,
+      skewY:-7,
+      flipX:true,
+    });
+    const viewportTransform = [2, 0.15, -0.1, 2, 30, -20];
+    const canvas = attachEditingCanvas(vertical, {
+      canvasRect:{left:25, top:35, width:600, height:500},
+      viewportTransform,
+      logicalWidth:400,
+      logicalHeight:400,
+    });
+    vertical.getBoundingRect.mockImplementation(() => { throw new Error('matrix path must not use bounds'); });
+    const objectMatrix = vertical.calcTransformMatrix();
+    const combined = realFabric.util.multiplyTransformMatrices(viewportTransform, objectMatrix);
+
+    vertical.enterEditing();
+
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const cssMatrix = cssMatrixValues(editor.style.transform);
+    expect(cssMatrix).not.toBeNull();
+    expect(cssMatrix[0]).toBeCloseTo(combined[0] * 1.5, 8);
+    expect(cssMatrix[1]).toBeCloseTo(combined[1] * 1.25, 8);
+    expect(cssMatrix[2]).toBeCloseTo(combined[2] * 1.5, 8);
+    expect(cssMatrix[3]).toBeCloseTo(combined[3] * 1.25, 8);
+    expect(cssMatrix.slice(4)).toEqual([0, 0]);
+    expect(editor.style.transform).toContain('translate(-50%, -50%)');
+    expect(editor.style.transformOrigin).toBe('0px 0px');
+    expect(Number.parseFloat(editor.style.left)).toBeCloseTo(25 + (combined[4] * 1.5), 8);
+    expect(Number.parseFloat(editor.style.top)).toBeCloseTo(35 + (combined[5] * 1.25), 8);
+    expect(Number.parseFloat(editor.style.width)).toBeCloseTo(vertical.width, 8);
+    expect(Number.parseFloat(editor.style.height)).toBeCloseTo(vertical.height, 8);
+    expect(canvas.viewportTransform).toEqual(viewportTransform);
+    delete window.fabric;
+  });
+
+  it('refreshes matrix geometry after input and keeps overflowing text usable', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {hstarWritingMode:'vertical', fontSize:20});
+    attachEditingCanvas(vertical);
+    vertical.calcTransformMatrix = vi.fn(() => [1, 0, 0, 1, 180, 160]);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const initialHeight = Number.parseFloat(editor.style.height);
+
+    editor.value = 'ABCDEFG';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(Number.parseFloat(editor.style.height)).toBeCloseTo(vertical.height, 8);
+    expect(Number.parseFloat(editor.style.height)).toBeGreaterThan(initialHeight);
+    expect(editor.style.transform).toContain('matrix(');
+    expect(readFileSync(editorCssPath, 'utf8')).toMatch(/overflow:\s*auto/);
+  });
+
+  it('fires live text events per input and one modification event only when changed', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'before', {hstarWritingMode:'vertical'});
+    const canvas = attachEditingCanvas(vertical);
+    vertical.fire = vi.fn();
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.value = 'after';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(vertical.fire).toHaveBeenCalledWith('changed');
+    expect(canvas.fire.mock.calls.filter(([name]) => name === 'text:changed')).toEqual([
+      ['text:changed', {target:vertical}],
+    ]);
+    expect(canvas.fire.mock.calls.filter(([name]) => name === 'object:modified')).toHaveLength(0);
+
+    vertical.exitEditing();
+    vertical.exitEditing();
+    expect(canvas.fire.mock.calls.filter(([name]) => name === 'object:modified')).toEqual([
+      ['object:modified', {target:vertical}],
+    ]);
+
+    vertical.enterEditing();
+    vertical.exitEditing();
+    expect(canvas.fire.mock.calls.filter(([name]) => name === 'object:modified')).toHaveLength(1);
+  });
+
+  it('cleans up editing when the object, canvas, or selection is removed', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'lifecycle', {hstarWritingMode:'vertical'});
+    const canvas = attachEditingCanvas(vertical);
+    vertical.enterEditing();
+
+    canvas.fire('object:removed', {target:vertical});
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(vertical.isEditing).toBe(false);
+    expect(canvas.off).toHaveBeenCalled();
+
+    vertical.enterEditing();
+    canvas.fire('canvas:cleared');
+    expect(runtime.activeEditorObject()).toBeNull();
+
+    vertical.enterEditing();
+    canvas.fire('selection:updated', {selected:[{type:'rect'}]});
+    expect(runtime.activeEditorObject()).toBeNull();
+
+    vertical.enterEditing();
+    canvas.requestRenderAll.mockImplementationOnce(() => { throw new Error('canvas disposed'); });
+    expect(() => canvas.fire('canvas:disposed')).not.toThrow();
+    expect(runtime.activeEditorObject()).toBeNull();
+  });
+
+  it('exposes an accessible editor and commits only Escape or Numpad Enter', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'keys', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const css = readFileSync(editorCssPath, 'utf8');
+
+    expect(editor.getAttribute('aria-label')).toBe('竖排文字编辑');
+    expect(editor.spellcheck).toBe(false);
+    expect(css).toMatch(/\.hstar-vertical-text-editor:focus-visible\s*\{[^}]*outline:/s);
+    editor.dispatchEvent(new KeyboardEvent('keydown', {
+      key:'Enter', code:'Enter', bubbles:true, cancelable:true,
+    }));
+    expect(runtime.activeEditorObject()).toBe(vertical);
+
+    const numpadGlobal = vi.fn();
+    document.addEventListener('keydown', numpadGlobal, {once:true});
+    editor.dispatchEvent(new KeyboardEvent('keydown', {
+      key:'Enter', code:'NumpadEnter', bubbles:true, cancelable:true,
+    }));
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(numpadGlobal).toHaveBeenCalledOnce();
+
+    vertical.enterEditing();
+    const escapeGlobal = vi.fn();
+    document.addEventListener('keydown', escapeGlobal, {once:true});
+    editor.dispatchEvent(new KeyboardEvent('keydown', {
+      key:'Escape', code:'Escape', bubbles:true, cancelable:true,
+    }));
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(escapeGlobal).toHaveBeenCalledOnce();
   });
 
   it('syncs textarea input to the object dimensions and canvas immediately', () => {

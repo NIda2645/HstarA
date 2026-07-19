@@ -33,6 +33,10 @@
   const MIN_EDITOR_HEIGHT = 48;
   let editorElement = null;
   let activeObject = null;
+  let activeFabric = null;
+  let activeOriginalText = null;
+  let activeCanvas = null;
+  let activeCanvasBindings = [];
   let editorDocument = null;
 
   function documentForRuntime() {
@@ -80,7 +84,36 @@
     };
   }
 
-  function editorGeometry(object) {
+  function validTransformMatrix(matrix) {
+    return Array.isArray(matrix) && matrix.length >= 6
+      && matrix.slice(0, 6).every(value => Number.isFinite(Number(value)));
+  }
+
+  function multiplyTransformMatrices(left, right) {
+    return [
+      (left[0] * right[0]) + (left[2] * right[1]),
+      (left[1] * right[0]) + (left[3] * right[1]),
+      (left[0] * right[2]) + (left[2] * right[3]),
+      (left[1] * right[2]) + (left[3] * right[3]),
+      (left[0] * right[4]) + (left[2] * right[5]) + left[4],
+      (left[1] * right[4]) + (left[3] * right[5]) + left[5],
+    ];
+  }
+
+  function combinedTransform(fabric, viewport, objectMatrix) {
+    const multiply = fabric && fabric.util && fabric.util.multiplyTransformMatrices;
+    if(typeof multiply === 'function') {
+      try {
+        const combined = multiply(viewport, objectMatrix);
+        if(validTransformMatrix(combined)) return combined.map(Number);
+      } catch(error) {
+        // Use the local Fabric-compatible matrix multiplication below.
+      }
+    }
+    return multiplyTransformMatrices(viewport.map(Number), objectMatrix.map(Number));
+  }
+
+  function editorGeometry(object, fabric) {
     const canvas = object && object.canvas;
     const canvasElements = canvas ? [canvas.upperCanvasEl, canvas.lowerCanvasEl].filter(Boolean) : [];
     let canvasElement = null;
@@ -91,6 +124,30 @@
       if(canvasRect) break;
     }
     canvasRect = canvasRect || {left:0, top:0};
+    const ratio = canvasCssRatio(canvas, canvasElement, canvasRect);
+    const viewport = canvas && canvas.viewportTransform;
+    if(object && typeof object.calcTransformMatrix === 'function' && validTransformMatrix(viewport)) {
+      try {
+        const objectMatrix = object.calcTransformMatrix();
+        if(validTransformMatrix(objectMatrix)) {
+          const combined = combinedTransform(fabric, viewport, objectMatrix);
+          return {
+            left:finiteValue(canvasRect.left) + (combined[4] * ratio.x),
+            top:finiteValue(canvasRect.top) + (combined[5] * ratio.y),
+            width:Math.max(MIN_EDITOR_WIDTH, finiteValue(object.width, MIN_EDITOR_WIDTH)),
+            height:Math.max(MIN_EDITOR_HEIGHT, finiteValue(object.height, MIN_EDITOR_HEIGHT)),
+            matrix:[
+              combined[0] * ratio.x,
+              combined[1] * ratio.y,
+              combined[2] * ratio.x,
+              combined[3] * ratio.y,
+            ],
+          };
+        }
+      } catch(error) {
+        // Fall back to Fabric's viewport-transformed bounding rectangle.
+      }
+    }
     let objectRect = null;
     try {
       objectRect = object && typeof object.getBoundingRect === 'function'
@@ -98,7 +155,6 @@
     } catch(error) {
       objectRect = null;
     }
-    const ratio = canvasCssRatio(canvas, canvasElement, canvasRect);
     const left = finiteValue(objectRect && (objectRect.left ?? objectRect.x), finiteValue(object && object.left)) * ratio.x;
     const top = finiteValue(objectRect && (objectRect.top ?? objectRect.y), finiteValue(object && object.top)) * ratio.y;
     const fallbackWidth = finiteValue(object && object.width, MIN_EDITOR_WIDTH);
@@ -110,15 +166,15 @@
       top:finiteValue(canvasRect.top) + top,
       width:Math.max(MIN_EDITOR_WIDTH, width),
       height:Math.max(MIN_EDITOR_HEIGHT, height),
+      matrix:null,
     };
   }
 
-  function applyEditorStyles(object) {
+  function applyEditorStyles(object, fabric = activeFabric) {
     if(!editorElement) return;
-    const geometry = editorGeometry(object);
+    const geometry = editorGeometry(object, fabric);
     const fontSize = positiveNumber(object && object.fontSize, 40);
     const lineHeight = positiveNumber(object && object.lineHeight, 1.16);
-    const angle = finiteValue(object && object.angle);
     editorElement.style.display = 'block';
     editorElement.style.position = 'fixed';
     editorElement.style.zIndex = '2147483647';
@@ -131,18 +187,28 @@
     editorElement.style.fontStyle = String(object && object.fontStyle || 'normal');
     editorElement.style.color = String(object && object.fill || 'currentColor');
     editorElement.style.lineHeight = String(lineHeight);
-    editorElement.style.transform = `rotate(${angle}deg)`;
-    editorElement.style.transformOrigin = 'top left';
+    editorElement.style.transform = geometry.matrix
+      ? `matrix(${geometry.matrix.join(', ')}, 0, 0) translate(-50%, -50%)`
+      : 'none';
+    editorElement.style.transformOrigin = '0px 0px';
     editorElement.style.left = `${geometry.left}px`;
     editorElement.style.top = `${geometry.top}px`;
     editorElement.style.width = `${geometry.width}px`;
     editorElement.style.height = `${geometry.height}px`;
   }
 
-  function requestObjectRender(object) {
-    if(object && object.canvas && typeof object.canvas.requestRenderAll === 'function') {
-      object.canvas.requestRenderAll();
+  function requestObjectRender(object, canvas = object && object.canvas) {
+    if(canvas && typeof canvas.requestRenderAll === 'function') {
+      try { canvas.requestRenderAll(); } catch(error) { /* disposed canvases cannot render */ }
     }
+  }
+
+  function fireEvent(target, name, payload) {
+    if(!target || typeof target.fire !== 'function') return;
+    try {
+      if(payload === undefined) target.fire(name);
+      else target.fire(name, payload);
+    } catch(error) { /* disposed Fabric targets may reject events */ }
   }
 
   function syncEditorText(object, {force = false, render = true} = {}) {
@@ -160,35 +226,105 @@
     return true;
   }
 
-  function focusCanvas(object) {
-    const canvas = object && object.canvas;
+  function focusCanvas(object, canvas = object && object.canvas) {
     const element = canvas && (canvas.upperCanvasEl || canvas.lowerCanvasEl);
     if(element && typeof element.focus === 'function') {
       try { element.focus(); } catch(error) { /* jsdom and detached canvases can reject focus */ }
     }
   }
 
+  function unbindActiveCanvas() {
+    const canvas = activeCanvas;
+    activeCanvasBindings.forEach(({name, handler, dispose}) => {
+      try {
+        if(canvas && typeof canvas.off === 'function') canvas.off(name, handler);
+        else if(typeof dispose === 'function') dispose();
+      } catch(error) {
+        // The canvas may already be disposed.
+      }
+    });
+    activeCanvasBindings = [];
+    activeCanvas = null;
+  }
+
+  function closeActiveEditor() {
+    if(activeObject) exitEditing(activeObject);
+  }
+
+  function onActiveObjectRemoved(event) {
+    if(activeObject && event && event.target === activeObject) closeActiveEditor();
+  }
+
+  function onActiveSelectionChanged(event) {
+    if(!activeObject) return;
+    const selected = event && Array.isArray(event.selected) ? event.selected : [];
+    if(event && event.target === activeObject || selected.includes(activeObject)) return;
+    closeActiveEditor();
+  }
+
+  function bindActiveCanvas(canvas) {
+    unbindActiveCanvas();
+    activeCanvas = canvas || null;
+    if(!canvas || typeof canvas.on !== 'function') return;
+    const bindings = [
+      ['object:removed', onActiveObjectRemoved],
+      ['canvas:cleared', closeActiveEditor],
+      ['canvas:disposed', closeActiveEditor],
+      ['selection:created', onActiveSelectionChanged],
+      ['selection:updated', onActiveSelectionChanged],
+      ['selection:cleared', closeActiveEditor],
+    ];
+    bindings.forEach(([name, handler]) => {
+      try {
+        const dispose = canvas.on(name, handler);
+        activeCanvasBindings.push({name, handler, dispose:typeof dispose === 'function' ? dispose : null});
+      } catch(error) {
+        // Ignore event APIs that disappear while a canvas is being disposed.
+      }
+    });
+  }
+
   function exitEditing(object) {
     if(!object) return object;
     object.isEditing = false;
     if(activeObject !== object) return object;
-    syncEditorText(object);
+    const canvas = activeCanvas || object.canvas;
+    syncEditorText(object, {render:false});
+    const changed = String(object.text == null ? '' : object.text) !== activeOriginalText;
     activeObject = null;
+    activeOriginalText = null;
+    activeFabric = null;
+    unbindActiveCanvas();
     if(editorElement) {
       editorElement.style.display = 'none';
       editorElement.blur?.();
     }
-    focusCanvas(object);
-    requestObjectRender(object);
+    if(changed) fireEvent(canvas, 'object:modified', {target:object});
+    focusCanvas(object, canvas);
+    requestObjectRender(object, canvas);
     return object;
   }
 
   function onEditorInput() {
-    if(activeObject) syncEditorText(activeObject, {force:true});
+    if(!activeObject) return;
+    const object = activeObject;
+    const canvas = activeCanvas || object.canvas;
+    syncEditorText(object, {force:true, render:false});
+    applyEditorStyles(object, activeFabric);
+    fireEvent(object, 'changed');
+    fireEvent(canvas, 'text:changed', {target:object});
+    requestObjectRender(object, canvas);
   }
 
   function onEditorBlur() {
     if(activeObject) exitEditing(activeObject);
+  }
+
+  function onEditorKeyDown(event) {
+    if(!activeObject || !event) return;
+    if(event.key !== 'Escape' && event.code !== 'NumpadEnter') return;
+    event.preventDefault?.();
+    exitEditing(activeObject);
   }
 
   function onDocumentPointer(event) {
@@ -201,6 +337,7 @@
     if(editorElement) {
       editorElement.removeEventListener('input', onEditorInput);
       editorElement.removeEventListener('blur', onEditorBlur);
+      editorElement.removeEventListener('keydown', onEditorKeyDown);
     }
     if(editorDocument) {
       editorDocument.removeEventListener('pointerdown', onDocumentPointer, true);
@@ -220,31 +357,40 @@
     const existing = [...documentRef.querySelectorAll(VERTICAL_EDITOR_SELECTOR)];
     if(!editorElement) {
       editorElement = existing.find(element => element.tagName === 'TEXTAREA') || documentRef.createElement('textarea');
-      editorElement.classList.add('hstar-vertical-text-editor');
-      editorElement.setAttribute('data-hstar-vertical-editor', '');
-      editorElement.autocomplete = 'off';
-      editorElement.spellcheck = false;
       editorElement.addEventListener('input', onEditorInput);
       editorElement.addEventListener('blur', onEditorBlur);
+      editorElement.addEventListener('keydown', onEditorKeyDown);
       editorDocument = documentRef;
       editorDocument.addEventListener('pointerdown', onDocumentPointer, true);
       editorDocument.addEventListener('mousedown', onDocumentPointer, true);
     }
+    editorElement.classList.add('hstar-vertical-text-editor');
+    editorElement.setAttribute('data-hstar-vertical-editor', '');
+    editorElement.setAttribute('aria-label', '竖排文字编辑');
+    editorElement.setAttribute('spellcheck', 'false');
+    editorElement.autocomplete = 'off';
+    editorElement.spellcheck = false;
     existing.filter(element => element !== editorElement).forEach(element => element.remove());
     if(!editorElement.isConnected) documentRef.body.append(editorElement);
     return editorElement;
   }
 
-  function enterEditing(object, event) {
+  function enterEditing(object, event, fabric) {
+    if(activeObject === object) {
+      applyEditorStyles(object, activeFabric || fabric);
+      try { editorElement?.focus({preventScroll:true}); } catch(error) { editorElement?.focus(); }
+      return object;
+    }
     if(activeObject && activeObject !== object) exitEditing(activeObject);
     const editor = ensureEditor();
     activeObject = object;
+    activeFabric = fabric || null;
+    activeOriginalText = String(object.text == null ? '' : object.text);
+    bindActiveCanvas(object.canvas);
     object.isEditing = true;
     if(!editor) return object;
-    if(editor.value !== String(object.text == null ? '' : object.text) || editor.style.display === 'none') {
-      editor.value = String(object.text == null ? '' : object.text);
-    }
-    applyEditorStyles(object);
+    editor.value = activeOriginalText;
+    applyEditorStyles(object, activeFabric);
     try { editor.focus({preventScroll:true}); } catch(error) { editor.focus?.(); }
     if(typeof editor.setSelectionRange === 'function') {
       editor.setSelectionRange(editor.value.length, editor.value.length);
@@ -419,7 +565,7 @@
       },
 
       enterEditing(event) {
-        return enterEditing(this, event);
+        return enterEditing(this, event, fabric);
       },
 
       exitEditing() {
@@ -670,10 +816,13 @@
 
   function destroy() {
     if(activeObject) exitEditing(activeObject);
+    else unbindActiveCanvas();
     detachEditorListeners();
     if(editorElement) editorElement.remove();
     editorElement = null;
     activeObject = null;
+    activeFabric = null;
+    activeOriginalText = null;
   }
 
   global.HstarOpenShopWritingMode = {
