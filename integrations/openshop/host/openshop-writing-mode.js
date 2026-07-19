@@ -192,8 +192,28 @@
       .filter(([, child]) => child !== undefined));
   }
 
+  function serializableObjectProperties(source) {
+    const properties = {};
+    Object.keys(source || {}).forEach(name => {
+      if(name.startsWith('_') || RUNTIME_PROPERTIES.has(name)) return;
+      const value = cloneSerializable(source[name]);
+      if(value !== undefined) properties[name] = value;
+    });
+    return properties;
+  }
+
   function copyConvertibleOptions(source) {
-    return collectSerializableOptions(source);
+    let serialized = {};
+    if(source && typeof source.toObject === 'function') {
+      try { serialized = source.toObject(); } catch(error) { serialized = {}; }
+    }
+    const properties = serializableObjectProperties(serialized);
+    Object.keys(source || {}).forEach(name => {
+      if(!name.startsWith('hstar') || name === 'hstarWritingMode' || Object.hasOwn(properties, name)) return;
+      const value = cloneSerializable(source[name]);
+      if(value !== undefined) properties[name] = value;
+    });
+    return properties;
   }
 
   function writingModeFor(object) {

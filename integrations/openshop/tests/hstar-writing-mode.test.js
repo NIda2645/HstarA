@@ -12,10 +12,12 @@ const TEXT_PROPERTIES = [
   'top', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY', 'originX', 'originY',
   'visible', 'selectable', 'evented',
 ];
-const BASE_OBJECT_PROPERTIES = [
-  'type', 'left', 'top', 'scaleX', 'scaleY', 'angle', 'opacity', 'originX', 'originY',
-  'visible', 'selectable', 'evented',
-];
+const MOCK_RUNTIME_PROPERTIES = new Set([
+  'canvas', 'group', 'aCoords', 'oCoords', 'matrixCache', 'ownMatrixCache', 'cacheKey',
+  'dirty', 'selectionStart', 'selectionEnd', 'isEditing', 'hiddenTextarea',
+  'hiddenTextareaContainer', 'cursorDuration', 'inCompositionMode', 'keysMap', 'cursorWidth',
+  'cursorColor', 'cursorDelay', 'width', 'height', 'pathOffset',
+]);
 
 function loadRuntime() {
   delete window.HstarOpenShopWritingMode;
@@ -42,9 +44,18 @@ function createFabricMock({withCreateClass = true} = {}) {
 
     toObject(extra = []) {
       const output = {};
-      BASE_OBJECT_PROPERTIES.forEach(key => {
-        if(this[key] !== undefined) output[key] = this[key];
-      });
+      const names = new Set();
+      let current = this;
+      while(current && current !== Object.prototype) {
+        Object.getOwnPropertyNames(current).forEach(key => {
+          if(names.has(key)) return;
+          names.add(key);
+          if(key.startsWith('_') || MOCK_RUNTIME_PROPERTIES.has(key)) return;
+          const value = this[key];
+          if(typeof value !== 'function' && value !== undefined) output[key] = value;
+        });
+        current = Object.getPrototypeOf(current);
+      }
       (Array.isArray(extra) ? extra : []).forEach(key => {
         if(this[key] !== undefined) output[key] = this[key];
       });
@@ -337,14 +348,34 @@ describe('Hstar OpenShop writing mode runtime', () => {
       hiddenTextarea:{value:'editor state'},
       hiddenTextareaContainer:{remove() {}},
       cursorDuration:600,
+      inCompositionMode:true,
+      keysMap:{TAB:9},
+      cursorWidth:3,
+      cursorColor:'#ff00aa',
+      cursorDelay:250,
     });
+    const baseToObject = source.toObject.bind(source);
+    const calls = [];
+    source.toObject = (...args) => {
+      calls.push(args);
+      return {...baseToObject(), serializedContractOption:{from:'toObject'}};
+    };
 
     const vertical = runtime.convertTextObject(fabric, source, 'vertical');
 
-    expect(vertical).toMatchObject({text:'editor state', direction:'ltr'});
+    expect(calls).toEqual([[]]);
+    expect(vertical).toMatchObject({
+      text:'editor state',
+      direction:'ltr',
+      paintFirst:'stroke',
+      strokeUniform:true,
+      strokeDashArray:[6, 3],
+      serializedContractOption:{from:'toObject'},
+    });
     for(const key of [
       'selectionStart', 'selectionEnd', 'isEditing', 'hiddenTextarea',
-      'hiddenTextareaContainer', 'cursorDuration',
+      'hiddenTextareaContainer', 'cursorDuration', 'inCompositionMode', 'keysMap',
+      'cursorWidth', 'cursorColor', 'cursorDelay',
     ]) {
       expect(vertical[key]).toBeUndefined();
     }
