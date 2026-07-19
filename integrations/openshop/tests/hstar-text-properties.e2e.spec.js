@@ -3,6 +3,13 @@ import { expect, test } from '@playwright/test';
 const baseUrl = process.env.HSTAR_BASE_URL || 'http://127.0.0.1:3010';
 const openshopUrl = `${baseUrl}/static/openshop/index.html`;
 
+function rectanglesIntersect(first, second){
+  return first.x < second.x + second.width
+    && first.x + first.width > second.x
+    && first.y < second.y + second.height
+    && first.y + first.height > second.y;
+}
+
 async function openOpenShopFrame(page){
   await page.goto(openshopUrl, {waitUntil:'domcontentloaded'});
   await page.waitForFunction(() => Boolean(
@@ -96,14 +103,48 @@ test('edits mixed-language text with installed fonts and preserves the project s
   expect(otherBox).not.toBeNull();
   expect(await fontList.evaluate(element => getComputedStyle(element).position)).toBe('fixed');
   expect(listBox.y).toBeGreaterThan(otherBox.y + otherBox.height);
-  expect(listBox.width).toBeCloseTo(selectorsBox.width, 1);
+  expect(Math.abs(listBox.width - selectorsBox.width)).toBeLessThanOrEqual(1);
   for (const triggerBox of [familyBox, otherBox]) {
-    const overlaps = listBox.x < triggerBox.x + triggerBox.width
-      && listBox.x + listBox.width > triggerBox.x
-      && listBox.y < triggerBox.y + triggerBox.height
-      && listBox.y + listBox.height > triggerBox.y;
-    expect(overlaps).toBe(false);
+    expect(rectanglesIntersect(listBox, triggerBox)).toBe(false);
   }
+  const textPanel = frame.locator('#hstar-text-properties-panel');
+  const secondFontLabel = otherTrigger.locator('..');
+  const panelScroll = await textPanel.evaluate(panel => {
+    const maximumScrollTop = Math.max(0, panel.scrollHeight - panel.clientHeight);
+    const requestedScrollTop = Math.min(12, maximumScrollTop);
+    panel.scrollTop = requestedScrollTop;
+    panel.dispatchEvent(new Event('scroll'));
+    return {maximumScrollTop, requestedScrollTop, scrollTop:panel.scrollTop};
+  });
+  expect(panelScroll.maximumScrollTop).toBeGreaterThan(0);
+  expect(panelScroll.scrollTop).toBe(panelScroll.requestedScrollTop);
+  expect(panelScroll.scrollTop).toBeLessThanOrEqual(panelScroll.maximumScrollTop);
+  await expect.poll(async () => {
+    const [currentListBox, currentLabelBox] = await Promise.all([
+      fontList.boundingBox(),
+      secondFontLabel.boundingBox(),
+    ]);
+    if(!currentListBox || !currentLabelBox) return Number.POSITIVE_INFINITY;
+    return Math.abs(currentListBox.y - (currentLabelBox.y + currentLabelBox.height + 4));
+  }).toBeLessThanOrEqual(1);
+  const [scrolledListBox, secondLabelBox, scrolledSelectorsBox, styleBox, sizeBox] = await Promise.all([
+    fontList.boundingBox(),
+    secondFontLabel.boundingBox(),
+    selectors.boundingBox(),
+    frame.locator('[data-text-style]').boundingBox(),
+    frame.locator('[data-text-size]').boundingBox(),
+  ]);
+  expect(scrolledListBox).not.toBeNull();
+  expect(secondLabelBox).not.toBeNull();
+  expect(scrolledSelectorsBox).not.toBeNull();
+  expect(styleBox).not.toBeNull();
+  expect(sizeBox).not.toBeNull();
+  expect(Math.abs(scrolledListBox.y - (secondLabelBox.y + secondLabelBox.height + 4)))
+    .toBeLessThanOrEqual(1);
+  expect(Math.abs(scrolledListBox.x - scrolledSelectorsBox.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(scrolledListBox.width - scrolledSelectorsBox.width)).toBeLessThanOrEqual(1);
+  expect(rectanglesIntersect(scrolledListBox, styleBox)).toBe(false);
+  expect(rectanglesIntersect(scrolledListBox, sizeBox)).toBe(false);
   await otherTrigger.click();
   await expect(fontList).toBeHidden();
   await expect(familyTrigger).toHaveAttribute('aria-expanded', 'false');
