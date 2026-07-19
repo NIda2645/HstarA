@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const runtimePath = resolve(testDir, '..', 'host', 'openshop-writing-mode.js');
+const vendorFabricPath = resolve(testDir, '..', 'vendor', 'fabric-5.3.1.min.js');
 const TEXT_PROPERTIES = [
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
   'charSpacing', 'lineHeight', 'textAlign', 'textBackgroundColor', 'backgroundColor',
@@ -52,8 +53,13 @@ function createFabricMock({withCreateClass = true} = {}) {
     }
 
     set(values, value) {
-      if(typeof values === 'string') this[values] = value;
-      else Object.assign(this, values || {});
+      if(typeof values === 'string') this._set(values, value);
+      else Object.entries(values || {}).forEach(([key, item]) => this._set(key, item));
+      return this;
+    }
+
+    _set(key, value) {
+      this[key] = value;
       return this;
     }
 
@@ -434,6 +440,85 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(calls[0][1]).toBeGreaterThan(calls[2][1]);
   });
 
+  it('recomputes dimensions after text and typography changes', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB', {hstarWritingMode:'vertical', fontSize:20});
+    const initial = {width:vertical.width, height:vertical.height};
+
+    vertical.set({text:'ABCD', fontSize:40});
+
+    expect(vertical.width).toBeGreaterThan(initial.width);
+    expect(vertical.height).toBeGreaterThan(initial.height);
+    expect(vertical._hstarVerticalLayout.glyphs.map(glyph => glyph.character)).toEqual(['A', 'B', 'C', 'D']);
+    expect(vertical.dirty).toBe(true);
+  });
+
+  it('renders defaults, glyph overrides, stroke, backgrounds, and decorations', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB', {
+      hstarWritingMode:'vertical',
+      fill:'#111111',
+      stroke:'#222222',
+      strokeWidth:2,
+      shadow:{color:'#334155', blur:3, offsetX:1, offsetY:2},
+      underline:true,
+      textBackgroundColor:'#eeeeee',
+      styles:{0:{1:{fontFamily:'Override Sans', fontSize:24, fontWeight:700, fontStyle:'italic', fill:'#ff0000'}}},
+    });
+    const fonts = [];
+    const fills = [];
+    const strokes = [];
+    const lineWidths = [];
+    const shadows = [];
+    const rects = [];
+    const context = {
+      save() {}, restore() {},
+      set font(value) { fonts.push(value); },
+      set fillStyle(value) { fills.push(value); },
+      set strokeStyle(value) { strokes.push(value); },
+      set lineWidth(value) { lineWidths.push(value); },
+      set shadowColor(value) { shadows.push(value); },
+      fillText(...args) { this.fillTexts.push(args); },
+      strokeText(...args) { this.strokeTexts.push(args); },
+      fillRect(...args) { rects.push(args); },
+      fillTexts:[], strokeTexts:[],
+    };
+
+    vertical._render(context);
+
+    expect(fonts).toContain('normal normal 40px sans-serif');
+    expect(fonts).toContain('italic 700 24px Override Sans');
+    expect(context.fillTexts.map(([glyph]) => glyph)).toEqual(['A', 'B']);
+    expect(context.strokeTexts).toHaveLength(2);
+    expect(fills).toContain('#ff0000');
+    expect(strokes).toContain('#222222');
+    expect(lineWidths).toContain(2);
+    expect(shadows).toContain('#334155');
+    expect(rects.length).toBeGreaterThan(2);
+  });
+
+  it('uses real Fabric enlivening for vertical object reconstruction', async () => {
+    new Function(readFileSync(vendorFabricPath, 'utf8'))();
+    const realFabric = window.fabric;
+    runtime.registerFabricClass(realFabric);
+    const original = new realFabric.HstarVerticalText('A', {
+      fontSize:28,
+      shadow:new realFabric.Shadow({color:'#000000', blur:3, offsetX:1, offsetY:2}),
+    });
+    const serialized = original.toObject();
+    const fromObject = vi.spyOn(realFabric.Object, '_fromObject');
+    const reconstructed = await new Promise(resolveObject => {
+      realFabric.HstarVerticalText.fromObject(serialized, resolveObject);
+    });
+    const context = {save() {}, restore() {}, fillText() {}, strokeText() {}, fillRect() {}};
+
+    expect(fromObject).toHaveBeenCalledWith('HstarVerticalText', serialized, expect.any(Function), 'text');
+    expect(reconstructed.shadow).toBeInstanceOf(realFabric.Shadow);
+    expect(() => reconstructed._render(context)).not.toThrow();
+    fromObject.mockRestore();
+    delete window.fabric;
+  });
+
   it('serializes and restores raw vertical text, visual styles, metadata, and dimensions', () => {
     const fabric = createFabricMock();
     const original = runtime.createTextObject(fabric, 'A\nB', {
@@ -447,6 +532,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
       fontStyle:'italic',
       stroke:'#012345',
       strokeWidth:2,
+      strokeDashArray:[5, 2],
       charSpacing:36,
       lineHeight:1.5,
       textAlign:'center',
@@ -502,6 +588,14 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(serialized.hstarRuntime).toBeUndefined();
     expect(reconstructed.styles).not.toBe(serialized.styles);
     expect(reconstructed.shadow).not.toBe(serialized.shadow);
+    serialized.styles[0][0].fill = '#000000';
+    serialized.shadow.color = '#ffffff';
+    serialized.strokeDashArray[0] = 99;
+    serialized.hstarData.tags.push('serialized-only');
+    expect(original.styles[0][0].fill).toBe('#f97316');
+    expect(original.shadow.color).toBe('#334155');
+    expect(original.strokeDashArray[0]).toBe(5);
+    expect(original.hstarData.tags).toEqual(['title']);
   });
 
   it('honors explicit writing modes and defaults legacy objects to horizontal', () => {

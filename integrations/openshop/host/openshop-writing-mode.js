@@ -20,6 +20,9 @@
     '_unwrappedTextLines', '_styleMap', 'dynamicMinWidth', '__corner', 'pathOffset', 'width',
     'height', 'type', 'text', 'hstarWritingMode',
   ]);
+  const LAYOUT_PROPERTIES = new Set([
+    'text', 'fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'lineHeight', 'charSpacing', 'styles',
+  ]);
 
   function normalizeWritingMode(value) {
     return value === VERTICAL ? VERTICAL : HORIZONTAL;
@@ -62,11 +65,62 @@
   }
 
   function applyVerticalDimensions(object) {
-    const layout = layoutVerticalText(object.text, object);
-    object._hstarVerticalLayout = layout;
-    if(typeof object.set === 'function') object.set({width:layout.width, height:layout.height});
-    else Object.assign(object, {width:layout.width, height:layout.height});
-    return layout;
+    if(object._hstarUpdatingLayout) return object._hstarVerticalLayout;
+    object._hstarUpdatingLayout = true;
+    try {
+      const layout = layoutVerticalText(object.text, object);
+      object._hstarVerticalLayout = layout;
+      object._hstarVerticalLayoutSignature = layoutSignature(object);
+      if(typeof object.set === 'function') object.set({width:layout.width, height:layout.height});
+      else Object.assign(object, {width:layout.width, height:layout.height});
+      return layout;
+    } finally {
+      object._hstarUpdatingLayout = false;
+    }
+  }
+
+  function layoutSignature(object) {
+    let styles = '';
+    try { styles = JSON.stringify(object.styles || null); } catch(error) { styles = String(object.styles); }
+    return [object.text, object.fontSize, object.fontFamily, object.fontWeight, object.fontStyle,
+      object.lineHeight, object.charSpacing, styles].join('\u0001');
+  }
+
+  function currentLayout(object) {
+    if(!object._hstarVerticalLayout || object._hstarVerticalLayoutSignature !== layoutSignature(object)) {
+      return applyVerticalDimensions(object);
+    }
+    return object._hstarVerticalLayout;
+  }
+
+  function glyphStyle(object, glyph) {
+    const column = object.styles && object.styles[glyph.columnIndex];
+    return Object.assign({}, object, column && column[glyph.rowIndex]);
+  }
+
+  function fontString(style) {
+    return `${style.fontStyle || 'normal'} ${style.fontWeight || 'normal'} ${positiveNumber(style.fontSize, 40)}px ${style.fontFamily || 'sans-serif'}`;
+  }
+
+  function setPaintStyles(context, object, style) {
+    try { if(typeof object._setFillStyles === 'function') object._setFillStyles(context, style); } catch(error) {}
+    try { if(typeof object._setStrokeStyles === 'function') object._setStrokeStyles(context, style); } catch(error) {}
+    let shadowApplied = false;
+    try {
+      if(style.shadow && typeof object._setShadow === 'function') {
+        object._setShadow(context, style.shadow);
+        shadowApplied = true;
+      }
+    } catch(error) {}
+    if(style.shadow && !shadowApplied) {
+      context.shadowColor = style.shadow.color || 'transparent';
+      context.shadowBlur = style.shadow.blur || 0;
+      context.shadowOffsetX = style.shadow.offsetX || 0;
+      context.shadowOffsetY = style.shadow.offsetY || 0;
+    }
+    if(typeof style.fill === 'string') context.fillStyle = style.fill;
+    if(typeof style.stroke === 'string') context.strokeStyle = style.stroke;
+    if(style.strokeWidth != null) context.lineWidth = style.strokeWidth;
   }
 
   function collectSerializableOptions(source) {
@@ -111,17 +165,65 @@
         return applyVerticalDimensions(this);
       },
 
+      _set(key, value) {
+        let result;
+        if(typeof this.callSuper === 'function') result = this.callSuper('_set', key, value);
+        else if(fabric.Object && fabric.Object.prototype && typeof fabric.Object.prototype._set === 'function') {
+          result = fabric.Object.prototype._set.call(this, key, value);
+        } else {
+          this[key] = value;
+          result = this;
+        }
+        if(!this._hstarUpdatingLayout && LAYOUT_PROPERTIES.has(key)) {
+          applyVerticalDimensions(this);
+          this.dirty = true;
+          if(typeof this.setCoords === 'function') this.setCoords();
+        }
+        return result || this;
+      },
+
+      setTextContent(value) {
+        if(typeof this.set === 'function') this.set('text', String(value));
+        else this.text = String(value);
+        const layout = currentLayout(this);
+        this.dirty = true;
+        if(typeof this.setCoords === 'function') this.setCoords();
+        return layout;
+      },
+
       _render(context) {
-        const layout = this._hstarVerticalLayout || applyVerticalDimensions(this);
+        const layout = currentLayout(this);
         const offsetX = -this.width / 2;
         const offsetY = -this.height / 2;
         if(context.save) context.save();
-        if(this.fontFamily) context.font = `${this.fontStyle || 'normal'} ${this.fontWeight || 'normal'} ${this.fontSize || 40}px ${this.fontFamily}`;
         context.textAlign = 'center';
         context.textBaseline = 'top';
-        if(this.fill) context.fillStyle = this.fill;
+        if(typeof this.backgroundColor === 'string' && context.fillRect) {
+          context.fillStyle = this.backgroundColor;
+          context.fillRect(offsetX, offsetY, this.width, this.height);
+        }
         layout.glyphs.forEach(glyph => {
-          if(context.fillText) context.fillText(glyph.character, offsetX + glyph.x, offsetY + glyph.y);
+          const style = glyphStyle(this, glyph);
+          const size = positiveNumber(style.fontSize, 40);
+          const x = offsetX + glyph.x;
+          const y = offsetY + glyph.y;
+          if(context.save) context.save();
+          context.font = fontString(style);
+          setPaintStyles(context, this, style);
+          if(typeof style.textBackgroundColor === 'string' && context.fillRect) {
+            context.fillStyle = style.textBackgroundColor;
+            context.fillRect(x - (size / 2), y, size, size);
+          }
+          if(style.fill != null && context.fillText) context.fillText(glyph.character, x, y);
+          if(style.stroke && Number(style.strokeWidth) > 0 && context.strokeText) context.strokeText(glyph.character, x, y);
+          if(context.fillRect && (style.underline || style.overline || style.linethrough)) {
+            const lineWidth = Math.max(1, Number(style.strokeWidth) || 1);
+            if(typeof style.fill === 'string') context.fillStyle = style.fill;
+            if(style.underline) context.fillRect(x - (size / 2), y + size - lineWidth, size, lineWidth);
+            if(style.overline) context.fillRect(x - (size / 2), y, size, lineWidth);
+            if(style.linethrough) context.fillRect(x - (size / 2), y + (size / 2), size, lineWidth);
+          }
+          if(context.restore) context.restore();
         });
         if(context.restore) context.restore();
       },
@@ -143,6 +245,10 @@
           ? fabric.Object.prototype.toObject.call(this, included)
           : {};
         Object.assign(object, metadata);
+        ['styles', 'shadow', 'strokeDashArray'].forEach(name => {
+          const value = cloneSerializable(object[name]);
+          if(value !== undefined) object[name] = value;
+        });
         Object.keys(object).forEach(name => {
           if(name.startsWith('hstar') && (typeof object[name] === 'function' || object[name] === undefined)) {
             delete object[name];
@@ -178,6 +284,9 @@
     HstarVerticalText.prototype.type = VERTICAL_TYPE;
     HstarVerticalText.prototype.hstarWritingMode = VERTICAL;
     HstarVerticalText.fromObject = function fromObject(object, callback) {
+      if(fabric.Object && typeof fabric.Object._fromObject === 'function') {
+        return fabric.Object._fromObject('HstarVerticalText', object, callback, 'text');
+      }
       const text = object && object.text;
       const options = Object.assign(
         {},
