@@ -4,10 +4,11 @@
   const HORIZONTAL = 'horizontal';
   const VERTICAL = 'vertical';
   const VERTICAL_TYPE = 'hstar-vertical-text';
-  const RUNTIME_KEYS = new Set([
-    'canvas', 'group', 'width', 'height', 'type', 'text', 'hstarWritingMode',
-    'aCoords', 'oCoords', 'matrixCache', 'ownMatrixCache', 'cacheKey', 'dirty',
-  ]);
+  const VISUAL_TEXT_PROPERTIES = [
+    'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
+    'charSpacing', 'lineHeight', 'opacity', 'angle', 'left', 'top', 'scaleX', 'scaleY',
+    'originX', 'originY', 'visible', 'selectable', 'evented',
+  ];
 
   function normalizeWritingMode(value) {
     return value === VERTICAL ? VERTICAL : HORIZONTAL;
@@ -57,6 +58,28 @@
     return layout;
   }
 
+  function serializableHstarMetadata(source) {
+    const metadata = {};
+    Object.keys(source || {}).forEach(key => {
+      if(key.startsWith('hstar') && key !== 'hstarWritingMode') {
+        const value = cloneSerializable(source[key]);
+        if(value !== undefined) metadata[key] = value;
+      }
+    });
+    return metadata;
+  }
+
+  function serializableVisualProperties(source) {
+    const properties = {};
+    VISUAL_TEXT_PROPERTIES.forEach(key => {
+      if(source && source[key] !== undefined) {
+        const value = cloneSerializable(source[key]);
+        if(value !== undefined) properties[key] = value;
+      }
+    });
+    return properties;
+  }
+
   function createVerticalMethods(fabric) {
     return {
       type:VERTICAL_TYPE,
@@ -97,7 +120,14 @@
 
       toObject(extra) {
         const parent = fabric.Object && fabric.Object.prototype && fabric.Object.prototype.toObject;
-        const object = typeof parent === 'function' ? parent.call(this, extra) : {};
+        const metadata = serializableHstarMetadata(this);
+        const included = [...new Set([
+          ...VISUAL_TEXT_PROPERTIES,
+          ...Object.keys(metadata),
+          ...(Array.isArray(extra) ? extra : []),
+        ])];
+        const object = typeof parent === 'function' ? parent.call(this, included) : {};
+        Object.assign(object, serializableVisualProperties(this), metadata);
         object.type = VERTICAL_TYPE;
         object.text = this.text;
         object.hstarWritingMode = VERTICAL;
@@ -128,11 +158,12 @@
     HstarVerticalText.prototype.type = VERTICAL_TYPE;
     HstarVerticalText.prototype.hstarWritingMode = VERTICAL;
     HstarVerticalText.fromObject = function fromObject(object, callback) {
-      const options = Object.assign({}, object || {});
-      const text = options.text;
-      delete options.type;
-      delete options.text;
-      delete options.hstarWritingMode;
+      const text = object && object.text;
+      const options = Object.assign(
+        {},
+        serializableVisualProperties(object),
+        serializableHstarMetadata(object),
+      );
       const instance = new HstarVerticalText(text, options);
       if(typeof callback === 'function') callback(instance);
       return instance;
@@ -163,13 +194,7 @@
   }
 
   function copyConvertibleOptions(source) {
-    const options = {};
-    Object.keys(source || {}).forEach(key => {
-      if(key.startsWith('_') || RUNTIME_KEYS.has(key) || typeof source[key] === 'function') return;
-      const value = cloneSerializable(source[key]);
-      if(value !== undefined) options[key] = value;
-    });
-    return options;
+    return Object.assign({}, serializableVisualProperties(source), serializableHstarMetadata(source));
   }
 
   function writingModeFor(object) {

@@ -5,6 +5,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const runtimePath = resolve(testDir, '..', 'host', 'openshop-writing-mode.js');
+const VISUAL_TEXT_PROPERTIES = [
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
+  'charSpacing', 'lineHeight', 'opacity', 'angle', 'left', 'top', 'scaleX', 'scaleY',
+  'originX', 'originY', 'visible', 'selectable', 'evented',
+];
+const BASE_OBJECT_PROPERTIES = [
+  'type', 'left', 'top', 'scaleX', 'scaleY', 'angle', 'opacity', 'originX', 'originY',
+  'visible', 'selectable', 'evented',
+];
 
 function loadRuntime() {
   delete window.HstarOpenShopWritingMode;
@@ -31,8 +40,8 @@ function createFabricMock({withCreateClass = true} = {}) {
 
     toObject(extra = []) {
       const output = {};
-      Object.keys(this).forEach(key => {
-        if(!key.startsWith('_') && typeof this[key] !== 'function') output[key] = this[key];
+      BASE_OBJECT_PROPERTIES.forEach(key => {
+        if(this[key] !== undefined) output[key] = this[key];
       });
       (Array.isArray(extra) ? extra : []).forEach(key => {
         if(this[key] !== undefined) output[key] = this[key];
@@ -54,6 +63,23 @@ function createFabricMock({withCreateClass = true} = {}) {
       return this;
     }
   }
+
+  Object.assign(IText.prototype, {
+    fontFamily:'Prototype Sans',
+    fontSize:31,
+    fontWeight:600,
+    fontStyle:'italic',
+    fill:'#224466',
+    stroke:'#112233',
+    strokeWidth:3,
+    charSpacing:48,
+    lineHeight:1.4,
+    originX:'center',
+    originY:'center',
+    visible:true,
+    selectable:true,
+    evented:true,
+  });
 
   const fabric = {Object:FabricObject, IText};
   if(withCreateClass) {
@@ -205,7 +231,57 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(horizontal).toBeInstanceOf(fabric.IText);
   });
 
-  it('serializes and restores raw vertical text and honors explicit writing modes', () => {
+  it('converts inherited IText defaults along with enumerable Hstar metadata', () => {
+    const fabric = createFabricMock();
+    const source = new fabric.IText('prototype values', {left:12, top:24, opacity:0.75});
+    source.hstarOrigin = {kind:'prototype-test'};
+    source.hstarHandler = () => 'omit';
+    source._hstarRuntime = 'omit';
+
+    const vertical = runtime.convertTextObject(fabric, source, 'vertical');
+
+    expect(vertical).toMatchObject({
+      text:'prototype values',
+      left:12,
+      top:24,
+      opacity:0.75,
+      ...Object.fromEntries(VISUAL_TEXT_PROPERTIES
+        .filter(key => key in source && !['left', 'top', 'opacity'].includes(key))
+        .map(key => [key, source[key]])),
+      hstarOrigin:{kind:'prototype-test'},
+    });
+    expect(Object.hasOwn(vertical, 'fontFamily')).toBe(true);
+    expect(vertical.hstarHandler).toBeUndefined();
+    expect(vertical._hstarRuntime).toBeUndefined();
+  });
+
+  it('renders every glyph in vertical top-to-bottom and right-to-left coordinate order', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB\nC', {
+      hstarWritingMode:'vertical',
+      fontFamily:'Render Sans',
+      fontSize:24,
+      fontWeight:700,
+      fontStyle:'italic',
+      fill:'#ff00aa',
+    });
+    const calls = [];
+    const context = {
+      save() {},
+      restore() {},
+      fillText(...args) { calls.push(args); },
+    };
+
+    vertical._render(context);
+
+    expect(context.font).toBe('italic 700 24px Render Sans');
+    expect(context.fillStyle).toBe('#ff00aa');
+    expect(calls.map(([glyph]) => glyph)).toEqual(['A', 'B', 'C']);
+    expect(calls[1][2]).toBeGreaterThan(calls[0][2]);
+    expect(calls[0][1]).toBeGreaterThan(calls[2][1]);
+  });
+
+  it('serializes and restores raw vertical text, visual styles, metadata, and dimensions', () => {
     const fabric = createFabricMock();
     const original = runtime.createTextObject(fabric, 'A\nB', {
       hstarWritingMode:'vertical',
@@ -213,7 +289,25 @@ describe('Hstar OpenShop writing mode runtime', () => {
       top:39,
       fill:'#abcdef',
       fontSize:32,
+      fontFamily:'Round Trip Sans',
+      fontWeight:700,
+      fontStyle:'italic',
+      stroke:'#012345',
+      strokeWidth:2,
+      charSpacing:36,
+      lineHeight:1.5,
+      opacity:0.65,
+      angle:14,
+      scaleX:1.25,
+      scaleY:0.8,
+      originX:'right',
+      originY:'bottom',
+      visible:false,
+      selectable:false,
+      evented:false,
     });
+    original.hstarLayerId = 'vertical-title';
+    original.hstarData = {tags:['title']};
     const serialized = original.toObject();
     let reconstructed;
     fabric.HstarVerticalText.fromObject(serialized, instance => { reconstructed = instance; });
@@ -222,13 +316,23 @@ describe('Hstar OpenShop writing mode runtime', () => {
       type:'hstar-vertical-text',
       text:'A\nB',
       hstarWritingMode:'vertical',
-      left:28,
-      top:39,
-      fill:'#abcdef',
-      fontSize:32,
+      ...Object.fromEntries(VISUAL_TEXT_PROPERTIES.map(key => [key, original[key]])),
+      hstarLayerId:'vertical-title',
+      hstarData:{tags:['title']},
     });
     expect(reconstructed).toBeInstanceOf(fabric.HstarVerticalText);
-    expect(reconstructed).toMatchObject({text:'A\nB', hstarWritingMode:'vertical', left:28, top:39});
+    expect(reconstructed).toMatchObject({
+      text:'A\nB',
+      hstarWritingMode:'vertical',
+      ...Object.fromEntries(VISUAL_TEXT_PROPERTIES.map(key => [key, original[key]])),
+      hstarLayerId:'vertical-title',
+      hstarData:{tags:['title']},
+    });
+    expect(reconstructed.width).toBeCloseTo(original.width, 8);
+    expect(reconstructed.height).toBeCloseTo(original.height, 8);
+  });
+
+  it('honors explicit writing modes and defaults legacy objects to horizontal', () => {
     expect(runtime.writingModeFor({hstarWritingMode:'vertical'})).toBe('vertical');
     expect(runtime.writingModeFor({type:'hstar-vertical-text', hstarWritingMode:'horizontal'})).toBe('horizontal');
     expect(runtime.writingModeFor({})).toBe('horizontal');
