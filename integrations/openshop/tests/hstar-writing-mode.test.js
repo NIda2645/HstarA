@@ -12,12 +12,31 @@ const TEXT_PROPERTIES = [
   'top', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY', 'originX', 'originY',
   'visible', 'selectable', 'evented',
 ];
+const BASE_OBJECT_PROPERTIES = [
+  'type', 'left', 'top', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY', 'angle',
+  'opacity', 'originX', 'originY', 'visible', 'selectable', 'evented',
+];
+const MOCK_TEXT_PROPERTIES = [
+  'text', 'baseTextOption', ...TEXT_PROPERTIES, 'direction', 'paintFirst', 'strokeUniform',
+  'strokeDashArray', 'strokeDashOffset', 'strokeLineCap', 'strokeLineJoin', 'strokeMiterLimit',
+  'futureTextOption',
+];
 const MOCK_RUNTIME_PROPERTIES = new Set([
   'canvas', 'group', 'aCoords', 'oCoords', 'matrixCache', 'ownMatrixCache', 'cacheKey',
   'dirty', 'selectionStart', 'selectionEnd', 'isEditing', 'hiddenTextarea',
   'hiddenTextareaContainer', 'cursorDuration', 'inCompositionMode', 'keysMap', 'cursorWidth',
   'cursorColor', 'cursorDelay', 'width', 'height', 'pathOffset',
 ]);
+
+function cloneMockValue(value) {
+  if(value == null || ['string', 'number', 'boolean'].includes(typeof value)) return value;
+  if(typeof value === 'function') return undefined;
+  if(Array.isArray(value)) return value.map(cloneMockValue).filter(value => value !== undefined);
+  if(Object.getPrototypeOf(value) !== Object.prototype) return value;
+  return Object.fromEntries(Object.entries(value)
+    .map(([key, child]) => [key, cloneMockValue(child)])
+    .filter(([, child]) => child !== undefined));
+}
 
 function loadRuntime() {
   delete window.HstarOpenShopWritingMode;
@@ -44,20 +63,12 @@ function createFabricMock({withCreateClass = true} = {}) {
 
     toObject(extra = []) {
       const output = {};
-      const names = new Set();
-      let current = this;
-      while(current && current !== Object.prototype) {
-        Object.getOwnPropertyNames(current).forEach(key => {
-          if(names.has(key)) return;
-          names.add(key);
-          if(key.startsWith('_') || MOCK_RUNTIME_PROPERTIES.has(key)) return;
-          const value = this[key];
-          if(typeof value !== 'function' && value !== undefined) output[key] = value;
-        });
-        current = Object.getPrototypeOf(current);
-      }
-      (Array.isArray(extra) ? extra : []).forEach(key => {
-        if(this[key] !== undefined) output[key] = this[key];
+      const names = new Set([...BASE_OBJECT_PROPERTIES, ...(Array.isArray(extra) ? extra : [])]);
+      names.forEach(key => {
+        if(key.startsWith('_') || MOCK_RUNTIME_PROPERTIES.has(key)) return;
+        const value = this[key];
+        const serializable = cloneMockValue(value);
+        if(serializable !== undefined) output[key] = serializable;
       });
       return output;
     }
@@ -75,10 +86,15 @@ function createFabricMock({withCreateClass = true} = {}) {
       this.text = String(text);
       return this;
     }
+
+    toObject(extra = []) {
+      return super.toObject([...MOCK_TEXT_PROPERTIES, ...(Array.isArray(extra) ? extra : [])]);
+    }
   }
 
   Object.assign(FabricObject.prototype, {
     baseTextOption:'from-fabric-object',
+    controls:{ml:{cursorStyleHandler() { return 'runtime'; }}},
   });
 
   Object.assign(IText.prototype, {
@@ -322,8 +338,19 @@ describe('Hstar OpenShop writing mode runtime', () => {
       futureTextOption:{source:'prototype'},
     };
 
-    for(const object of [vertical, serialized, reconstructed]) {
-      expect(object).toMatchObject(expected);
+    expect(vertical).toMatchObject(expected);
+    const serializedExpected = {
+      direction:'rtl',
+      paintFirst:'stroke',
+      strokeUniform:true,
+      strokeDashArray:[6, 3],
+      strokeDashOffset:2,
+      strokeLineCap:'round',
+      strokeLineJoin:'bevel',
+      strokeMiterLimit:9,
+    };
+    for(const object of [serialized, reconstructed]) {
+      expect(object).toMatchObject(serializedExpected);
       expect(object.canvas).toBeUndefined();
       expect(object.group).toBeUndefined();
       expect(object.aCoords).toBeUndefined();
@@ -335,7 +362,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(vertical.strokeDashArray).not.toBe(source.strokeDashArray);
     expect(vertical.futureTextOption).not.toBe(source.futureTextOption);
     expect(reconstructed.strokeDashArray).not.toBe(serialized.strokeDashArray);
-    expect(reconstructed.futureTextOption).not.toBe(serialized.futureTextOption);
+    expect(serialized.futureTextOption).toBeUndefined();
   });
 
   it('omits Fabric editor runtime state during text conversion', () => {
@@ -470,6 +497,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(reconstructed.height).toBeCloseTo(original.height, 8);
     expect(serialized.styles).not.toBe(original.styles);
     expect(serialized.shadow).not.toBe(original.shadow);
+    expect(serialized.controls).toBeUndefined();
     expect(reconstructed.styles).not.toBe(serialized.styles);
     expect(reconstructed.shadow).not.toBe(serialized.shadow);
   });

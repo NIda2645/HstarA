@@ -4,6 +4,14 @@
   const HORIZONTAL = 'horizontal';
   const VERTICAL = 'vertical';
   const VERTICAL_TYPE = 'hstar-vertical-text';
+  const VERTICAL_TEXT_PROPERTIES = [
+    'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
+    'charSpacing', 'lineHeight', 'textAlign', 'textBackgroundColor', 'backgroundColor',
+    'underline', 'overline', 'linethrough', 'shadow', 'styles', 'opacity', 'angle', 'left',
+    'top', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY', 'originX', 'originY',
+    'visible', 'selectable', 'evented', 'direction', 'paintFirst', 'strokeUniform',
+    'strokeDashArray', 'strokeDashOffset', 'strokeLineCap', 'strokeLineJoin', 'strokeMiterLimit',
+  ];
   const RUNTIME_PROPERTIES = new Set([
     'canvas', 'group', 'aCoords', 'oCoords', 'lineCoords', 'matrixCache', 'ownMatrixCache',
     'cacheKey', 'dirty', 'stateProperties', 'cacheProperties', 'colorProperties', 'ownDefaults',
@@ -120,13 +128,15 @@
 
       toObject(extra) {
         const parent = fabric.Object && fabric.Object.prototype && fabric.Object.prototype.toObject;
-        const properties = collectSerializableOptions(this);
+        const metadata = Object.keys(this).filter(name => name.startsWith('hstar'));
         const included = [...new Set([
-          ...Object.keys(properties),
+          ...VERTICAL_TEXT_PROPERTIES,
+          ...metadata,
           ...(Array.isArray(extra) ? extra : []),
         ])];
-        const object = typeof parent === 'function' ? parent.call(this, included) : {};
-        Object.assign(object, properties);
+        const object = typeof parent === 'function'
+          ? fabric.Object.prototype.toObject.call(this, included)
+          : {};
         object.type = VERTICAL_TYPE;
         object.text = this.text;
         object.hstarWritingMode = VERTICAL;
