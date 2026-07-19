@@ -453,6 +453,65 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(vertical.dirty).toBe(true);
   });
 
+  it('marks paint changes dirty and sizes cells from per-glyph styles', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB\nC', {
+      hstarWritingMode:'vertical',
+      fontSize:10,
+      lineHeight:1,
+      styles:{0:{1:{fontSize:40, lineHeight:1.5, charSpacing:50}}},
+    });
+    const firstColumn = vertical._hstarVerticalLayout.glyphs.filter(glyph => glyph.columnIndex === 0);
+
+    expect(firstColumn[1]).toMatchObject({width:40, height:40});
+    expect(firstColumn[1].y).toBeGreaterThan(firstColumn[0].y);
+    expect(vertical.width).toBeGreaterThan(40);
+    vertical.dirty = false;
+    vertical.set('underline', true);
+    expect(vertical.dirty).toBe(true);
+    vertical.dirty = false;
+    vertical.set('backgroundColor', '#123456');
+    expect(vertical.dirty).toBe(true);
+  });
+
+  it('strokes before filling with dash state and leaves object backgrounds to Fabric', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {
+      hstarWritingMode:'vertical',
+      fill:'#111111',
+      stroke:'#222222',
+      strokeWidth:2,
+      paintFirst:'stroke',
+      strokeDashArray:[4, 2],
+      strokeDashOffset:3,
+      strokeLineCap:'round',
+      strokeLineJoin:'bevel',
+      strokeMiterLimit:7,
+      textBackgroundColor:'#eeeeee',
+      backgroundColor:'#ff00ff',
+    });
+    const events = [];
+    const rects = [];
+    const context = {
+      save() {}, restore() {},
+      fillText() { events.push('fill'); },
+      strokeText() { events.push('stroke'); },
+      fillRect(...args) { rects.push(args); },
+      setLineDash(value) { this.dash = value; },
+    };
+
+    vertical._render(context);
+
+    expect(events).toEqual(['stroke', 'fill']);
+    expect(context.dash).toEqual([4, 2]);
+    expect(context.lineDashOffset).toBe(3);
+    expect(context.lineCap).toBe('round');
+    expect(context.lineJoin).toBe('bevel');
+    expect(context.miterLimit).toBe(7);
+    expect(rects).not.toContainEqual([-vertical.width / 2, -vertical.height / 2, vertical.width, vertical.height]);
+    expect(rects).toHaveLength(1);
+  });
+
   it('renders defaults, glyph overrides, stroke, backgrounds, and decorations', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, 'AB', {
@@ -515,6 +574,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(fromObject).toHaveBeenCalledWith('HstarVerticalText', serialized, expect.any(Function), 'text');
     expect(reconstructed.shadow).toBeInstanceOf(realFabric.Shadow);
     expect(() => reconstructed._render(context)).not.toThrow();
+    expect(() => reconstructed.drawObject(context)).not.toThrow();
     fromObject.mockRestore();
     delete window.fabric;
   });

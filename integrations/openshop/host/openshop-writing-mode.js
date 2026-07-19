@@ -23,6 +23,11 @@
   const LAYOUT_PROPERTIES = new Set([
     'text', 'fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'lineHeight', 'charSpacing', 'styles',
   ]);
+  const PAINT_PROPERTIES = new Set([
+    'fill', 'stroke', 'strokeWidth', 'strokeDashArray', 'strokeDashOffset', 'strokeLineCap',
+    'strokeLineJoin', 'strokeMiterLimit', 'paintFirst', 'shadow', 'textBackgroundColor',
+    'underline', 'overline', 'linethrough', 'opacity', 'styles', 'backgroundColor',
+  ]);
 
   function normalizeWritingMode(value) {
     return value === VERTICAL ? VERTICAL : HORIZONTAL;
@@ -37,28 +42,36 @@
     const text = String(raw);
     const fontSize = positiveNumber(style.fontSize, 40);
     const lineHeight = positiveNumber(style.lineHeight, 1.16);
-    const charSpacing = Number.isFinite(Number(style.charSpacing)) ? Number(style.charSpacing) : 0;
-    const advance = Math.max(1, fontSize * lineHeight + (fontSize * charSpacing / 1000));
     const columnGap = Math.max(0, fontSize * (lineHeight - 1));
     const columns = text.split(/\r\n|\r|\n/).map(column => Array.from(column));
-    const width = Math.max(fontSize, (columns.length * fontSize) + ((columns.length - 1) * columnGap));
-    const height = Math.max(fontSize, ...columns.map(column => column.length * advance));
-    const glyphs = [];
-
-    columns.forEach((column, columnIndex) => {
-      const x = width - (fontSize / 2) - (columnIndex * (fontSize + columnGap));
-      column.forEach((character, rowIndex) => {
-        glyphs.push({
-          character,
-          columnIndex,
-          rowIndex,
-          x,
-          y:rowIndex * advance,
-          width:fontSize,
-          height:fontSize,
-          advance,
-        });
+    const columnLayouts = columns.map((column, columnIndex) => {
+      let height = 0;
+      let width = 0;
+      const glyphs = column.map((character, rowIndex) => {
+        const glyphStyle = styleForCell(style, columnIndex, rowIndex);
+        const size = positiveNumber(glyphStyle.fontSize, 40);
+        const glyphLineHeight = positiveNumber(glyphStyle.lineHeight, 1.16);
+        const charSpacing = Number.isFinite(Number(glyphStyle.charSpacing)) ? Number(glyphStyle.charSpacing) : 0;
+        const advance = Math.max(1, (size * glyphLineHeight) + (size * charSpacing / 1000));
+        const glyph = {character, columnIndex, rowIndex, width:size, height:size, advance, y:height};
+        height += advance;
+        width = Math.max(width, size);
+        return glyph;
       });
+      return {glyphs, width:Math.max(width, fontSize), height};
+    });
+    const width = Math.max(fontSize, columnLayouts.reduce((sum, column) => sum + column.width, 0)
+      + Math.max(0, columnLayouts.length - 1) * columnGap);
+    const height = Math.max(fontSize, ...columnLayouts.map(column => column.height));
+    const glyphs = [];
+    let right = width;
+    columnLayouts.forEach(column => {
+      const x = right - (column.width / 2);
+      column.glyphs.forEach(glyph => {
+        glyph.x = x;
+        glyphs.push(glyph);
+      });
+      right -= column.width + columnGap;
     });
 
     return {text, writingMode:VERTICAL, columns, glyphs, width, height};
@@ -94,8 +107,12 @@
   }
 
   function glyphStyle(object, glyph) {
-    const column = object.styles && object.styles[glyph.columnIndex];
-    return Object.assign({}, object, column && column[glyph.rowIndex]);
+    return styleForCell(object, glyph.columnIndex, glyph.rowIndex);
+  }
+
+  function styleForCell(object, columnIndex, rowIndex) {
+    const column = object.styles && object.styles[columnIndex];
+    return Object.assign({}, object, column && column[rowIndex]);
   }
 
   function fontString(style) {
@@ -121,6 +138,11 @@
     if(typeof style.fill === 'string') context.fillStyle = style.fill;
     if(typeof style.stroke === 'string') context.strokeStyle = style.stroke;
     if(style.strokeWidth != null) context.lineWidth = style.strokeWidth;
+    if(typeof context.setLineDash === 'function') context.setLineDash(style.strokeDashArray || []);
+    if(style.strokeDashOffset != null) context.lineDashOffset = style.strokeDashOffset;
+    if(style.strokeLineCap) context.lineCap = style.strokeLineCap;
+    if(style.strokeLineJoin) context.lineJoin = style.strokeLineJoin;
+    if(style.strokeMiterLimit != null) context.miterLimit = style.strokeMiterLimit;
   }
 
   function collectSerializableOptions(source) {
@@ -178,6 +200,8 @@
           applyVerticalDimensions(this);
           this.dirty = true;
           if(typeof this.setCoords === 'function') this.setCoords();
+        } else if(!this._hstarUpdatingLayout && PAINT_PROPERTIES.has(key)) {
+          this.dirty = true;
         }
         return result || this;
       },
@@ -198,10 +222,6 @@
         if(context.save) context.save();
         context.textAlign = 'center';
         context.textBaseline = 'top';
-        if(typeof this.backgroundColor === 'string' && context.fillRect) {
-          context.fillStyle = this.backgroundColor;
-          context.fillRect(offsetX, offsetY, this.width, this.height);
-        }
         layout.glyphs.forEach(glyph => {
           const style = glyphStyle(this, glyph);
           const size = positiveNumber(style.fontSize, 40);
@@ -214,8 +234,19 @@
             context.fillStyle = style.textBackgroundColor;
             context.fillRect(x - (size / 2), y, size, size);
           }
-          if(style.fill != null && context.fillText) context.fillText(glyph.character, x, y);
-          if(style.stroke && Number(style.strokeWidth) > 0 && context.strokeText) context.strokeText(glyph.character, x, y);
+          const fill = () => {
+            if(style.fill != null && context.fillText) context.fillText(glyph.character, x, y);
+          };
+          const stroke = () => {
+            if(style.stroke && Number(style.strokeWidth) > 0 && context.strokeText) context.strokeText(glyph.character, x, y);
+          };
+          if(style.paintFirst === 'stroke') {
+            stroke();
+            fill();
+          } else {
+            fill();
+            stroke();
+          }
           if(context.fillRect && (style.underline || style.overline || style.linethrough)) {
             const lineWidth = Math.max(1, Number(style.strokeWidth) || 1);
             if(typeof style.fill === 'string') context.fillStyle = style.fill;
