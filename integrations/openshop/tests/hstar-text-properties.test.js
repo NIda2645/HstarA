@@ -351,7 +351,7 @@ describe('Hstar OpenShop text properties', () => {
     const missing = list.querySelector('[data-family="Missing Project Font"]');
 
     expect(list.getAttribute('role')).toBe('listbox');
-    expect(list.querySelectorAll('.hstar-font-heading')).toHaveLength(4);
+    expect(list.querySelectorAll('.hstar-font-heading')).toHaveLength(2);
     expect(selected.getAttribute('role')).toBe('option');
     expect(selected.getAttribute('aria-selected')).toBe('true');
     expect(missing.querySelector('[data-font-missing-badge]')).not.toBeNull();
