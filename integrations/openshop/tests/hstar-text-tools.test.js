@@ -361,7 +361,8 @@ describe('Hstar OpenShop multilingual text tools', () => {
     const editorHtml = readFileSync(editorHtmlPath, 'utf8');
     const hostScript = readFileSync(hostScriptPath, 'utf8');
     const textToolsVersion = editorHtml.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
-    const editorVersion = hostScript.match(/OPENSHOP_RUNTIME_REVISION\s*=\s*'([^']+)'/)?.[1];
+    const editorVersion = hostScript.match(/OPENSHOP_RUNTIME_REVISION\s*=\s*'([^']+)'/)?.[1]
+      || hostScript.match(/openshop\/index\.html\?v=([0-9.]+)/)?.[1];
     expect(textToolsVersion).toBeTruthy();
     expect(editorVersion).toBe(textToolsVersion);
   });
