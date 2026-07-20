@@ -673,6 +673,55 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(acrossNewline.styles[0][5]).toMatchObject({fill:'#aa00aa'});
   });
 
+  it('uses actual deletion lengths for collapsed directional delete input types', () => {
+    const fabric = createFabricMock();
+    const colors = {
+      red:'#ff0000', green:'#00aa00', blue:'#0000ff', orange:'#ffaa00', cyan:'#00aaaa', magenta:'#aa00aa',
+    };
+    const styles = {
+      0:{0:{fill:colors.red}, 1:{fill:colors.green}, 2:{fill:colors.blue}, 3:{fill:colors.orange}},
+      1:{0:{fill:colors.cyan}, 1:{fill:colors.magenta}},
+    };
+    const edit = ({inputType, start, nextText}) => {
+      const vertical = runtime.createTextObject(fabric, 'AAAA\nBB', {hstarWritingMode:'vertical', styles});
+      attachEditingCanvas(vertical);
+      vertical.enterEditing();
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.setSelectionRange(start, start);
+      const remove = new Event('beforeinput', {bubbles:true});
+      Object.defineProperty(remove, 'inputType', {value:inputType});
+      editor.dispatchEvent(remove);
+      editor.value = nextText;
+      editor.dispatchEvent(new Event('input', {bubbles:true}));
+      vertical.exitEditing();
+      return vertical;
+    };
+    const expectColumns = (vertical, columns) => {
+      columns.forEach((rows, columnIndex) => rows.forEach((color, rowIndex) => {
+        expect(vertical.styles[columnIndex][rowIndex]).toMatchObject({fill:colors[color]});
+      }));
+    };
+
+    expectColumns(edit({inputType:'deleteWordForward', start:2, nextText:'AA\nBB'}), [
+      ['red', 'green'], ['cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteWordBackward', start:3, nextText:'AA\nBB'}), [
+      ['red', 'orange'], ['cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteSoftLineForward', start:2, nextText:'AA\nBB'}), [
+      ['red', 'green'], ['cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteSoftLineBackward', start:3, nextText:'AA\nBB'}), [
+      ['red', 'orange'], ['cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteHardLineForward', start:2, nextText:'AABB'}), [
+      ['red', 'green', 'cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteHardLineBackward', start:5, nextText:'BB'}), [
+      ['cyan', 'magenta'],
+    ]);
+  });
+
   it('places a missing editor selection at the end while preserving an explicit zero caret', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, '甲\nA', {hstarWritingMode:'vertical'});
