@@ -3214,7 +3214,7 @@ self.onmessage = function(e) {
             return;
         }
         if (tool==='clone') { this._rasterTools?.begin('clone', ptr); return; }
-        if (tool==='text') {
+        if (tool==='text'||tool==='text-horizontal'||tool==='text-vertical') {
             if (this._isEditableTextObject(opt.target)) {
                 this.canvas.setActiveObject(opt.target);
                 if (!opt.target.isEditing) opt.target.enterEditing?.(opt.e);

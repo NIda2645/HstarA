@@ -333,6 +333,31 @@ describe('OpenShop core object', () => {
     expect(OS.saveHistory).toHaveBeenCalledWith('Add Text');
   });
 
+  it('routes legacy and vertical text pointers through the existing text branch', () => {
+    const OS = loadOpenShop();
+    const text = new fabric.IText('Existing', {left:20, top:30});
+    OS.canvas = createCanvasMock([text]);
+    OS.canvas.getPointer = vi.fn(() => ({x:120, y:80}));
+    OS.layers = [{name:'Layer 1', locked:false, objects:[text]}];
+    OS.activeLayerIdx = 0;
+    OS.saveHistory = vi.fn();
+    quietUiMethods(OS);
+
+    OS.setTool('text');
+    OS.onMouseDown({e:{}, target:text});
+    expect(text.enterEditing).toHaveBeenCalledOnce();
+
+    text.isEditing = false;
+    OS.state.tool = 'text';
+    OS.onMouseDown({e:{}, target:text});
+    expect(text.enterEditing).toHaveBeenCalledTimes(2);
+
+    OS.setTool('text-vertical');
+    OS.onMouseDown({e:{}, target:null});
+    expect(OS.canvas.getObjects()).toHaveLength(2);
+    expect(OS.canvas.getObjects()[1].enterEditing).toHaveBeenCalledOnce();
+  });
+
   it('creates each completed shape on its own layer', () => {
     const OS = loadOpenShop();
     class Rect {
