@@ -813,12 +813,75 @@ describe('Hstar OpenShop writing mode runtime', () => {
     Object.defineProperty(remove, 'inputType', {value:'deleteEntireSoftLine'});
     editor.dispatchEvent(remove);
     editor.value = 'AA\n\nBB';
+    editor.setSelectionRange(3, 3);
     editor.dispatchEvent(new Event('input', {bubbles:true}));
 
     expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
     expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
     expect(vertical.styles[2][0]).toMatchObject({fill:'#7744cc'});
     expect(vertical.styles[2][1]).toMatchObject({fill:'#cc4477'});
+  });
+
+  it('anchors collapsed replacement text edits to the before and after carets', () => {
+    const fabric = createFabricMock();
+    const styles = {
+      0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+      1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+    };
+    const replace = ({text, oldCaret, nextText, newCaret}) => {
+      const vertical = runtime.createTextObject(fabric, text, {hstarWritingMode:'vertical', styles});
+      attachEditingCanvas(vertical);
+      vertical.enterEditing();
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.setSelectionRange(oldCaret, oldCaret);
+      const event = new Event('beforeinput', {bubbles:true});
+      Object.defineProperty(event, 'inputType', {value:'insertReplacementText'});
+      editor.dispatchEvent(event);
+      editor.value = nextText;
+      editor.setSelectionRange(newCaret, newCaret);
+      editor.dispatchEvent(new Event('input', {bubbles:true}));
+      vertical.exitEditing();
+      return vertical;
+    };
+
+    const shortened = replace({text:'AAAA\nBB', oldCaret:4, nextText:'AA\nBB', newCaret:2});
+    expect(shortened.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(shortened.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(shortened.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(shortened.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+
+    const equalLength = replace({text:'AAAA\nBB', oldCaret:4, nextText:'AAXA\nBB', newCaret:4});
+    expect(equalLength.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(equalLength.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(equalLength.styles[0][2]).toMatchObject({fill:'#00aa00'});
+    expect(equalLength.styles[0][3]).toMatchObject({fill:'#00aa00'});
+    expect(equalLength.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(equalLength.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+  });
+
+  it('anchors deleteEntireSoftLine within a long logical line without hard newlines', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AAAAAA', {
+      hstarWritingMode:'vertical',
+      styles:{0:{
+        0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'},
+        3:{fill:'#ffaa00'}, 4:{fill:'#00aaaa'}, 5:{fill:'#aa00aa'},
+      }},
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    editor.setSelectionRange(3, 3);
+    const remove = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(remove, 'inputType', {value:'deleteEntireSoftLine'});
+    editor.dispatchEvent(remove);
+    editor.value = 'AAA';
+    editor.setSelectionRange(3, 3);
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#0000ff'});
   });
 
   it('places a missing editor selection at the end while preserving an explicit zero caret', () => {

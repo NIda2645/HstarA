@@ -290,13 +290,35 @@
     compositionActive = false;
   }
 
-  function softLineStart(text, offset) {
-    let start = Math.max(0, Math.min(text.length, offset));
-    while(start > 0 && text[start - 1] !== '\r' && text[start - 1] !== '\n') start -= 1;
-    return start;
+  function caretAnchoredTextRange(before, after, oldCaret, newCaret) {
+    const oldRange = boundedTextRange(before, oldCaret, oldCaret);
+    const newRange = boundedTextRange(after, newCaret, newCaret);
+    const oldOffset = oldRange.start;
+    const newOffset = newRange.start;
+    let prefix = 0;
+    let suffix = 0;
+    if(before.slice(oldOffset) === after.slice(newOffset)) {
+      while(prefix < oldOffset && prefix < newOffset && before[prefix] === after[prefix]) prefix += 1;
+      return {prefix, beforeSuffixStart:oldOffset, afterSuffixStart:newOffset};
+    }
+    if(before.slice(0, oldOffset) === after.slice(0, newOffset)) {
+      while(
+        before.length - suffix > oldOffset
+        && after.length - suffix > newOffset
+        && before[before.length - suffix - 1] === after[after.length - suffix - 1]
+      ) suffix += 1;
+      return {prefix:oldOffset, beforeSuffixStart:before.length - suffix, afterSuffixStart:after.length - suffix};
+    }
+    while(prefix < oldOffset && prefix < newOffset && before[prefix] === after[prefix]) prefix += 1;
+    while(
+      before.length - suffix > oldOffset
+      && after.length - suffix > newOffset
+      && before[before.length - suffix - 1] === after[after.length - suffix - 1]
+    ) suffix += 1;
+    return {prefix, beforeSuffixStart:before.length - suffix, afterSuffixStart:after.length - suffix};
   }
 
-  function replacementTextRange(before, after, start, end, inputType) {
+  function replacementTextRange(before, after, start, end, inputType, afterSelection, rangeSource) {
     const selection = boundedTextRange(before, start, end);
     let from = selection.start;
     let to = selection.end;
@@ -304,10 +326,12 @@
     if(from === to && deletedLength > 0 && typeof inputType === 'string' && inputType.startsWith('delete')) {
       if(inputType.endsWith('Backward')) from = Math.max(0, from - deletedLength);
       if(inputType.endsWith('Forward')) to = Math.min(before.length, to + deletedLength);
-      if(inputType === 'deleteEntireSoftLine') {
-        from = softLineStart(before, from);
-        to = Math.min(before.length, from + deletedLength);
-      }
+    }
+    const shouldAnchorToCarets = from === to && rangeSource === 'selection'
+      && (inputType === 'insertReplacementText' || inputType === 'deleteEntireSoftLine');
+    if(shouldAnchorToCarets) {
+      const afterRange = boundedTextRange(after, afterSelection && afterSelection.start, afterSelection && afterSelection.end);
+      return caretAnchoredTextRange(before, after, from, afterRange.start);
     }
     return {
       prefix:from,
@@ -338,13 +362,16 @@
     return location && styles.has(location.offset) ? styles.get(location.offset) : undefined;
   }
 
-  function rebaseVerticalStyles(object, before, after, replacement) {
+  function rebaseVerticalStyles(object, before, after, replacement, afterSelection) {
     const beforeLocations = verticalGlyphLocations(before);
     const afterLocations = verticalGlyphLocations(after);
     const oldStyles = stylesByRawOffset(object, before);
     const rebased = new Map();
     const range = replacement && replacement.text === before
-      ? replacementTextRange(before, after, replacement.selectionStart, replacement.selectionEnd, replacement.inputType)
+      ? replacementTextRange(
+        before, after, replacement.selectionStart, replacement.selectionEnd, replacement.inputType,
+        afterSelection, replacement.rangeSource,
+      )
       : sharedTextRange(before, after);
     const delta = after.length - before.length;
 
@@ -371,12 +398,12 @@
     return styles;
   }
 
-  function syncEditorText(object, {force = false, render = true, replacement = null} = {}) {
+  function syncEditorText(object, {force = false, render = true, replacement = null, afterSelection = null} = {}) {
     if(!object || !editorElement) return false;
     const value = editorElement.value;
     if(!force && object.text === value) return false;
     const oldText = rawText(object.text);
-    const styles = rebaseVerticalStyles(object, oldText, value, replacement);
+    const styles = rebaseVerticalStyles(object, oldText, value, replacement, afterSelection);
     if(typeof object.set === 'function') object.set('styles', styles);
     else object.styles = styles;
     if(typeof object.set === 'function') object.set('text', value);
@@ -479,9 +506,13 @@
     pendingEditorInput = null;
     const before = rawText(object.text);
     const after = rawText(editorElement && editorElement.value);
-    syncEditorText(object, {force:true, render:false, replacement});
+    const afterSelection = boundedTextRange(after, editorElement && editorElement.selectionStart, editorElement && editorElement.selectionEnd);
+    syncEditorText(object, {force:true, render:false, replacement, afterSelection});
     if(replacement && replacement.text === before && isCompositionInputType(replacement.inputType)) {
-      const range = replacementTextRange(before, after, replacement.selectionStart, replacement.selectionEnd, replacement.inputType);
+      const range = replacementTextRange(
+        before, after, replacement.selectionStart, replacement.selectionEnd, replacement.inputType,
+        afterSelection, replacement.rangeSource,
+      );
       compositionReplacement = {text:after, selectionStart:range.prefix, selectionEnd:range.afterSuffixStart};
       if(replacement.inputType === 'insertFromComposition') clearCompositionState();
     } else if(!compositionActive && !isCompositionInputType(replacement && replacement.inputType)) {
@@ -507,6 +538,7 @@
       selectionStart:selection.start,
       selectionEnd:selection.end,
       inputType,
+      rangeSource:targetRange ? 'target' : compositionRange ? 'composition' : 'selection',
     };
   }
 
