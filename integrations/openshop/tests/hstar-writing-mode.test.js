@@ -535,6 +535,55 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(canvas.requestRenderAll).toHaveBeenCalled();
   });
 
+  it('rebases glyph styles through textarea insertions and deletions across columns', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '甲\nBC', {
+      hstarWritingMode:'vertical',
+      styles:{0:{0:{fill:'#008800'}}, 1:{0:{fill:'#ff0000'}, 1:{fill:'#0000ff'}}},
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.value = 'Z甲\nBC';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#008800'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#008800'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#0000ff'});
+
+    editor.value = 'Z甲\nB中C';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#008800'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[1][2]).toMatchObject({fill:'#0000ff'});
+
+    editor.value = 'Z甲\n中C';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#008800'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#0000ff'});
+    expect(vertical.styles[1][2]).toBeUndefined();
+  });
+
+  it('places a missing editor selection at the end while preserving an explicit zero caret', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '甲\nA', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(vertical);
+
+    vertical.enterEditing();
+    let editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([vertical.text.length, vertical.text.length]);
+    vertical.exitEditing();
+
+    vertical.selectionStart = 0;
+    vertical.selectionEnd = 0;
+    vertical.enterEditing();
+    editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([0, 0]);
+  });
+
   it('maps textarea selections onto vertical glyph cells and restores the caret range', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, 'AB\nCD', {hstarWritingMode:'vertical', fontSize:12});

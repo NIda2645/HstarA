@@ -211,10 +211,114 @@
     } catch(error) { /* disposed Fabric targets may reject events */ }
   }
 
+  function rawText(value) {
+    return String(value == null ? '' : value);
+  }
+
+  function verticalGlyphLocations(value) {
+    const text = rawText(value);
+    const glyphs = [];
+    let columnIndex = 0;
+    let rowIndex = 0;
+    for(let offset = 0; offset < text.length;) {
+      const character = text[offset];
+      if(character === '\r') {
+        offset += text[offset + 1] === '\n' ? 2 : 1;
+        columnIndex += 1;
+        rowIndex = 0;
+        continue;
+      }
+      if(character === '\n') {
+        offset += 1;
+        columnIndex += 1;
+        rowIndex = 0;
+        continue;
+      }
+      const length = String.fromCodePoint(text.codePointAt(offset)).length;
+      glyphs.push({offset, length, columnIndex, rowIndex});
+      offset += length;
+      rowIndex += 1;
+    }
+    return glyphs;
+  }
+
+  function sharedTextRange(before, after) {
+    const commonLength = Math.min(before.length, after.length);
+    let prefix = 0;
+    while(prefix < commonLength && before[prefix] === after[prefix]) prefix += 1;
+    let suffix = 0;
+    while(
+      suffix < commonLength - prefix
+      && before[before.length - suffix - 1] === after[after.length - suffix - 1]
+    ) suffix += 1;
+    return {
+      prefix,
+      beforeSuffixStart:before.length - suffix,
+      afterSuffixStart:after.length - suffix,
+    };
+  }
+
+  function stylesByRawOffset(object, text) {
+    const result = new Map();
+    const styles = object && object.styles;
+    verticalGlyphLocations(text).forEach(location => {
+      const column = styles && styles[location.columnIndex];
+      if(column && Object.prototype.hasOwnProperty.call(column, location.rowIndex)) {
+        result.set(location.offset, cloneSerializable(column[location.rowIndex]));
+      }
+    });
+    return result;
+  }
+
+  function styleImmediatelyBefore(styles, locations, offset) {
+    const location = locations.find(candidate => candidate.offset + candidate.length === offset);
+    return location && styles.has(location.offset) ? styles.get(location.offset) : undefined;
+  }
+
+  function styleAtReplacementStart(styles, locations, offset) {
+    const location = locations.find(candidate => candidate.offset <= offset && offset < candidate.offset + candidate.length);
+    return location && styles.has(location.offset) ? styles.get(location.offset) : undefined;
+  }
+
+  function rebaseVerticalStyles(object, before, after) {
+    const beforeLocations = verticalGlyphLocations(before);
+    const afterLocations = verticalGlyphLocations(after);
+    const oldStyles = stylesByRawOffset(object, before);
+    const rebased = new Map();
+    const range = sharedTextRange(before, after);
+    const delta = after.length - before.length;
+
+    beforeLocations.forEach(location => {
+      if(!oldStyles.has(location.offset)) return;
+      if(location.offset + location.length <= range.prefix) rebased.set(location.offset, oldStyles.get(location.offset));
+      else if(location.offset >= range.beforeSuffixStart) rebased.set(location.offset + delta, oldStyles.get(location.offset));
+    });
+
+    const caretStyle = styleImmediatelyBefore(oldStyles, beforeLocations, range.prefix)
+      ?? styleAtReplacementStart(oldStyles, beforeLocations, range.prefix);
+    afterLocations.forEach(location => {
+      const isInserted = location.offset < range.afterSuffixStart && location.offset + location.length > range.prefix;
+      if(isInserted && caretStyle !== undefined) rebased.set(location.offset, cloneSerializable(caretStyle));
+    });
+
+    const styles = {};
+    afterLocations.forEach(location => {
+      if(!rebased.has(location.offset)) return;
+      const column = Object.assign({}, styles[location.columnIndex] || {});
+      column[location.rowIndex] = cloneSerializable(rebased.get(location.offset));
+      styles[location.columnIndex] = column;
+    });
+    return styles;
+  }
+
   function syncEditorText(object, {force = false, render = true} = {}) {
     if(!object || !editorElement) return false;
     const value = editorElement.value;
     if(!force && object.text === value) return false;
+    const oldText = rawText(object.text);
+    const styles = rebaseVerticalStyles(object, oldText, value);
+    if(typeof object.set === 'function') object.set('styles', styles);
+    else object.styles = styles;
     if(typeof object.set === 'function') object.set('text', value);
     else if(typeof object.setTextContent === 'function') object.setTextContent(value);
     else object.text = value;
@@ -406,8 +510,11 @@
     applyEditorStyles(object, activeFabric);
     try { editor.focus({preventScroll:true}); } catch(error) { editor.focus?.(); }
     if(typeof editor.setSelectionRange === 'function') {
-      const start = Math.max(0, Math.min(editor.value.length, Number(object.selectionStart) || 0));
-      const end = Math.max(start, Math.min(editor.value.length, Number(object.selectionEnd) || start));
+      const storedStart = Number(object.selectionStart);
+      const storedEnd = Number(object.selectionEnd);
+      const hasStoredRange = Number.isFinite(storedStart) && Number.isFinite(storedEnd);
+      const start = hasStoredRange ? Math.max(0, Math.min(editor.value.length, storedStart)) : editor.value.length;
+      const end = hasStoredRange ? Math.max(start, Math.min(editor.value.length, storedEnd)) : editor.value.length;
       editor.setSelectionRange(start, end);
       syncEditorSelection();
     }
@@ -508,33 +615,10 @@
   }
 
   function verticalCellsForRange(object, start, end) {
-    const text = String(object && object.text == null ? '' : object && object.text || '');
+    const text = rawText(object && object.text);
     const from = Math.max(0, Math.min(text.length, Number(start) || 0));
     const to = Math.max(from, Math.min(text.length, Number(end) || from));
-    const cells = [];
-    let columnIndex = 0;
-    let rowIndex = 0;
-    for(let offset = 0; offset < text.length;) {
-      const code = text.codePointAt(offset);
-      const character = String.fromCodePoint(code);
-      const length = character.length;
-      if(character === '\r') {
-        offset += text[offset + 1] === '\n' ? 2 : 1;
-        columnIndex += 1;
-        rowIndex = 0;
-        continue;
-      }
-      if(character === '\n') {
-        offset += 1;
-        columnIndex += 1;
-        rowIndex = 0;
-        continue;
-      }
-      if(offset < to && offset + length > from) cells.push({columnIndex, rowIndex});
-      offset += length;
-      rowIndex += 1;
-    }
-    return cells;
+    return verticalGlyphLocations(text).filter(location => location.offset < to && location.offset + location.length > from);
   }
 
   function selectionStylesForRange(object, start, end, complete) {
