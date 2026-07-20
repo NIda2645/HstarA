@@ -2872,6 +2872,11 @@ self.onmessage = function(e) {
                 e.stopImmediatePropagation();
                 openFlyout(true);
             }, true);
+            face.addEventListener('focusout', e => {
+                const next = e.relatedTarget;
+                if (!flyout.classList.contains('show') || face.contains(next) || flyout.contains(next)) return;
+                this._closeAllFlyouts();
+            });
             flyout.addEventListener('keydown', e => {
                 if (e.key === 'Tab') {
                     e.preventDefault();

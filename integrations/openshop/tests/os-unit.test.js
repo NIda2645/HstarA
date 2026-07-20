@@ -133,6 +133,15 @@ describe('OpenShop core object', () => {
     expect(rows.map(row => row.getAttribute('role'))).toEqual(['menuitem', 'menuitem']);
     expect(rows.map(row => row.getAttribute('tabindex'))).toEqual(['-1', '-1']);
 
+    const toolbarFaces = [...document.querySelectorAll('#toolbar > .tool-btn, #toolbar > .tool-group > .tool-btn')];
+    face.focus();
+    face.click();
+    expect(flyout.classList.contains('show')).toBe(true);
+    expect(document.activeElement).toBe(face);
+    toolbarFaces[toolbarFaces.indexOf(face) + 1].focus();
+    expect(flyout.classList.contains('show')).toBe(false);
+    expect(face.getAttribute('aria-expanded')).toBe('false');
+
     face.focus();
     face.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown', bubbles:true}));
     expect(flyout.classList.contains('show')).toBe(true);
@@ -150,7 +159,6 @@ describe('OpenShop core object', () => {
 
     face.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true}));
     rows[0].dispatchEvent(new KeyboardEvent('keydown', {key:'Tab', bubbles:true}));
-    const toolbarFaces = [...document.querySelectorAll('#toolbar > .tool-btn, #toolbar > .tool-group > .tool-btn')];
     expect(flyout.classList.contains('show')).toBe(false);
     expect(face.getAttribute('aria-expanded')).toBe('false');
     expect(document.activeElement).toBe(toolbarFaces[toolbarFaces.indexOf(face) + 1]);
