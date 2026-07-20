@@ -418,6 +418,30 @@
     return payload;
   }
 
+  async function requestDownloadLocal(envelope){
+    const session = captureSession();
+    try {
+      const result = await state.editor.downloadToLocal({format:'png', options:{}});
+      assertActiveSession(session);
+      post(state.protocol.TYPES.DOWNLOAD_LOCAL_RESULT, {
+        requestId:envelope.requestId,
+        sessionId:session.sessionId,
+        context:session.context,
+        payload:result?.cancelled
+          ? {status:'cancelled'}
+          : {status:'success', filename:String(result?.filename || 'openshop-export.png')},
+      });
+    } catch(error){
+      assertActiveSession(session);
+      post(state.protocol.TYPES.DOWNLOAD_LOCAL_RESULT, {
+        requestId:envelope.requestId,
+        sessionId:session.sessionId,
+        context:session.context,
+        payload:{status:'error', message:safeErrorMessage(error)},
+      });
+    }
+  }
+
   async function applyRequest(envelope){
     const types = state.protocol.TYPES;
     let reason = '';
@@ -446,6 +470,10 @@
     }
     if(envelope.type === types.REQUEST_SEND_TO_CANVAS){
       await requestSendToCanvas({requestId:envelope.requestId});
+      return;
+    }
+    if(envelope.type === types.REQUEST_DOWNLOAD_LOCAL){
+      await requestDownloadLocal(envelope);
       return;
     }
     if(envelope.type === types.FIT_WORKSPACE){

@@ -10,7 +10,7 @@
 
   const pointsToPixels = value => Number(value) * 96 / 72;
   const pixelsToPoints = value => Number(value) * 72 / 96;
-  const isTextObject = object => ['text', 'i-text', 'textbox'].includes(String(object?.type || '').toLowerCase());
+  const isTextObject = object => ['text', 'i-text', 'textbox', 'hstar-vertical-text'].includes(String(object?.type || '').toLowerCase());
 
   function clean(value){
     return String(value ?? '').trim();

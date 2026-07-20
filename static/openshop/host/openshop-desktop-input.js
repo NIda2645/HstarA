@@ -15,7 +15,7 @@
         o: Object.freeze(['dodge', 'burn', 'sponge']),
         r: Object.freeze(['smudge']),
         p: Object.freeze(['pen']),
-        t: Object.freeze(['text']),
+        t: Object.freeze(['text-horizontal', 'text-vertical']),
         u: Object.freeze(['rect', 'circle', 'triangle', 'line', 'arrow', 'polygon', 'star']),
         i: Object.freeze(['eyedropper', 'measure', 'note']),
         h: Object.freeze(['pan']),
