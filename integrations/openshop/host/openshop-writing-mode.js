@@ -39,6 +39,8 @@
   let activeCanvasBindings = [];
   let editorDocument = null;
   let pendingEditorInput = null;
+  let compositionReplacement = null;
+  let compositionActive = false;
 
   function documentForRuntime() {
     return global && global.document ? global.document : null;
@@ -259,13 +261,53 @@
     };
   }
 
+  function boundedTextRange(text, start, end) {
+    const from = Math.max(0, Math.min(text.length, Number(start) || 0));
+    return {start:from, end:Math.max(from, Math.min(text.length, Number(end) || from))};
+  }
+
+  function targetTextRange(event, text) {
+    if(!event || typeof event.getTargetRanges !== 'function') return null;
+    try {
+      const ranges = event.getTargetRanges();
+      if(!ranges || ranges.length !== 1) return null;
+      const range = ranges[0];
+      const start = Number(range && range.startOffset);
+      const end = Number(range && range.endOffset);
+      if(!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > text.length) return null;
+      return {start, end};
+    } catch(error) {
+      return null;
+    }
+  }
+
+  function isCompositionInputType(inputType) {
+    return typeof inputType === 'string' && inputType.includes('Composition');
+  }
+
+  function clearCompositionState() {
+    compositionReplacement = null;
+    compositionActive = false;
+  }
+
+  function softLineStart(text, offset) {
+    let start = Math.max(0, Math.min(text.length, offset));
+    while(start > 0 && text[start - 1] !== '\r' && text[start - 1] !== '\n') start -= 1;
+    return start;
+  }
+
   function replacementTextRange(before, after, start, end, inputType) {
-    let from = Math.max(0, Math.min(before.length, Number(start) || 0));
-    let to = Math.max(from, Math.min(before.length, Number(end) || from));
+    const selection = boundedTextRange(before, start, end);
+    let from = selection.start;
+    let to = selection.end;
     const deletedLength = before.length - after.length;
     if(from === to && deletedLength > 0 && typeof inputType === 'string' && inputType.startsWith('delete')) {
       if(inputType.endsWith('Backward')) from = Math.max(0, from - deletedLength);
       if(inputType.endsWith('Forward')) to = Math.min(before.length, to + deletedLength);
+      if(inputType === 'deleteEntireSoftLine') {
+        from = softLineStart(before, from);
+        to = Math.min(before.length, from + deletedLength);
+      }
     }
     return {
       prefix:from,
@@ -413,6 +455,7 @@
     const canvas = activeCanvas || object.canvas;
     syncEditorText(object, {render:false});
     pendingEditorInput = null;
+    clearCompositionState();
     const changed = String(object.text == null ? '' : object.text) !== activeOriginalText;
     activeObject = null;
     activeOriginalText = null;
@@ -434,7 +477,16 @@
     const canvas = activeCanvas || object.canvas;
     const replacement = pendingEditorInput;
     pendingEditorInput = null;
+    const before = rawText(object.text);
+    const after = rawText(editorElement && editorElement.value);
     syncEditorText(object, {force:true, render:false, replacement});
+    if(replacement && replacement.text === before && isCompositionInputType(replacement.inputType)) {
+      const range = replacementTextRange(before, after, replacement.selectionStart, replacement.selectionEnd, replacement.inputType);
+      compositionReplacement = {text:after, selectionStart:range.prefix, selectionEnd:range.afterSuffixStart};
+      if(replacement.inputType === 'insertFromComposition') clearCompositionState();
+    } else if(!compositionActive && !isCompositionInputType(replacement && replacement.inputType)) {
+      clearCompositionState();
+    }
     syncEditorSelection();
     applyEditorStyles(object, activeFabric);
     fireEvent(object, 'changed');
@@ -445,14 +497,33 @@
   function onEditorBeforeInput(event) {
     if(!activeObject || !editorElement) return;
     const text = rawText(editorElement.value);
-    const start = Math.max(0, Math.min(text.length, Number(editorElement.selectionStart) || 0));
-    const end = Math.max(start, Math.min(text.length, Number(editorElement.selectionEnd) || start));
+    const inputType = event && event.inputType || '';
+    const targetRange = targetTextRange(event, text);
+    const compositionRange = isCompositionInputType(inputType) && compositionReplacement && compositionReplacement.text === text
+      ? {start:compositionReplacement.selectionStart, end:compositionReplacement.selectionEnd} : null;
+    const selection = targetRange || compositionRange || boundedTextRange(text, editorElement.selectionStart, editorElement.selectionEnd);
     pendingEditorInput = {
       text,
-      selectionStart:start,
-      selectionEnd:end,
-      inputType:event && event.inputType || '',
+      selectionStart:selection.start,
+      selectionEnd:selection.end,
+      inputType,
     };
+  }
+
+  function onCompositionStart() {
+    if(!activeObject || !editorElement) return;
+    const text = rawText(editorElement.value);
+    const selection = boundedTextRange(text, editorElement.selectionStart, editorElement.selectionEnd);
+    compositionReplacement = {text, selectionStart:selection.start, selectionEnd:selection.end};
+    compositionActive = true;
+  }
+
+  function onCompositionUpdate() {
+    if(activeObject) compositionActive = true;
+  }
+
+  function onCompositionEnd() {
+    compositionActive = false;
   }
 
   function syncEditorSelection() {
@@ -486,11 +557,15 @@
     if(editorElement) {
       editorElement.removeEventListener('beforeinput', onEditorBeforeInput);
       editorElement.removeEventListener('input', onEditorInput);
+      editorElement.removeEventListener('compositionstart', onCompositionStart);
+      editorElement.removeEventListener('compositionupdate', onCompositionUpdate);
+      editorElement.removeEventListener('compositionend', onCompositionEnd);
       editorElement.removeEventListener('blur', onEditorBlur);
       editorElement.removeEventListener('keydown', onEditorKeyDown);
       ['select', 'keyup', 'click'].forEach(name => editorElement.removeEventListener(name, syncEditorSelection));
     }
     pendingEditorInput = null;
+    clearCompositionState();
     if(editorDocument) {
       editorDocument.removeEventListener('pointerdown', onDocumentPointer, true);
       editorDocument.removeEventListener('mousedown', onDocumentPointer, true);
@@ -511,6 +586,9 @@
       editorElement = existing.find(element => element.tagName === 'TEXTAREA') || documentRef.createElement('textarea');
       editorElement.addEventListener('beforeinput', onEditorBeforeInput);
       editorElement.addEventListener('input', onEditorInput);
+      editorElement.addEventListener('compositionstart', onCompositionStart);
+      editorElement.addEventListener('compositionupdate', onCompositionUpdate);
+      editorElement.addEventListener('compositionend', onCompositionEnd);
       editorElement.addEventListener('blur', onEditorBlur);
       editorElement.addEventListener('keydown', onEditorKeyDown);
       ['select', 'keyup', 'click'].forEach(name => editorElement.addEventListener(name, syncEditorSelection));
@@ -539,6 +617,7 @@
     const editor = ensureEditor();
     activeObject = object;
     pendingEditorInput = null;
+    clearCompositionState();
     activeFabric = fabric || null;
     activeOriginalText = String(object.text == null ? '' : object.text);
     bindActiveCanvas(object.canvas);

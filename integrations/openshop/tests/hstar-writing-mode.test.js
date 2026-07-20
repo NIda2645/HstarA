@@ -722,6 +722,105 @@ describe('Hstar OpenShop writing mode runtime', () => {
     ]);
   });
 
+  it('tracks composition replacement ranges through preedit deletion and commit', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AAAA\nBB', {
+      hstarWritingMode:'vertical',
+      styles:{
+        0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+        1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+      },
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const beforeInput = (inputType, range) => {
+      const event = new Event('beforeinput', {bubbles:true});
+      Object.defineProperty(event, 'inputType', {value:inputType});
+      if(range) Object.defineProperty(event, 'getTargetRanges', {value:() => [range]});
+      editor.dispatchEvent(event);
+    };
+    const input = value => {
+      editor.value = value;
+      editor.dispatchEvent(new Event('input', {bubbles:true}));
+    };
+
+    editor.setSelectionRange(2, 4);
+    editor.dispatchEvent(new Event('compositionstart', {bubbles:true}));
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertCompositionText', {startOffset:2, endOffset:4});
+    input('AAX\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#00aa00'});
+
+    editor.dispatchEvent(new Event('compositionupdate', {bubbles:true}));
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertCompositionText');
+    input('AAYZ\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][3]).toMatchObject({fill:'#00aa00'});
+
+    editor.setSelectionRange(0, 0);
+    beforeInput('deleteCompositionText');
+    input('AA\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertCompositionText');
+    input('AAQ\nBB');
+    editor.setSelectionRange(0, 0);
+    beforeInput('deleteByComposition');
+    input('AA\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertCompositionText');
+    input('AAR\nBB');
+    editor.dispatchEvent(new Event('compositionend', {bubbles:true}));
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertFromComposition');
+    input('AATU\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][3]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+  });
+
+  it('uses the caret soft-line bounds for collapsed deleteEntireSoftLine', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AA\nAAAA\nBB', {
+      hstarWritingMode:'vertical',
+      styles:{
+        0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}},
+        1:{0:{fill:'#0000ff'}, 1:{fill:'#ffaa00'}, 2:{fill:'#00aaaa'}, 3:{fill:'#aa00aa'}},
+        2:{0:{fill:'#7744cc'}, 1:{fill:'#cc4477'}},
+      },
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    editor.setSelectionRange(5, 5);
+    const remove = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(remove, 'inputType', {value:'deleteEntireSoftLine'});
+    editor.dispatchEvent(remove);
+    editor.value = 'AA\n\nBB';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[2][0]).toMatchObject({fill:'#7744cc'});
+    expect(vertical.styles[2][1]).toMatchObject({fill:'#cc4477'});
+  });
+
   it('places a missing editor selection at the end while preserving an explicit zero caret', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, '甲\nA', {hstarWritingMode:'vertical'});
