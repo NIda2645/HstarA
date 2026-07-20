@@ -535,6 +535,33 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(canvas.requestRenderAll).toHaveBeenCalled();
   });
 
+  it('maps textarea selections onto vertical glyph cells and restores the caret range', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB\nCD', {hstarWritingMode:'vertical', fontSize:12});
+    const canvas = attachEditingCanvas(vertical);
+    const initialHeight = vertical.height;
+    vertical.selectionStart = 1;
+    vertical.selectionEnd = 4;
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([1, 4]);
+    editor.setSelectionRange(1, 4);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+    vertical.setSelectionStyles({fontSize:36, fill:'#00aa00', fontWeight:700}, 1, 4);
+
+    expect(vertical.styles[0][1]).toMatchObject({fontSize:36, fill:'#00aa00', fontWeight:700});
+    expect(vertical.styles[1][0]).toMatchObject({fontSize:36, fill:'#00aa00', fontWeight:700});
+    expect(vertical.styles[0][0]).toBeUndefined();
+    expect(vertical.styles[1][1]).toBeUndefined();
+    expect(vertical.getSelectionStyles(1, 4, true)).toEqual([
+      expect.objectContaining({fontSize:36, fill:'#00aa00', fontWeight:700}),
+      expect.objectContaining({fontSize:36, fill:'#00aa00', fontWeight:700}),
+    ]);
+    expect(vertical.height).toBeGreaterThan(initialHeight);
+    expect(canvas.requestRenderAll).toHaveBeenCalledTimes(1);
+  });
+
   it('commits the first object and hands the same textarea to a second object', () => {
     const fabric = createFabricMock();
     const first = runtime.createTextObject(fabric, 'first', {hstarWritingMode:'vertical'});
@@ -779,6 +806,8 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(calls).toEqual([[]]);
     expect(vertical).toMatchObject({
       text:'editor state',
+      selectionStart:2,
+      selectionEnd:5,
       direction:'ltr',
       paintFirst:'stroke',
       strokeUniform:true,
@@ -786,7 +815,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
       serializedContractOption:{from:'toObject'},
     });
     for(const key of [
-      'selectionStart', 'selectionEnd', 'isEditing', 'hiddenTextarea',
+      'isEditing', 'hiddenTextarea',
       'hiddenTextareaContainer', 'cursorDuration', 'inCompositionMode', 'keysMap',
       'cursorWidth', 'cursorColor', 'cursorDelay',
     ]) {

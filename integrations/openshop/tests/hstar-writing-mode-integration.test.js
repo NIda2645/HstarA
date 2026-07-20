@@ -30,6 +30,7 @@ describe('OpenShop writing-mode integration', () => {
 
     OS.setTool('text-horizontal');
     OS.onMouseDown({e:{x:10, y:20}});
+    OS.canvas.discardActiveObject();
     OS.setTool('text-vertical');
     OS.onMouseDown({e:{x:30, y:40}});
 
@@ -67,6 +68,35 @@ describe('OpenShop writing-mode integration', () => {
     expect(OS.state.tool).toBe('select');
     expect(OS.state.textWritingMode).toBe('vertical');
     expect(document.querySelector('.tool-group[data-group="text"] > .tool-btn').dataset.tool).toBe('text-vertical');
+  });
+
+  it('converts an active text object once when the user switches writing direction', () => {
+    const source = new fabric.IText('Title', {hstarWritingMode:'horizontal'});
+    const OS = createEditor(loadOpenShop(), [source]);
+    OS.canvas.setActiveObject(source);
+
+    OS.setTool('text-vertical');
+
+    const converted = OS.canvas.getActiveObject();
+    expect(converted).toMatchObject({type:'hstar-vertical-text', hstarWritingMode:'vertical'});
+    expect(OS.layers[0].objects).toEqual([converted]);
+    expect(OS.saveHistory).toHaveBeenCalledOnce();
+
+    OS.setTool('text-vertical');
+    expect(OS.saveHistory).toHaveBeenCalledOnce();
+
+    const horizontal = new fabric.IText('No restore conversion', {hstarWritingMode:'horizontal'});
+    const restoreOS = createEditor(loadOpenShop(), [horizontal]);
+    restoreOS.canvas.setActiveObject(horizontal);
+    restoreOS.setTool('text-vertical', {forceInteraction:true, convertTextSelection:false});
+    expect(restoreOS.canvas.getActiveObject()).toBe(horizontal);
+    expect(restoreOS.saveHistory).not.toHaveBeenCalled();
+
+    restoreOS.setTextWritingMode = vi.fn();
+    restoreOS.history = [{snapshot:JSON.stringify({objects:[]}), layers:[]}];
+    restoreOS.historyIdx = 0;
+    restoreOS._restoreHistory();
+    expect(restoreOS.setTextWritingMode).not.toHaveBeenCalled();
   });
 
   it('converts selected text once while preserving metadata, stack, layer, visibility, and editing', () => {

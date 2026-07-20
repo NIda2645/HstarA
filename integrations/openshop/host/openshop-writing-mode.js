@@ -310,10 +310,21 @@
     const object = activeObject;
     const canvas = activeCanvas || object.canvas;
     syncEditorText(object, {force:true, render:false});
+    syncEditorSelection();
     applyEditorStyles(object, activeFabric);
     fireEvent(object, 'changed');
     fireEvent(canvas, 'text:changed', {target:object});
     requestObjectRender(object, canvas);
+  }
+
+  function syncEditorSelection() {
+    if(!activeObject || !editorElement) return;
+    const length = editorElement.value.length;
+    const start = Math.max(0, Math.min(length, Number(editorElement.selectionStart) || 0));
+    const end = Math.max(start, Math.min(length, Number(editorElement.selectionEnd) || start));
+    activeObject.selectionStart = start;
+    activeObject.selectionEnd = end;
+    fireEvent(activeCanvas || activeObject.canvas, 'text:selection:changed', {target:activeObject});
   }
 
   function onEditorBlur() {
@@ -338,6 +349,7 @@
       editorElement.removeEventListener('input', onEditorInput);
       editorElement.removeEventListener('blur', onEditorBlur);
       editorElement.removeEventListener('keydown', onEditorKeyDown);
+      ['select', 'keyup', 'click'].forEach(name => editorElement.removeEventListener(name, syncEditorSelection));
     }
     if(editorDocument) {
       editorDocument.removeEventListener('pointerdown', onDocumentPointer, true);
@@ -360,6 +372,7 @@
       editorElement.addEventListener('input', onEditorInput);
       editorElement.addEventListener('blur', onEditorBlur);
       editorElement.addEventListener('keydown', onEditorKeyDown);
+      ['select', 'keyup', 'click'].forEach(name => editorElement.addEventListener(name, syncEditorSelection));
       editorDocument = documentRef;
       editorDocument.addEventListener('pointerdown', onDocumentPointer, true);
       editorDocument.addEventListener('mousedown', onDocumentPointer, true);
@@ -393,7 +406,10 @@
     applyEditorStyles(object, activeFabric);
     try { editor.focus({preventScroll:true}); } catch(error) { editor.focus?.(); }
     if(typeof editor.setSelectionRange === 'function') {
-      editor.setSelectionRange(editor.value.length, editor.value.length);
+      const start = Math.max(0, Math.min(editor.value.length, Number(object.selectionStart) || 0));
+      const end = Math.max(start, Math.min(editor.value.length, Number(object.selectionEnd) || start));
+      editor.setSelectionRange(start, end);
+      syncEditorSelection();
     }
     return object;
   }
@@ -491,6 +507,63 @@
     return Object.assign({}, object, column && column[rowIndex]);
   }
 
+  function verticalCellsForRange(object, start, end) {
+    const text = String(object && object.text == null ? '' : object && object.text || '');
+    const from = Math.max(0, Math.min(text.length, Number(start) || 0));
+    const to = Math.max(from, Math.min(text.length, Number(end) || from));
+    const cells = [];
+    let columnIndex = 0;
+    let rowIndex = 0;
+    for(let offset = 0; offset < text.length;) {
+      const code = text.codePointAt(offset);
+      const character = String.fromCodePoint(code);
+      const length = character.length;
+      if(character === '\r') {
+        offset += text[offset + 1] === '\n' ? 2 : 1;
+        columnIndex += 1;
+        rowIndex = 0;
+        continue;
+      }
+      if(character === '\n') {
+        offset += 1;
+        columnIndex += 1;
+        rowIndex = 0;
+        continue;
+      }
+      if(offset < to && offset + length > from) cells.push({columnIndex, rowIndex});
+      offset += length;
+      rowIndex += 1;
+    }
+    return cells;
+  }
+
+  function selectionStylesForRange(object, start, end, complete) {
+    return verticalCellsForRange(object, start, end).map(cell => {
+      const style = object.styles && object.styles[cell.columnIndex] && object.styles[cell.columnIndex][cell.rowIndex];
+      return complete ? Object.assign({}, object, style) : Object.assign({}, style);
+    });
+  }
+
+  function applySelectionStyles(object, style, start, end) {
+    const cells = verticalCellsForRange(object, start, end);
+    if(!cells.length) return object;
+    const styles = cloneSerializable(object.styles) || {};
+    cells.forEach(({columnIndex, rowIndex}) => {
+      const column = Object.assign({}, styles[columnIndex] || {});
+      column[rowIndex] = Object.assign({}, column[rowIndex] || {}, cloneSerializable(style) || {});
+      styles[columnIndex] = column;
+    });
+    if(typeof object.set === 'function') object.set('styles', styles);
+    else {
+      object.styles = styles;
+      applyVerticalDimensions(object);
+      object.dirty = true;
+    }
+    if(typeof object.setCoords === 'function') object.setCoords();
+    requestObjectRender(object);
+    return object;
+  }
+
   function fontString(style) {
     return `${style.fontStyle || 'normal'} ${style.fontWeight || 'normal'} ${positiveNumber(style.fontSize, 40)}px ${style.fontFamily || 'sans-serif'}`;
   }
@@ -570,6 +643,14 @@
 
       exitEditing() {
         return exitEditing(this);
+      },
+
+      getSelectionStyles(start, end, complete) {
+        return selectionStylesForRange(this, start, end, complete);
+      },
+
+      setSelectionStyles(style, start, end) {
+        return applySelectionStyles(this, style, start, end);
       },
 
       _set(key, value) {
@@ -807,7 +888,11 @@
     const options = copyConvertibleOptions(source);
     options.styles = normalizeStyles(fabric, options.styles, text);
     options.hstarWritingMode = normalizeWritingMode(mode);
-    return createTextObject(fabric, text, options);
+    const converted = createTextObject(fabric, text, options);
+    ['selectionStart', 'selectionEnd'].forEach(property => {
+      if(Number.isFinite(Number(source && source[property]))) converted[property] = Number(source[property]);
+    });
+    return converted;
   }
 
   function activeEditorObject() {

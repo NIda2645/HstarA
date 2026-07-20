@@ -3116,11 +3116,11 @@ self.onmessage = function(e) {
     },
 
 
-    setTool(tool, {forceInteraction = false} = {}) {
+    setTool(tool, {forceInteraction = false, convertTextSelection = !forceInteraction} = {}) {
         if (tool === 'text') tool = 'text-horizontal';
-        if (tool === 'text-horizontal' || tool === 'text-vertical') {
-            this.state.textWritingMode = tool === 'text-vertical' ? 'vertical' : 'horizontal';
-        }
+        const writingMode = tool === 'text-vertical' ? 'vertical'
+            : tool === 'text-horizontal' ? 'horizontal' : null;
+        if (writingMode) this.state.textWritingMode = writingMode;
         this._toolTooltipController?.hide();
         const prevTool = this.state.tool;
         if (prevTool !== tool && this._rasterTools?.getState?.().active) {
@@ -3132,6 +3132,9 @@ self.onmessage = function(e) {
         runtime.activeButtons.forEach(button => button.classList.remove('active'));
         runtime.activeButtons = runtime.buttons.filter(button => button.dataset.tool === tool);
         runtime.activeButtons.forEach(button => button.classList.add('active'));
+        if (writingMode && convertTextSelection) {
+            this.setTextWritingMode(writingMode, {convertSelection:true, recordHistory:true});
+        }
         if (tool === 'text-horizontal' || tool === 'text-vertical') this._syncTextToolFace();
         if (runtime.activeOption) runtime.activeOption.style.display = 'none';
         runtime.activeOption = null;
