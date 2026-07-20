@@ -116,6 +116,22 @@ class OpenShopOcrWritingModeTests(unittest.TestCase):
         self.assertEqual(result["schemaVersion"], 3)
         self.assertEqual(result["blocks"][0]["writingMode"], "horizontal")
 
+    def test_preserves_ocr_text_whitespace_and_line_order(self):
+        raw_text = " 甲乙 \n丙 "
+
+        block = self.normalize(
+            self.block(text=raw_text, writingMode="vertical")
+        )["blocks"][0]
+
+        self.assertEqual(block["text"], raw_text)
+
+    def test_normalizes_ocr_crlf_and_removes_non_printable_controls(self):
+        block = self.normalize(
+            self.block(text=" A\r\nB\t\x00\x07 ")
+        )["blocks"][0]
+
+        self.assertEqual(block["text"], " A\nB\t ")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -699,8 +699,8 @@
           const matches = blocks.map(block => fontManager.matchOcrFont(block));
           const createdLayers = [];
           blocks.forEach((block, index) => {
-            const text = clean(block?.text);
-            if(!text) return;
+            const text = String(block?.text ?? '');
+            if(!text.trim()) return;
             const match = matches[index];
             if(!clean(match?.faceFamily)) throw new Error('OCR font match did not return a usable face');
             const geometry = quadGeometry(block.quad, canvasWidth, canvasHeight, block.rotation);

@@ -98,6 +98,13 @@ def _clean_text(value: Any, limit: int, fallback: str = "") -> str:
     return text[:limit] or fallback
 
 
+def _normalize_ocr_text(value: Any, limit: int = 4000) -> str:
+    text = str(value if value is not None else "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
+    return text[:limit]
+
+
 def _unique_texts(values: Any, limit: int = 120, max_items: int = 64) -> list[str]:
     if not isinstance(values, list):
         return []
@@ -495,8 +502,8 @@ def _normalize_writing_mode(value: Any, quad: list[dict[str, float]]) -> str:
 def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OpenShopAiValidationError("OCR block must be an object")
-    text = _clean_text(value.get("text"), 4000)
-    if not text:
+    text = _normalize_ocr_text(value.get("text"))
+    if not text.strip():
         raise OpenShopAiValidationError("OCR block text is empty")
     quad = _normalize_points(value.get("quad"), width, height) if value.get("quad") is not None else _quad_from_bbox(value.get("bbox"), width, height)
     confidence = max(0.0, min(1.0, _finite_number(value.get("confidence", 0), "confidence")))

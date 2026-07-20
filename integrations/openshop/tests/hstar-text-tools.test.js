@@ -453,6 +453,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
   });
 
   it('creates precisely fitted horizontal and vertical OCR layers in reading order', async () => {
+    const verticalText = ' 甲乙 \n丙 ';
     const blocks = [
       {
         id:'ocr-title', text:'经典奶茶', language:'zh', script:'zh-hans', confidence:0.98, lowConfidence:false,
@@ -467,7 +468,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
         color:'#7b3f12', align:'center', rotation:90, paragraphId:'title', lineIndex:0,
       },
       {
-        id:'ocr-subtitle', text:'甲乙丙丁', language:'zh', script:'zh-hans', confidence:0.94, lowConfidence:false,
+        id:'ocr-subtitle', text:verticalText, language:'zh', script:'zh-hans', confidence:0.94, lowConfidence:false,
         writingMode:'vertical',
         quad:[{x:0.55,y:0.25},{x:0.61,y:0.26},{x:0.56,y:0.66},{x:0.5,y:0.65}],
         font:{
@@ -508,7 +509,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(editor.layers).toEqual([sourceLayer, ...layers, existingTopLayer]);
     expect(objects).toEqual([sourceImage, ...layers.map(layer => layer.objects[0]), existingTopObject]);
     expect(sourceLayer.objects).toEqual([sourceImage]);
-    expect(layers.map(layer => layer.name)).toEqual(['经典奶茶（校对）', '甲乙丙丁']);
+    expect(layers.map(layer => layer.name)).toEqual(['经典奶茶（校对）', '甲乙 丙']);
     expect(layers.every(layer => layer.objects.length === 1)).toBe(true);
     expect(new Set(layers.map(layer => layer.layerId)).size).toBe(2);
     expect(loadSystemFonts).toHaveBeenCalledOnce();
@@ -555,7 +556,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     const subtitle = layers[1].objects[0];
     expect(subtitle).toBeInstanceOf(FakeVerticalText);
     expect(subtitle).toMatchObject({
-      type:'hstar-vertical-text', text:'甲乙丙丁', left:1056, top:270,
+      type:'hstar-vertical-text', text:verticalText, left:1056, top:270,
       fontFamily:'03免Subtitle Face', fontSize:44, fill:'#d77721', fontWeight:500,
       fontStyle:'normal', textAlign:'left', editable:true,
       hstarWritingMode:'vertical', charSpacing:20, lineHeight:1.16,
@@ -563,9 +564,9 @@ describe('Hstar OpenShop multilingual text tools', () => {
       hstarOcrBlockId:'ocr-subtitle', hstarOcrSourceLayerId:'layer-source',
       hstarOcrSourceAssetId:SOURCE_ASSET_ID,
       hstarOcrFontCandidates:['Missing Font', 'Arial'],
-      hstarOcrOriginalText:'甲乙丙丁',
+      hstarOcrOriginalText:verticalText,
     });
-    expect(subtitle.text).not.toContain('\n');
+    expect(subtitle.text.match(/\n/g)).toHaveLength(1);
     expect(subtitle.angle).toBeCloseTo(5.356, 2);
     expect(subtitle.scaleX).toBeCloseTo(subtitle.scaleY, 10);
     expect(subtitle.width * subtitle.scaleX).toBeLessThanOrEqual(115.707);
@@ -593,7 +594,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(writingModeRuntime.createTextObject).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({IText:FakeIText, HstarVerticalText:FakeVerticalText}),
-      '甲乙丙丁',
+      verticalText,
       expect.objectContaining({hstarWritingMode:'vertical'}),
     );
     expect(editor.activeLayerIdx).toBe(2);
