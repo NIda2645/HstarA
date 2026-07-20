@@ -567,6 +567,44 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(vertical.styles[1][2]).toBeUndefined();
   });
 
+  it('uses beforeinput ranges to rebase repeated glyph styles across columns', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AAAA\nAA', {
+      hstarWritingMode:'vertical',
+      styles:{
+        0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+        1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+      },
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.setSelectionRange(0, 0);
+    const insert = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(insert, 'inputType', {value:'insertText'});
+    editor.dispatchEvent(insert);
+    editor.value = 'AAAAA\nAA';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+
+    editor.setSelectionRange(1, 3);
+    const remove = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(remove, 'inputType', {value:'deleteContentBackward'});
+    editor.dispatchEvent(remove);
+    editor.value = 'AAA\nAA';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#0000ff'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#ffaa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+  });
+
   it('places a missing editor selection at the end while preserving an explicit zero caret', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, '甲\nA', {hstarWritingMode:'vertical'});

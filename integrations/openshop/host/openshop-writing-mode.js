@@ -38,6 +38,7 @@
   let activeCanvas = null;
   let activeCanvasBindings = [];
   let editorDocument = null;
+  let pendingEditorInput = null;
 
   function documentForRuntime() {
     return global && global.document ? global.document : null;
@@ -258,6 +259,16 @@
     };
   }
 
+  function replacementTextRange(before, after, start, end) {
+    const from = Math.max(0, Math.min(before.length, Number(start) || 0));
+    const to = Math.max(from, Math.min(before.length, Number(end) || from));
+    return {
+      prefix:from,
+      beforeSuffixStart:to,
+      afterSuffixStart:Math.max(from, after.length - (before.length - to)),
+    };
+  }
+
   function stylesByRawOffset(object, text) {
     const result = new Map();
     const styles = object && object.styles;
@@ -280,12 +291,14 @@
     return location && styles.has(location.offset) ? styles.get(location.offset) : undefined;
   }
 
-  function rebaseVerticalStyles(object, before, after) {
+  function rebaseVerticalStyles(object, before, after, replacement) {
     const beforeLocations = verticalGlyphLocations(before);
     const afterLocations = verticalGlyphLocations(after);
     const oldStyles = stylesByRawOffset(object, before);
     const rebased = new Map();
-    const range = sharedTextRange(before, after);
+    const range = replacement && replacement.text === before
+      ? replacementTextRange(before, after, replacement.selectionStart, replacement.selectionEnd)
+      : sharedTextRange(before, after);
     const delta = after.length - before.length;
 
     beforeLocations.forEach(location => {
@@ -311,12 +324,12 @@
     return styles;
   }
 
-  function syncEditorText(object, {force = false, render = true} = {}) {
+  function syncEditorText(object, {force = false, render = true, replacement = null} = {}) {
     if(!object || !editorElement) return false;
     const value = editorElement.value;
     if(!force && object.text === value) return false;
     const oldText = rawText(object.text);
-    const styles = rebaseVerticalStyles(object, oldText, value);
+    const styles = rebaseVerticalStyles(object, oldText, value, replacement);
     if(typeof object.set === 'function') object.set('styles', styles);
     else object.styles = styles;
     if(typeof object.set === 'function') object.set('text', value);
@@ -394,6 +407,7 @@
     if(activeObject !== object) return object;
     const canvas = activeCanvas || object.canvas;
     syncEditorText(object, {render:false});
+    pendingEditorInput = null;
     const changed = String(object.text == null ? '' : object.text) !== activeOriginalText;
     activeObject = null;
     activeOriginalText = null;
@@ -413,12 +427,27 @@
     if(!activeObject) return;
     const object = activeObject;
     const canvas = activeCanvas || object.canvas;
-    syncEditorText(object, {force:true, render:false});
+    const replacement = pendingEditorInput;
+    pendingEditorInput = null;
+    syncEditorText(object, {force:true, render:false, replacement});
     syncEditorSelection();
     applyEditorStyles(object, activeFabric);
     fireEvent(object, 'changed');
     fireEvent(canvas, 'text:changed', {target:object});
     requestObjectRender(object, canvas);
+  }
+
+  function onEditorBeforeInput(event) {
+    if(!activeObject || !editorElement) return;
+    const text = rawText(editorElement.value);
+    const start = Math.max(0, Math.min(text.length, Number(editorElement.selectionStart) || 0));
+    const end = Math.max(start, Math.min(text.length, Number(editorElement.selectionEnd) || start));
+    pendingEditorInput = {
+      text,
+      selectionStart:start,
+      selectionEnd:end,
+      inputType:event && event.inputType || '',
+    };
   }
 
   function syncEditorSelection() {
@@ -450,11 +479,13 @@
 
   function detachEditorListeners() {
     if(editorElement) {
+      editorElement.removeEventListener('beforeinput', onEditorBeforeInput);
       editorElement.removeEventListener('input', onEditorInput);
       editorElement.removeEventListener('blur', onEditorBlur);
       editorElement.removeEventListener('keydown', onEditorKeyDown);
       ['select', 'keyup', 'click'].forEach(name => editorElement.removeEventListener(name, syncEditorSelection));
     }
+    pendingEditorInput = null;
     if(editorDocument) {
       editorDocument.removeEventListener('pointerdown', onDocumentPointer, true);
       editorDocument.removeEventListener('mousedown', onDocumentPointer, true);
@@ -473,6 +504,7 @@
     const existing = [...documentRef.querySelectorAll(VERTICAL_EDITOR_SELECTOR)];
     if(!editorElement) {
       editorElement = existing.find(element => element.tagName === 'TEXTAREA') || documentRef.createElement('textarea');
+      editorElement.addEventListener('beforeinput', onEditorBeforeInput);
       editorElement.addEventListener('input', onEditorInput);
       editorElement.addEventListener('blur', onEditorBlur);
       editorElement.addEventListener('keydown', onEditorKeyDown);
@@ -501,6 +533,7 @@
     if(activeObject && activeObject !== object) exitEditing(activeObject);
     const editor = ensureEditor();
     activeObject = object;
+    pendingEditorInput = null;
     activeFabric = fabric || null;
     activeOriginalText = String(object.text == null ? '' : object.text);
     bindActiveCanvas(object.canvas);
