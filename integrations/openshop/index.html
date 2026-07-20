@@ -73,11 +73,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 .tool-group{position:relative}
 .tool-group>.tool-btn::before{content:'';position:absolute;bottom:2px;right:2px;border:3px solid transparent;border-bottom-color:var(--text-muted);border-right-color:var(--text-muted);width:0;height:0;pointer-events:none}
 .tool-group>.tool-btn.active::before{border-bottom-color:var(--accent);border-right-color:var(--accent)}
-.tool-flyout{display:none;position:fixed;background:var(--bg-depth-1);border:1px solid var(--border);border-radius:10px;padding:4px;box-shadow:0 12px 36px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.03) inset;z-index:9999;min-width:36px;backdrop-filter:blur(12px)}
+.tool-flyout{display:none;position:fixed;background:var(--bg-depth-1);border:1px solid var(--border);border-radius:10px;padding:4px;box-shadow:0 12px 36px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.03) inset;z-index:9999;min-width:36px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow-y:auto;backdrop-filter:blur(12px)}
 .tool-flyout.show{display:flex;flex-direction:column;gap:2px}
 .tool-flyout .tool-btn{width:32px;height:32px}
 .tool-flyout .tool-btn svg{width:16px;height:16px}
-.tool-flyout .tool-btn.tool-flyout-row{width:190px;grid-template-columns:20px minmax(0,1fr) 16px;gap:8px;padding:0 8px;text-align:left}
+.tool-flyout .tool-btn.tool-flyout-row{width:190px;display:grid;grid-template-columns:20px minmax(0,1fr) 16px;gap:8px;padding:0 8px;text-align:left}
 .tool-flyout-row .tool-flyout-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text-primary)}
 .tool-flyout-row .tool-flyout-shortcut{font-size:11px;color:var(--text-muted);text-align:right}
 .tool-flyout .tool-btn[data-tip]::after{left:calc(100% + 6px)}
@@ -2797,6 +2797,24 @@ self.onmessage = function(e) {
 
     // ====================== TOOLS ======================
     // ====================== TOOL GROUP FLYOUTS ======================
+    _positionToolFlyout(face, flyout) {
+        const rect = face.getBoundingClientRect();
+        const gap = 4, gutter = 8;
+        flyout.style.position = 'fixed';
+        flyout.classList.add('show');
+        const width = flyout.offsetWidth || flyout.getBoundingClientRect().width || 0;
+        const height = flyout.offsetHeight || flyout.getBoundingClientRect().height || 0;
+        const viewportWidth = Math.max(window.innerWidth || 0, document.documentElement.clientWidth || 0);
+        const viewportHeight = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0);
+        const maxLeft = Math.max(gutter, viewportWidth - width - gutter);
+        const maxTop = Math.max(gutter, viewportHeight - height - gutter);
+        const rightLeft = rect.right + gap;
+        const leftLeft = rect.left - width - gap;
+        const preferredLeft = rightLeft + width <= viewportWidth - gutter ? rightLeft : leftLeft;
+        const preferredTop = rect.top + height <= viewportHeight - gutter ? rect.top : rect.bottom - height;
+        flyout.style.left = Math.max(gutter, Math.min(maxLeft, preferredLeft)) + 'px';
+        flyout.style.top = Math.max(gutter, Math.min(maxTop, preferredTop)) + 'px';
+    },
     initToolGroups() {
         // Portal all flyouts to body so toolbar overflow doesn't clip them
         const flyoutHost = document.createElement('div');
@@ -2811,35 +2829,62 @@ self.onmessage = function(e) {
             flyoutHost.appendChild(flyout);
             flyout.style.pointerEvents = 'auto';
             flyout._parentGroup = grp;
+            face.setAttribute('aria-haspopup', 'menu');
+            face.setAttribute('aria-expanded', 'false');
+            flyout.setAttribute('role', 'menu');
+            const rows = [...flyout.querySelectorAll(':scope > .tool-btn')];
+            rows.forEach(row => {
+                row.setAttribute('role', 'menuitem');
+                row.setAttribute('tabindex', '-1');
+            });
+            const openFlyout = focusFirst => {
+                this._closeAllFlyouts();
+                this._positionToolFlyout(face, flyout);
+                face.setAttribute('aria-expanded', 'true');
+                if (focusFirst) rows[0]?.focus();
+            };
             // Click toggles flyout
             face.addEventListener('click', e => {
                 e.preventDefault(); e.stopPropagation();
                 const wasOpen = flyout.classList.contains('show');
-                this._closeAllFlyouts();
                 if (!wasOpen) {
-                    const rect = face.getBoundingClientRect();
-                    flyout.style.position = 'fixed';
-                    flyout.style.left = (rect.right + 4) + 'px';
-                    flyout.style.top = rect.top + 'px';
-                    flyout.classList.add('show');
+                    openFlyout(false);
                 } else {
+                    this._closeAllFlyouts();
                     const tool = face.dataset.tool;
                     if (tool) this.setTool(tool);
                 }
             });
             face.addEventListener('contextmenu', e => {
                 e.preventDefault();
-                this._closeAllFlyouts();
-                const rect = face.getBoundingClientRect();
-                flyout.style.position = 'fixed';
-                flyout.style.left = (rect.right + 4) + 'px';
-                flyout.style.top = rect.top + 'px';
-                flyout.classList.add('show');
+                openFlyout(false);
+            });
+            face.addEventListener('keydown', e => {
+                if (!['Enter', ' ', 'ArrowRight', 'ArrowDown'].includes(e.key)) return;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                openFlyout(true);
+            }, true);
+            flyout.addEventListener('keydown', e => {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this._closeAllFlyouts();
+                    face.focus();
+                    return;
+                }
+                if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                const current = rows.indexOf(e.target.closest('.tool-btn'));
+                if (current < 0 || !rows.length) return;
+                e.preventDefault();
+                const next = e.key === 'ArrowDown'
+                    ? (current + 1) % rows.length
+                    : (current - 1 + rows.length) % rows.length;
+                rows[next].focus();
             });
             face.removeAttribute('onclick');
         });
         document.addEventListener('mousedown', e => {
-            const target = eventElementTarget(e);
+            const target = e.target;
             if (!target || (!target.closest('.tool-flyout') && !target.closest('.tool-group > .tool-btn'))) {
                 this._closeAllFlyouts();
             }
@@ -2904,7 +2949,10 @@ self.onmessage = function(e) {
     },
     _closeAllFlyouts() {
         this._toolTooltipController?.hide();
-        document.querySelectorAll('.tool-flyout.show').forEach(f => f.classList.remove('show'));
+        document.querySelectorAll('.tool-flyout').forEach(f => {
+            f.classList.remove('show');
+            f._parentGroup?.querySelector(':scope > .tool-btn')?.setAttribute('aria-expanded', 'false');
+        });
     },
     flyoutSelect(btn, groupName) {
         const grp = document.querySelector(`.tool-group[data-group="${groupName}"]`);
@@ -2922,6 +2970,7 @@ self.onmessage = function(e) {
         // Close all flyouts and activate tool
         this._closeAllFlyouts();
         this.setTool(tool);
+        face.focus();
     },
 
     _initToolRuntimeCache() {

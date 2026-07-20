@@ -31,6 +31,16 @@ const ART_GENERATION = {
   contentBox:{x:10,y:5,width:340,height:110},
 };
 
+function mountToolbarFromSource() {
+  const source = new DOMParser().parseFromString(
+    readFileSync(resolve(testDir, '..', 'index.html'), 'utf8'),
+    'text/html',
+  );
+  const toolbar = document.importNode(source.getElementById('toolbar'), true);
+  document.getElementById('toolbar').replaceWith(toolbar);
+  return toolbar;
+}
+
 describe('OpenShop core object', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -79,6 +89,71 @@ describe('OpenShop core object', () => {
     expect(document.getElementById('opt-ai-segment').style.display).toBe('flex');
   });
 
+  it('positions tool flyouts inside the viewport gutter near the bottom-right corner', () => {
+    const OS = loadOpenShop();
+    const face = document.createElement('button');
+    const flyout = document.createElement('div');
+    document.body.append(face, flyout);
+    vi.stubGlobal('innerWidth', 180);
+    vi.stubGlobal('innerHeight', 100);
+    vi.spyOn(face, 'getBoundingClientRect').mockReturnValue({
+      left:140, top:80, right:176, bottom:116, width:36, height:36,
+    });
+    Object.defineProperties(flyout, {
+      offsetWidth:{value:160, configurable:true},
+      offsetHeight:{value:72, configurable:true},
+    });
+
+    OS._positionToolFlyout(face, flyout);
+
+    expect(flyout.classList.contains('show')).toBe(true);
+    expect(Number.parseFloat(flyout.style.left)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(flyout.style.left)).toBeLessThanOrEqual(12);
+    expect(Number.parseFloat(flyout.style.top)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(flyout.style.top)).toBeLessThanOrEqual(20);
+  });
+
+  it('opens the text flyout by keyboard and manages its menu focus', () => {
+    mountToolbarFromSource();
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.layers = [{name:'Layer 0', locked:false, objects:[]}];
+    quietUiMethods(OS);
+    OS.initToolGroups();
+
+    const group = document.querySelector('.tool-group[data-group="text"]');
+    const face = group.querySelector(':scope > .tool-btn');
+    const flyout = [...document.querySelectorAll('#flyout-host > .tool-flyout')]
+      .find(candidate => candidate._parentGroup === group);
+    const rows = [...flyout.querySelectorAll(':scope > .tool-btn')];
+
+    expect(face.getAttribute('aria-haspopup')).toBe('menu');
+    expect(face.getAttribute('aria-expanded')).toBe('false');
+    expect(flyout.getAttribute('role')).toBe('menu');
+    expect(rows.map(row => row.getAttribute('role'))).toEqual(['menuitem', 'menuitem']);
+    expect(rows.map(row => row.getAttribute('tabindex'))).toEqual(['-1', '-1']);
+
+    face.focus();
+    face.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown', bubbles:true}));
+    expect(flyout.classList.contains('show')).toBe(true);
+    expect(face.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(rows[0]);
+
+    rows[0].dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown', bubbles:true}));
+    expect(document.activeElement).toBe(rows[1]);
+    rows[1].dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowUp', bubbles:true}));
+    expect(document.activeElement).toBe(rows[0]);
+    rows[0].dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+    expect(flyout.classList.contains('show')).toBe(false);
+    expect(face.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(face);
+
+    face.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true}));
+    OS.flyoutSelect(rows[1], 'text');
+    expect(flyout.classList.contains('show')).toBe(false);
+    expect(face.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(face);
+  });
   it('localizes the visible tool name when switching tools', () => {
     const OS = loadOpenShop();
     OS.canvas = createCanvasMock([]);
