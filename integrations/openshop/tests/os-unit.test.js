@@ -89,6 +89,30 @@ describe('OpenShop core object', () => {
     expect(document.getElementById('opt-ai-segment').style.display).toBe('flex');
   });
 
+
+  it('creates horizontal and vertical text as one separate layer per object', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(event => ({x:event.x, y:event.y}));
+    OS.layers = [{name:'Background', locked:false, visible:true, objects:[]}];
+    quietUiMethods(OS);
+    OS.saveHistory = vi.fn();
+
+    OS.setTool('text-horizontal');
+    OS.onMouseDown({e:{x:10, y:20}});
+    OS.canvas.discardActiveObject();
+    OS.setTool('text-vertical');
+    OS.onMouseDown({e:{x:30, y:40}});
+
+    expect(OS.canvas.getObjects().map(object => object.type)).toEqual(['i-text', 'hstar-vertical-text']);
+    expect(OS.layers).toHaveLength(3);
+    expect(OS.layers.slice(1).map(layer => layer.objects)).toEqual([
+      [OS.canvas.getObjects()[0]], [OS.canvas.getObjects()[1]],
+    ]);
+    expect(OS.canvas.getObjects()[0].hstarWritingMode).toBe('horizontal');
+    expect(OS.canvas.getObjects()[1].hstarWritingMode).toBe('vertical');
+    expect(OS.saveHistory).toHaveBeenCalledTimes(2);
+  });
   it('positions tool flyouts inside the viewport gutter near the bottom-right corner', () => {
     const OS = loadOpenShop();
     const face = document.createElement('button');
