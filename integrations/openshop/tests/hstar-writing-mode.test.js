@@ -605,6 +605,74 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
   });
 
+  it('expands a collapsed Delete range before rebasing repeated glyph styles', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AAAA\nBB', {
+      hstarWritingMode:'vertical',
+      styles:{
+        0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+        1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+      },
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.setSelectionRange(2, 2);
+    const remove = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(remove, 'inputType', {value:'deleteContentForward'});
+    editor.dispatchEvent(remove);
+    editor.value = 'AAA\nBB';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#ffaa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+  });
+
+  it('expands collapsed Backspace ranges at the start, in repeated text, and across newlines', () => {
+    const fabric = createFabricMock();
+    const styles = {
+      0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+      1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+    };
+    const editWithBackspace = (text, start, nextText) => {
+      const vertical = runtime.createTextObject(fabric, text, {hstarWritingMode:'vertical', styles});
+      attachEditingCanvas(vertical);
+      vertical.enterEditing();
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.setSelectionRange(start, start);
+      const remove = new Event('beforeinput', {bubbles:true});
+      Object.defineProperty(remove, 'inputType', {value:'deleteContentBackward'});
+      editor.dispatchEvent(remove);
+      editor.value = nextText;
+      editor.dispatchEvent(new Event('input', {bubbles:true}));
+      vertical.exitEditing();
+      return vertical;
+    };
+
+    const atStart = editWithBackspace('AAAA\nBB', 0, 'AAAA\nBB');
+    expect(atStart.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(atStart.styles[0][1]).toMatchObject({fill:'#00aa00'});
+
+    const inMiddle = editWithBackspace('AAAA\nBB', 2, 'AAA\nBB');
+    expect(inMiddle.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(inMiddle.styles[0][1]).toMatchObject({fill:'#0000ff'});
+    expect(inMiddle.styles[0][2]).toMatchObject({fill:'#ffaa00'});
+    expect(inMiddle.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(inMiddle.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+
+    const acrossNewline = editWithBackspace('AAAA\nBB', 5, 'AAAABB');
+    expect(acrossNewline.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(acrossNewline.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(acrossNewline.styles[0][2]).toMatchObject({fill:'#0000ff'});
+    expect(acrossNewline.styles[0][3]).toMatchObject({fill:'#ffaa00'});
+    expect(acrossNewline.styles[0][4]).toMatchObject({fill:'#00aaaa'});
+    expect(acrossNewline.styles[0][5]).toMatchObject({fill:'#aa00aa'});
+  });
+
   it('places a missing editor selection at the end while preserving an explicit zero caret', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, '甲\nA', {hstarWritingMode:'vertical'});

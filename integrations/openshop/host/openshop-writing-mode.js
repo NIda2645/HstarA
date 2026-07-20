@@ -259,9 +259,26 @@
     };
   }
 
-  function replacementTextRange(before, after, start, end) {
-    const from = Math.max(0, Math.min(before.length, Number(start) || 0));
-    const to = Math.max(from, Math.min(before.length, Number(end) || from));
+  function previousRawCharacterOffset(text, offset) {
+    if(offset <= 0) return 0;
+    if(text[offset - 1] === '\n' && text[offset - 2] === '\r') return offset - 2;
+    const code = text.charCodeAt(offset - 1);
+    return code >= 0xdc00 && code <= 0xdfff && offset > 1
+      && text.charCodeAt(offset - 2) >= 0xd800 && text.charCodeAt(offset - 2) <= 0xdbff
+      ? offset - 2 : offset - 1;
+  }
+
+  function nextRawCharacterOffset(text, offset) {
+    if(offset >= text.length) return text.length;
+    if(text[offset] === '\r' && text[offset + 1] === '\n') return offset + 2;
+    return offset + String.fromCodePoint(text.codePointAt(offset)).length;
+  }
+
+  function replacementTextRange(before, after, start, end, inputType) {
+    let from = Math.max(0, Math.min(before.length, Number(start) || 0));
+    let to = Math.max(from, Math.min(before.length, Number(end) || from));
+    if(from === to && inputType === 'deleteContentBackward') from = previousRawCharacterOffset(before, from);
+    if(from === to && inputType === 'deleteContentForward') to = nextRawCharacterOffset(before, to);
     return {
       prefix:from,
       beforeSuffixStart:to,
@@ -297,7 +314,7 @@
     const oldStyles = stylesByRawOffset(object, before);
     const rebased = new Map();
     const range = replacement && replacement.text === before
-      ? replacementTextRange(before, after, replacement.selectionStart, replacement.selectionEnd)
+      ? replacementTextRange(before, after, replacement.selectionStart, replacement.selectionEnd, replacement.inputType)
       : sharedTextRange(before, after);
     const delta = after.length - before.length;
 
