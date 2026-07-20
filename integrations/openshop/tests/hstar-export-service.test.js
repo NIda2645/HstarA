@@ -6,6 +6,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const servicePath = resolve(testDir, '..', 'host', 'openshop-export-service.js');
 const buildPath = resolve(testDir, '..', 'scripts', 'build-hstar.mjs');
+const indexPath = resolve(testDir, '..', 'index.html');
+const projectRoot = resolve(testDir, '..', '..', '..');
+const hostPath = resolve(projectRoot, 'static', 'js', 'openshop-host.js');
+const shellPath = resolve(projectRoot, 'static', 'index.html');
+const classicPath = resolve(projectRoot, 'static', 'canvas.html');
+const smartPath = resolve(projectRoot, 'static', 'smart-canvas.html');
 const serviceExists = existsSync(servicePath);
 
 function loadService() {
@@ -21,6 +27,37 @@ describe('OpenShop export service availability', () => {
 
   it('publishes the service in the approved runtime tree', () => {
     expect(readFileSync(buildPath, 'utf8')).toContain("'host/openshop-export-service.js'");
+  });
+
+  it('loads the export service before the host runtime', () => {
+    const html = readFileSync(indexPath, 'utf8');
+    const serviceIndex = html.indexOf('./host/openshop-export-service.js');
+    const runtimeIndex = html.indexOf('./host/openshop-host-runtime.js');
+    expect(serviceIndex).toBeGreaterThan(-1);
+    expect(serviceIndex).toBeLessThan(runtimeIndex);
+  });
+
+  it('uses one cache revision across every OpenShop entry point', () => {
+    const host = readFileSync(hostPath, 'utf8');
+    const revision = host.match(/OPENSHOP_RUNTIME_REVISION\s*=\s*'([^']+)'/)?.[1];
+    const shell = readFileSync(shellPath, 'utf8');
+    const classic = readFileSync(classicPath, 'utf8');
+    const smart = readFileSync(smartPath, 'utf8');
+    const editor = readFileSync(indexPath, 'utf8');
+
+    expect(revision).toMatch(/^\d{4}\.\d{2}\.\d{2}\.[0-9.]+$/);
+    expect(shell).toContain(`/static/css/openshop-host.css?v=${revision}`);
+    expect(shell).toContain(`/static/openshop/host/openshop-protocol.js?v=${revision}`);
+    expect(shell).toContain(`/static/js/openshop-host.js?v=${revision}`);
+    expect(classic).toContain(`/static/js/canvas-openshop.js?v=${revision}`);
+    expect(smart).toContain(`/static/js/smart-canvas-openshop.js?v=${revision}`);
+    expect(editor).toContain(`./host/openshop-protocol.js?v=${revision}`);
+    expect(editor).toContain(`./host/openshop-project-adapter.js?v=${revision}`);
+    expect(editor).toContain(`./host/openshop-export-service.js?v=${revision}`);
+    expect(editor).toContain(`./host/openshop-host-runtime.js?v=${revision}`);
+    expect(editor).toContain(`./host/openshop-writing-mode.css?v=${revision}`);
+    expect(editor).toContain(`./host/openshop-writing-mode.js?v=${revision}`);
+    expect(editor).toContain(`./host/openshop-text-tools.js?v=${revision}`);
   });
 });
 

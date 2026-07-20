@@ -5,6 +5,7 @@
 
     const HIDDEN_SESSION_IDLE_MS = 15 * 60 * 1000;
     const MAX_IDLE_SESSIONS = 3;
+    const OPENSHOP_RUNTIME_REVISION = '2026.07.20.1784529300000';
     const state = {
         sessions:new Map(),
         activeScope:'',
@@ -407,7 +408,7 @@
         });
         state.sessions.set(scope, session);
         getOverlay().appendChild(frame);
-        frame.src = '/static/openshop/index.html?v=2026.07.17.1784263000';
+        frame.src = `/static/openshop/index.html?v=${OPENSHOP_RUNTIME_REVISION}`;
         return session;
     }
 

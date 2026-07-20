@@ -41,9 +41,31 @@
   let pendingEditorInput = null;
   let compositionReplacement = null;
   let compositionActive = false;
+  let pointerFocusObject = null;
+  let pointerFocusTimer = 0;
 
   function documentForRuntime() {
     return global && global.document ? global.document : null;
+  }
+
+  function clearPointerFocusGuard() {
+    if(pointerFocusTimer && typeof global.clearTimeout === 'function') global.clearTimeout(pointerFocusTimer);
+    pointerFocusTimer = 0;
+    pointerFocusObject = null;
+  }
+
+  function armPointerFocusGuard(object, event) {
+    const type = String(event && event.type || '').toLowerCase();
+    if(!/(?:mouse|pointer|touch)/.test(type) || typeof global.setTimeout !== 'function') return;
+    clearPointerFocusGuard();
+    pointerFocusObject = object;
+    pointerFocusTimer = global.setTimeout(() => {
+      pointerFocusTimer = 0;
+      if(activeObject === object && editorElement && editorElement.ownerDocument?.activeElement !== editorElement) {
+        try { editorElement.focus({preventScroll:true}); } catch(error) { editorElement.focus?.(); }
+      }
+      pointerFocusObject = null;
+    }, 0);
   }
 
   function readRect(element) {
@@ -479,6 +501,7 @@
     if(!object) return object;
     object.isEditing = false;
     if(activeObject !== object) return object;
+    clearPointerFocusGuard();
     const canvas = activeCanvas || object.canvas;
     syncEditorText(object, {render:false});
     pendingEditorInput = null;
@@ -569,7 +592,7 @@
   }
 
   function onEditorBlur() {
-    if(activeObject) exitEditing(activeObject);
+    if(activeObject && pointerFocusObject !== activeObject) exitEditing(activeObject);
   }
 
   function onEditorKeyDown(event) {
@@ -598,6 +621,7 @@
     }
     pendingEditorInput = null;
     clearCompositionState();
+    clearPointerFocusGuard();
     if(editorDocument) {
       editorDocument.removeEventListener('pointerdown', onDocumentPointer, true);
       editorDocument.removeEventListener('mousedown', onDocumentPointer, true);
@@ -642,6 +666,7 @@
   function enterEditing(object, event, fabric) {
     if(activeObject === object) {
       applyEditorStyles(object, activeFabric || fabric);
+      armPointerFocusGuard(object, event);
       try { editorElement?.focus({preventScroll:true}); } catch(error) { editorElement?.focus(); }
       return object;
     }
@@ -657,6 +682,7 @@
     if(!editor) return object;
     editor.value = activeOriginalText;
     applyEditorStyles(object, activeFabric);
+    armPointerFocusGuard(object, event);
     try { editor.focus({preventScroll:true}); } catch(error) { editor.focus?.(); }
     if(typeof editor.setSelectionRange === 'function') {
       const storedStart = Number(object.selectionStart);

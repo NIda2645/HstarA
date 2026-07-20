@@ -12,7 +12,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https://huggingface.co https://*.hf.co blob:; worker-src 'self' blob:; frame-src 'self';">
 <title>OpenShop v0.19.1 — Online Image Editor</title>
 <link rel="stylesheet" href="./host/openshop-text-properties.css">
-<link rel="stylesheet" href="./host/openshop-writing-mode.css">
+<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=2026.07.20.1784529300000">
 <link rel="stylesheet" href="./host/openshop-color-panel.css">
 <script src="./vendor/fabric-5.3.1.min.js"></script>
 <script src="./vendor/ag-psd-22.0.2.bundle.js"></script>
@@ -1486,7 +1486,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <input type="file" id="project-input" accept=".json" style="display:none" onchange="OS.handleProjectOpen(event)">
 
 <script src="./host/openshop-i18n.js"></script>
-<script src="./host/openshop-writing-mode.js"></script>
+<script src="./host/openshop-writing-mode.js?v=2026.07.20.1784529300000"></script>
 <script src="./locales/zh-CN.js"></script>
 <script src="./host/openshop-pixel-fill.js"></script>
 <script src="./host/openshop-desktop-input.js"></script>
@@ -3371,7 +3371,7 @@ self.onmessage = function(e) {
                 hstarWritingMode:this.state.textWritingMode,
             });
             this.canvas.add(text); this._createObjectLayer(text, text.text);
-            this.canvas.setActiveObject(text); text.enterEditing(); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
+            this.canvas.setActiveObject(text); text.enterEditing(opt.e); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
         }
         if (tool==='fill') {
             const t=opt.target;
@@ -10220,13 +10220,14 @@ window.addEventListener('DOMContentLoaded', () => OS.init());
 <script src="./host/openshop-color-panel.js"></script>
 <script src="./host/openshop-update-scheduler.js"></script>
 <script src="./host/openshop-snap-engine.js"></script>
-<script src="./host/openshop-protocol.js?v=2026.07.15.1784120375"></script>
-<script src="./host/openshop-project-adapter.js?v=2026.07.15.1784123441"></script>
-<script src="./host/openshop-host-runtime.js?v=2026.07.15.1784120375"></script>
+<script src="./host/openshop-protocol.js?v=2026.07.20.1784529300000"></script>
+<script src="./host/openshop-project-adapter.js?v=2026.07.20.1784529300000"></script>
+<script src="./host/openshop-export-service.js?v=2026.07.20.1784529300000"></script>
+<script src="./host/openshop-host-runtime.js?v=2026.07.20.1784529300000"></script>
 <script src="./host/openshop-ai-client.js"></script>
 <script src="./host/openshop-font-catalog.js"></script>
 <script src="./host/openshop-text-properties.js"></script>
-<script src="./host/openshop-text-tools.js?v=2026.07.17.1784263000"></script>
+<script src="./host/openshop-text-tools.js?v=2026.07.20.1784529300000"></script>
 <script src="./host/openshop-reference-manager.js"></script>
 <script src="./host/openshop-generative-client.js"></script>
 <script src="./host/openshop-generative-tools.js"></script>

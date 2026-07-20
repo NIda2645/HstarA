@@ -12,6 +12,8 @@ const buildScript = readFileSync(resolve(integrationRoot, 'scripts', 'build-hsta
 
 describe('Hstar OpenShop offline runtime', () => {
   it('uses only local browser runtime dependencies', () => {
+    const runtimeRevision = html.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
+    expect(runtimeRevision).toBeTruthy();
     expect(html).toContain('./vendor/fabric-5.3.1.min.js');
     expect(html).toContain('./vendor/ag-psd-22.0.2.bundle.js');
     expect(html).toContain('./vendor/jspdf-4.2.1.umd.min.js');
@@ -24,8 +26,8 @@ describe('Hstar OpenShop offline runtime', () => {
     expect(html).toContain('<link rel="stylesheet" href="./host/openshop-text-properties.css">');
     expect(html).toContain('<script src="./host/openshop-text-properties.js"></script>');
     expect(html).toContain('HstarOpenShopTextProperties.createController');
-    expect(html).toContain('<link rel="stylesheet" href="./host/openshop-writing-mode.css">');
-    expect(html).toContain('<script src="./host/openshop-writing-mode.js"></script>');
+    expect(html).toContain(`<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=${runtimeRevision}">`);
+    expect(html).toContain(`<script src="./host/openshop-writing-mode.js?v=${runtimeRevision}"></script>`);
     expect(html.indexOf('./host/openshop-writing-mode.js'))
       .toBeLessThan(html.indexOf('./host/openshop-text-tools.js'));
     expect(html).toContain('<script src="./host/openshop-canvas-sampler.js"></script>');
@@ -78,8 +80,9 @@ describe('Hstar OpenShop offline runtime', () => {
     if(!available) return;
 
     const staticHtml = readFileSync(resolve(staticRoot, 'index.html'), 'utf8');
-    expect(staticHtml).toContain('<link rel="stylesheet" href="./host/openshop-writing-mode.css">');
-    expect(staticHtml).toContain('<script src="./host/openshop-writing-mode.js"></script>');
+    const runtimeRevision = html.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
+    expect(staticHtml).toContain(`<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=${runtimeRevision}">`);
+    expect(staticHtml).toContain(`<script src="./host/openshop-writing-mode.js?v=${runtimeRevision}"></script>`);
     expect(staticHtml.indexOf('./host/openshop-writing-mode.js'))
       .toBeLessThan(staticHtml.indexOf('./host/openshop-text-tools.js'));
     files.forEach(file => {

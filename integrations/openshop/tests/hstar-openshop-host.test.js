@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const protocolPath = resolve(testDir, '..', 'host', 'openshop-protocol.js');
 const hostPath = resolve(testDir, '..', '..', '..', 'static', 'js', 'openshop-host.js');
+const shellPath = resolve(testDir, '..', '..', '..', 'static', 'index.html');
 
 async function mountHost() {
   delete window.HstarOpenShopHost;
@@ -79,6 +80,23 @@ function dispatchProjectChanged(host, frame, requestId, reason = 'sources-synchr
 describe('Hstar OpenShop host page visibility', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('uses one current runtime revision for the host script and editor iframe', async () => {
+    const hostSource = readFileSync(hostPath, 'utf8');
+    const shellSource = readFileSync(shellPath, 'utf8');
+    const revision = hostSource.match(/OPENSHOP_RUNTIME_REVISION\s*=\s*'([^']+)'/)?.[1];
+    expect(revision).toMatch(/^\d{4}\.\d{2}\.\d{2}\.[0-9.]+$/);
+    expect(shellSource).toContain(`/static/js/openshop-host.js?v=${revision}`);
+
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1', projectId:'project-1',
+      projectName:'Layered text', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
+    });
+
+    expect(document.querySelector('iframe.openshop-session-frame').getAttribute('src'))
+      .toBe(`/static/openshop/index.html?v=${revision}`);
   });
 
   it('hides the editor without interrupting its session or background-task iframe', async () => {

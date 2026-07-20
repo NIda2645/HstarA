@@ -339,3 +339,79 @@ for (const viewport of [{width:1440, height:1000}, {width:3840, height:2160}]) {
     expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
   });
 }
+
+test('offers only horizontal and vertical text tools and creates real text layers', async ({page}) => {
+  await page.setViewportSize({width:1024, height:720});
+  await openPreparedEditor(page);
+
+  const face = page.locator('#toolbar > .tool-group[data-group="text"] > .tool-btn');
+  await expect(face).toHaveCount(1);
+  await face.click();
+
+  const flyout = page.locator('#flyout-host .tool-flyout').filter({
+    has:page.locator('.tool-btn[data-tool="text-vertical"]'),
+  });
+  await expect(flyout).toHaveCount(1);
+  await expect(flyout).toBeVisible();
+  const rows = flyout.locator(':scope > .tool-btn[data-tool]');
+  await expect(rows).toHaveCount(2);
+  expect(await rows.evaluateAll(buttons => buttons.map(button => ({
+    tool:button.dataset.tool,
+    label:button.querySelector('.tool-flyout-label')?.textContent?.trim(),
+  })))).toEqual([
+    {tool:'text-horizontal', label:'横排文字工具'},
+    {tool:'text-vertical', label:'直排文字工具'},
+  ]);
+  expect((await flyout.textContent()).includes('蒙版')).toBe(false);
+  const flyoutBox = await flyout.boundingBox();
+  expect(flyoutBox.x).toBeGreaterThanOrEqual(0);
+  expect(flyoutBox.y).toBeGreaterThanOrEqual(0);
+  expect(flyoutBox.x + flyoutBox.width).toBeLessThanOrEqual(1024);
+  expect(flyoutBox.y + flyoutBox.height).toBeLessThanOrEqual(720);
+
+  await flyout.locator('.tool-btn[data-tool="text-vertical"]').click();
+  const upperCanvas = page.locator('.upper-canvas');
+  await expect(upperCanvas).toHaveCount(1);
+  const initialLayerCount = await page.evaluate(() => OS.layers.length);
+  await upperCanvas.click({position:{x:240, y:180}});
+
+  const verticalEditor = page.locator('textarea[data-hstar-vertical-editor]');
+  await expect(verticalEditor).toHaveCount(1);
+  await verticalEditor.fill('甲乙\n丙丁');
+  await verticalEditor.press('NumpadEnter');
+  const verticalState = await page.evaluate(() => {
+    const object = OS.canvas.getActiveObject();
+    return {
+      layerCount:OS.layers.length,
+      type:object?.type,
+      text:object?.text,
+      writingMode:object?.hstarWritingMode,
+      columns:object?._hstarVerticalLayout?.columns,
+    };
+  });
+  expect(verticalState).toEqual({
+    layerCount:initialLayerCount + 1,
+    type:'hstar-vertical-text',
+    text:'甲乙\n丙丁',
+    writingMode:'vertical',
+    columns:[['甲', '乙'], ['丙', '丁']],
+  });
+
+  await face.click();
+  await expect(flyout).toBeVisible();
+  await flyout.locator('.tool-btn[data-tool="text-horizontal"]').click();
+  await upperCanvas.click({position:{x:480, y:180}});
+  const horizontalState = await page.evaluate(() => {
+    const object = OS.canvas.getActiveObject();
+    return {
+      layerCount:OS.layers.length,
+      type:object?.type,
+      writingMode:object?.hstarWritingMode,
+    };
+  });
+  expect(horizontalState).toEqual({
+    layerCount:initialLayerCount + 2,
+    type:'i-text',
+    writingMode:'horizontal',
+  });
+});

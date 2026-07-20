@@ -976,6 +976,26 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(vertical.isEditing).toBe(false);
   });
 
+  it('survives the canvas focus default action after pointer-based editing starts', () => {
+    vi.useFakeTimers();
+    try {
+      const fabric = createFabricMock();
+      const vertical = runtime.createTextObject(fabric, '甲乙', {hstarWritingMode:'vertical'});
+      attachEditingCanvas(vertical);
+
+      vertical.enterEditing(new MouseEvent('mousedown'));
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.dispatchEvent(new FocusEvent('blur'));
+
+      expect(vertical.isEditing).toBe(true);
+      expect(editor.style.display).toBe('block');
+      vi.runAllTimers();
+      expect(document.activeElement).toBe(editor);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses minimum editor dimensions when canvas and object geometry are unavailable', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, '', {hstarWritingMode:'vertical', fontSize:0});
