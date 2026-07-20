@@ -73,6 +73,20 @@ describe('OpenShop desktop input foundation', () => {
     controller.destroy();
   });
 
+  it('defines exactly two text flyout rows without mask tools', () => {
+    const source = new DOMParser().parseFromString(readFileSync(indexPath, 'utf8'), 'text/html');
+    const group = source.querySelector('.tool-group[data-group="text"]');
+    const rows = [...group.querySelectorAll(':scope > .tool-flyout > .tool-btn')];
+
+    expect(rows.map(row => row.dataset.tool)).toEqual(['text-horizontal', 'text-vertical']);
+    expect(rows).toHaveLength(2);
+    expect(group.querySelector('[data-tool*="mask"]')).toBeNull();
+    expect(rows.map(row => row.querySelector('.tool-flyout-label')?.textContent.trim())).toEqual([
+      '横排文字工具', '直排文字工具',
+    ]);
+    expect(rows.map(row => row.querySelector('.tool-flyout-shortcut')?.textContent.trim())).toEqual(['T', 'T']);
+  });
+
   it('defines Photoshop tool cycles from one registry', () => {
     const desktop = loadDesktopInput();
 
@@ -80,9 +94,31 @@ describe('OpenShop desktop input foundation', () => {
     expect(desktop.toolCycleForKey('U')).toEqual([
       'rect', 'circle', 'triangle', 'line', 'arrow', 'polygon', 'star',
     ]);
+    expect(desktop.toolCycleForKey('t')).toEqual(['text-horizontal', 'text-vertical']);
     expect(desktop.toolShortcut('line')).toBe('U');
     expect(desktop.toolShortcut('lasso')).toBe('L');
     expect(desktop.toolShortcut('note')).toBe('I');
+  });
+
+  it('selects the current text tool with T and cycles it with Shift+T', () => {
+    const desktop = loadDesktopInput();
+
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'t'}),
+      {currentTool:'brush', textWritingMode:'vertical'},
+    )).toEqual({command:'cycle-tool', tool:'text-horizontal'});
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'t', shiftKey:true}),
+      {currentTool:'text-horizontal', textWritingMode:'vertical'},
+    )).toEqual({command:'cycle-tool', tool:'text-vertical'});
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'T', shiftKey:true}),
+      {currentTool:'text-horizontal', textWritingMode:'horizontal'},
+    )).toEqual({command:'cycle-tool', tool:'text-vertical'});
+    expect(desktop.resolveShortcut(
+      new KeyboardEvent('keydown', {key:'t'}),
+      {currentTool:'text-horizontal', textWritingMode:'vertical'},
+    )).toEqual({command:'cycle-tool', tool:'text-horizontal'});
   });
 
   it('supports plain, Ctrl, Shift, and Ctrl+Shift layer selection', () => {

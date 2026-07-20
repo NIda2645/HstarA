@@ -77,6 +77,9 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 .tool-flyout.show{display:flex;flex-direction:column;gap:2px}
 .tool-flyout .tool-btn{width:32px;height:32px}
 .tool-flyout .tool-btn svg{width:16px;height:16px}
+.tool-flyout .tool-btn.tool-flyout-row{width:190px;grid-template-columns:20px minmax(0,1fr) 16px;gap:8px;padding:0 8px;text-align:left}
+.tool-flyout-row .tool-flyout-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text-primary)}
+.tool-flyout-row .tool-flyout-shortcut{font-size:11px;color:var(--text-muted);text-align:right}
 .tool-flyout .tool-btn[data-tip]::after{left:calc(100% + 6px)}
 
 /* === TOOL OPTIONS === */
@@ -958,7 +961,13 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         </div>
     </div>
     <button class="tool-btn" data-tool="pen" data-tip="Pen Tool" onclick="OS.setTool('pen')" data-i18n-tip="Pen Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
-    <button class="tool-btn" data-tool="text" data-tip="Text Tool" onclick="OS.setTool('text')" data-i18n-tip="Text Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
+    <div class="tool-group" data-group="text">
+        <button class="tool-btn" data-tool="text-horizontal" data-tip="Horizontal Type Tool" data-i18n-tip="Horizontal Type Tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
+        <div class="tool-flyout">
+            <button class="tool-btn tool-flyout-row" data-tool="text-horizontal" data-tip="Horizontal Type Tool" data-i18n-tip="Horizontal Type Tool" onclick="OS.flyoutSelect(this,'text')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg><span class="tool-flyout-label" data-i18n="Horizontal Type Tool">横排文字工具</span><span class="tool-flyout-shortcut" aria-hidden="true">T</span></button>
+            <button class="tool-btn tool-flyout-row" data-tool="text-vertical" data-tip="Vertical Type Tool" data-i18n-tip="Vertical Type Tool" onclick="OS.flyoutSelect(this,'text')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="4" x2="16" y2="4"/><line x1="11" y1="4" x2="11" y2="20"/><path d="M17 7v10m-3-3 3 3 3-3"/></svg><span class="tool-flyout-label" data-i18n="Vertical Type Tool">直排文字工具</span><span class="tool-flyout-shortcut" aria-hidden="true">T</span></button>
+        </div>
+    </div>
     <div class="tool-sep"></div>
     <div class="tool-group" data-group="fillgrp">
         <button class="tool-btn" data-tool="gradient" data-tip="Gradient" onclick="OS.setTool('gradient')" data-i18n-tip="Gradient"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="21" x2="21" y2="3" stroke-width="1" opacity=".4"/></svg></button>
@@ -2903,7 +2912,9 @@ self.onmessage = function(e) {
         const face = grp.querySelector(':scope > .tool-btn');
         const tool = btn.dataset.tool;
         // Swap the face button icon + data
-        face.innerHTML = btn.innerHTML;
+        const icon = btn.querySelector(':scope > svg');
+        if (btn.classList.contains('tool-flyout-row') && icon) face.replaceChildren(icon.cloneNode(true));
+        else face.innerHTML = btn.innerHTML;
         face.dataset.tool = tool;
         face.dataset.tip = btn.dataset.tip;
         face.dataset.i18nTip = btn.dataset.i18nTip || btn.dataset.tip;
@@ -2936,7 +2947,7 @@ self.onmessage = function(e) {
     _toolInteractionProfile(tool) {
         if (tool === 'select') return 'select';
         if (tool === 'fill' || tool === 'eyedropper') return 'target';
-        if (tool === 'text') return 'text';
+        if (tool === 'text-horizontal' || tool === 'text-vertical') return 'text';
         return 'none';
     },
     _isEditableTextObject(object) {
@@ -2970,6 +2981,7 @@ self.onmessage = function(e) {
 
 
     setTool(tool, {forceInteraction = false} = {}) {
+        if (tool === 'text') tool = 'text-horizontal';
         this._toolTooltipController?.hide();
         const prevTool = this.state.tool;
         if (prevTool !== tool && this._rasterTools?.getState?.().active) {
@@ -3042,7 +3054,8 @@ self.onmessage = function(e) {
             case 'polygon': showOption('opt-polygon'); break;
             case 'star': showOption('opt-star'); break;
             case 'pen': showOption('opt-pen'); document.getElementById('pen-overlay').style.display='block'; c.defaultCursor='crosshair'; break;
-            case 'text': c.defaultCursor='text'; showOption('opt-text'); break;
+            case 'text-horizontal': case 'text-vertical':
+                c.defaultCursor='text'; c.hoverCursor='text'; showOption('opt-text'); break;
             case 'gradient': showOption('opt-gradient'); break;
             case 'pattern': showOption('opt-pattern'); break;
             case 'fill': break;
