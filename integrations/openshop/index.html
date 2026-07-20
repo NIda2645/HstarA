@@ -1628,6 +1628,7 @@ const OS = {
         brushSize: 8, brushOpacity: 100, brushHardness: 100, brushPreset: 'round',
         shapeFill: '#6c8cff', shapeStroke: '#ffffff', shapeStrokeWidth: 2, shapeFilled: true,
         textFont: 'Microsoft YaHei UI', textSize: 24, textColor: '#000000', textBold: false, textItalic: false,
+        textWritingMode: 'horizontal',
         gradFrom: '#6c8cff', gradTo: '#000000', gradType: 'linear',
         patternType: 'checkerboard', patternScale: 20, patternColor: '#6c8cff',
         cloneSize: 20, sprayDensity: 30, sprayWidth: 30, healingSize: 15,
@@ -1646,9 +1647,9 @@ const OS = {
         const topLevel = window.self === window.top;
         if (this._persistenceMode !== 'embedded-hstara') {
             this._persistenceMode = topLevel ? 'standalone' : 'embedded-pending';
-        window.HstarOpenShopWritingMode.registerFabricClass(fabric);
         }
         this._initI18n();
+        window.HstarOpenShopWritingMode.registerFabricClass(fabric);
         this._panelSplitter?.destroy?.();
         this._panelSplitter = window.HstarOpenShopPanelSplitter.createController({
             documentRef:document,
@@ -1682,14 +1683,14 @@ const OS = {
         this.canvas.on('object:modified', () => { this.saveHistory('Object Modified'); this.drawRulers(); });
         this.canvas.on('selection:created', event => {
             this._syncLayerSelectionFromCanvasSelection(event);
+            this._syncTextWritingModeFromSelection(event);
             this.updateStatus();
         });
-            this._syncTextWritingModeFromSelection(event);
         this.canvas.on('selection:updated', event => {
             this._syncLayerSelectionFromCanvasSelection(event);
+            this._syncTextWritingModeFromSelection(event);
             this.updateStatus();
         });
-            this._syncTextWritingModeFromSelection(event);
         this.canvas.on('selection:cleared', () => this.updateStatus());
         this.canvas.on('mouse:wheel', opt => this.onMouseWheel(opt));
         this.canvas.on('path:created', e => {
@@ -2454,6 +2455,37 @@ self.onmessage = function(e) {
             object?.type === 'image' && object.visible !== false
         )) || null;
     },
+    setTextWritingMode(mode, {convertSelection = true, recordHistory = true} = {}) {
+        const writingMode = mode === 'vertical' ? 'vertical' : 'horizontal';
+        this.state.textWritingMode = writingMode;
+        this._syncTextToolFace(writingMode);
+        const source = this.canvas?.getActiveObject?.();
+        if (!convertSelection || !this._isEditableTextObject(source)) return source || null;
+        if (window.HstarOpenShopWritingMode.writingModeFor(source) === writingMode) return source;
+
+        const layerIndex = this.layers.findIndex(layer => layer.objects?.includes(source));
+        const objectIndex = layerIndex >= 0 ? this.layers[layerIndex].objects.indexOf(source) : -1;
+        const canvasIndex = this.canvas.getObjects?.().indexOf(source) ?? -1;
+        const wasEditing = Boolean(source.isEditing);
+        const converted = window.HstarOpenShopWritingMode.convertTextObject(fabric, source, writingMode);
+
+        if (layerIndex >= 0 && objectIndex >= 0) this.layers[layerIndex].objects[objectIndex] = converted;
+        this.canvas.remove(source);
+        if (canvasIndex >= 0 && typeof this.canvas.insertAt === 'function') {
+            this.canvas.insertAt(converted, canvasIndex, false);
+        } else {
+            this.canvas.add(converted);
+            if (canvasIndex >= 0) this.canvas.moveTo?.(converted, canvasIndex);
+        }
+        this.canvas.setActiveObject(converted);
+        if (wasEditing) converted.enterEditing?.();
+        this.canvas.requestRenderAll?.();
+        this._markToolObjectsDirty();
+        this._syncTextToolFace(writingMode);
+        if (recordHistory) this.saveHistory('Convert Text Writing Mode');
+        this.updateLayersPanel();
+        return converted;
+    },
     _refreshLayerSelectionPresentation() {
         document.querySelectorAll('#layers-list .layer-item[data-layer-index]').forEach(row => {
             const index = Number(row.dataset.layerIndex);
@@ -2556,37 +2588,6 @@ self.onmessage = function(e) {
         const insertionIndex = Math.max(...sources.map(layer => this.layers.indexOf(layer))) + 1;
         this.layers.splice(insertionIndex, 0, ...copies);
         const cloneEntries = sources.flatMap((source, sourceIndex) => (
-    setTextWritingMode(mode, {convertSelection = true, recordHistory = true} = {}) {
-        const writingMode = mode === 'vertical' ? 'vertical' : 'horizontal';
-        this.state.textWritingMode = writingMode;
-        this._syncTextToolFace(writingMode);
-        const source = this.canvas?.getActiveObject?.();
-        if (!convertSelection || !this._isEditableTextObject(source)) return source || null;
-        if (window.HstarOpenShopWritingMode.writingModeFor(source) === writingMode) return source;
-
-        const layerIndex = this.layers.findIndex(layer => layer.objects?.includes(source));
-        const objectIndex = layerIndex >= 0 ? this.layers[layerIndex].objects.indexOf(source) : -1;
-        const canvasIndex = this.canvas.getObjects?.().indexOf(source) ?? -1;
-        const wasEditing = Boolean(source.isEditing);
-        const converted = window.HstarOpenShopWritingMode.convertTextObject(fabric, source, writingMode);
-
-        if (layerIndex >= 0 && objectIndex >= 0) this.layers[layerIndex].objects[objectIndex] = converted;
-        this.canvas.remove(source);
-        if (canvasIndex >= 0 && typeof this.canvas.insertAt === 'function') {
-            this.canvas.insertAt(converted, canvasIndex, false);
-        } else {
-            this.canvas.add(converted);
-            if (canvasIndex >= 0) this.canvas.moveTo?.(converted, canvasIndex);
-        }
-        this.canvas.setActiveObject(converted);
-        if (wasEditing) converted.enterEditing?.();
-        this.canvas.requestRenderAll?.();
-        this._markToolObjectsDirty();
-        this._syncTextToolFace(writingMode);
-        if (recordHistory) this.saveHistory('Convert Text Writing Mode');
-        this.updateLayersPanel();
-        return converted;
-    },
             source.objects
                 .filter(object => object.name !== '__boundary__')
                 .map(object => ({object, copy:copies[sourceIndex]}))
@@ -3117,6 +3118,9 @@ self.onmessage = function(e) {
 
     setTool(tool, {forceInteraction = false} = {}) {
         if (tool === 'text') tool = 'text-horizontal';
+        if (tool === 'text-horizontal' || tool === 'text-vertical') {
+            this.state.textWritingMode = tool === 'text-vertical' ? 'vertical' : 'horizontal';
+        }
         this._toolTooltipController?.hide();
         const prevTool = this.state.tool;
         if (prevTool !== tool && this._rasterTools?.getState?.().active) {
@@ -3128,6 +3132,7 @@ self.onmessage = function(e) {
         runtime.activeButtons.forEach(button => button.classList.remove('active'));
         runtime.activeButtons = runtime.buttons.filter(button => button.dataset.tool === tool);
         runtime.activeButtons.forEach(button => button.classList.add('active'));
+        if (tool === 'text-horizontal' || tool === 'text-vertical') this._syncTextToolFace();
         if (runtime.activeOption) runtime.activeOption.style.display = 'none';
         runtime.activeOption = null;
         const showOption = id => {
