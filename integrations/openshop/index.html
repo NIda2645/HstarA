@@ -12,6 +12,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https://huggingface.co https://*.hf.co blob:; worker-src 'self' blob:; frame-src 'self';">
 <title>OpenShop v0.19.1 — Online Image Editor</title>
 <link rel="stylesheet" href="./host/openshop-text-properties.css">
+<link rel="stylesheet" href="./host/openshop-writing-mode.css">
 <link rel="stylesheet" href="./host/openshop-color-panel.css">
 <script src="./vendor/fabric-5.3.1.min.js"></script>
 <script src="./vendor/ag-psd-22.0.2.bundle.js"></script>
@@ -1485,6 +1486,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <input type="file" id="project-input" accept=".json" style="display:none" onchange="OS.handleProjectOpen(event)">
 
 <script src="./host/openshop-i18n.js"></script>
+<script src="./host/openshop-writing-mode.js"></script>
 <script src="./locales/zh-CN.js"></script>
 <script src="./host/openshop-pixel-fill.js"></script>
 <script src="./host/openshop-desktop-input.js"></script>
@@ -1515,6 +1517,7 @@ const OS = {
         'hstarOcrSourceLayerId',
         'hstarOcrBlockId',
         'hstarOcrQuad',
+        'hstarWritingMode',
         'hstarOcrVisualProfile',
         'hstarOcrOriginalText',
         'hstarArtFontRequestGeneration',
@@ -1643,6 +1646,7 @@ const OS = {
         const topLevel = window.self === window.top;
         if (this._persistenceMode !== 'embedded-hstara') {
             this._persistenceMode = topLevel ? 'standalone' : 'embedded-pending';
+        window.HstarOpenShopWritingMode.registerFabricClass(fabric);
         }
         this._initI18n();
         this._panelSplitter?.destroy?.();
@@ -1680,10 +1684,12 @@ const OS = {
             this._syncLayerSelectionFromCanvasSelection(event);
             this.updateStatus();
         });
+            this._syncTextWritingModeFromSelection(event);
         this.canvas.on('selection:updated', event => {
             this._syncLayerSelectionFromCanvasSelection(event);
             this.updateStatus();
         });
+            this._syncTextWritingModeFromSelection(event);
         this.canvas.on('selection:cleared', () => this.updateStatus());
         this.canvas.on('mouse:wheel', opt => this.onMouseWheel(opt));
         this.canvas.on('path:created', e => {
@@ -2550,6 +2556,37 @@ self.onmessage = function(e) {
         const insertionIndex = Math.max(...sources.map(layer => this.layers.indexOf(layer))) + 1;
         this.layers.splice(insertionIndex, 0, ...copies);
         const cloneEntries = sources.flatMap((source, sourceIndex) => (
+    setTextWritingMode(mode, {convertSelection = true, recordHistory = true} = {}) {
+        const writingMode = mode === 'vertical' ? 'vertical' : 'horizontal';
+        this.state.textWritingMode = writingMode;
+        this._syncTextToolFace(writingMode);
+        const source = this.canvas?.getActiveObject?.();
+        if (!convertSelection || !this._isEditableTextObject(source)) return source || null;
+        if (window.HstarOpenShopWritingMode.writingModeFor(source) === writingMode) return source;
+
+        const layerIndex = this.layers.findIndex(layer => layer.objects?.includes(source));
+        const objectIndex = layerIndex >= 0 ? this.layers[layerIndex].objects.indexOf(source) : -1;
+        const canvasIndex = this.canvas.getObjects?.().indexOf(source) ?? -1;
+        const wasEditing = Boolean(source.isEditing);
+        const converted = window.HstarOpenShopWritingMode.convertTextObject(fabric, source, writingMode);
+
+        if (layerIndex >= 0 && objectIndex >= 0) this.layers[layerIndex].objects[objectIndex] = converted;
+        this.canvas.remove(source);
+        if (canvasIndex >= 0 && typeof this.canvas.insertAt === 'function') {
+            this.canvas.insertAt(converted, canvasIndex, false);
+        } else {
+            this.canvas.add(converted);
+            if (canvasIndex >= 0) this.canvas.moveTo?.(converted, canvasIndex);
+        }
+        this.canvas.setActiveObject(converted);
+        if (wasEditing) converted.enterEditing?.();
+        this.canvas.requestRenderAll?.();
+        this._markToolObjectsDirty();
+        this._syncTextToolFace(writingMode);
+        if (recordHistory) this.saveHistory('Convert Text Writing Mode');
+        this.updateLayersPanel();
+        return converted;
+    },
             source.objects
                 .filter(object => object.name !== '__boundary__')
                 .map(object => ({object, copy:copies[sourceIndex]}))
@@ -3022,7 +3059,34 @@ self.onmessage = function(e) {
         return 'none';
     },
     _isEditableTextObject(object) {
-        return ['text', 'i-text', 'textbox'].includes(String(object?.type || '').toLowerCase());
+        return ['text', 'i-text', 'textbox', 'hstar-vertical-text'].includes(String(object?.type || '').toLowerCase());
+    },
+    _syncTextToolFace(mode = this.state.textWritingMode) {
+        const tool = mode === 'vertical' ? 'text-vertical' : 'text-horizontal';
+        const group = document.querySelector('.tool-group[data-group="text"]');
+        const face = group?.querySelector(':scope > .tool-btn');
+        const flyout = group?.querySelector('.tool-flyout')
+            || [...document.querySelectorAll('#flyout-host .tool-flyout')]
+                .find(candidate => candidate._parentGroup === group);
+        const rows = [...(flyout?.querySelectorAll(':scope > .tool-btn[data-tool]') || [])];
+        const selectedRow = rows.find(row => row.dataset.tool === tool);
+        rows.forEach(row => row.classList.toggle('active', row === selectedRow));
+        if (!face || !selectedRow) return;
+        const icon = selectedRow.querySelector(':scope > svg');
+        if (icon) face.replaceChildren(icon.cloneNode(true));
+        face.dataset.tool = tool;
+        face.dataset.tip = this._t(selectedRow.dataset.i18nTip || selectedRow.dataset.tip || '');
+        face.dataset.i18nTip = selectedRow.dataset.i18nTip || selectedRow.dataset.tip || '';
+        face.classList.toggle('active', this.state.tool === tool);
+        face.setAttribute('aria-label', window.HstarOpenShopDesktopInput.localizedToolTip(face));
+    },
+    _syncTextWritingModeFromSelection(event = {}) {
+        const selected = Array.isArray(event.selected) ? event.selected : [];
+        const candidate = selected[0] || event.target || this.canvas?.getActiveObject?.();
+        if (!this._isEditableTextObject(candidate)) return false;
+        this.state.textWritingMode = window.HstarOpenShopWritingMode.writingModeFor(candidate);
+        this._syncTextToolFace();
+        return true;
     },
     _applyToolInteractionState(tool, {force = false} = {}) {
         const runtime = this._toolRuntime || this._initToolRuntimeCache();
@@ -3292,7 +3356,12 @@ self.onmessage = function(e) {
                 this.canvas.requestRenderAll?.();
                 return;
             }
-            const text = new fabric.IText('Type here', { left:ptr.x, top:ptr.y, fontFamily:this.state.textFont, fontSize:this.state.textSize, fill:this.state.textColor, editable:true, fontWeight:this.state.textBold?'bold':'normal', fontStyle:this.state.textItalic?'italic':'normal' });
+            const text = window.HstarOpenShopWritingMode.createTextObject(fabric, 'Type here', {
+                left:ptr.x, top:ptr.y, fontFamily:this.state.textFont, fontSize:this.state.textSize,
+                fill:this.state.textColor, editable:true, fontWeight:this.state.textBold?'bold':'normal',
+                fontStyle:this.state.textItalic?'italic':'normal',
+                hstarWritingMode:this.state.textWritingMode,
+            });
             this.canvas.add(text); this._createObjectLayer(text, text.text);
             this.canvas.setActiveObject(text); text.enterEditing(); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
         }

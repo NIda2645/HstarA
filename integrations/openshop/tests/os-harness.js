@@ -14,6 +14,8 @@ const brushCursorPath = join(__dirname, '..', 'host', 'openshop-brush-cursor.js'
 const pixelFillPath = join(__dirname, '..', 'host', 'openshop-pixel-fill.js');
 const selectionEnginePath = join(__dirname, '..', 'host', 'openshop-selection-engine.js');
 const updateSchedulerPath = join(__dirname, '..', 'host', 'openshop-update-scheduler.js');
+const exportServicePath = join(__dirname, '..', 'host', 'openshop-export-service.js');
+const writingModePath = join(__dirname, '..', 'host', 'openshop-writing-mode.js');
 
 export function loadOpenShop() {
   delete globalThis.OS;
@@ -28,6 +30,9 @@ export function loadOpenShop() {
   new Function(readFileSync(pixelFillPath, 'utf8'))();
   new Function(readFileSync(selectionEnginePath, 'utf8'))();
   new Function(readFileSync(updateSchedulerPath, 'utf8'))();
+  new Function(readFileSync(exportServicePath, 'utf8'))();
+  new Function(readFileSync(writingModePath, 'utf8'))();
+  if (globalThis.fabric) window.HstarOpenShopWritingMode.registerFabricClass(globalThis.fabric);
   window.HstarOpenShopI18n.setLocale('en-US');
   const html = readFileSync(indexPath, 'utf8');
   const start = html.indexOf('const OS = {');
@@ -44,6 +49,13 @@ export function loadOpenShop() {
   return globalThis.OS;
 }
 
+export function mountOpenShopToolbar() {
+  const source = new DOMParser().parseFromString(readFileSync(indexPath, 'utf8'), 'text/html');
+  const toolbar = document.importNode(source.getElementById('toolbar'), true);
+  document.getElementById('toolbar')?.replaceWith(toolbar);
+  return toolbar;
+}
+
 export function installFabricMock() {
   class Brush {
     constructor(canvas) {
@@ -53,8 +65,38 @@ export function installFabricMock() {
     }
   }
 
-  class IText {
+  class FabricObject {
+    initialize(options = {}) {
+      Object.assign(this, options);
+      return this;
+    }
+
+    _set(key, value) {
+      this[key] = value;
+      return this;
+    }
+
+    set(values, value) {
+      if (typeof values === 'string') return this._set(values, value);
+      Object.entries(values || {}).forEach(([key, item]) => this._set(key, item));
+      return this;
+    }
+
+    setCoords() { return this; }
+
+    toObject(extra = []) {
+      const included = Array.isArray(extra) ? extra : [];
+      const output = {};
+      [...new Set([...Object.keys(this), ...included])].forEach(key => {
+        if (typeof this[key] !== 'function' && this[key] !== undefined) output[key] = this[key];
+      });
+      return output;
+    }
+  }
+
+  class IText extends FabricObject {
     constructor(text, options = {}) {
+      super();
       this.type = 'i-text';
       this.text = text;
       this.isEditing = false;
@@ -64,6 +106,7 @@ export function installFabricMock() {
   }
 
   globalThis.fabric = {
+    Object: FabricObject,
     util: {
       invertTransform(matrix) {
         const [a = 1, b = 0, c = 0, d = 1, e = 0, f = 0] = matrix || [];
@@ -96,7 +139,22 @@ export function installFabricMock() {
       forEachObject(callback) {
         this._objects.forEach(callback);
       }
+    },
+    Text: class extends FabricObject {}
+  };
+  globalThis.fabric.util.createClass = (Parent, methods) => {
+    class FabricSubclass extends Parent {
+      constructor(...args) {
+        super();
+        this.initialize(...args);
+      }
+
+      callSuper(method, ...args) {
+        return Parent.prototype[method].apply(this, args);
+      }
     }
+    Object.assign(FabricSubclass.prototype, methods);
+    return FabricSubclass;
   };
 }
 
@@ -118,6 +176,14 @@ export function createCanvasMock(initialObjects = []) {
     remove: vi.fn((object) => {
       const index = objects.indexOf(object);
       if (index >= 0) objects.splice(index, 1);
+    }),
+    insertAt: vi.fn((object, index) => {
+      objects.splice(index, 0, object);
+    }),
+    moveTo: vi.fn((object, index) => {
+      const current = objects.indexOf(object);
+      if (current >= 0) objects.splice(current, 1);
+      objects.splice(index, 0, object);
     }),
     renderAll: vi.fn(),
     requestRenderAll: vi.fn(),

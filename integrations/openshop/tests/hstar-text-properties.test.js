@@ -263,6 +263,25 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
+  it('recognizes a vertical text object and applies generic text attributes', async () => {
+    const {controller, canvas, textObject, editor} = createHarness();
+    textObject.type = 'hstar-vertical-text';
+    await controller.start();
+
+    canvas.fire('selection:created', {selected:[textObject]});
+    controller.applyProperty('fontSize', 30);
+    controller.applyProperty('fontFamily', 'Century Gothic');
+    controller.applyProperty('fill', '#123456');
+    controller.applyProperty('fontWeight', 700);
+
+    expect(textObject.set).toHaveBeenCalledWith(expect.objectContaining({fontSize:40}));
+    expect(textObject.set).toHaveBeenCalledWith(expect.objectContaining({fontFamily:'Century Gothic'}));
+    expect(textObject.set).toHaveBeenCalledWith(expect.objectContaining({fill:'#123456'}));
+    expect(textObject.set).toHaveBeenCalledWith(expect.objectContaining({fontWeight:700}));
+    expect(editor.saveHistory).toHaveBeenCalledTimes(4);
+    controller.destroy();
+  });
+
   it('uses separate Chinese and English-or-other font selectors with one shared listbox', async () => {
     const rows = createSectionedCatalogRows();
     const {controller, textObject} = createHarness({catalogRows:rows});
