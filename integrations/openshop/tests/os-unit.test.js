@@ -149,6 +149,27 @@ describe('OpenShop core object', () => {
     expect(document.activeElement).toBe(face);
 
     face.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true}));
+    rows[0].dispatchEvent(new KeyboardEvent('keydown', {key:'Tab', bubbles:true}));
+    const toolbarFaces = [...document.querySelectorAll('#toolbar > .tool-btn, #toolbar > .tool-group > .tool-btn')];
+    expect(flyout.classList.contains('show')).toBe(false);
+    expect(face.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(toolbarFaces[toolbarFaces.indexOf(face) + 1]);
+
+    face.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown', bubbles:true}));
+    rows[0].dispatchEvent(new KeyboardEvent('keydown', {key:'Tab', shiftKey:true, bubbles:true}));
+    expect(flyout.classList.contains('show')).toBe(false);
+    expect(document.activeElement).toBe(face);
+
+    face.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown', bubbles:true}));
+    rows[0].dispatchEvent(new FocusEvent('focusout', {bubbles:true, relatedTarget:face}));
+    expect(flyout.classList.contains('show')).toBe(true);
+    const external = document.createElement('button');
+    document.body.appendChild(external);
+    rows[0].dispatchEvent(new FocusEvent('focusout', {bubbles:true, relatedTarget:external}));
+    expect(flyout.classList.contains('show')).toBe(false);
+    expect(face.getAttribute('aria-expanded')).toBe('false');
+
+    face.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true}));
     OS.flyoutSelect(rows[1], 'text');
     expect(flyout.classList.contains('show')).toBe(false);
     expect(face.getAttribute('aria-expanded')).toBe('false');

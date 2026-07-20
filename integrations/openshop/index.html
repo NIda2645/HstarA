@@ -2843,6 +2843,13 @@ self.onmessage = function(e) {
                 face.setAttribute('aria-expanded', 'true');
                 if (focusFirst) rows[0]?.focus();
             };
+            const closeForTab = shiftKey => {
+                const faces = [...document.querySelectorAll('#toolbar > .tool-btn, #toolbar > .tool-group > .tool-btn')];
+                const faceIndex = faces.indexOf(face);
+                const nextFace = !shiftKey && faceIndex >= 0 ? faces[faceIndex + 1] || face : face;
+                this._closeAllFlyouts();
+                nextFace.focus();
+            };
             // Click toggles flyout
             face.addEventListener('click', e => {
                 e.preventDefault(); e.stopPropagation();
@@ -2866,6 +2873,11 @@ self.onmessage = function(e) {
                 openFlyout(true);
             }, true);
             flyout.addEventListener('keydown', e => {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    closeForTab(e.shiftKey);
+                    return;
+                }
                 if (e.key === 'Escape') {
                     e.preventDefault();
                     this._closeAllFlyouts();
@@ -2880,6 +2892,11 @@ self.onmessage = function(e) {
                     ? (current + 1) % rows.length
                     : (current - 1 + rows.length) % rows.length;
                 rows[next].focus();
+            });
+            flyout.addEventListener('focusout', e => {
+                const next = e.relatedTarget;
+                if (face.contains(next) || rows.some(row => row.contains(next))) return;
+                this._closeAllFlyouts();
             });
             face.removeAttribute('onclick');
         });
