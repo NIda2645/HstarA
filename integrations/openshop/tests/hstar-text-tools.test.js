@@ -2,9 +2,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { installFabricMock } from './os-harness.js';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const toolsPath = resolve(testDir, '..', 'host', 'openshop-text-tools.js');
+const writingModePath = resolve(testDir, '..', 'host', 'openshop-writing-mode.js');
 const editorHtmlPath = resolve(testDir, '..', 'index.html');
 const hostScriptPath = resolve(testDir, '..', '..', '..', 'static', 'js', 'openshop-host.js');
 
@@ -41,9 +43,9 @@ function createOcrBlock({id='ocr-race', text='Deferred OCR'} = {}) {
   };
 }
 
-function artVisualProfile() {
+function artVisualProfile(writingMode = 'horizontal') {
   return {
-    script:'en', dominantScript:'', fill:'#112233', alignment:'left', rotation:0,
+    writingMode, script:'en', dominantScript:'', fill:'#112233', alignment:'left', rotation:0,
     artistic:false, familyCandidates:['Arial'], size:40, weight:700, style:'normal',
     styleDescription:'painted title', letterSpacing:25, lineHeight:1.2,
     strokeColor:'#00000000', strokeWidth:0,
@@ -51,15 +53,19 @@ function artVisualProfile() {
   };
 }
 
-function addArtCarrier(harness, {layerId='text-layer-1', blockId='ocr-title', text='Edited title'} = {}) {
-  const object = new FakeIText(text, {
+function addArtCarrier(harness, {
+  layerId='text-layer-1', blockId='ocr-title', text='Edited title', writingMode='horizontal',
+} = {}) {
+  const TextClass = writingMode === 'vertical' ? FakeVerticalText : FakeIText;
+  const object = new TextClass(text, {
+    hstarWritingMode:writingMode,
     name:text,
     hstarLayerId:layerId,
     hstarOcrSourceAssetId:SOURCE_ASSET_ID,
     hstarOcrSourceLayerId:'layer-source',
     hstarOcrBlockId:blockId,
     hstarOcrQuad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
-    hstarOcrVisualProfile:artVisualProfile(),
+    hstarOcrVisualProfile:artVisualProfile(writingMode),
     hstarOcrOriginalText:'Original title',
     hstarArtFontRequestGeneration:0,
     visible:true,
@@ -355,7 +361,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     const editorHtml = readFileSync(editorHtmlPath, 'utf8');
     const hostScript = readFileSync(hostScriptPath, 'utf8');
     const textToolsVersion = editorHtml.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
-    const editorVersion = hostScript.match(/openshop\/index\.html\?v=([0-9.]+)/)?.[1];
+    const editorVersion = hostScript.match(/OPENSHOP_RUNTIME_REVISION\s*=\s*'([^']+)'/)?.[1];
     expect(textToolsVersion).toBeTruthy();
     expect(editorVersion).toBe(textToolsVersion);
   });
@@ -449,6 +455,31 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(sourceLayer.objects).toContain(sourceImage);
     expect(editor.saveHistory).toHaveBeenCalledWith('文字提取');
     expect(aiClient.createTask).toHaveBeenCalledTimes(1);
+    controller.destroy();
+  });
+
+  it('preserves vertical column newlines while reviewing and editing OCR text', async () => {
+    const block = {
+      ...createOcrBlock({id:'ocr-columns', text:'甲乙\n丙'}),
+      writingMode:'vertical',
+      quad:[{x:0.1,y:0.1},{x:0.2,y:0.1},{x:0.2,y:0.6},{x:0.1,y:0.6}],
+    };
+    const {controller} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks:[block]},
+      }},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const editor = document.querySelector('textarea[data-hstar-ocr-index="0"]');
+    expect(editor).not.toBeNull();
+    expect(editor.value).toBe('甲乙\n丙');
+
+    editor.value = '甲乙\n丙丁';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(controller.getState().reviewBlocks[0].text).toBe('甲乙\n丙丁');
     controller.destroy();
   });
 
@@ -600,6 +631,53 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(editor.activeLayerIdx).toBe(2);
     expect(fontManager.scanEditor).toHaveBeenCalledWith(editor);
     controller.destroy();
+  });
+
+  it('fits real multi-column HstarVerticalText objects without changing OCR newlines', async () => {
+    installFabricMock();
+    delete window.HstarOpenShopWritingMode;
+    await import(`${pathToFileURL(writingModePath).href}?integration=${Date.now()}-${Math.random()}`);
+    const realWritingModeRuntime = window.HstarOpenShopWritingMode;
+    const verticalText = '甲乙\n丙丁';
+    const block = {
+      id:'ocr-real-vertical', text:verticalText, language:'zh', script:'zh-hans',
+      writingMode:'vertical', confidence:0.98, lowConfidence:false,
+      quad:[{x:0.2,y:0.2},{x:0.32,y:0.2},{x:0.32,y:0.7},{x:0.2,y:0.7}],
+      font:{
+        familyCandidates:['Microsoft YaHei UI'], size:36, weight:700, style:'normal',
+        letterSpacing:30, lineHeight:1.2, strokeColor:'#123456', strokeWidth:1,
+        shadow:{color:'#00000080', blur:2, offsetX:1, offsetY:2},
+      },
+      color:'#445566', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+    };
+    const {controller} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks:[block]},
+      }},
+      controllerOptions:{writingModeRuntime:realWritingModeRuntime, fabricRef:globalThis.fabric},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const [layer] = await controller.applyTextExtraction();
+    const object = layer.objects[0];
+
+    expect(object).toBeInstanceOf(globalThis.fabric.HstarVerticalText);
+    expect(object).toMatchObject({
+      type:'hstar-vertical-text', hstarWritingMode:'vertical', text:verticalText,
+      left:384, top:216, angle:0, fontFamily:'Microsoft YaHei UI', fontWeight:700,
+      fill:'#445566', hstarOcrBlockId:'ocr-real-vertical',
+      hstarOcrOriginalText:verticalText, hstarOcrQuad:block.quad,
+    });
+    expect(object._hstarVerticalLayout.columns).toEqual([['甲', '乙'], ['丙', '丁']]);
+    expect(object.width).toBeGreaterThan(object.fontSize);
+    expect(object.height).toBeGreaterThan(object.fontSize);
+    expect(object.scaleX).toBeCloseTo(object.scaleY, 10);
+    expect(object.width * object.scaleX).toBeLessThanOrEqual(230.401);
+    expect(object.height * object.scaleY).toBeLessThanOrEqual(540.001);
+    expect(object.hstarOcrVisualProfile).toMatchObject({writingMode:'vertical'});
+    controller.destroy();
+    realWritingModeRuntime.destroy();
   });
 
   it('preflights every OCR font match before canvas mutation and leaves no partial text on failure', async () => {
@@ -1110,6 +1188,28 @@ describe('Hstar OpenShop multilingual text tools', () => {
     await controller.restorePendingArtTasks();
     expect(editor.layers).toHaveLength(3);
     expect(editor.saveHistory).toHaveBeenCalledOnce();
+    controller.destroy();
+  });
+
+  it('creates an artistic-font task from a vertical carrier without losing writing mode', async () => {
+    const harness = createHarness();
+    const {controller, aiClient, editor} = harness;
+    const {object} = addArtCarrier(harness, {
+      layerId:'vertical-text-layer', blockId:'ocr-vertical', text:'甲乙\n丙丁', writingMode:'vertical',
+    });
+    await controller.start();
+
+    await controller.restoreArtFont('vertical-text-layer');
+
+    expect(object).toBeInstanceOf(FakeVerticalText);
+    expect(aiClient.createTask).toHaveBeenCalledWith(context, expect.objectContaining({
+      toolId:'art-font-restore',
+      options:{artFont:expect.objectContaining({
+        textLayerId:'vertical-text-layer', currentText:'甲乙\n丙丁',
+        visualProfile:expect.objectContaining({writingMode:'vertical'}),
+      })},
+    }));
+    expect(editor.__hstarAiTaskRecords.at(-1).snapshot.visualProfile.writingMode).toBe('vertical');
     controller.destroy();
   });
 

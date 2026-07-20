@@ -1461,11 +1461,11 @@ describe('OpenShop core object', () => {
     quietUiMethods(OS, {keepLayersPanel:true});
     OS.updateInfoPanel = vi.fn();
     const eligible = {
-      type:'i-text', text:'OCR title', hstarLayerId:'text-layer-1',
+      type:'hstar-vertical-text', text:'OCR\n标题', hstarLayerId:'text-layer-1',
       hstarOcrSourceAssetId:'a'.repeat(64), hstarOcrSourceLayerId:'source-layer-1',
       hstarOcrBlockId:'ocr-title',
       hstarOcrQuad:[{x:.1,y:.2},{x:.4,y:.2},{x:.4,y:.3},{x:.1,y:.3}],
-      hstarOcrVisualProfile:{script:'en', fill:'#112233'},
+      hstarOcrVisualProfile:{writingMode:'vertical', script:'zh-hans', fill:'#112233'},
       hstarOcrOriginalText:'Original OCR title',
     };
     const manual = {type:'i-text', text:'Manual', hstarLayerId:'text-layer-2'};
@@ -1504,6 +1504,44 @@ describe('OpenShop core object', () => {
     OS.updateLayersPanel();
     expect(document.querySelector('[data-layer-index="0"] .layer-art-font').disabled).toBe(true);
     delete window.HstarOpenShopTextToolsController;
+  });
+
+  it('applies text effects to editable vertical text', () => {
+    const OS = loadOpenShop();
+    const vertical = {
+      type:'hstar-vertical-text', text:'甲乙\n丙丁', set:vi.fn(function set(...args) {
+        if(typeof args[0] === 'string') this[args[0]] = args[1];
+        else Object.assign(this, args[0]);
+      }),
+    };
+    OS.canvas = createCanvasMock([vertical]);
+    OS.canvas.setActiveObject(vertical);
+    quietUiMethods(OS);
+    document.body.insertAdjacentHTML('beforeend', `
+      <input id="tfx-sx" value="2"><input id="tfx-sy" value="3">
+      <input id="tfx-blur" value="4"><input id="tfx-color" value="#112233">
+      <input id="tfx-stroke" value="2"><input id="tfx-stroke-color" value="#445566">`);
+
+    OS.applyTextFx();
+
+    expect(vertical.set).toHaveBeenCalled();
+    expect(vertical.stroke).toBe('#445566');
+    expect(vertical.shadow).toEqual(expect.objectContaining({offsetX:2, offsetY:3, blur:4}));
+  });
+
+  it('counts editable vertical text in image information', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([
+      {type:'hstar-vertical-text', text:'甲乙\n丙丁'},
+      {type:'rect'},
+    ]);
+    OS.layers = [{objects:[]}, {objects:[]}];
+
+    OS.showImageInfo();
+
+    const values = [...document.querySelectorAll('.info-grid dd')].map(item => item.textContent);
+    expect(values[4]).toBe('1');
+    expect(values[5]).toBe('1');
   });
 
   it('keeps a layer row mounted so double-click can start rename after selection', () => {

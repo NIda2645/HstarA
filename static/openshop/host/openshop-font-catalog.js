@@ -48,7 +48,8 @@
   }
 
   function textObject(object){
-    return ['text', 'i-text', 'textbox'].includes(String(object?.type || '').toLowerCase());
+    return ['text', 'i-text', 'textbox', 'hstar-vertical-text']
+      .includes(String(object?.type || '').toLowerCase());
   }
 
   function walkTextStyles(styles, visit, seen = new Set()){

@@ -52,6 +52,7 @@
     const assetApi = options.assetApi;
     const fontManager = options.fontManager;
     const fabricRef = options.fabricRef || root.fabric;
+    const writingModeRuntime = options.writingModeRuntime || root.HstarOpenShopWritingMode;
     const documentRef = options.documentRef || root.document;
     const imageLoader = options.imageLoader || defaultImageLoader;
     const maskRenderer = options.maskRenderer || defaultMaskRenderer;
@@ -66,7 +67,8 @@
             reject(new DOMException('Polling aborted', 'AbortError'));
           }, {once:true});
         });
-    if(!editor || !runtime || !aiClient || !assetApi || !fontManager || !fabricRef){
+    if(!editor || !runtime || !aiClient || !assetApi || !fontManager || !fabricRef
+      || typeof writingModeRuntime?.createTextObject !== 'function'){
       throw new Error('OpenShop 文字工具依赖不完整');
     }
 
@@ -520,10 +522,18 @@
       return Number.isFinite(number) ? number : fallback;
     }
 
+    function normalizeWritingMode(value){
+      const normalized = clean(value).toLowerCase().replaceAll('_', '-');
+      return ['vertical', 'vertical-rl', 'vertical-lr'].includes(normalized)
+        ? 'vertical'
+        : 'horizontal';
+    }
+
     function ocrVisualProfile(block){
       const font = block?.font && typeof block.font === 'object' ? block.font : {};
       const shadow = font.shadow && typeof font.shadow === 'object' ? font.shadow : {};
       return {
+        writingMode:normalizeWritingMode(block?.writingMode),
         script:clean(block?.script) || 'mixed',
         dominantScript:clean(block?.dominantScript),
         fill:clean(block?.color || block?.fill) || '#ffffff',
@@ -554,7 +564,7 @@
       const naturalHeight = Math.max(1, finite(object.height, geometry.height));
       const fontSize = Math.max(1, finite(object.fontSize, 1));
       const graphemeGaps = Math.max(0, Array.from(String(object.text || '')).length - 1);
-      if(graphemeGaps){
+      if(object.hstarWritingMode !== 'vertical' && graphemeGaps){
         const heightScale = geometry.height / naturalHeight;
         const targetNaturalWidth = heightScale > 0 ? geometry.width / heightScale : naturalWidth;
         const spacingDelta = (targetNaturalWidth - naturalWidth) * 1000 / (fontSize * graphemeGaps);
@@ -689,8 +699,8 @@
           const matches = blocks.map(block => fontManager.matchOcrFont(block));
           const createdLayers = [];
           blocks.forEach((block, index) => {
-            const text = clean(block?.text);
-            if(!text) return;
+            const text = String(block?.text ?? '');
+            if(!text.trim()) return;
             const match = matches[index];
             if(!clean(match?.faceFamily)) throw new Error('OCR font match did not return a usable face');
             const geometry = quadGeometry(block.quad, canvasWidth, canvasHeight, block.rotation);
@@ -705,7 +715,7 @@
               || originalBlocks[index]
               || block;
             const layerId = createId('hstar-text-layer').replaceAll('-', '_');
-            const object = new fabricRef.IText(text, {
+            const object = writingModeRuntime.createTextObject(fabricRef, text, {
               left:Math.round(geometry.left),
               top:Math.round(geometry.top),
               originX:'left',
@@ -718,6 +728,7 @@
               charSpacing:visualProfile.letterSpacing,
               lineHeight:visualProfile.lineHeight,
               textAlign:visualProfile.alignment,
+              hstarWritingMode:visualProfile.writingMode,
               angle:geometry.angle,
               stroke:visualProfile.strokeColor,
               strokeWidth:visualProfile.strokeWidth * sourcePixelScale,
@@ -837,7 +848,8 @@
     }
 
     function isTextObject(object){
-      return ['i-text', 'itext', 'text', 'textbox'].includes(clean(object?.type).toLowerCase());
+      return ['i-text', 'itext', 'text', 'textbox', 'hstar-vertical-text']
+        .includes(clean(object?.type).toLowerCase());
     }
 
     function isArtFontEligibleObject(object){
@@ -1587,7 +1599,7 @@
         .hstar-text-field{display:grid;gap:5px;margin-top:9px}.hstar-text-field label{font-size:11px;color:var(--text-muted)}.hstar-text-field select,.hstar-text-field textarea{width:100%;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px;font-size:12px;box-sizing:border-box}.hstar-text-field textarea{min-height:70px;resize:vertical}
         .hstar-text-status{font-size:11px;line-height:1.5;color:var(--text-secondary);min-height:18px}.hstar-text-status.error{color:var(--danger)}
         .hstar-ocr-preview{position:relative;aspect-ratio:16/9;background:#171717;border:1px solid var(--border);overflow:hidden}.hstar-ocr-preview img{width:100%;height:100%;object-fit:contain}.hstar-ocr-box{position:absolute;border:1px solid #f7c948;background:rgba(247,201,72,.12);pointer-events:none}.hstar-ocr-box.low{border-color:#ff6b6b;background:rgba(255,107,107,.14)}
-        .hstar-ocr-list{display:grid;gap:7px;margin-top:9px}.hstar-ocr-row{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center}.hstar-ocr-row input{min-width:0;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px}.hstar-ocr-confidence{font-size:10px;color:var(--text-muted)}.hstar-ocr-confidence.low{color:#ff8c8c;font-weight:700}
+        .hstar-ocr-list{display:grid;gap:7px;margin-top:9px}.hstar-ocr-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:start}.hstar-ocr-row textarea{width:100%;min-width:0;min-height:34px;max-height:96px;overflow:auto;resize:vertical;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px;font:inherit;line-height:1.35;box-sizing:border-box}.hstar-ocr-confidence{padding-top:8px;font-size:10px;color:var(--text-muted)}.hstar-ocr-confidence.low{color:#ff8c8c;font-weight:700}
         .hstar-text-modal{position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:16px}.hstar-text-dialog{width:min(560px,100%);max-height:min(720px,90vh);overflow:auto;background:var(--bg-depth-1);border:1px solid var(--border-active);border-radius:6px;box-shadow:0 18px 60px rgba(0,0,0,.45);padding:16px}.hstar-text-dialog h3{font-size:15px;margin:0 0 12px}.hstar-font-list{display:grid;gap:5px;max-height:360px;overflow:auto}.hstar-font-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
         #hstar-font-manage-btn{padding:3px 7px;font-size:10px}
         @media(max-width:760px){#hstar-text-tools-panel{right:0;top:74px;bottom:48px;width:min(324px,calc(100vw - var(--toolbar-w)));max-width:calc(100vw - var(--toolbar-w))}.hstar-text-provider-grid{grid-template-columns:1fr}.hstar-text-dialog{padding:12px}}
@@ -1688,7 +1700,7 @@
         return `<span class="hstar-ocr-box ${block.lowConfidence ? 'low' : ''}" style="left:${bounds.left * 100}%;top:${bounds.top * 100}%;width:${bounds.width * 100}%;height:${bounds.height * 100}%"></span>`;
       }).join('');
       const rows = state.reviewBlocks.map((block, index) => `<div class="hstar-ocr-row">
-        <input type="text" data-hstar-ocr-index="${index}" value="${escapeHtml(block.text)}" aria-label="识别文字 ${index + 1}">
+        <textarea rows="2" wrap="off" spellcheck="false" data-hstar-ocr-index="${index}" aria-label="识别文字 ${index + 1}">${escapeHtml(block.text)}</textarea>
         <span class="hstar-ocr-confidence ${block.lowConfidence ? 'low' : ''}">${block.lowConfidence ? '低置信度 ' : ''}${Math.round(Number(block.confidence || 0) * 100)}%</span>
       </div>`).join('');
       return `<section class="hstar-text-section"><div class="hstar-text-label">识别校对</div>
@@ -1720,6 +1732,10 @@
             <div class="hstar-text-actions"><button type="button" class="btn btn-primary" data-hstar-action="run-removal" ${disabled ? 'disabled' : ''}>执行去除文字</button><button type="button" class="btn" data-hstar-action="cancel" ${running ? '' : 'disabled'}>取消</button></div>
           </section>`;
       panel.innerHTML = `<div class="hstar-text-head"><strong>${title}</strong><button class="btn" type="button" data-hstar-action="close">关闭</button></div><div class="hstar-text-body">${body}<section class="hstar-text-section"><div class="hstar-text-status ${state.error ? 'error' : ''}">${escapeHtml(statusText())}</div></section></div>`;
+      panel.querySelectorAll('textarea[data-hstar-ocr-index]').forEach(control => {
+        const block = state.reviewBlocks[Number(control.dataset.hstarOcrIndex)];
+        if(block) control.value = String(block.text ?? '');
+      });
       const quality = panel.querySelector('#hstar-remove-quality');
       if(quality) quality.value = state.lastRemovalOptions.quality;
     }

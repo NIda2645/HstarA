@@ -484,13 +484,27 @@ def _normalize_font(value: Any) -> dict[str, Any]:
     }
 
 
-def _normalize_writing_mode(value: Any, quad: list[dict[str, float]]) -> str:
+def _normalize_writing_mode(
+    value: Any,
+    quad: list[dict[str, float]],
+    image_width: int,
+    image_height: int,
+) -> str:
     if value is None or (isinstance(value, str) and not value.strip()):
-        xs = [point["x"] for point in quad]
-        ys = [point["y"] for point in quad]
-        width = max(xs) - min(xs)
-        height = max(ys) - min(ys)
-        return "vertical" if height > width * 1.5 else "horizontal"
+        points = [
+            (point["x"] * image_width, point["y"] * image_height)
+            for point in quad
+        ]
+
+        def edge_length(first: int, second: int) -> float:
+            return math.hypot(
+                points[second][0] - points[first][0],
+                points[second][1] - points[first][1],
+            )
+
+        local_width = (edge_length(0, 1) + edge_length(2, 3)) / 2
+        local_height = (edge_length(1, 2) + edge_length(3, 0)) / 2
+        return "vertical" if local_height > local_width * 1.5 else "horizontal"
     normalized = str(value).strip().lower().replace("_", "-")
     if normalized in {"horizontal", "horizontal-tb"}:
         return "horizontal"
@@ -533,7 +547,9 @@ def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[st
         "font": _normalize_font(value.get("font")),
         "color": color,
         "align": align,
-        "writingMode": _normalize_writing_mode(value.get("writingMode"), quad),
+        "writingMode": _normalize_writing_mode(
+            value.get("writingMode"), quad, width, height
+        ),
         "rotation": max(-360.0, min(360.0, round(rotation, 3))),
         "paragraphId": _clean_text(value.get("paragraphId"), 96, f"paragraph-{index + 1}"),
         "lineIndex": line_index,
@@ -768,7 +784,13 @@ def _normalize_art_font_profile(value: Any, current_text: str) -> dict[str, Any]
     alignment = str(value.get("alignment", value.get("align", "left"))).strip().lower()
     if alignment not in {"left", "center", "right", "justify"}:
         alignment = "left"
+    writing_mode = str(value.get("writingMode") or "").strip().lower().replace("_", "-")
+    if writing_mode in {"vertical", "vertical-rl", "vertical-lr"}:
+        writing_mode = "vertical"
+    else:
+        writing_mode = "horizontal"
     profile = {
+        "writingMode": writing_mode,
         "script": script,
         "fill": _normalize_color(value.get("fill", value.get("color")), "#ffffff"),
         "alignment": alignment,
@@ -817,6 +839,20 @@ def normalize_art_font_snapshot(value: Any) -> dict[str, Any]:
             value.get("visualProfile"), current_text
         ),
     }
+
+
+def build_art_font_prompt(snapshot: dict[str, Any]) -> str:
+    profile = snapshot["visualProfile"]
+    exact_text = json.dumps(snapshot["currentText"], ensure_ascii=False)
+    return (
+        f"Render exactly this edited text once: {exact_text}. Produce one lettering rendering only. "
+        "Use the supplied original lettering crop only as the style reference. Preserve the reference's "
+        f"apparent size, weight {profile['weight']}, color {profile['fill']}, angle {profile['rotation']}, "
+        f"and writing direction {profile['writingMode']} independent from rotation. Preserve spacing, stroke, "
+        "shadow, and artistic structure. Return only the lettering on a fully transparent background. Do not "
+        "add symbols, duplicate words, logos, scenery, texture panels, a scene, or any background reconstruction. "
+        "Keep glyphs at natural proportions with no compression or stretch."
+    )
 
 
 def normalize_art_font_result(value: Any) -> dict[str, Any]:

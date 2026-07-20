@@ -127,6 +127,19 @@ describe('Hstar OpenShop font catalog', () => {
     ]);
   });
 
+  it('collects fonts from editable vertical text objects', () => {
+    const manager = window.HstarOpenShopFontCatalog.createManager({fontProbe:() => true});
+    const editor = {
+      canvas:{getObjects:() => [{
+        type:'hstar-vertical-text', fontFamily:'Microsoft YaHei UI', text:'甲乙\n丙丁',
+      }]},
+    };
+
+    expect(manager.scanEditor(editor)).toEqual([
+      {family:'Microsoft YaHei UI', status:'available'},
+    ]);
+  });
+
   it('replaces a missing font inside per-character text styles', () => {
     const manager = window.HstarOpenShopFontCatalog.createManager({
       fontProbe:family => !family.includes('Missing'),

@@ -1,7 +1,12 @@
 import json
 import unittest
 
-from openshop_ai import build_ocr_prompt, normalize_ocr_layout
+from openshop_ai import (
+    build_art_font_prompt,
+    build_ocr_prompt,
+    normalize_art_font_snapshot,
+    normalize_ocr_layout,
+)
 
 
 class OpenShopOcrPromptTests(unittest.TestCase):
@@ -23,11 +28,11 @@ class OpenShopOcrPromptTests(unittest.TestCase):
 
 
 class OpenShopOcrWritingModeTests(unittest.TestCase):
-    def normalize(self, *blocks):
+    def normalize(self, *blocks, width=1000, height=1000):
         return normalize_ocr_layout(
             json.dumps({"blocks": list(blocks)}),
-            1000,
-            1000,
+            width,
+            height,
         )
 
     def block(self, *, quad=None, rotation=0, **values):
@@ -87,6 +92,37 @@ class OpenShopOcrWritingModeTests(unittest.TestCase):
             ["vertical", "horizontal"],
         )
 
+    def test_infers_rotated_90_degree_horizontal_from_local_quad_edges(self):
+        rotated_horizontal_quad = [
+            {"x": 0.4, "y": 0.2},
+            {"x": 0.4, "y": 0.8},
+            {"x": 0.3, "y": 0.8},
+            {"x": 0.3, "y": 0.2},
+        ]
+
+        block = self.normalize(
+            self.block(quad=rotated_horizontal_quad, rotation=90)
+        )["blocks"][0]
+
+        self.assertEqual(block["writingMode"], "horizontal")
+        self.assertEqual(block["rotation"], 90)
+
+    def test_infers_local_pixel_geometry_on_non_square_images(self):
+        source_tall_quad = [
+            {"x": 0.1, "y": 0.1},
+            {"x": 0.3, "y": 0.1},
+            {"x": 0.3, "y": 0.3},
+            {"x": 0.1, "y": 0.3},
+        ]
+
+        block = self.normalize(
+            self.block(quad=source_tall_quad),
+            width=1000,
+            height=2000,
+        )["blocks"][0]
+
+        self.assertEqual(block["writingMode"], "vertical")
+
     def test_explicit_invalid_writing_mode_falls_back_to_horizontal(self):
         tall_quad = [
             {"x": 0.1, "y": 0.1},
@@ -131,6 +167,51 @@ class OpenShopOcrWritingModeTests(unittest.TestCase):
         )["blocks"][0]
 
         self.assertEqual(block["text"], " A\nB\t ")
+
+
+class OpenShopArtFontWritingModeTests(unittest.TestCase):
+    def snapshot(self, writing_mode):
+        return {
+            "textLayerId": "text-layer-1",
+            "ocrBlockId": "ocr-1",
+            "originalText": "原文",
+            "currentText": "甲乙\n丙丁",
+            "requestGeneration": 1,
+            "document": {"width": 1000, "height": 800},
+            "quad": [
+                {"x": 0.1, "y": 0.1},
+                {"x": 0.3, "y": 0.1},
+                {"x": 0.3, "y": 0.7},
+                {"x": 0.1, "y": 0.7},
+            ],
+            "visualProfile": {
+                "writingMode": writing_mode,
+                "script": "zh-hans",
+                "fill": "#112233",
+                "rotation": 90,
+                "weight": 700,
+            },
+        }
+
+    def test_preserves_vertical_writing_mode_in_normalized_profile(self):
+        snapshot = normalize_art_font_snapshot(self.snapshot("vertical-rl"))
+
+        self.assertEqual(snapshot["visualProfile"]["writingMode"], "vertical")
+        self.assertEqual(snapshot["visualProfile"]["rotation"], 90)
+
+    def test_invalid_art_font_writing_mode_falls_back_to_horizontal(self):
+        snapshot = normalize_art_font_snapshot(self.snapshot("diagonal"))
+
+        self.assertEqual(snapshot["visualProfile"]["writingMode"], "horizontal")
+
+    def test_art_font_prompt_keeps_writing_direction_independent_from_rotation(self):
+        snapshot = normalize_art_font_snapshot(self.snapshot("vertical"))
+
+        prompt = build_art_font_prompt(snapshot)
+
+        self.assertIn("writing direction vertical", prompt)
+        self.assertIn("independent from rotation", prompt)
+        self.assertIn("angle 90.0", prompt)
 
 
 if __name__ == "__main__":

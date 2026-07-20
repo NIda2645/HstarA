@@ -61,6 +61,7 @@ from openshop_ai import (
     OpenShopAiTaskOwnershipError,
     OpenShopAiTaskRegistry,
     OpenShopAiValidationError,
+    build_art_font_prompt,
     build_capability_catalog,
     build_ocr_prompt,
     normalize_generation_snapshot,
@@ -17352,19 +17353,6 @@ def _art_font_quad_aspect(
             baseline_index = min(range(2), key=lambda index: distances[index])
     cross_index = 1 - baseline_index
     return candidates[baseline_index][0] / candidates[cross_index][0]
-
-
-def build_art_font_prompt(snapshot: Dict[str, Any]) -> str:
-    profile = snapshot["visualProfile"]
-    exact_text = json.dumps(snapshot["currentText"], ensure_ascii=False)
-    return (
-        f"Render exactly this edited text once: {exact_text}. Produce one lettering rendering only. "
-        "Use the supplied original lettering crop only as the style reference. Preserve the reference's "
-        f"apparent size, weight {profile['weight']}, color {profile['fill']}, angle {profile['rotation']}, "
-        "spacing, stroke, shadow, and artistic structure. Return only the lettering on a fully transparent "
-        "background. Do not add symbols, duplicate words, logos, scenery, texture panels, a scene, or any "
-        "background reconstruction. Keep glyphs at natural proportions with no compression or stretch."
-    )
 
 
 def _read_openshop_art_font_source(path: str) -> bytes:

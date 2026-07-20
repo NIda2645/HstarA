@@ -2719,7 +2719,7 @@ self.onmessage = function(e) {
             const lockSvg = l.locked
                 ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
                 : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>';
-            const textObjects = l.objects.filter(object => ['i-text','itext','text','textbox'].includes(String(object?.type || '').toLowerCase()));
+            const textObjects = l.objects.filter(object => ['i-text','itext','text','textbox','hstar-vertical-text'].includes(String(object?.type || '').toLowerCase()));
             const textObject = textObjects.find(object => Boolean(object.hstarOcrSourceAssetId
                 && object.hstarOcrSourceLayerId && object.hstarOcrBlockId
                 && typeof object.hstarOcrOriginalText === 'string' && object.hstarOcrOriginalText.trim()
@@ -6411,7 +6411,7 @@ self.onmessage = async function(e) {
     // ====================== TEXT EFFECTS ======================
     applyTextFx() {
         const active = this.canvas.getActiveObject();
-        if (!active || (active.type !== 'i-text' && active.type !== 'text' && active.type !== 'textbox')) return;
+        if (!this._isEditableTextObject(active)) return;
         const sx = +document.getElementById('tfx-sx').value;
         const sy = +document.getElementById('tfx-sy').value;
         const blur = +document.getElementById('tfx-blur').value;
@@ -6782,7 +6782,7 @@ self.onmessage = async function(e) {
     showImageInfo() {
         const objs = this.canvas.getObjects().filter(o => o.name !== '__boundary__');
         const imgObjs = objs.filter(o => o.type === 'image');
-        const textObjs = objs.filter(o => o.type === 'i-text' || o.type === 'text' || o.type === 'textbox');
+        const textObjs = objs.filter(o => this._isEditableTextObject(o));
         const o = document.createElement('div'); o.className = 'modal-overlay';
         o.innerHTML = `<div class="modal"><h3 data-i18n="Image Information">Image Information</h3>
             <dl class="info-grid" style="font-size:12px">
