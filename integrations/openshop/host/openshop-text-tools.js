@@ -52,6 +52,7 @@
     const assetApi = options.assetApi;
     const fontManager = options.fontManager;
     const fabricRef = options.fabricRef || root.fabric;
+    const writingModeRuntime = options.writingModeRuntime || root.HstarOpenShopWritingMode;
     const documentRef = options.documentRef || root.document;
     const imageLoader = options.imageLoader || defaultImageLoader;
     const maskRenderer = options.maskRenderer || defaultMaskRenderer;
@@ -66,7 +67,8 @@
             reject(new DOMException('Polling aborted', 'AbortError'));
           }, {once:true});
         });
-    if(!editor || !runtime || !aiClient || !assetApi || !fontManager || !fabricRef){
+    if(!editor || !runtime || !aiClient || !assetApi || !fontManager || !fabricRef
+      || typeof writingModeRuntime?.createTextObject !== 'function'){
       throw new Error('OpenShop 文字工具依赖不完整');
     }
 
@@ -520,10 +522,18 @@
       return Number.isFinite(number) ? number : fallback;
     }
 
+    function normalizeWritingMode(value){
+      const normalized = clean(value).toLowerCase().replaceAll('_', '-');
+      return ['vertical', 'vertical-rl', 'vertical-lr'].includes(normalized)
+        ? 'vertical'
+        : 'horizontal';
+    }
+
     function ocrVisualProfile(block){
       const font = block?.font && typeof block.font === 'object' ? block.font : {};
       const shadow = font.shadow && typeof font.shadow === 'object' ? font.shadow : {};
       return {
+        writingMode:normalizeWritingMode(block?.writingMode),
         script:clean(block?.script) || 'mixed',
         dominantScript:clean(block?.dominantScript),
         fill:clean(block?.color || block?.fill) || '#ffffff',
@@ -554,7 +564,7 @@
       const naturalHeight = Math.max(1, finite(object.height, geometry.height));
       const fontSize = Math.max(1, finite(object.fontSize, 1));
       const graphemeGaps = Math.max(0, Array.from(String(object.text || '')).length - 1);
-      if(graphemeGaps){
+      if(object.hstarWritingMode !== 'vertical' && graphemeGaps){
         const heightScale = geometry.height / naturalHeight;
         const targetNaturalWidth = heightScale > 0 ? geometry.width / heightScale : naturalWidth;
         const spacingDelta = (targetNaturalWidth - naturalWidth) * 1000 / (fontSize * graphemeGaps);
@@ -705,7 +715,7 @@
               || originalBlocks[index]
               || block;
             const layerId = createId('hstar-text-layer').replaceAll('-', '_');
-            const object = new fabricRef.IText(text, {
+            const object = writingModeRuntime.createTextObject(fabricRef, text, {
               left:Math.round(geometry.left),
               top:Math.round(geometry.top),
               originX:'left',
@@ -718,6 +728,7 @@
               charSpacing:visualProfile.letterSpacing,
               lineHeight:visualProfile.lineHeight,
               textAlign:visualProfile.alignment,
+              hstarWritingMode:visualProfile.writingMode,
               angle:geometry.angle,
               stroke:visualProfile.strokeColor,
               strokeWidth:visualProfile.strokeWidth * sourcePixelScale,

@@ -271,7 +271,9 @@ def build_ocr_prompt(width: int, height: int) -> str:
         "Return JSON only with a top-level blocks array, in natural reading order. Return one block per "
         "visually distinct text line or independently styled text run; never merge unrelated labels, titles, "
         "or paragraphs. Every block must contain text, quad, language, script (zh-hans, zh-hant, en, or mixed), "
-        "confidence, font, color (the glyph fill), align, rotation, paragraphId, and lineIndex. For mixed script, "
+        "confidence, font, color (the glyph fill), align, writingMode, rotation, paragraphId, and lineIndex. "
+        "writingMode must be horizontal or vertical and describes text flow independently from rotation; "
+        "rotation=90 does not imply vertical writing. For mixed script, "
         "optionally include dominantScript. quad must contain four clockwise points around the tight visible "
         "glyph bounds, with normalized x and y values from 0 to 1. Preserve punctuation, whitespace, line "
         "order, and the original 中文/English spelling. font must contain artistic, ordered familyCandidates, "
@@ -475,6 +477,21 @@ def _normalize_font(value: Any) -> dict[str, Any]:
     }
 
 
+def _normalize_writing_mode(value: Any, quad: list[dict[str, float]]) -> str:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        xs = [point["x"] for point in quad]
+        ys = [point["y"] for point in quad]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
+        return "vertical" if height > width * 1.5 else "horizontal"
+    normalized = str(value).strip().lower().replace("_", "-")
+    if normalized in {"horizontal", "horizontal-tb"}:
+        return "horizontal"
+    if normalized in {"vertical", "vertical-rl", "vertical-lr"}:
+        return "vertical"
+    return "horizontal"
+
+
 def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OpenShopAiValidationError("OCR block must be an object")
@@ -509,6 +526,7 @@ def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[st
         "font": _normalize_font(value.get("font")),
         "color": color,
         "align": align,
+        "writingMode": _normalize_writing_mode(value.get("writingMode"), quad),
         "rotation": max(-360.0, min(360.0, round(rotation, 3))),
         "paragraphId": _clean_text(value.get("paragraphId"), 96, f"paragraph-{index + 1}"),
         "lineIndex": line_index,
@@ -557,7 +575,7 @@ def normalize_ocr_layout(raw_text: Any, width: int, height: int) -> dict[str, An
             "count": invalid_block_count - (OPENSHOP_OCR_MAX_WARNINGS - 1),
         })
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "width": width,
         "height": height,
         "blocks": blocks,

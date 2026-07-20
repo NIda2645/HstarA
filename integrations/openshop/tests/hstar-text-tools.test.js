@@ -127,10 +127,37 @@ class FakeIText {
   }
 }
 
+class FakeVerticalText extends FakeIText {
+  constructor(text, options={}) {
+    super(text, options);
+    this.type = 'hstar-vertical-text';
+    this.initDimensions();
+  }
+
+  initDimensions() {
+    const fontSize = Number(this.fontSize || 16);
+    const graphemeCount = Array.from(this.text).length;
+    const spacing = Number(this.charSpacing || 0) * fontSize / 1000;
+    this.width = Math.max(1, fontSize * 1.2);
+    this.height = Math.max(1, graphemeCount * fontSize * 1.2
+      + Math.max(0, graphemeCount - 1) * spacing);
+  }
+}
+
 class FakeShadow {
   constructor(options={}) {
     Object.assign(this, options);
   }
+}
+
+function createFakeWritingModeRuntime() {
+  return {
+    createTextObject:vi.fn((fabric, text, options={}) => (
+      options.hstarWritingMode === 'vertical'
+        ? new fabric.HstarVerticalText(text, options)
+        : new fabric.IText(text, options)
+    )),
+  };
 }
 
 function createEditor() {
@@ -268,18 +295,22 @@ function createHarness({pollResults={}, fontManagerOverrides={}, controllerOptio
     getState:vi.fn(() => ({activeSession:{context}})),
     requestSave:vi.fn(async () => ({saved:true})),
   };
+  const writingModeRuntime = controllerOptions.writingModeRuntime || window.HstarOpenShopWritingMode;
   const controller = window.HstarOpenShopTextTools.createController({
     editor,
     runtime,
     aiClient,
     assetApi,
     fontManager,
-    fabricRef:{IText:FakeIText, Shadow:FakeShadow},
+    fabricRef:{IText:FakeIText, HstarVerticalText:FakeVerticalText, Shadow:FakeShadow},
     imageLoader,
     maskRenderer:vi.fn(() => 'data:image/png;base64,SELECTION_MASK'),
     ...controllerOptions,
   });
-  return {controller, editor, sourceImage, sourceLayer, objects, aiClient, assetApi, fontManager, imageLoader, runtime, createdTasks};
+  return {
+    controller, editor, sourceImage, sourceLayer, objects, aiClient, assetApi, fontManager,
+    imageLoader, runtime, writingModeRuntime, createdTasks,
+  };
 }
 
 describe('Hstar OpenShop multilingual text tools', () => {
@@ -287,6 +318,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(existsSync(toolsPath), `${toolsPath} should exist`).toBe(true);
     vi.resetModules();
     delete window.HstarOpenShopTextTools;
+    window.HstarOpenShopWritingMode = createFakeWritingModeRuntime();
     document.body.innerHTML = `
       <div id="toolbar"></div>
       <div id="tool-options"><div id="opt-text"><select id="text-font"><option>Arial</option></select></div></div>
@@ -420,10 +452,11 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
-  it('creates one precisely fitted editable layer per OCR block in reading order', async () => {
+  it('creates precisely fitted horizontal and vertical OCR layers in reading order', async () => {
     const blocks = [
       {
         id:'ocr-title', text:'经典奶茶', language:'zh', script:'zh-hans', confidence:0.98, lowConfidence:false,
+        writingMode:'horizontal',
         quad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
         font:{
           artistic:true, familyCandidates:['Missing Font', 'Microsoft YaHei UI'], size:48,
@@ -431,11 +464,12 @@ describe('Hstar OpenShop multilingual text tools', () => {
           letterSpacing:125, lineHeight:1.4, strokeColor:'#12345678', strokeWidth:3.5,
           shadow:{color:'#10203080', blur:6, offsetX:2, offsetY:-3},
         },
-        color:'#7b3f12', align:'center', rotation:0, paragraphId:'title', lineIndex:0,
+        color:'#7b3f12', align:'center', rotation:90, paragraphId:'title', lineIndex:0,
       },
       {
-        id:'ocr-subtitle', text:'Bubble Milk Tea', language:'en', script:'en', confidence:0.94, lowConfidence:false,
-        quad:[{x:0.2,y:0.4},{x:0.7,y:0.42},{x:0.69,y:0.46},{x:0.19,y:0.44}],
+        id:'ocr-subtitle', text:'甲乙丙丁', language:'zh', script:'zh-hans', confidence:0.94, lowConfidence:false,
+        writingMode:'vertical',
+        quad:[{x:0.55,y:0.25},{x:0.61,y:0.26},{x:0.56,y:0.66},{x:0.5,y:0.65}],
         font:{
           artistic:false, familyCandidates:['Missing Font', 'Arial'], size:22, weight:400,
           style:'italic', styleDescription:'clean italic sans', letterSpacing:20, lineHeight:1.16,
@@ -449,10 +483,15 @@ describe('Hstar OpenShop multilingual text tools', () => {
     const matchOcrFont = vi.fn(block => block.id === 'ocr-title'
       ? {faceFamily:'01免Title Face', weight:800, italic:true}
       : {faceFamily:'03免Subtitle Face', weight:500, italic:false});
-    const {controller, editor, sourceLayer, sourceImage, objects, fontManager} = createHarness({
+    const injectedWritingModeRuntime = createFakeWritingModeRuntime();
+    const {
+      controller, editor, sourceLayer, sourceImage, objects, fontManager, writingModeRuntime,
+    } = createHarness({
       pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:960, height:540, blocks}}},
       fontManagerOverrides:{loadSystemFonts, matchOcrFont},
+      controllerOptions:{writingModeRuntime:injectedWritingModeRuntime},
     });
+    expect(writingModeRuntime).toBe(injectedWritingModeRuntime);
     const existingTopObject = {type:'rect', name:'existing top object'};
     const existingTopLayer = {
       layerId:'layer-existing-top', name:'Existing top layer', visible:true, opacity:100,
@@ -469,7 +508,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(editor.layers).toEqual([sourceLayer, ...layers, existingTopLayer]);
     expect(objects).toEqual([sourceImage, ...layers.map(layer => layer.objects[0]), existingTopObject]);
     expect(sourceLayer.objects).toEqual([sourceImage]);
-    expect(layers.map(layer => layer.name)).toEqual(['经典奶茶（校对）', 'Bubble Milk Tea']);
+    expect(layers.map(layer => layer.name)).toEqual(['经典奶茶（校对）', '甲乙丙丁']);
     expect(layers.every(layer => layer.objects.length === 1)).toBe(true);
     expect(new Set(layers.map(layer => layer.layerId)).size).toBe(2);
     expect(loadSystemFonts).toHaveBeenCalledOnce();
@@ -483,6 +522,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
       type:'i-text', text:'经典奶茶（校对）', left:192, top:216,
       fontFamily:'01免Title Face', fontSize:96, fill:'#7b3f12', fontWeight:800,
       fontStyle:'italic', textAlign:'center', lineHeight:1.4, editable:true,
+      hstarWritingMode:'horizontal',
       stroke:'#12345678', strokeWidth:7,
       hstarOcrBlockId:'ocr-title', hstarOcrSourceLayerId:'layer-source',
       hstarOcrSourceAssetId:SOURCE_ASSET_ID,
@@ -502,8 +542,10 @@ describe('Hstar OpenShop multilingual text tools', () => {
     expect(title.width * title.scaleX).toBeLessThanOrEqual(576.001);
     expect(title.height * title.scaleY).toBeLessThanOrEqual(108.001);
     expect(title.hstarOcrQuad).toEqual(blocks[0].quad);
+    expect(title.angle).toBe(90);
     expect(title.hstarOcrVisualProfile).toEqual({
-      script:'zh-hans', dominantScript:'', fill:'#7b3f12', alignment:'center', rotation:0,
+      writingMode:'horizontal',
+      script:'zh-hans', dominantScript:'', fill:'#7b3f12', alignment:'center', rotation:90,
       artistic:true, familyCandidates:['Missing Font', 'Microsoft YaHei UI'], size:48,
       weight:700, style:'normal', styleDescription:'painted condensed title',
       letterSpacing:125, lineHeight:1.4, strokeColor:'#12345678', strokeWidth:3.5,
@@ -511,15 +553,49 @@ describe('Hstar OpenShop multilingual text tools', () => {
     });
 
     const subtitle = layers[1].objects[0];
+    expect(subtitle).toBeInstanceOf(FakeVerticalText);
     expect(subtitle).toMatchObject({
-      type:'i-text', text:'Bubble Milk Tea', left:384, top:432,
+      type:'hstar-vertical-text', text:'甲乙丙丁', left:1056, top:270,
       fontFamily:'03免Subtitle Face', fontSize:44, fill:'#d77721', fontWeight:500,
       fontStyle:'normal', textAlign:'left', editable:true,
+      hstarWritingMode:'vertical', charSpacing:20, lineHeight:1.16,
+      stroke:'#00000000', strokeWidth:0,
       hstarOcrBlockId:'ocr-subtitle', hstarOcrSourceLayerId:'layer-source',
+      hstarOcrSourceAssetId:SOURCE_ASSET_ID,
       hstarOcrFontCandidates:['Missing Font', 'Arial'],
+      hstarOcrOriginalText:'甲乙丙丁',
     });
-    expect(subtitle.angle).toBeCloseTo(1.289, 2);
+    expect(subtitle.text).not.toContain('\n');
+    expect(subtitle.angle).toBeCloseTo(5.356, 2);
     expect(subtitle.scaleX).toBeCloseTo(subtitle.scaleY, 10);
+    expect(subtitle.width * subtitle.scaleX).toBeLessThanOrEqual(115.707);
+    expect(subtitle.height * subtitle.scaleY).toBeLessThanOrEqual(442.539);
+    expect(subtitle.shadow).toEqual(expect.objectContaining({
+      color:'#00000000', blur:0, offsetX:0, offsetY:0,
+    }));
+    expect(subtitle).toMatchObject({
+      hstarOcrQuad:blocks[1].quad,
+      hstarOcrVisualProfile:{
+        writingMode:'vertical',
+        script:'zh-hans', dominantScript:'', fill:'#d77721', alignment:'left', rotation:2,
+        artistic:false, familyCandidates:['Missing Font', 'Arial'], size:22, weight:400,
+        style:'italic', styleDescription:'clean italic sans', letterSpacing:20, lineHeight:1.16,
+        strokeColor:'#00000000', strokeWidth:0,
+        shadow:{color:'#00000000', blur:0, offsetX:0, offsetY:0},
+      },
+    });
+    expect(writingModeRuntime.createTextObject).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({IText:FakeIText, HstarVerticalText:FakeVerticalText}),
+      '经典奶茶（校对）',
+      expect.objectContaining({hstarWritingMode:'horizontal', angle:90}),
+    );
+    expect(writingModeRuntime.createTextObject).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({IText:FakeIText, HstarVerticalText:FakeVerticalText}),
+      '甲乙丙丁',
+      expect.objectContaining({hstarWritingMode:'vertical'}),
+    );
     expect(editor.activeLayerIdx).toBe(2);
     expect(fontManager.scanEditor).toHaveBeenCalledWith(editor);
     controller.destroy();
