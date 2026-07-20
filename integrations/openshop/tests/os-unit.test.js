@@ -459,7 +459,7 @@ describe('OpenShop core object', () => {
     OS.setTool('text-vertical');
     OS.onMouseDown({e:{}, target:null});
     expect(OS.canvas.getObjects()).toHaveLength(2);
-    expect(OS.canvas.getObjects()[1].enterEditing).toHaveBeenCalledOnce();
+    expect(OS.canvas.getObjects()[1].isEditing).toBe(true);
   });
 
   it('creates each completed shape on its own layer', () => {
