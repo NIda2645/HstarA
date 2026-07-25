@@ -8,7 +8,15 @@ class FakeRecognizer:
         return self.device
 
     def transcribe(self, pcm16, language):
-        return "测试完成。" if pcm16 else ""
+        if not pcm16:
+            return ""
+
+        duration_seconds = len(pcm16) / (16_000 * 2)
+        if duration_seconds < 4:
+            return "测试"
+        if duration_seconds < 4.8:
+            return "测试语音"
+        return "测试语音完成。"
 
     def close(self):
         self.device = ""

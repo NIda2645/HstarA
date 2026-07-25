@@ -51,6 +51,30 @@ describe('Hstar global voice target adapter', () => {
     expect(prompt.value).toBe('前 后');
   });
 
+  it('routes Ctrl+Z through the voice transaction undo stack', () => {
+    document.body.innerHTML = '<textarea id="prompt"></textarea>';
+    const prompt = document.querySelector('#prompt');
+    prompt.value = '前缀旧内容后缀';
+    prompt.setSelectionRange(2, 5);
+    prompt.focus();
+
+    const transaction = adapter.begin(prompt);
+    transaction.update('测试语音');
+    transaction.commit('测试语音完成。');
+    expect(prompt.value).toBe('前缀测试语音完成。后缀');
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    prompt.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(prompt.value).toBe('前缀旧内容后缀');
+  });
+
   it('fires beforeinput before mutation, input after mutation, and honors cancellation', () => {
     document.body.innerHTML = '<textarea id="prompt"></textarea>';
     const prompt = document.querySelector('#prompt');

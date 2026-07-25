@@ -211,6 +211,13 @@ describe('Hstar global voice coordinator', () => {
     harness.coordinator.activateTarget(document.createElement('textarea'));
     await harness.coordinator.start();
 
+    expect(harness.coordinator.debugState()).toMatchObject({
+      state: 'listening',
+      trackCount: 1,
+      hasAudioContext: true,
+      hasSocket: true,
+    });
+
     harness.socket.emit({type: 'stopped', reason: 'silence-timeout', sequence: 6});
     await harness.coordinator.whenIdle();
 
@@ -219,6 +226,12 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.worklet.disconnect).toHaveBeenCalledOnce();
     expect(harness.context.close).toHaveBeenCalledOnce();
     expect(harness.coordinator.state).toBe('ready');
+    expect(harness.coordinator.debugState()).toMatchObject({
+      state: 'ready',
+      trackCount: 0,
+      hasAudioContext: false,
+      hasSocket: false,
+    });
   });
 
   it('never requests microphone permission while the model is missing', async () => {
@@ -305,6 +318,24 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.adapter.begin).toHaveBeenCalledOnce();
     expect(harness.adapter.begin).toHaveBeenCalledWith(firstTarget);
     expect(harness.coordinator.lockedTarget).toBe(firstTarget);
+  });
+
+  it('stops and releases resources when audio arrives after the target is removed', async () => {
+    const harness = makeHarness();
+    const target = document.createElement('textarea');
+    document.body.append(target);
+    harness.adapter.isEligible.mockImplementation(value => value?.isConnected === true);
+    harness.coordinator.activateTarget(target);
+    await harness.coordinator.start();
+
+    target.remove();
+    harness.worklet.port.onmessage({data: new ArrayBuffer(640)});
+    await harness.coordinator.whenIdle();
+
+    expect(harness.socket.sent.some(value => String(value).includes('target-removed'))).toBe(true);
+    expect(harness.track.stop).toHaveBeenCalledOnce();
+    expect(harness.context.close).toHaveBeenCalledOnce();
+    expect(harness.coordinator.state).toBe('ready');
   });
 
   it('routes an attached iframe target through the child adapter', async () => {

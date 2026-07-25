@@ -56,7 +56,7 @@
   }
 
   function isEligible(target) {
-    if (!(target instanceof Element) || isHidden(target)) return false;
+    if (!(target instanceof Element) || !target.isConnected || isHidden(target)) return false;
     const registered = customAdapters.get(target);
     if (registered) return registered.isTargetAvailable?.() !== false;
     if (target.matches('[data-voice-input="off"],:disabled,[readonly]')) return false;
@@ -333,10 +333,22 @@
       && event.metaKey === pieces.includes('meta');
   }
 
+  function undoShortcutMatches(event) {
+    return event.key.toLowerCase() === 'z'
+      && (event.ctrlKey || event.metaKey)
+      && !event.shiftKey
+      && !event.altKey;
+  }
+
   function onKeyDown(event) {
-    if (imeComposing || event.isComposing || !shortcutMatches(event)) return;
+    if (imeComposing || event.isComposing) return;
     const target = isEligible(event.target) ? event.target : activeTarget;
     if (!target || !isEligible(target)) return;
+    if (undoShortcutMatches(event) && undo(target)) {
+      event.preventDefault();
+      return;
+    }
+    if (!shortcutMatches(event)) return;
     event.preventDefault();
     postToCoordinator('hstar-voice-target-command', target);
     global.dispatchEvent(new CustomEvent('hstar-voice-target-command', {

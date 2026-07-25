@@ -18,6 +18,7 @@
     "test:hstar:text-tools": "playwright test tests/hstar-text-tools.e2e.spec.js",
     "test:hstar:text-properties": "playwright test tests/hstar-text-properties.e2e.spec.js",
     "test:hstar:generative": "playwright test tests/hstar-generative-tools.e2e.spec.js",
+    "test:hstar:voice": "playwright test tests/hstar-voice-assistant.e2e.spec.js",
     "test:hstar:high-resolution": "playwright test tests/hstar-foundation.e2e.spec.js --grep high-resolution",
     "test:hstar:4k": "npm run test:hstar:high-resolution",
     "test:hstar:import-eyedropper-performance": "playwright test tests/hstar-import-eyedropper-performance.e2e.spec.js"

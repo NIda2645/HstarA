@@ -121,6 +121,15 @@
       return this._lockedTarget;
     }
 
+    debugState() {
+      return Object.freeze({
+        state: this.state,
+        trackCount: this._stream?.getTracks?.().length || 0,
+        hasAudioContext: Boolean(this._audioContext),
+        hasSocket: Boolean(this._socket),
+      });
+    }
+
     activateTarget(target) {
       if (!target || !this._targetEligible(target)) return false;
       this._activeTarget = target;
@@ -355,6 +364,10 @@
     }
 
     _sendAudio(value) {
+      if (this._lockedTarget && !this._targetEligible(this._lockedTarget)) {
+        void this.stop('target-removed');
+        return;
+      }
       if (!this._socket || this._socket.readyState !== 1) return;
       let buffer = value;
       if (ArrayBuffer.isView(buffer)) {
