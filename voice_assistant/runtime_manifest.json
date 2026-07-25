@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "python": "3.10",
+  "packages": [
+    "modelscope==1.38.1",
+    "funasr==1.3.29",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    "transformers==4.57.6",
+    "webrtcvad-wheels==2.0.14",
+    "soundfile==0.14.0"
+  ],
+  "profiles": {
+    "cuda": {
+      "indexUrl": "https://download.pytorch.org/whl/cu128",
+      "extraIndexUrl": "https://pypi.org/simple"
+    },
+    "cpu": {
+      "indexUrl": "https://download.pytorch.org/whl/cpu",
+      "extraIndexUrl": "https://pypi.org/simple"
+    }
+  }
+}
