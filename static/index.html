@@ -788,6 +788,7 @@
             max-width: 0;
         }
     </style>
+    <link rel="stylesheet" href="/static/css/voice-assistant.css?v=2026.07.20.1785005643">
 </head>
 
 <body>
@@ -1020,18 +1021,18 @@
         </script>
 
         <main class="stage">
-            <iframe id="frame-zimage" data-src="/static/zimage.html?v=2026.07.20.1784551549" class="active" scrolling="yes"></iframe>
-            <iframe id="frame-enhance" data-src="/static/enhance.html?v=2026.07.20.1784551549" scrolling="yes"></iframe>
-            <iframe id="frame-klein" data-src="/static/klein.html?v=2026.07.20.1784551549" scrolling="yes"></iframe>
-            <iframe id="frame-angle" data-src="/static/angle.html?v=2026.07.20.1784551549" scrolling="yes"></iframe>
-            <iframe id="frame-online" data-src="/static/online.html?v=2026.07.20.1784551549" scrolling="yes"></iframe>
-            <iframe id="frame-gpt-chat" data-src="/static/gpt-chat.html?v=2026.07.20.1784551549" scrolling="yes"></iframe>
-            <iframe id="frame-asset-manager" data-src="/static/asset-manager.html?v=2026.07.20.1784551549" scrolling="yes"></iframe>
-            <iframe id="frame-api-settings" data-src="/static/api-settings.html?v=2026.07.20.1784551549" scrolling="yes"></iframe>
-            <iframe id="frame-software-settings" data-src="/static/software-settings.html?v=2026.07.20.1784096542" scrolling="yes"></iframe>
-            <iframe id="frame-comfyui-settings" data-src="/static/comfyui-settings.html?v=2026.07.20.1784551549" scrolling="yes"></iframe>
-            <iframe id="frame-canvas" data-src="/static/canvas-list.html?v=2026.07.20.1784987716" scrolling="yes"></iframe>
-            <iframe id="frame-director-desk" class="director-host-frame" data-src="/static/3d-director/index.html?v=2026.07.20.1784788916" scrolling="no"></iframe>
+            <iframe id="frame-zimage" data-src="/static/zimage.html?v=2026.07.20.1785007209" class="active" scrolling="yes"></iframe>
+            <iframe id="frame-enhance" data-src="/static/enhance.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-klein" data-src="/static/klein.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-angle" data-src="/static/angle.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-online" data-src="/static/online.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-gpt-chat" data-src="/static/gpt-chat.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-asset-manager" data-src="/static/asset-manager.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-api-settings" data-src="/static/api-settings.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-software-settings" data-src="/static/software-settings.html?v=2026.07.20.1785007209" scrolling="yes"></iframe>
+            <iframe id="frame-comfyui-settings" data-src="/static/comfyui-settings.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-canvas" data-src="/static/canvas-list.html?v=2026.07.20.1785007208" scrolling="yes"></iframe>
+            <iframe id="frame-director-desk" class="director-host-frame" data-src="/static/3d-director/index.html?v=2026.07.20.1785007294" scrolling="no"></iframe>
 
         </main>
     </div>
@@ -1359,6 +1360,7 @@ function setSidebarPinned(pinned, options = {}) {
                 syncThemeToFrame(f);
                 syncLanguageToFrame(f);
                 syncScaleToFrame(f);
+                window.HstarVoiceAssistant?.attachFrame(f);
             });
         });
     </script>
@@ -1366,6 +1368,12 @@ function setSidebarPinned(pinned, options = {}) {
     <script src="/static/js/director-host.js?v=2026.07.20.1784096541"></script>
     <script src="/static/openshop/host/openshop-protocol.js?v=2026.07.25.1245000000003"></script>
     <script src="/static/js/openshop-host.js?v=2026.07.25.1245000000003"></script>
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.20.1785006389"></script>
+    <script src="/static/js/voice-assistant-coordinator.js?v=2026.07.20.1785006389"></script>
+    <script>
+        window.HstarVoiceAssistant = window.HstarVoiceAssistantCoordinator.create();
+        document.querySelectorAll('iframe').forEach(f => window.HstarVoiceAssistant?.attachFrame(f));
+    </script>
 </body>
 
 </html>

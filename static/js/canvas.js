@@ -2032,7 +2032,7 @@ function renderCanvasMetaPopover(){
     pop.innerHTML = `
         <div class="canvas-meta-section">
             <div class="canvas-meta-label">${tr('canvas.ownerLabel') || '负责人 / 项目'}</div>
-            <input class="canvas-owner-input" type="text" maxlength="40" value="${escapeAttr(owner)}" placeholder="${escapeAttr(tr('canvas.ownerPlaceholder') || '如：张三 / 双十一项目')}">
+        <input class="canvas-owner-input" type="text" maxlength="40" value="${escapeAttr(owner)}" placeholder="${escapeAttr(tr('canvas.ownerPlaceholder') || '如：张三 / 双十一项目')}" data-voice-input="on" data-voice-label="画布所有者">
         </div>
         <div class="canvas-meta-section">
             <div class="canvas-meta-label">${tr('canvas.colorLabel') || '颜色标记'}</div>
@@ -2990,7 +2990,7 @@ function renderMsGenBody(node){
                     <div class="gen-count-row">
                         <div class="gen-stepper">
                             <button class="gen-step-btn" data-ms-step="-1" type="button" title="${tr('canvas.decrease')}" aria-label="${tr('canvas.decreaseCount')}"><i data-lucide="chevron-left" class="w-3.5 h-3.5"></i></button>
-                            <input class="gen-count-input ms-count-input" type="text" inputmode="numeric" pattern="[0-9]*" value="${msCount}">
+                    <input class="gen-count-input ms-count-input" type="text" inputmode="numeric" pattern="[0-9]*" value="${msCount}" data-voice-input="off">
                             <button class="gen-step-btn" data-ms-step="1" type="button" title="${tr('canvas.increase')}" aria-label="${tr('canvas.increaseCount')}"><i data-lucide="chevron-right" class="w-3.5 h-3.5"></i></button>
                         </div>
                     </div>
@@ -2998,21 +2998,21 @@ function renderMsGenBody(node){
                 <div class="gen-settings-row ms-custom-ratio-row" style="display:none">
                     <label class="field">
                         <div class="setting-title">${tr('canvas.ratioWidth')}</div>
-                        <input class="setting-input ms-custom-ratio-w-input" type="number" min="1" step="1" value="${escapeHtml(node.msCustomRatioWidth || '')}" placeholder="4">
+                            <input class="setting-input ms-custom-ratio-w-input" type="number" min="1" step="1" value="${escapeHtml(node.msCustomRatioWidth || '')}" placeholder="4" data-voice-input="off">
                     </label>
                     <label class="field">
                         <div class="setting-title">${tr('canvas.ratioHeight')}</div>
-                        <input class="setting-input ms-custom-ratio-h-input" type="number" min="1" step="1" value="${escapeHtml(node.msCustomRatioHeight || '')}" placeholder="3">
+                            <input class="setting-input ms-custom-ratio-h-input" type="number" min="1" step="1" value="${escapeHtml(node.msCustomRatioHeight || '')}" placeholder="3" data-voice-input="off">
                     </label>
                 </div>
                 <div class="gen-settings-row ms-custom-size-row" style="display:none">
                     <label class="field">
                         <div class="setting-title">${tr('canvas.width')}</div>
-                        <input class="setting-input ms-custom-w-input" type="number" min="64" step="64" value="${escapeHtml(node.msCustomWidth || '')}" placeholder="Auto">
+                            <input class="setting-input ms-custom-w-input" type="number" min="64" step="64" value="${escapeHtml(node.msCustomWidth || '')}" placeholder="Auto" data-voice-input="off">
                     </label>
                     <label class="field">
                         <div class="setting-title">${tr('canvas.height')}</div>
-                        <input class="setting-input ms-custom-h-input" type="number" min="64" step="64" value="${escapeHtml(node.msCustomHeight || '')}" placeholder="Auto">
+                            <input class="setting-input ms-custom-h-input" type="number" min="64" step="64" value="${escapeHtml(node.msCustomHeight || '')}" placeholder="Auto" data-voice-input="off">
                     </label>
                     <button class="secondary-btn ms-fit-size-btn" type="button" style="height:32px;align-self:flex-end;padding:0 10px;font-size:11px">${tr('canvas.fitImageSize')}</button>
                 </div>
@@ -6712,7 +6712,7 @@ function renderImageMarkers(){
     panel.innerHTML = markers.length ? markers.map(marker => `<div class="image-marker-row ${escapeAttr(marker.status || '')}" data-marker-id="${escapeAttr(marker.id || '')}">
             ${marker.thumbnail ? `<img class="image-marker-thumb" src="${escapeAttr(marker.thumbnail)}" alt="">` : '<div class="image-marker-thumb"></div>'}
             <div class="image-marker-number"><span>${marker.number}</span></div>
-            <input class="image-marker-name" value="${escapeAttr(markerInputDisplayValue(marker))}" placeholder="标记名称" maxlength="18" data-marker-name="${escapeAttr(marker.id || '')}" ${marker.status === 'identifying' ? 'readonly' : ''}>
+                <input class="image-marker-name" value="${escapeAttr(markerInputDisplayValue(marker))}" placeholder="标记名称" maxlength="18" data-marker-name="${escapeAttr(marker.id || '')}" data-voice-input="on" data-voice-label="图片标记名称" ${marker.status === 'identifying' ? 'readonly' : ''}>
             <button class="image-marker-refresh-one" type="button" data-marker-refresh="${escapeAttr(marker.id || '')}" title="重新识别"><i data-lucide="refresh-cw" class="w-3 h-3"></i></button>
             <button class="image-marker-delete-one" type="button" data-marker-delete="${escapeAttr(marker.id || '')}" title="删除标记"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
             <div class="image-marker-status">${marker.status === 'identifying' ? '识别中' : marker.status === 'failed' ? '识别失败' : marker.objectName ? '已识别' : '待填写'}</div>
@@ -8212,7 +8212,7 @@ function materialPanelHtml(node){
             <div class="material-cats" data-zone="material-cats">${MATERIAL_CATEGORIES.map(cat => `<button type="button" class="material-cat ${cat.id === material.category ? 'active' : ''}" data-material-category="${cat.id}">${cat.label}</button>`).join('')}</div>
             <div>
                 ${materialMarkerTargetHtml(node, material)}
-                <input class="material-search" data-material-search value="${escapeAttr(material.query || '')}" placeholder="搜索：木、金属、玻璃、反光、粗糙、透明...">
+        <input class="material-search" data-material-search value="${escapeAttr(material.query || '')}" placeholder="搜索：木、金属、玻璃、反光、粗糙、透明..." data-voice-input="on" data-voice-label="材质搜索">
                 <div class="material-grid" data-zone="material-grid">${addCard}${filtered.map(item => `<button type="button" class="material-card ${(material.selected || []).includes(item.id) ? 'active' : ''}" data-material-id="${item.id}" style="--mat-tone:${item.tone};--mat-hue:${matHue}deg;--mat-display-hue:${materialHueToDisplayHue(Number(material.colorHue || 0))};--mat-sat:${matSat};--mat-lit:${matLit}">${item.custom ? `<span class="material-delete-btn" data-material-delete="${item.id}">×</span>` : ''}<span class="material-ball"></span><span class="material-label">${escapeHtml(item.label)}</span></button>`).join('')}</div>
                 <div class="material-hsl-panel ${hslOn ? 'enabled' : ''}" style="--mat-hue-value:${Number(material.colorHue || 0)};--mat-display-hue:${materialHueToDisplayHue(Number(material.colorHue || 0))};--mat-sat-value:${Number(material.colorSaturation || 100)}%;--mat-light-value:${Number(material.colorLightness || 50)}%">
                     <div class="material-hsl-head"><span class="material-hsl-title">HSL染色</span><button type="button" class="material-hsl-toggle ${hslOn ? 'active' : ''}" data-material-hsl-toggle>${hslOn ? '开启' : '关闭'}</button></div>
@@ -8263,7 +8263,7 @@ function materialDetailPanelHtml(material){
                 <label class="material-field"><span>凹凸强度</span><input type="range" min="0" max="200" step="1" value="${num('bumpStrength',0)}" data-material-config="bumpStrength"></label>
                 <label class="material-field"><span>纹理缩放</span><input type="range" min="10" max="400" step="10" value="${num('textureScale',100)}" data-material-config="textureScale"></label>
                 ${categoryFieldHtml}
-                <label class="material-field"><span>补充描述</span><input data-material-config="note" value="${escapeAttr(cfg.note || '')}" placeholder="例如：细密木纹、磨砂、旧化边缘"></label>
+                <label class="material-field"><span>补充描述</span><input data-material-config="note" value="${escapeAttr(cfg.note || '')}" placeholder="例如：细密木纹、磨砂、旧化边缘" data-voice-input="on" data-voice-label="材质说明"></label>
             </div>
             <div class="material-detail-actions">
                 <button type="button" class="controller-chip" data-material-config-reset>重置本材质</button>
@@ -10745,13 +10745,13 @@ function renderPromptTemplateModal(){
             ${editMode ? `
                 <div class="prompt-template-edit-fields">
                     <label>${escapeHtml(tr('smart.tplName'))}</label>
-                    <input data-template-edit-name value="${escapeAttr(canvasPromptTemplateName(selected) || '')}" placeholder="${escapeAttr(tr('smart.tplName'))}">
+                    <input data-template-edit-name value="${escapeAttr(canvasPromptTemplateName(selected) || '')}" placeholder="${escapeAttr(tr('smart.tplName'))}" data-voice-input="on" data-voice-label="提示词模板名称">
                     <label>${escapeHtml(tr('smart.tplGroup'))}</label>
                     <select data-template-edit-category>
                         ${promptTemplateGroups.map(group => `<option value="${escapeAttr(group.id)}" ${group.id === (selected.category || 'mine') ? 'selected' : ''}>${escapeHtml(canvasPromptTemplateCategoryLabel(group.id))}</option>`).join('')}
                     </select>
                     <label>${escapeHtml(tr('smart.tplContent'))}</label>
-                    <textarea data-template-edit-text placeholder="${escapeAttr(tr('smart.tplContent'))}">${escapeHtml(selected.positive || '')}</textarea>
+                    <textarea data-template-edit-text placeholder="${escapeAttr(tr('smart.tplContent'))}" data-voice-input="on" data-voice-label="提示词模板内容">${escapeHtml(selected.positive || '')}</textarea>
                 </div>
             ` : `
                 <div class="prompt-template-preview-content">
@@ -11069,7 +11069,7 @@ function renderLLMBody(node){
             <button class="llm-sys-toggle ${node.showSystem ? 'active' : ''}" type="button">System</button>
         </div>
         ${imgBadge}
-        ${node.showSystem ? `<textarea class="llm-system" placeholder="${tr('canvas.systemPrompt')}">${escapeHtml(node.systemPrompt || '')}</textarea>` : ''}
+        ${node.showSystem ? `<textarea class="llm-system" placeholder="${tr('canvas.systemPrompt')}" data-voice-input="on" data-voice-label="LLM 系统提示词">${escapeHtml(node.systemPrompt || '')}</textarea>` : ''}
         <div class="llm-node-pane"></div>
         <div class="llm-chat-pane"></div>
     `;
@@ -11123,7 +11123,7 @@ function renderLLMNodePane(container, node){
     const inputPlaceholder = langIsEn() ? 'Type input, or connect a Prompt node…' : '直接输入，或连接提示词节点…';
     container.innerHTML = `
         <div class="llm-pane-label">Input${isReadonly ? ' <span style="font-size:9px;opacity:.5;font-weight:600;text-transform:none;letter-spacing:0">(来自连接)</span>' : ''}</div>
-        <textarea class="llm-input-area llm-input-output" style="height:${inputHeight}px; flex:0 0 ${inputHeight}px;" ${isReadonly ? 'readonly' : ''} placeholder="${inputPlaceholder}">${escapeHtml(inputValue)}</textarea>
+        <textarea class="llm-input-area llm-input-output" style="height:${inputHeight}px; flex:0 0 ${inputHeight}px;" ${isReadonly ? 'readonly' : ''} placeholder="${inputPlaceholder}" data-voice-input="on" data-voice-label="LLM 输入">${escapeHtml(inputValue)}</textarea>
         <div class="llm-pane-resizer" title="${tr('canvas.resizePanes')}"></div>
         <div class="llm-pane-label">Output</div>
         <div class="llm-output-wrap" style="height:${outputHeight}px; flex:0 0 ${outputHeight}px;">
@@ -11163,7 +11163,7 @@ function renderLLMChatPane(container, node){
     const messages = node.messages || [];
     container.innerHTML = `
         <div class="llm-chat-log">${messages.length ? messages.map((msg, mi) => `<div class="llm-bubble ${msg.role === 'user' ? 'user' : 'assistant'}" data-msg-idx="${mi}">${escapeHtml(msg.content || '')}${msg.role === 'assistant' ? `<button class="llm-bubble-copy" type="button" title="复制"><i data-lucide="copy" style="width:11px;height:11px;display:inline-block;vertical-align:middle"></i></button>` : ''}</div>`).join('') : `<div class="text-[11px] text-gray-300">${tr('canvas.startChat')}</div>`}</div>
-        <textarea class="llm-chat-input mt-2" rows="2" placeholder="${tr('canvas.chatInput')}">${escapeHtml(node.chatInput || '')}</textarea>
+        <textarea class="llm-chat-input mt-2" rows="2" placeholder="${tr('canvas.chatInput')}" data-voice-input="on" data-voice-label="LLM 对话输入">${escapeHtml(node.chatInput || '')}</textarea>
         <button class="llm-run mt-2" ${node.running ? 'disabled' : ''}><i data-lucide="send" class="w-4 h-4"></i>${node.running ? tr('canvas.sending') : 'Send'}</button>
     `;
     bindScrollableText(container.querySelector('.llm-chat-log'));
@@ -11378,7 +11378,7 @@ function renderGeneratorBody(node){
                 <div class="gen-count-row">
                     <div class="gen-stepper">
                         <button class="gen-step-btn" data-step="-1" type="button" title="${tr('canvas.decrease')}" aria-label="${tr('canvas.decreaseCount')}"><i data-lucide="chevron-left" class="w-3.5 h-3.5"></i></button>
-                        <input class="gen-count-input" type="text" inputmode="numeric" pattern="[0-9]*" value="${Math.max(1, Math.min(8, Number(node.count || 1)))}">
+                    <input class="gen-count-input" type="text" inputmode="numeric" pattern="[0-9]*" value="${Math.max(1, Math.min(8, Number(node.count || 1)))}" data-voice-input="off">
                         <button class="gen-step-btn" data-step="1" type="button" title="${tr('canvas.increase')}" aria-label="${tr('canvas.increaseCount')}"><i data-lucide="chevron-right" class="w-3.5 h-3.5"></i></button>
                     </div>
                 </div>
@@ -11386,21 +11386,21 @@ function renderGeneratorBody(node){
             <div class="gen-settings-row custom-ratio-row" style="display:none">
                 <label class="field">
                     <div class="setting-title">${tr('canvas.ratioWidth')}</div>
-                    <input class="setting-input custom-ratio-w-input" type="number" min="1" step="1" value="${escapeHtml(node.customRatioWidth || '')}" placeholder="4">
+                            <input class="setting-input custom-ratio-w-input" type="number" min="1" step="1" value="${escapeHtml(node.customRatioWidth || '')}" placeholder="4" data-voice-input="off">
                 </label>
                 <label class="field">
                     <div class="setting-title">${tr('canvas.ratioHeight')}</div>
-                    <input class="setting-input custom-ratio-h-input" type="number" min="1" step="1" value="${escapeHtml(node.customRatioHeight || '')}" placeholder="3">
+                            <input class="setting-input custom-ratio-h-input" type="number" min="1" step="1" value="${escapeHtml(node.customRatioHeight || '')}" placeholder="3" data-voice-input="off">
                 </label>
             </div>
             <div class="gen-settings-row custom-size-row" style="display:none">
                 <label class="field">
                     <div class="setting-title">${tr('canvas.width')}</div>
-                    <input class="setting-input custom-w-input" type="number" min="64" step="64" value="${escapeHtml(node.customWidth || '')}" placeholder="Auto">
+                            <input class="setting-input custom-w-input" type="number" min="64" step="64" value="${escapeHtml(node.customWidth || '')}" placeholder="Auto" data-voice-input="off">
                 </label>
                 <label class="field">
                     <div class="setting-title">${tr('canvas.height')}</div>
-                    <input class="setting-input custom-h-input" type="number" min="64" step="64" value="${escapeHtml(node.customHeight || '')}" placeholder="Auto">
+                            <input class="setting-input custom-h-input" type="number" min="64" step="64" value="${escapeHtml(node.customHeight || '')}" placeholder="Auto" data-voice-input="off">
                 </label>
                 <button class="secondary-btn fit-size-btn" type="button" style="height:32px;align-self:flex-end;padding:0 10px;font-size:11px">${tr('canvas.fitImageSize')}</button>
             </div>
@@ -11680,7 +11680,7 @@ function renderVideoBody(node){
             <div class="gen-settings-row">
                 <label class="field" style="flex:1">
                     <div class="setting-title">${tr('canvas.videoDuration')}</div>
-                    <input class="setting-input video-duration" type="number" min="1" max="60" step="1" value="${Number(node.duration || 5)}">
+                    <input class="setting-input video-duration" type="number" min="1" max="60" step="1" value="${Number(node.duration || 5)}" data-voice-input="off">
                 </label>
                 <label class="field" style="flex:1">
                     <div class="setting-title">${tr('canvas.videoAspect')}</div>
@@ -12904,7 +12904,7 @@ function renderRhPromptFields(container, node, fields){
         const value = rhFieldValue(node, field, rhMediaSources(node));
         return `<label class="field rh-prompt-field">
             <div class="setting-title">${escapeHtml(label)}</div>
-            <textarea class="setting-input rh-param-input" data-rh-param="${escapeAttr(key)}" data-rh-role="prompt">${escapeHtml(value)}</textarea>
+            <textarea class="setting-input rh-param-input" data-rh-param="${escapeAttr(key)}" data-rh-role="prompt" data-voice-input="on" data-voice-label="${escapeAttr(label)}">${escapeHtml(value)}</textarea>
         </label>`;
     }).join('');
     bindRhParamControls(container, node);
@@ -12947,7 +12947,7 @@ function renderRhSettingField(node, field, key, kind, label, value, options, wid
         return `<div class="gen-settings-row rh-param-row ${wide ? 'wide' : ''}">
             <label class="field" style="flex:1">
                 <div class="setting-title" style="display:flex;justify-content:space-between"><span>${safeLabel}</span><span class="rh-param-val">${escapeHtml(numericValue)}</span></div>
-                <input type="range" class="canvas-range rh-param-input" data-rh-param="${escapeAttr(key)}" data-rh-type="slider" min="${escapeAttr(min)}" max="${escapeAttr(max)}" step="${escapeAttr(step)}" value="${escapeAttr(numericValue)}">
+                <input type="range" class="canvas-range rh-param-input" data-rh-param="${escapeAttr(key)}" data-rh-type="slider" min="${escapeAttr(min)}" max="${escapeAttr(max)}" step="${escapeAttr(step)}" value="${escapeAttr(numericValue)}" data-voice-input="off">
             </label>
         </div>`;
     }
@@ -12960,14 +12960,14 @@ function renderRhSettingField(node, field, key, kind, label, value, options, wid
         const active = rhRandomActive(node, key);
         return `<div class="gen-settings-row rh-param-row ${wide ? 'wide' : ''}">
             <div class="comfy-random-field">
-                <label class="field"><div class="setting-title">${safeLabel}</div><input class="setting-input rh-param-input" type="number" data-rh-param="${escapeAttr(key)}" data-rh-type="number" value="${escapeAttr(value)}" ${active ? 'disabled' : ''}></label>
+                <label class="field"><div class="setting-title">${safeLabel}</div><input class="setting-input rh-param-input" type="number" data-rh-param="${escapeAttr(key)}" data-rh-type="number" value="${escapeAttr(value)}" data-voice-input="off" ${active ? 'disabled' : ''}></label>
                 <button class="tool-btn comfy-random-btn ${active ? 'active' : ''}" type="button" data-rh-random="${escapeAttr(key)}" title="${active ? '随机已开启，点击关闭' : '随机已关闭，点击开启'}"><i data-lucide="dice-5" class="w-4 h-4"></i></button>
             </div>
         </div>`;
     }
     const inputType = kind === 'number' ? 'number' : 'text';
     return `<div class="gen-settings-row rh-param-row ${wide ? 'wide' : ''}">
-        <label class="field"><div class="setting-title">${safeLabel}</div><input class="setting-input rh-param-input" type="${inputType}" data-rh-param="${escapeAttr(key)}" data-rh-type="${escapeAttr(kind)}" value="${escapeAttr(value)}"></label>
+        <label class="field"><div class="setting-title">${safeLabel}</div><input class="setting-input rh-param-input" type="${inputType}" data-rh-param="${escapeAttr(key)}" data-rh-type="${escapeAttr(kind)}" value="${escapeAttr(value)}" data-voice-input="off"></label>
     </div>`;
 }
 function bindRhParamControls(container, node){
@@ -13471,7 +13471,7 @@ function renderComfyCustomField(node, f){
     }
     if(f.type === 'textarea'){
         return `<div class="gen-settings-row">
-            <label class="field" style="flex:1"><div class="setting-title">${label}</div><textarea class="setting-input" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="textarea" style="height:66px;padding-top:8px;resize:vertical">${escapeHtml(value)}</textarea></label>
+            <label class="field" style="flex:1"><div class="setting-title">${label}</div><textarea class="setting-input" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="textarea" style="height:66px;padding-top:8px;resize:vertical" data-voice-input="on" data-voice-label="${escapeAttr(f.name || f.input || '工作流文本')}">${escapeHtml(value)}</textarea></label>
         </div>`;
     }
     const type = f.type === 'number' ? 'number' : 'text';
@@ -13479,13 +13479,13 @@ function renderComfyCustomField(node, f){
         const active = comfyRandomActive(node, f.id);
         return `<div class="gen-settings-row">
             <div class="comfy-random-field">
-                <label class="field"><div class="setting-title">${label}</div><input class="setting-input" type="number" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="number" value="${escapeHtml(value)}"></label>
+                <label class="field"><div class="setting-title">${label}</div><input class="setting-input" type="number" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="number" value="${escapeHtml(value)}" data-voice-input="off"></label>
                 <button class="tool-btn comfy-random-btn ${active ? 'active' : ''}" type="button" data-comfy-random="${escapeHtml(f.id)}" title="${active ? '随机已开启，点击关闭' : '随机已关闭，点击开启'}" aria-label="${active ? '随机已开启，点击关闭' : '随机已关闭，点击开启'}"><i data-lucide="dice-5" class="w-4 h-4"></i></button>
             </div>
         </div>`;
     }
     return `<div class="gen-settings-row">
-        <label class="field" style="flex:1"><div class="setting-title">${label}</div><input class="setting-input" type="${type}" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="${escapeHtml(f.type || 'text')}" value="${escapeHtml(value)}"></label>
+        <label class="field" style="flex:1"><div class="setting-title">${label}</div><input class="setting-input" type="${type}" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="${escapeHtml(f.type || 'text')}" value="${escapeHtml(value)}" data-voice-input="off"></label>
     </div>`;
 }
 function updateComfyField(node, input, event){
@@ -15623,7 +15623,7 @@ function showExternalAppFallback(app='custom', appLabel='自定义软件'){
     externalAppFallback.innerHTML = `
         <div class="external-app-title">绑定${escapeHtml(appLabel)}</div>
         <div class="external-app-hint">如果系统选择窗口没有弹出，可以在这里手动输入或粘贴软件 .exe 的完整路径。</div>
-        <input class="external-app-path" placeholder="例如：D:\\Tools\\app.exe" spellcheck="false">
+            <input class="external-app-path" placeholder="例如：D:\\Tools\\app.exe" spellcheck="false" data-voice-input="off">
         <div class="external-app-actions">
             <button type="button" class="external-app-primary" data-external-app-save>保存并打开</button>
             <button type="button" class="external-app-secondary" data-external-app-picker>自动查找软件</button>

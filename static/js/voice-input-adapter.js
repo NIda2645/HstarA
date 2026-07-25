@@ -7,7 +7,9 @@
   const undoStacks = new WeakMap();
   const targetIds = new WeakMap();
   const targetsById = new Map();
+  const childFrameIds = new WeakMap();
   let targetSequence = 0;
+  let childFrameSequence = 0;
   let activeTarget = null;
   let imeComposing = false;
   let shortcut = 'Shift+Q';
@@ -260,6 +262,42 @@
       type,
       targetId: target ? targetId(target) : '',
       label: target ? labelFor(target) : '',
+      framePath: [],
+    }, global.location.origin);
+  }
+
+  function childFrameFor(source) {
+    for (const frame of document.querySelectorAll('iframe')) {
+      if (frame.contentWindow === source) return frame;
+    }
+    return null;
+  }
+
+  function childFrameId(frame) {
+    let id = childFrameIds.get(frame) || frame.dataset.hstarVoiceFrameId;
+    if (!id) {
+      id = `voice-frame-${++childFrameSequence}`;
+      childFrameIds.set(frame, id);
+      frame.dataset.hstarVoiceFrameId = id;
+    }
+    return id;
+  }
+
+  function onChildTargetMessage(event) {
+    if (global.parent === global || event.origin !== global.location.origin) return;
+    const data = event.data;
+    if (!data || ![
+      'hstar-voice-target-active',
+      'hstar-voice-target-lost',
+      'hstar-voice-target-command',
+    ].includes(data.type)) return;
+    const frame = childFrameFor(event.source);
+    if (!frame) return;
+    global.parent.postMessage({
+      type: data.type,
+      targetId: String(data.targetId || ''),
+      label: String(data.label || ''),
+      framePath: [childFrameId(frame), ...(Array.isArray(data.framePath) ? data.framePath : [])],
     }, global.location.origin);
   }
 
@@ -317,6 +355,7 @@
   document.addEventListener('compositionend', () => { imeComposing = false; }, true);
   document.addEventListener('keydown', onKeyDown, true);
   global.addEventListener('pagehide', onPageHide);
+  global.addEventListener('message', onChildTargetMessage);
 
   global.HstarVoiceInputAdapter = Object.freeze({
     begin,

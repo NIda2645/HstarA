@@ -307,6 +307,39 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.coordinator.lockedTarget).toBe(firstTarget);
   });
 
+  it('routes an attached iframe target through the child adapter', async () => {
+    const harness = makeHarness();
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const childTarget = frame.contentDocument.createElement('textarea');
+    frame.contentDocument.body.append(childTarget);
+    const childTransaction = makeTransaction();
+    const childAdapter = {
+      getTargetById: vi.fn(id => id === 'child-prompt' ? childTarget : null),
+      isEligible: vi.fn(target => target === childTarget),
+      begin: vi.fn(() => childTransaction),
+    };
+    frame.contentWindow.HstarVoiceInputAdapter = childAdapter;
+
+    harness.coordinator.attachFrame(frame);
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: window.location.origin,
+      source: frame.contentWindow,
+      data: {
+        type: 'hstar-voice-target-active',
+        targetId: 'child-prompt',
+        label: '子页面提示词',
+        framePath: [],
+      },
+    }));
+    await harness.coordinator.start();
+    harness.socket.emit({type: 'partial', text: '子页面听写', sequence: 1});
+
+    expect(childAdapter.getTargetById).toHaveBeenCalledWith('child-prompt');
+    expect(childAdapter.begin).toHaveBeenCalledWith(childTarget);
+    expect(childTransaction.update).toHaveBeenCalledWith('子页面听写');
+  });
+
   it('lets first use choose a folder and activate an existing model', async () => {
     const status = readyStatus();
     status.status.model = {ready: false, missing: ['model.pt']};

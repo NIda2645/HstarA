@@ -89,6 +89,8 @@
       this._sessionId = '';
       this._positionFrame = 0;
       this._ui = null;
+      this._attachedFrames = new Set();
+      this._frameLoadHandlers = new WeakMap();
 
       this._onFocusIn = event => {
         if (this.adapter?.isEligible?.(event.target)) this.activateTarget(event.target);
@@ -100,11 +102,13 @@
         else void this.start();
       };
       this._onViewportChange = () => this._schedulePosition();
+      this._onFrameMessage = event => this._handleFrameMessage(event);
 
       global.document?.addEventListener('focusin', this._onFocusIn, true);
       global.addEventListener?.('hstar-voice-target-command', this._onTargetCommand);
       global.addEventListener?.('resize', this._onViewportChange);
       global.addEventListener?.('scroll', this._onViewportChange, true);
+      global.addEventListener?.('message', this._onFrameMessage);
 
       if (this.renderUi) this._ensureUi();
     }
@@ -118,9 +122,23 @@
     }
 
     activateTarget(target) {
-      if (!target || this.adapter?.isEligible?.(target) === false) return false;
+      if (!target || !this._targetEligible(target)) return false;
       this._activeTarget = target;
       this._schedulePosition();
+      return true;
+    }
+
+    attachFrame(frame) {
+      if (!frame?.contentWindow || this._attachedFrames.has(frame)) return false;
+      this._attachedFrames.add(frame);
+      const onLoad = () => {
+        if (this._isFrameHandle(this._lockedTarget) && this._lockedTarget.frame === frame) {
+          void this.stop('target-removed');
+        }
+        this._schedulePosition();
+      };
+      this._frameLoadHandlers.set(frame, onLoad);
+      frame.addEventListener?.('load', onLoad);
       return true;
     }
 
@@ -130,7 +148,7 @@
       if (this.state === STATES.STOPPING && this._stopPromise) await this._stopPromise;
 
       const target = this._activeTarget || this.adapter?.getActiveTarget?.();
-      if (!target || this.adapter?.isEligible?.(target) === false) {
+      if (!target || !this._targetEligible(target)) {
         this._setState(STATES.ERROR, {code: 'VOICE_TARGET_LOST'});
         return false;
       }
@@ -164,6 +182,11 @@
       global.removeEventListener?.('hstar-voice-target-command', this._onTargetCommand);
       global.removeEventListener?.('resize', this._onViewportChange);
       global.removeEventListener?.('scroll', this._onViewportChange, true);
+      global.removeEventListener?.('message', this._onFrameMessage);
+      for (const frame of this._attachedFrames) {
+        frame.removeEventListener?.('load', this._frameLoadHandlers.get(frame));
+      }
+      this._attachedFrames.clear();
       if (this._positionFrame) global.cancelAnimationFrame?.(this._positionFrame);
       this._ui?.root.remove();
       this._ui?.dialog.remove();
@@ -379,8 +402,85 @@
 
     _ensureTransaction() {
       if (!this._lockedTarget) throw new VoiceCoordinatorError('VOICE_TARGET_LOST');
-      if (!this._transaction) this._transaction = this.adapter.begin(this._lockedTarget);
+      if (!this._transaction) {
+        if (this._isFrameHandle(this._lockedTarget)) {
+          const resolved = this._resolveFrameTarget(this._lockedTarget);
+          if (!resolved || resolved.adapter.isEligible?.(resolved.target) === false) {
+            throw new VoiceCoordinatorError('VOICE_TARGET_LOST');
+          }
+          this._transaction = resolved.adapter.begin(resolved.target);
+        } else {
+          this._transaction = this.adapter.begin(this._lockedTarget);
+        }
+      }
       return this._transaction;
+    }
+
+    _isFrameHandle(target) {
+      return Boolean(target?.hstarVoiceFrameTarget === true);
+    }
+
+    _targetEligible(target) {
+      if (this._isFrameHandle(target)) {
+        const resolved = this._resolveFrameTarget(target);
+        return Boolean(resolved && resolved.adapter.isEligible?.(resolved.target) !== false);
+      }
+      return this.adapter?.isEligible?.(target) !== false;
+    }
+
+    _resolveFrameTarget(handle) {
+      try {
+        let frameWindow = handle.frame.contentWindow;
+        const traversedFrames = [handle.frame];
+        for (const routeId of handle.framePath || []) {
+          const nestedFrame = Array.from(frameWindow.document.querySelectorAll('iframe'))
+            .find(frame => frame.dataset.hstarVoiceFrameId === routeId);
+          if (!nestedFrame?.contentWindow) return null;
+          traversedFrames.push(nestedFrame);
+          frameWindow = nestedFrame.contentWindow;
+        }
+        const adapter = frameWindow.HstarVoiceInputAdapter;
+        const target = adapter?.getTargetById?.(handle.targetId);
+        if (!adapter || !target) return null;
+        return {adapter, target, frames: traversedFrames};
+      } catch {
+        return null;
+      }
+    }
+
+    _handleFrameMessage(event) {
+      if (event.origin !== global.location.origin) return;
+      const frame = Array.from(this._attachedFrames)
+        .find(candidate => candidate.contentWindow === event.source);
+      if (!frame) return;
+      const data = event.data;
+      if (!data || ![
+        'hstar-voice-target-active',
+        'hstar-voice-target-lost',
+        'hstar-voice-target-command',
+      ].includes(data.type)) return;
+      const framePath = (Array.isArray(data.framePath) ? data.framePath : [])
+        .map(value => String(value || ''))
+        .filter(Boolean)
+        .slice(0, 8);
+      const handle = {
+        hstarVoiceFrameTarget: true,
+        frame,
+        framePath,
+        targetId: String(data.targetId || ''),
+        label: String(data.label || ''),
+      };
+      if (!handle.targetId) return;
+      if (data.type === 'hstar-voice-target-active') {
+        this.activateTarget(handle);
+      } else if (data.type === 'hstar-voice-target-command') {
+        if (!this.activateTarget(handle)) return;
+        if (ACTIVE_STATES.has(this.state)) void this.stop('user');
+        else void this.start();
+      } else if (!this._targetEligible(handle)) {
+        if (this._activeTarget?.targetId === handle.targetId) this._activeTarget = null;
+        if (this._lockedTarget?.targetId === handle.targetId) void this.stop('target-removed');
+      }
     }
 
     _beginServerStop(reason, nextState, detail) {
@@ -724,11 +824,11 @@
 
     _positionEntry() {
       const target = this._activeTarget;
-      if (!this._ui || !target?.isConnected || typeof target.getBoundingClientRect !== 'function') {
+      const rect = this._targetRect(target);
+      if (!this._ui || !rect) {
         if (this._ui) this._ui.root.hidden = true;
         return;
       }
-      const rect = target.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
         this._ui.root.hidden = true;
         return;
@@ -736,6 +836,36 @@
       this._ui.root.hidden = false;
       this._ui.root.style.left = `${Math.max(8, rect.right - 34)}px`;
       this._ui.root.style.top = `${Math.max(8, rect.top + 6)}px`;
+    }
+
+    _targetRect(target) {
+      if (!target) return null;
+      if (!this._isFrameHandle(target)) {
+        if (!target.isConnected || typeof target.getBoundingClientRect !== 'function') return null;
+        return target.getBoundingClientRect();
+      }
+      const resolved = this._resolveFrameTarget(target);
+      if (!resolved || typeof resolved.target.getBoundingClientRect !== 'function') return null;
+      let left = 0;
+      let top = 0;
+      let scaleX = 1;
+      let scaleY = 1;
+      for (const frame of resolved.frames) {
+        const frameRect = frame.getBoundingClientRect();
+        left += frameRect.left * scaleX;
+        top += frameRect.top * scaleY;
+        scaleX *= frame.clientWidth > 0 ? frameRect.width / frame.clientWidth : 1;
+        scaleY *= frame.clientHeight > 0 ? frameRect.height / frame.clientHeight : 1;
+      }
+      const inner = resolved.target.getBoundingClientRect();
+      return {
+        left: left + (inner.left * scaleX),
+        right: left + (inner.right * scaleX),
+        top: top + (inner.top * scaleY),
+        bottom: top + (inner.bottom * scaleY),
+        width: inner.width * scaleX,
+        height: inner.height * scaleY,
+      };
     }
   }
 

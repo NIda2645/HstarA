@@ -2852,7 +2852,7 @@ function renderVideoDurationControl(){
             </div>
             <label class="duration-custom">
                 <span>${escapeHtml(tr('smart.custom'))}</span>
-                <input type="number" min="1" max="60" step="1" data-param="videoDuration" value="${v}">
+                <input type="number" min="1" max="60" step="1" data-param="videoDuration" value="${v}" data-voice-input="off">
             </label>
         </div>
     </div>`;
@@ -3255,8 +3255,8 @@ function renderComfyParams(){
     }
     let html = '';
     if(settings.comfyMode === 'text'){
-        html += `<div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.width'))}</span><input type="number" data-param="width" value="${Number(settings.width || 1024)}"></div>
-            <div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.height'))}</span><input type="number" data-param="height" value="${Number(settings.height || 1024)}"></div>`;
+        html += `<div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.width'))}</span><input type="number" data-param="width" value="${Number(settings.width || 1024)}" data-voice-input="off"></div>
+            <div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.height'))}</span><input type="number" data-param="height" value="${Number(settings.height || 1024)}" data-voice-input="off"></div>`;
     } else if(settings.comfyMode === 'enhance'){
         html += `<div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.strength'))}</span><input type="number" min="0.1" max="1" step="0.05" data-param="enhanceStrength" value="${Number(settings.enhanceStrength ?? 0.5)}"></div>
             <button type="button" class="setting-check ${settings.enhanceUpscale ? 'active' : ''}" data-toggle-param="enhanceUpscale"><span class="check-box"></span><span>${escapeHtml(tr('smart.superResolution'))}</span></button>
@@ -3622,16 +3622,16 @@ function renderCustomRatioControls(prefix=''){
     const wKey = prefix ? `${prefix}CustomRatioWidth` : 'customRatioWidth';
     const hKey = prefix ? `${prefix}CustomRatioHeight` : 'customRatioHeight';
     const disabled = settings[ratioKey] === 'source' ? 'disabled' : '';
-    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="比例宽" ${disabled}>
-            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="比例高" ${disabled}>`;
+    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="比例宽" data-voice-input="off" ${disabled}>
+            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="比例高" data-voice-input="off" ${disabled}>`;
 }
 function renderCustomSizeControls(prefix=''){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     if(settings[resKey] !== 'custom') return '';
     const wKey = prefix ? `${prefix}CustomWidth` : 'customWidth';
     const hKey = prefix ? `${prefix}CustomHeight` : 'customHeight';
-    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="宽度">
-            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="高度">`;
+    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="宽度" data-voice-input="off">
+            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="高度" data-voice-input="off">`;
 }
 function renderComfySettingField(field){
     const value = comfyParamValue(field);
@@ -3650,13 +3650,13 @@ function renderComfySettingField(field){
             </div>
         </div>`;
     }
-    if(field.type === 'textarea') return `<textarea class="wide" data-comfy-param="${escapeHtml(field.id)}" placeholder="${escapeHtml(label)}" style="width:160px">${escapeHtml(value)}</textarea>`;
+    if(field.type === 'textarea') return `<textarea class="wide" data-comfy-param="${escapeHtml(field.id)}" placeholder="${escapeHtml(label)}" style="width:160px" data-voice-input="on" data-voice-label="${escapeHtml(label)}">${escapeHtml(value)}</textarea>`;
     const type = (field.type === 'number' || field.type === 'slider') ? 'number' : 'text';
     const min = field.min !== undefined ? ` min="${escapeHtml(field.min)}"` : '';
     const max = field.max !== undefined ? ` max="${escapeHtml(field.max)}"` : '';
     const step = field.step !== undefined ? ` step="${escapeHtml(field.step)}"` : '';
     const isNumeric = type === 'number';
-    const inputHtml = `<input type="${type}" data-comfy-param="${escapeHtml(field.id)}" value="${escapeHtml(value)}"${min}${max}${step}>`;
+    const inputHtml = `<input type="${type}" data-comfy-param="${escapeHtml(field.id)}" value="${escapeHtml(value)}"${min}${max}${step} data-voice-input="off">`;
     if(isNumeric && comfyRandomEnabledField(field)){
         const active = smartComfyRandomActive(field.id);
         return `<div class="num-with-dice" title="${escapeHtml(label)}">
@@ -4114,7 +4114,7 @@ function renderRhSettingField(field){
             <button class="smart-pill" type="button"><span class="sub">${escapeHtml(label)}</span><span class="rh-slider-pill-value">${escapeHtml(numericValue)}</span></button>
             <div class="smart-popover compact-popover rh-picker-popover rh-param-popover rh-slider-popover">
                 <div class="smart-popover-title"><span>${escapeHtml(label)}</span><span class="rh-slider-value">${escapeHtml(numericValue)}</span></div>
-                <input type="range" class="smart-range rh-slider-input" data-rh-param="${escapeHtml(key)}" data-rh-type="slider" min="${escapeHtml(min)}" max="${escapeHtml(max)}" step="${escapeHtml(step)}" value="${escapeHtml(numericValue)}">
+                <input type="range" class="smart-range rh-slider-input" data-rh-param="${escapeHtml(key)}" data-rh-type="slider" min="${escapeHtml(min)}" max="${escapeHtml(max)}" step="${escapeHtml(step)}" value="${escapeHtml(numericValue)}" data-voice-input="off">
             </div>
         </div>`;
     }
@@ -4131,7 +4131,7 @@ function renderRhSettingField(field){
         </div>`;
     }
     const type = kind === 'number' ? 'number' : 'text';
-    const inputHtml = `<input type="${type}" data-rh-param="${escapeHtml(key)}" value="${escapeHtml(value)}">`;
+    const inputHtml = `<input type="${type}" data-rh-param="${escapeHtml(key)}" value="${escapeHtml(value)}" data-voice-input="off">`;
     if(kind === 'number' && rhRandomEnabled(field)){
         const active = smartRhRandomActive(key);
         return `<div class="num-with-dice" title="${escapeHtml(label)}">
@@ -4854,13 +4854,13 @@ function renderPromptTemplatePanel(options={}){
             ${editMode ? `
                 <div class="prompt-template-edit-fields">
                     <label>${escapeHtml(tr('smart.tplName'))}</label>
-                    <input data-template-edit-name value="${escapeAttr(selectedPreset.name || '')}" placeholder="${escapeAttr(tr('smart.tplName'))}">
+                    <input data-template-edit-name value="${escapeAttr(selectedPreset.name || '')}" placeholder="${escapeAttr(tr('smart.tplName'))}" data-voice-input="on" data-voice-label="提示词模板名称">
                     <label>${escapeHtml(tr('smart.tplGroup'))}</label>
                     <select data-template-edit-category>
                         ${activeGroups.map(group => `<option value="${escapeAttr(group.id)}" ${group.id === (selectedPreset.category || selected?.category || 'mine') ? 'selected' : ''}>${escapeHtml(promptTemplateCategoryLabel(group.id))}</option>`).join('')}
                     </select>
                     <label>${escapeHtml(tr('smart.tplContent'))}</label>
-                    <textarea data-template-edit-text placeholder="${escapeAttr(tr('smart.tplContent'))}">${escapeHtml(selectedPreset.text || '')}</textarea>
+                    <textarea data-template-edit-text placeholder="${escapeAttr(tr('smart.tplContent'))}" data-voice-input="on" data-voice-label="提示词模板内容">${escapeHtml(selectedPreset.text || '')}</textarea>
                 </div>
             ` : `
                 <div class="prompt-template-preview-content">
@@ -7888,15 +7888,15 @@ function promptNodeBodyHtml(node){
         <div class="prompt-node-llm">
             <select class="prompt-node-control prompt-llm-provider">${chatProviderOptions(node.llmProvider)}</select>
             <select class="prompt-node-control prompt-llm-model">${chatModelOptions(node.llmModel, node.llmProvider)}</select>
-            <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}">${escapeHtml(node.llmInstruction || '')}</textarea>
+            <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}" data-voice-input="on" data-voice-label="LLM 修改要求">${escapeHtml(node.llmInstruction || '')}</textarea>
             <div class="prompt-node-llm-actions">
                 <button class="prompt-node-run prompt-node-control" type="button" ${node.running ? 'disabled' : ''}><i data-lucide="${node.running ? 'loader-2' : 'play'}"></i><span>${node.running ? escapeHtml(tr('common.running')) : escapeHtml(tr('common.run'))}</span></button>
                 <button class="prompt-node-pill prompt-node-control prompt-system-toggle ${node.llmSystemEnabled ? 'active' : ''}" type="button"><i data-lucide="${node.llmSystemEnabled ? 'toggle-right' : 'toggle-left'}"></i><span>${escapeHtml(node.llmSystemEnabled ? tr('smart.promptLlmDisableSystem') : tr('smart.promptLlmEnableSystem'))}</span></button>
             </div>
-            ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
+            ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}" data-voice-input="on" data-voice-label="LLM 系统提示词">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
         </div>` : '';
     return `<div class="prompt-node-card">
-        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}">${escapeHtml(node.text || '')}</textarea>
+        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}" data-voice-input="on" data-voice-label="提示词">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
             <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>模板库</span></button>
             <button class="prompt-node-pill prompt-llm-toggle ${node.llmEnabled ? 'active' : ''}" type="button"><i data-lucide="sparkles"></i><span>LLM</span></button>
@@ -7915,7 +7915,7 @@ function loopNumberControlHtml({label, value, key, min=1, max=100, quick=[1,2,3,
             </div>
             <label class="loop-number-custom">
                 <span>${escapeHtml(tr('common.custom'))}</span>
-                <input class="loop-smart-control loop-number-input" type="number" min="${min}" max="${max}" step="1" data-loop-number-input="${escapeHtml(key)}" value="${v}">
+                <input class="loop-smart-control loop-number-input" type="number" min="${min}" max="${max}" step="1" data-loop-number-input="${escapeHtml(key)}" value="${v}" data-voice-input="off">
             </label>
         </div>
     </div>`;
@@ -10587,7 +10587,7 @@ function promptNodeBodyHtml(node){
             <select class="prompt-node-control prompt-llm-provider">${chatProviderOptions(node.llmProvider)}</select>
             <select class="prompt-node-control prompt-llm-model">${chatModelOptions(node.llmModel, node.llmProvider)}</select>
             <div class="prompt-llm-instruction-wrap">
-                <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}" style="height:${promptLlmInstructionHeight(node)}px">${escapeHtml(node.llmInstruction || '')}</textarea>
+                <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}" style="height:${promptLlmInstructionHeight(node)}px" data-voice-input="on" data-voice-label="LLM 修改要求">${escapeHtml(node.llmInstruction || '')}</textarea>
                 <div class="prompt-llm-instruction-resize prompt-node-control" data-llm-instruction-resize="1" title="拖动调整高度"><span></span></div>
             </div>
             ${upstreamPromptHtml}
@@ -10595,17 +10595,17 @@ function promptNodeBodyHtml(node){
                 <button class="prompt-node-run prompt-node-control" type="button" ${node.running ? 'disabled' : ''}><i data-lucide="${node.running ? 'loader-2' : 'play'}"></i><span>${node.running ? escapeHtml(tr('common.running')) : escapeHtml(tr('common.run'))}</span></button>
                 <button class="prompt-node-pill prompt-node-control prompt-system-toggle ${node.llmSystemEnabled ? 'active' : ''}" type="button"><i data-lucide="${node.llmSystemEnabled ? 'toggle-right' : 'toggle-left'}"></i><span>${escapeHtml(node.llmSystemEnabled ? tr('smart.promptLlmDisableSystem') : tr('smart.promptLlmEnableSystem'))}</span></button>
             </div>
-            ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
+            ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}" data-voice-input="on" data-voice-label="LLM 系统提示词">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
         </div>` : '';
     return `<div class="prompt-node-card">
-        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}">${escapeHtml(node.text || '')}</textarea>
+        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}" data-voice-input="on" data-voice-label="提示词">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
             <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>模板库</span></button>
             <button class="prompt-node-pill prompt-node-control prompt-split-toggle ${node.promptSplitEnabled ? 'active' : ''}" type="button"><i data-lucide="split"></i><span>分隔符</span></button>
             <button class="prompt-node-pill prompt-llm-toggle ${node.llmEnabled ? 'active' : ''}" type="button"><i data-lucide="sparkles"></i><span>LLM</span></button>
         </div>
         ${node.promptSplitEnabled ? `<div class="prompt-node-split-row">
-            <label class="prompt-node-split-control prompt-node-control"><span>分隔符</span><input class="prompt-node-separator" type="text" value="${escapeHtml(node.promptSeparator)}" maxlength="8" placeholder=";"></label>
+            <label class="prompt-node-split-control prompt-node-control"><span>分隔符</span><input class="prompt-node-separator" type="text" value="${escapeHtml(node.promptSeparator)}" maxlength="8" placeholder=";" data-voice-input="off"></label>
             <span class="prompt-node-split-count">${promptItems.length || 0} 段</span>
         </div>
         <div class="prompt-node-segments" style="height:${promptSplitPreviewH}px">${promptItems.length ? promptItems.map((item, index) => `<div class="prompt-node-segment"><span>${index + 1}</span><p>${escapeHtml(item)}</p></div>`).join('') : ''}</div>
@@ -10635,7 +10635,7 @@ function loopNumberControlHtml({label, value, key, min=1, max=100, quick=[1,2,3,
             </div>
             <label class="loop-number-custom">
                 <span>${escapeHtml(tr('common.custom'))}</span>
-                <input class="loop-smart-control loop-number-input" type="number" min="${min}" max="${max}" step="1" data-loop-number-input="${escapeHtml(key)}" value="${v}">
+                <input class="loop-smart-control loop-number-input" type="number" min="${min}" max="${max}" step="1" data-loop-number-input="${escapeHtml(key)}" value="${v}" data-voice-input="off">
             </label>
         </div>
     </div>`;
@@ -11150,7 +11150,7 @@ function renderSmartTextModifyPanel(){
     const rows = (state.texts || []).length ? state.texts.map((item, index) => `
         <label class="smart-text-edit-field">
             <span>${index + 1}</span>
-            <textarea data-smart-text-index="${index}" rows="2" placeholder="识别文字">${escapeHtml(item.next ?? item.text ?? '')}</textarea>
+            <textarea data-smart-text-index="${index}" rows="2" placeholder="识别文字" data-voice-input="on" data-voice-label="识别文字">${escapeHtml(item.next ?? item.text ?? '')}</textarea>
         </label>`).join('') : `<div class="smart-text-edit-empty">${emptyText}</div>`;
     const modifyBody = `
         ${recognitionControls}
@@ -13082,7 +13082,7 @@ function renderImageMarkers(){
         return `<div class="image-marker-row" data-marker-id="${escapeAttr(marker.id || '')}">
             ${marker.thumbnail ? `<img class="image-marker-thumb" src="${escapeAttr(marker.thumbnail)}" alt="">` : '<div class="image-marker-thumb"></div>'}
             <div class="image-marker-number"><span>${marker.number}</span></div>
-            <input class="image-marker-name" value="${escapeAttr(markerInputDisplayValue(marker))}" placeholder="标记名称" maxlength="18" data-marker-name="${escapeAttr(marker.id || '')}" ${marker.status === 'identifying' ? 'readonly' : ''}>
+            <input class="image-marker-name" value="${escapeAttr(markerInputDisplayValue(marker))}" placeholder="标记名称" maxlength="18" data-marker-name="${escapeAttr(marker.id || '')}" data-voice-input="on" data-voice-label="图片标记名称" ${marker.status === 'identifying' ? 'readonly' : ''}>
             <button class="image-marker-refresh-one" type="button" data-marker-refresh="${escapeAttr(marker.id || '')}" title="重新识别"><i data-lucide="refresh-cw" class="w-3 h-3"></i></button>
             <button class="image-marker-delete-one" type="button" data-marker-delete="${escapeAttr(marker.id || '')}" title="删除标记"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
             <div class="image-marker-status">${marker.status === 'identifying' ? '识别中' : marker.status === 'failed' ? '识别失败' : marker.objectName ? '已识别' : '待填写'}</div>

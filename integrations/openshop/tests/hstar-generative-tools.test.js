@@ -257,6 +257,7 @@ describe('Hstar OpenShop inline generative tools', () => {
     expect(existsSync(stylesPath), `${stylesPath} should exist`).toBe(true);
     vi.resetModules();
     delete window.HstarOpenShopGenerativeTools;
+    delete window.HstarVoiceInputAdapter;
     document.querySelectorAll('link[href*="openshop-generative-tools.css"]').forEach(link => link.remove());
     document.body.innerHTML = `
       <div id="tool-options"><div id="opt-marquee"></div></div>
@@ -359,6 +360,44 @@ describe('Hstar OpenShop inline generative tools', () => {
       controller.destroy();
     },
   );
+
+  it('keeps mention capsules intact across voice commit and cancellation', async () => {
+    let registration = null;
+    window.HstarVoiceInputAdapter = {
+      register: vi.fn((target, adapter) => {
+        registration = {target, adapter};
+        return vi.fn();
+      }),
+    };
+    const {controller, editor} = createHarness();
+    await controller.start();
+    openToolWithSelection(controller, editor, 'local-redraw');
+    const prompt = document.querySelector('[data-generative-prompt]');
+    prompt.innerHTML = '保留 <span class="hstar-generative-mention-token" contenteditable="false" data-generative-mention-token="true" data-reference-key="primary-key" data-mention="@参考图1">@参考图1</span> ';
+    prompt.dispatchEvent(new Event('input', {bubbles:true}));
+    placeCaretAtEnd(prompt);
+
+    expect(registration?.target).toBe(prompt);
+    const transaction = registration.adapter.beginComposition(registration.adapter.getSelection());
+    transaction.updateComposition('语');
+    transaction.updateComposition('语音@文字');
+    transaction.commitComposition('语音@文字完成');
+
+    expect(prompt.querySelectorAll('[data-generative-mention-token]')).toHaveLength(1);
+    expect(prompt.querySelector('[data-generative-mention-token]').textContent).toBe('@参考图1');
+    expect(prompt.textContent).toContain('语音@文字完成');
+    expect(prompt.querySelectorAll('[data-generative-mention-token]')).toHaveLength(1);
+    expect(controller.getState().prompt).toContain('语音@文字完成');
+
+    placeCaretAtEnd(prompt);
+    const beforeCancel = prompt.innerHTML;
+    const cancelled = registration.adapter.beginComposition(registration.adapter.getSelection());
+    cancelled.updateComposition('未提交');
+    cancelled.cancelComposition();
+    expect(prompt.innerHTML).toBe(beforeCancel);
+    expect(prompt.querySelectorAll('[data-generative-mention-token]')).toHaveLength(1);
+    controller.destroy();
+  });
 
   it('hides while a canvas selection is being drawn and restores the normal panel when it completes', async () => {
     const {controller, editor} = createHarness();

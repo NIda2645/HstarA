@@ -1759,16 +1759,20 @@ def sync_static_html_versions():
         return
     safe_version = urllib.parse.quote(version, safe="._-")
     try:
-        for name in os.listdir(STATIC_DIR):
-            # 跳过 macOS 在外置硬盘(ExFAT/NTFS)生成的 ._* Apple Double 元数据文件，
-            # 这些是二进制文件，按 UTF-8 读取会抛 UnicodeDecodeError。
-            if name.startswith("._"):
-                continue
-            if not name.lower().endswith(".html"):
-                continue
-            path = os.path.join(STATIC_DIR, name)
-            if not os.path.isfile(path):
-                continue
+        html_paths = []
+        for directory, subdirectories, filenames in os.walk(STATIC_DIR):
+            subdirectories[:] = [name for name in subdirectories if name not in {"node_modules", "vendor"}]
+            for name in filenames:
+                # 跳过 macOS 在外置硬盘(ExFAT/NTFS)生成的 ._* Apple Double 元数据文件，
+                # 这些是二进制文件，按 UTF-8 读取会抛 UnicodeDecodeError。
+                if name.startswith("._") or not name.lower().endswith(".html"):
+                    continue
+                path = os.path.join(directory, name)
+                if os.path.isfile(path):
+                    html_paths.append(path)
+        shell_path = os.path.abspath(os.path.join(STATIC_DIR, "index.html"))
+        html_paths.sort(key=lambda path: (os.path.abspath(path) == shell_path, path.lower()))
+        for path in html_paths:
             # 单文件容错：某个文件读写失败不应中断整批同步。
             try:
                 with open(path, "r", encoding="utf-8") as f:
@@ -1778,7 +1782,7 @@ def sync_static_html_versions():
                     with open(path, "w", encoding="utf-8", newline="") as f:
                         f.write(new)
             except Exception as e:
-                print(f"同步静态页面版本号失败({name}): {e}")
+                print(f"同步静态页面版本号失败({os.path.relpath(path, STATIC_DIR)}): {e}")
     except Exception as e:
         print(f"同步静态页面版本号失败: {e}")
 

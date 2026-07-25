@@ -110,6 +110,7 @@
       feedback:'',
       feedbackTimer:0,
       unsubscribeCatalog:null,
+      unregisterVoicePrompt:null,
       listeners:[],
       resumeGeneration:0,
     };
@@ -509,9 +510,9 @@
           ${['auto', '1k', '2k', '4k', 'custom'].map(value => `<button type="button" class="${state.resolution === value ? 'active' : ''}" data-generative-size-resolution="${value}">${value === 'auto' ? '自动' : value === 'custom' ? '自定义' : value.toUpperCase()}</button>`).join('')}
         </div>
         ${state.resolution === 'custom' ? `<div class="hstar-generative-custom-fields">
-          <input type="number" min="64" max="4096" step="16" value="${state.customWidth}" data-generative-custom-width aria-label="自定义宽度">
+          <input type="number" min="64" max="4096" step="16" value="${state.customWidth}" data-generative-custom-width data-voice-input="off" aria-label="自定义宽度">
           <span>×</span>
-          <input type="number" min="64" max="4096" step="16" value="${state.customHeight}" data-generative-custom-height aria-label="自定义高度">
+          <input type="number" min="64" max="4096" step="16" value="${state.customHeight}" data-generative-custom-height data-voice-input="off" aria-label="自定义高度">
           <button type="button" data-generative-action="apply-custom-resolution">应用</button>
         </div>` : ''}
       </div>`;
@@ -524,9 +525,9 @@
           ${RATIO_OPTIONS.map(([value, label]) => `<button type="button" class="${state.ratio === value ? 'active' : ''}" data-generative-size-ratio="${value}">${label}</button>`).join('')}
         </div>
         ${state.ratio === 'custom' ? `<div class="hstar-generative-custom-fields">
-          <input type="number" min="1" max="100" step="1" value="${state.customRatioWidth}" data-generative-custom-ratio-width aria-label="自定义比例宽度">
+          <input type="number" min="1" max="100" step="1" value="${state.customRatioWidth}" data-generative-custom-ratio-width data-voice-input="off" aria-label="自定义比例宽度">
           <span>:</span>
-          <input type="number" min="1" max="100" step="1" value="${state.customRatioHeight}" data-generative-custom-ratio-height aria-label="自定义比例高度">
+          <input type="number" min="1" max="100" step="1" value="${state.customRatioHeight}" data-generative-custom-ratio-height data-voice-input="off" aria-label="自定义比例高度">
           <button type="button" data-generative-action="apply-custom-ratio">应用</button>
         </div>` : ''}
       </div>`;
@@ -740,6 +741,125 @@
       state.prompt = promptTextFromParts(state.promptParts);
     }
 
+    function captureEditorSelection(editorNode){
+      const selection = root.getSelection?.();
+      let range = null;
+      if(selection?.rangeCount){
+        const selected = selection.getRangeAt(0);
+        if(editorNode.contains(selected.commonAncestorContainer)) range = selected.cloneRange();
+      }
+      if(!range){
+        range = documentRef.createRange();
+        range.selectNodeContents(editorNode);
+        range.collapse(false);
+      }
+      return {range, beforeHtml:editorNode.innerHTML};
+    }
+
+    function dispatchVoiceInput(editorNode, type, inputType, text, isComposing=false){
+      const options = {
+        bubbles:true,
+        cancelable:type === 'beforeinput',
+        inputType,
+        data:text == null ? null : String(text),
+        isComposing,
+      };
+      let event;
+      try { event = new root.InputEvent(type, options); }
+      catch(error) { event = new root.Event(type, options); }
+      return editorNode.dispatchEvent(event);
+    }
+
+    function updateVoiceComposition(editorNode, transaction, text){
+      if(transaction.closed || !editorNode.isConnected) return false;
+      const value = String(text || '');
+      if(!dispatchVoiceInput(editorNode, 'beforeinput', 'insertCompositionText', value, true)) return false;
+      if(!transaction.marker){
+        transaction.range.deleteContents();
+        transaction.marker = documentRef.createElement('span');
+        transaction.marker.dataset.voiceComposition = 'true';
+        transaction.range.insertNode(transaction.marker);
+      }
+      transaction.marker.textContent = value;
+      dispatchVoiceInput(editorNode, 'input', 'insertCompositionText', value, true);
+      return true;
+    }
+
+    function commitVoiceComposition(editorNode, transaction, text){
+      if(transaction.closed || !editorNode.isConnected) return false;
+      if(!updateVoiceComposition(editorNode, transaction, text)) return false;
+      const textNode = documentRef.createTextNode(transaction.marker?.textContent || '');
+      transaction.marker?.replaceWith(textNode);
+      transaction.marker = null;
+      transaction.closed = true;
+      state.mentionOpen = false;
+      syncPromptFromDom();
+      renderMentionPicker();
+      const selection = root.getSelection?.();
+      if(selection && textNode.isConnected){
+        const range = documentRef.createRange();
+        range.setStartAfter(textNode);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        state.promptRange = range.cloneRange();
+      }
+      return true;
+    }
+
+    function cancelVoiceComposition(editorNode, transaction){
+      if(transaction.closed || !editorNode.isConnected) return false;
+      if(!dispatchVoiceInput(editorNode, 'beforeinput', 'deleteCompositionText', null, false)) return false;
+      editorNode.innerHTML = transaction.beforeHtml;
+      transaction.marker = null;
+      transaction.closed = true;
+      state.mentionOpen = false;
+      syncPromptFromDom();
+      renderMentionPicker();
+      const selection = root.getSelection?.();
+      if(selection){
+        const range = documentRef.createRange();
+        range.selectNodeContents(editorNode);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        state.promptRange = range.cloneRange();
+      }
+      dispatchVoiceInput(editorNode, 'input', 'deleteCompositionText', null, false);
+      return true;
+    }
+
+    function beginVoiceComposition(editorNode, captured=captureEditorSelection(editorNode)){
+      const transaction = {
+        range:captured?.range?.cloneRange?.() || captureEditorSelection(editorNode).range,
+        beforeHtml:String(captured?.beforeHtml ?? editorNode.innerHTML),
+        marker:null,
+        closed:false,
+      };
+      return {
+        updateComposition:text => updateVoiceComposition(editorNode, transaction, text),
+        commitComposition:text => commitVoiceComposition(editorNode, transaction, text),
+        cancelComposition:() => cancelVoiceComposition(editorNode, transaction),
+      };
+    }
+
+    function clearVoicePromptRegistration(){
+      state.unregisterVoicePrompt?.();
+      state.unregisterVoicePrompt = null;
+    }
+
+    function registerVoicePrompt(bar){
+      clearVoicePromptRegistration();
+      const editorNode = bar.querySelector('[data-generative-prompt]');
+      if(!editorNode || typeof root.HstarVoiceInputAdapter?.register !== 'function') return;
+      state.unregisterVoicePrompt = root.HstarVoiceInputAdapter.register(editorNode, {
+        getSelection:() => captureEditorSelection(editorNode),
+        beginComposition:selection => beginVoiceComposition(editorNode, selection),
+        isTargetAvailable:() => editorNode.isConnected && !bar.hidden && Boolean(state.activeTool),
+        getTargetLabel:() => state.activeTool === 'generative-fill' ? '生成式填充要求' : '局部重绘要求',
+      });
+    }
+
     function removeMentionTrigger(editorNode, range){
       if(range.startContainer?.nodeType === 3 && range.startOffset > 0){
         const value = range.startContainer.textContent || '';
@@ -896,7 +1016,11 @@
         button.classList.toggle('active', button.dataset.hstarGenerativeTool === state.activeTool);
       });
       const bar = ensureBar();
-      if(!state.activeTool){ bar.hidden = true; return; }
+      if(!state.activeTool){
+        clearVoicePromptRegistration();
+        bar.hidden = true;
+        return;
+      }
       const selected = resolvedModel();
       const limits = capabilityLimits(selected.model);
       state.count = Math.min(limits.maxOutputs, Math.max(1, Number(state.count || 1)));
@@ -924,6 +1048,7 @@
       const secondaryReasonText = primaryStatusText === reason ? '' : reason;
       bar.classList.toggle('is-expanded', state.expanded && !state.collapsed);
       bar.classList.toggle('is-collapsed', state.collapsed);
+      clearVoicePromptRegistration();
       bar.innerHTML = `<div class="hstar-generative-grab" aria-hidden="true"></div>
       <div class="hstar-generative-workbench-top" data-generative-workbench-top>
         <div class="hstar-generative-context">
@@ -943,7 +1068,7 @@
       <div class="hstar-generative-prompt-stage" data-generative-prompt-stage>
         <label class="hstar-generative-prompt">
           <span class="hstar-visually-hidden">修改要求${state.activeTool === 'local-redraw' ? '，支持 @ 精确引用' : '，可以留空'}</span>
-          <div class="hstar-generative-prompt-editor" data-generative-prompt contenteditable="true" role="textbox" aria-multiline="true" data-maxlength="8000" data-placeholder="${state.activeTool === 'local-redraw' ? '请输入修改要求，输入 @ 可引用参考图…' : '请输入提示词，输入 @ 可引用参考图，也可以留空直接运行…'}">${promptPartsHtml(state.promptParts)}</div>
+          <div class="hstar-generative-prompt-editor" data-generative-prompt data-voice-input="on" data-voice-label="${state.activeTool === 'generative-fill' ? '生成式填充要求' : '局部重绘要求'}" contenteditable="true" role="textbox" aria-multiline="true" data-maxlength="8000" data-placeholder="${state.activeTool === 'local-redraw' ? '请输入修改要求，输入 @ 可引用参考图…' : '请输入提示词，输入 @ 可引用参考图，也可以留空直接运行…'}">${promptPartsHtml(state.promptParts)}</div>
           ${mentionPickerHtml()}
         </label>
         <div class="hstar-selection-hint" data-generative-selection-hint ${selectionAvailable() ? 'hidden' : ''}>请先选择要修改的区域</div>
@@ -1004,6 +1129,7 @@
         </div>
       </div>`;
       renderSelectionMarkers(state.selectionRegions);
+      registerVoicePrompt(bar);
     }
 
     function openTool(toolId){
@@ -1683,6 +1809,7 @@
       state.resumeGeneration += 1;
       if(state.feedbackTimer) root.clearTimeout?.(state.feedbackTimer);
       state.feedbackTimer = 0;
+      clearVoicePromptRegistration();
       state.listeners.splice(0).forEach(remove => remove());
       state.unsubscribeCatalog?.();
       generativeClient.stopSession?.();
