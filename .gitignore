@@ -41,6 +41,13 @@ python/share/
 # Installer staging output
 build/installer/stage/
 
+# Optional local voice assistant runtime and model data
+**/.hstar-voice/
+/FunAudioLLM/Fun-ASR-Nano-2512/
+/voice-assistant-data/
+**/.cache/modelscope/
+**/.modelscope/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

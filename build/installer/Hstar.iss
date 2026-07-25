@@ -35,7 +35,7 @@ Name: "desktopicon"; Description: "Create desktop shortcut"; GroupDescription: "
 Name: "overwriteapidata"; Description: "Overwrite API config data while preserving saved local keys"; GroupDescription: "API data:"; Flags: unchecked
 
 [Files]
-Source: "{#SourceRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: ".gitignore,API\.env,API\api.env.template,data\api_providers.json,*.log,logs\*,output\*,assets\input\*,assets\library\*,assets\output\*,assets\uploads\*,*\__pycache__\*,*.pyc,*.pyo,unins*.dat,unins*.exe,tools\tests\*,tools\probe-baofu-max-size.mjs,tools\test-baofu-4k-matrix.mjs"
+Source: "{#SourceRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: ".gitignore,API\.env,API\api.env.template,data\api_providers.json,*.log,logs\*,output\*,assets\input\*,assets\library\*,assets\output\*,assets\uploads\*,*\__pycache__\*,*.pyc,*.pyo,unins*.dat,unins*.exe,tools\tests\*,tools\probe-baofu-max-size.mjs,tools\test-baofu-4k-matrix.mjs,.hstar-voice\*,*\.hstar-voice\*,FunAudioLLM\Fun-ASR-Nano-2512\*,*\FunAudioLLM\Fun-ASR-Nano-2512\*,voice-assistant-data\*,*\voice-assistant-data\*,.cache\modelscope\*,*\.cache\modelscope\*,.modelscope\*,*\.modelscope\*,real-smoke-*.json,*\real-smoke-*.json,fake-microphone.wav,*\fake-microphone.wav,official-*-with-silence.wav,*\official-*-with-silence.wav"
 Source: "{#SourceRoot}\API\api.env.template"; DestDir: "{app}\API"; DestName: ".env"; Flags: ignoreversion; Tasks: overwriteapidata
 Source: "{#SourceRoot}\data\api_providers.json"; DestDir: "{app}\data"; Flags: ignoreversion skipifsourcedoesntexist; Tasks: overwriteapidata
 
