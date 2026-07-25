@@ -47,8 +47,20 @@ function digest(path){
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+function htmlDigestWithoutCacheVersions(path){
+  const normalized = readFileSync(path, 'utf8')
+    .replace(/\r\n/g, '\n')
+    .replace(/([?&]v=)[^"'`\s<>)]*/g, '$1__CACHE_VERSION__');
+  return createHash('sha256').update(normalized).digest('hex');
+}
+
+assert.equal(
+  htmlDigestWithoutCacheVersions(`${runtimeRoot}/index.html`),
+  htmlDigestWithoutCacheVersions('integrations/openshop/index.html'),
+  'index.html should match the integration source except for published cache versions',
+);
+
 for(const relativePath of [
-  'index.html',
   'host/openshop-protocol.js',
   'host/openshop-project-adapter.js',
   'host/openshop-host-runtime.js',

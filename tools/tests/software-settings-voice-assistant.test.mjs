@@ -27,7 +27,7 @@ assert.match(html, /id="voiceShortcut"[^>]*data-voice-input="off"/, 'shortcut ca
 assert.match(html, /id="voiceConfirmDialog"/, 'destructive operations use an in-app dialog');
 assert.match(html, /id="voiceConfirmPath"/, 'confirmation shows the affected path');
 assert.match(html, /id="voiceConfirmOwnership"/, 'confirmation shows model ownership');
-assert.match(html, /src="\/static\/js\/voice-settings-panel\.js"/, 'settings loads the voice controller');
+assert.match(html, /src="\/static\/js\/voice-settings-panel\.js\?v=[0-9.]+"/, 'settings loads the versioned voice controller');
 
 assert.match(js, /\/api\/voice-assistant\/status/, 'panel reads authoritative status');
 assert.match(js, /\/api\/voice-assistant\/choose-folder/, 'panel uses the voice folder picker');

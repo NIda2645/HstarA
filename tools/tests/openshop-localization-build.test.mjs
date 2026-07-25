@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
 
 const integrationRoot = 'integrations/openshop';
 const runtimeRoot = 'static/openshop';
+const projectRoot = resolve(integrationRoot, '..', '..');
 const gitAttributes = readFileSync('.gitattributes', 'utf8');
 const sourceManifest = JSON.parse(readFileSync(`${integrationRoot}/vendor/runtime-manifest.json`, 'utf8'));
 const glossary = JSON.parse(readFileSync(`${integrationRoot}/locales/photoshop-zh-CN-glossary.json`, 'utf8'));
@@ -136,5 +137,20 @@ function runBuild(){
 }
 
 assert.equal(runBuild(), runBuild(), 'repeated OpenShop builds should have identical tree fingerprints');
+
+const bundledPython = join(projectRoot, 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python3');
+const pythonExecutable = existsSync(bundledPython)
+  ? bundledPython
+  : process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const cacheSync = spawnSync(
+  pythonExecutable,
+  ['-X', 'utf8', '-c', 'import main; main.sync_static_html_versions()'],
+  {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    shell: false,
+  },
+);
+assert.equal(cacheSync.status, 0, cacheSync.stderr || cacheSync.stdout);
 
 console.log(`OpenShop localization build tests passed (${expectedFiles.length} approved files)`);

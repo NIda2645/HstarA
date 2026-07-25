@@ -19,7 +19,7 @@ assert.match(main, /purpose\s*==\s*"storage"/, 'native choose-folder must suppor
 assert.ok(existsSync(resolve(root, 'static/software-settings.html')), 'software settings page must exist');
 assert.ok(existsSync(resolve(root, 'static/js/voice-settings-panel.js')), 'software settings must include the voice settings controller');
 const settingsHtml = readFileSync(resolve(root, 'static/software-settings.html'), 'utf8');
-assert.match(settingsHtml, /src="\/static\/js\/voice-settings-panel\.js"/, 'software settings must load the voice settings controller');
+assert.match(settingsHtml, /src="\/static\/js\/voice-settings-panel\.js\?v=[0-9.]+"/, 'software settings must load a versioned voice settings controller');
 assert.match(index, /switchUI\(this, 'software-settings'\)/, 'sidebar must expose software settings entry');
 assert.match(index, /id="frame-software-settings"/, 'stage must mount software settings iframe');
 assert.match(index, /PAGE_IDS = \[[^\]]*'software-settings'/, 'software settings must be routable via PAGE_IDS');

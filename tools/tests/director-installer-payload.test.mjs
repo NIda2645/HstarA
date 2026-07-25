@@ -6,6 +6,9 @@ import { execFileSync } from 'node:child_process';
 const root = process.cwd();
 const directorRoot = path.join(root, 'static', '3d-director');
 const indexPath = path.join(directorRoot, 'index.html');
+const approvedSharedAssets = new Map([
+  ['/static/js/voice-input-adapter.js', path.join(root, 'static', 'js', 'voice-input-adapter.js')],
+]);
 
 assert.ok(fs.existsSync(indexPath), 'static/3d-director/index.html exists');
 
@@ -17,6 +20,11 @@ for(const ref of assetRefs){
   assert.ok(!/^https?:\/\//i.test(ref), `director asset is not external: ${ref}`);
   if(ref.startsWith('data:') || ref.startsWith('#')) continue;
   const cleanRef = ref.split('?')[0].split('#')[0];
+  if(cleanRef.startsWith('/')){
+    assert.ok(approvedSharedAssets.has(cleanRef), `director absolute asset is approved: ${ref}`);
+    assert.ok(fs.existsSync(approvedSharedAssets.get(cleanRef)), `director shared asset exists: ${ref}`);
+    continue;
+  }
   const assetPath = path.resolve(directorRoot, cleanRef);
   assert.ok(assetPath.startsWith(directorRoot), `director asset stays inside static/3d-director: ${ref}`);
   assert.ok(fs.existsSync(assetPath), `director asset exists: ${ref}`);

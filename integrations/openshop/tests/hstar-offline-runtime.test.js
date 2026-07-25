@@ -7,6 +7,7 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const integrationRoot = resolve(testDir, '..');
 const staticRoot = resolve(integrationRoot, '..', '..', 'static', 'openshop');
 const html = readFileSync(resolve(integrationRoot, 'index.html'), 'utf8');
+const appVersion = readFileSync(resolve(integrationRoot, '..', '..', 'VERSION'), 'utf8').trim().split(/\r?\n/)[0];
 const manifestPath = resolve(integrationRoot, 'vendor', 'runtime-manifest.json');
 const buildScript = readFileSync(resolve(integrationRoot, 'scripts', 'build-hstar.mjs'), 'utf8');
 
@@ -92,9 +93,10 @@ describe('Hstar OpenShop offline runtime', () => {
     if(!available) return;
 
     const staticHtml = readFileSync(resolve(staticRoot, 'index.html'), 'utf8');
-    const runtimeRevision = html.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
-    expect(staticHtml).toContain(`<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=${runtimeRevision}">`);
-    expect(staticHtml).toContain(`<script src="./host/openshop-writing-mode.js?v=${runtimeRevision}"></script>`);
+    const staticRuntimeRevision = staticHtml.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
+    expect(staticRuntimeRevision).toBe(appVersion);
+    expect(staticHtml).toContain(`<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=${staticRuntimeRevision}">`);
+    expect(staticHtml).toContain(`<script src="./host/openshop-writing-mode.js?v=${staticRuntimeRevision}"></script>`);
     expect(staticHtml.indexOf('./host/openshop-writing-mode.js'))
       .toBeLessThan(staticHtml.indexOf('./host/openshop-text-tools.js'));
     files.forEach(file => {
