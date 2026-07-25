@@ -64,6 +64,7 @@ const runtimeFiles = [...new Set([
   'host/openshop-text-properties.css',
   'host/openshop-writing-mode.js',
   'host/openshop-writing-mode.css',
+  'host/openshop-ocr-layout.js',
   'host/openshop-text-tools.js',
   'host/openshop-reference-manager.js',
   'host/openshop-generative-client.js',
@@ -83,7 +84,8 @@ for(const file of runtimeFiles){
   }
 }
 
-await rm(destination, {recursive:true, force:true});
+await mkdir(destination, {recursive:true});
+const existingFiles = await listFiles(destination);
 
 for(const file of runtimeFiles){
   const source = resolve(integrationRoot, file);
@@ -99,6 +101,13 @@ for(const file of runtimeFiles){
   await mkdir(dirname(target), {recursive:true});
   await copyFile(source, target);
   console.log(relative(projectRoot, target).replaceAll('\\', '/'));
+}
+
+const approvedFiles = new Set(runtimeFiles);
+for(const file of existingFiles){
+  if(!approvedFiles.has(file)){
+    await rm(resolve(destination, file), {force:true});
+  }
 }
 
 async function listFiles(root, directory = root){

@@ -70,13 +70,36 @@
     }
 
     function activeTextObject(){
-      const active = state.target || editor.canvas.getActiveObject?.();
-      return isTextObject(active) ? active : null;
+      const active = editor.canvas.getActiveObject?.();
+      if(active) return isTextObject(active) ? active : null;
+      return isTextObject(state.target) ? state.target : null;
     }
 
     function setObject(target, values){
       if(typeof target.set === 'function') target.set(values);
       else Object.assign(target, values);
+    }
+
+    function removeCharacterOverrides(target, property){
+      const styles = target?.styles;
+      if(!styles || typeof styles !== 'object') return;
+      Object.keys(styles).forEach(lineKey => {
+        const line = styles[lineKey];
+        if(!line || typeof line !== 'object') return;
+        Object.keys(line).forEach(characterKey => {
+          const style = line[characterKey];
+          if(!style || typeof style !== 'object') return;
+          delete style[property];
+          if(!Object.keys(style).length) delete line[characterKey];
+        });
+        if(!Object.keys(line).length) delete styles[lineKey];
+      });
+    }
+
+    function refreshTextGeometry(target){
+      target.dirty = true;
+      target.initDimensions?.();
+      target.setCoords?.();
     }
 
     function editingRange(target){
@@ -104,6 +127,7 @@
     }
 
     function propertyValue(target, property){
+      if(OBJECT_PROPERTIES.has(property)) return target[property];
       return selectionValue(target, property);
     }
 
@@ -137,6 +161,14 @@
       return 'other';
     }
 
+    function sectionForTrigger(trigger){
+      return trigger?.dataset?.topTextFamily || trigger?.dataset?.textFamily || 'zh';
+    }
+
+    function isPanelFontTrigger(trigger){
+      return Boolean(trigger?.dataset?.textFamily);
+    }
+
     function syncFamilyControl(value){
       const mixed = value === MIXED;
       state.familyValue = mixed ? '' : clean(fontManager.resolveFamily?.(value) || value);
@@ -144,7 +176,7 @@
       fontTriggers.forEach(control => {
         const label = control.querySelector('[data-text-family-label]');
         if(!label) return;
-        const selected = !mixed && Boolean(state.familyValue) && control.dataset.textFamily === selectedSection;
+        const selected = !mixed && Boolean(state.familyValue) && sectionForTrigger(control) === selectedSection;
         control.dataset.mixed = mixed ? 'true' : 'false';
         label.textContent = mixed ? '多种字体' : (selected ? state.familyValue : '选择字体');
         control.title = label.textContent;
@@ -174,7 +206,7 @@
       select.value = String(value);
     }
 
-    function updateStyleOptions(family){
+    function updateStyleOptions(family, target = activeTextObject()){
       const select = documentRef.querySelector('[data-text-style]');
       if(!select) return;
       const groupedFamily = clean(fontManager.resolveFamily?.(family) || family);
@@ -188,47 +220,68 @@
         option.dataset.italic = style.italic ? 'true' : 'false';
         select.append(option);
       });
-      const target = activeTextObject();
-      const face = propertyValue(target, 'fontFamily');
-      const weight = propertyValue(target, 'fontWeight');
-      const italic = propertyValue(target, 'fontStyle') === 'italic';
+      const face = target ? propertyValue(target, 'fontFamily') : clean(editor.state.textFont || family);
+      const weight = target
+        ? propertyValue(target, 'fontWeight')
+        : (editor.state.textFontWeight ?? (editor.state.textBold ? 700 : 400));
+      const italic = target
+        ? propertyValue(target, 'fontStyle') === 'italic'
+        : Boolean(editor.state.textItalic);
       const exact = face !== MIXED ? fontManager.styleForFace?.(face) : null;
-      if(exact && [...select.options].some(option => option.value === exact.id)) {
-        select.value = exact.id;
-        return;
-      }
       if(weight !== MIXED && weight !== undefined) {
         const normalizedWeight = weight === 'bold' ? 700 : Number(weight);
         const option = [...select.options].find(item => (
           Number(item.dataset.weight) === normalizedWeight
           && (item.dataset.italic === 'true') === italic
         ));
-        if(option) select.value = option.value;
-        else if(current && [...select.options].some(option => option.value === current)) select.value = current;
+        if(option) {
+          select.value = option.value;
+          return;
+        }
+      }
+      if(exact && [...select.options].some(option => option.value === exact.id)) {
+        select.value = exact.id;
+        return;
+      }
+      const fallback = fontManager.defaultStyleFor?.(groupedFamily);
+      if(fallback && [...select.options].some(option => option.value === fallback.id)) {
+        select.value = fallback.id;
+      } else if(current && [...select.options].some(option => option.value === current)) {
+        select.value = current;
+      } else if(face === MIXED || weight === MIXED) {
+        select.value = '';
       }
     }
 
     function applyFontStyle(style, {commit = true} = {}){
       if(!style) return false;
-      applyProperty('fontFamily', clean(style.family), {commit:false});
-      applyProperty('fontWeight', Number(style.weight) || 400, {commit:false});
-      applyProperty('fontStyle', style.italic ? 'italic' : 'normal', {commit:false});
-      if(commit) commitChange('字型');
+      const target = activeTextObject();
+      const family = clean(style.family);
+      const weight = Number(style.weight) || 400;
+      if(target) {
+        applyProperty('fontFamily', family, {commit:false});
+        applyProperty('fontWeight', weight, {commit:false});
+        applyProperty('fontStyle', style.italic ? 'italic' : 'normal', {commit:false});
+        if(commit) commitChange('字型');
+      } else {
+        editor.state.textFont = family;
+        editor.state.textFontWeight = weight;
+        editor.state.textBold = weight >= 600;
+        editor.state.textItalic = Boolean(style.italic);
+        syncControls();
+      }
       return true;
     }
 
     function syncTopBar(target){
-      if(!target) return;
-      const family = propertyValue(target, 'fontFamily');
-      const familyControl = documentRef.getElementById('text-font');
-      if(family !== MIXED && family !== undefined) {
-        ensureOption(familyControl, family);
-        if(familyControl) familyControl.value = String(family);
-      }
-      setControlValue('#text-size', propertyValue(target, 'fontSize'), {points:true});
-      setControlValue('#text-color', propertyValue(target, 'fill'));
-      const bold = propertyValue(target, 'fontWeight');
-      const italic = propertyValue(target, 'fontStyle');
+      const size = target ? propertyValue(target, 'fontSize') : editor.state.textSize;
+      const color = target ? propertyValue(target, 'fill') : editor.state.textColor;
+      const bold = target
+        ? propertyValue(target, 'fontWeight')
+        : (editor.state.textFontWeight ?? (editor.state.textBold ? 700 : 400));
+      const italic = target ? propertyValue(target, 'fontStyle') : (editor.state.textItalic ? 'italic' : 'normal');
+      setControlValue('#text-size', size, {points:true});
+      setControlValue('#text-color', color);
       const boldControl = documentRef.getElementById('text-bold');
       const italicControl = documentRef.getElementById('text-italic');
       if(boldControl && bold !== MIXED) boldControl.checked = bold === 'bold' || Number(bold) >= 600;
@@ -237,23 +290,27 @@
 
     function syncControls(){
       const target = activeTextObject();
-      if(!target) return;
-      const family = propertyValue(target, 'fontFamily');
+      const family = target ? propertyValue(target, 'fontFamily') : clean(editor.state.textFont);
+      const fontSize = target ? propertyValue(target, 'fontSize') : editor.state.textSize;
+      const lineHeight = target ? propertyValue(target, 'lineHeight') : 1.16;
+      const charSpacing = target ? propertyValue(target, 'charSpacing') : 0;
+      const fill = target ? propertyValue(target, 'fill') : editor.state.textColor;
+      const textAlign = target ? propertyValue(target, 'textAlign') : 'left';
       syncFamilyControl(family);
-      updateStyleOptions(family === MIXED ? '' : family);
-      setControlValue('[data-text-size]', propertyValue(target, 'fontSize'), {points:true});
-      setControlValue('[data-text-line-height]', propertyValue(target, 'lineHeight'));
-      setControlValue('[data-text-tracking]', propertyValue(target, 'charSpacing'));
-      syncTextColorControl(propertyValue(target, 'fill'));
-      setControlValue('[data-text-align]', propertyValue(target, 'textAlign'));
-      setControlValue('[data-text-kerning]', propertyValue(target, 'charSpacing'));
-      const kerningMode = target.hstarKerningMode || (Number(target.charSpacing || 0) ? 'numeric' : 'auto');
+      updateStyleOptions(family === MIXED ? '' : family, target);
+      setControlValue('[data-text-size]', fontSize, {points:true});
+      setControlValue('[data-text-line-height]', lineHeight);
+      setControlValue('[data-text-tracking]', charSpacing);
+      syncTextColorControl(fill);
+      setControlValue('[data-text-align]', textAlign);
+      setControlValue('[data-text-kerning]', charSpacing);
+      const kerningMode = target?.hstarKerningMode || (Number(charSpacing || 0) ? 'numeric' : 'auto');
       setControlValue('[data-text-kerning-mode]', kerningMode);
       const kerningInput = documentRef.querySelector('[data-text-kerning]');
       if(kerningInput) kerningInput.disabled = kerningMode !== 'numeric';
       ['underline', 'linethrough'].forEach(property => {
         const control = documentRef.querySelector(`[data-text-${property}]`);
-        const value = propertyValue(target, property);
+        const value = target ? propertyValue(target, property) : false;
         if(control && value !== MIXED) control.checked = Boolean(value);
       });
       syncTopBar(target);
@@ -268,6 +325,7 @@
       const group = panel.parentElement;
       group?.querySelectorAll('.panel-tab-content[data-group="ptg2"]').forEach(item => item.classList.remove('active'));
       panel.classList.add('active');
+      syncControls();
     }
 
     function commitChange(property){
@@ -291,7 +349,10 @@
           state.caretStyles[property] = normalized;
         }
       } else {
+        if(OBJECT_PROPERTIES.has(property)) removeCharacterOverrides(target, property);
         setObject(target, {[property]:normalized});
+        if(CHARACTER_PROPERTIES.has(property)) removeCharacterOverrides(target, property);
+        refreshTextGeometry(target);
       }
       editor.canvas.renderAll?.();
       if(property === 'fill' && normalized !== MIXED) editor.state.textColor = normalizeColor(normalized);
@@ -314,7 +375,12 @@
 
     function onSelection(event){
       const candidate = event?.selected?.[0] || editor.canvas.getActiveObject?.();
-      if(!isTextObject(candidate)) return;
+      if(!isTextObject(candidate)) {
+        state.target = null;
+        state.caretStyles = {};
+        syncControls();
+        return;
+      }
       state.target = candidate;
       state.previousText = String(candidate.text || '');
       activateTextTab();
@@ -417,7 +483,15 @@
       option.dataset.active = index === fontActiveIndex ? 'true' : 'false';
       option.setAttribute('role', 'option');
       option.setAttribute('aria-selected', family.toLowerCase() === state.familyValue.toLowerCase() ? 'true' : 'false');
-      option.style.fontFamily = family;
+      const previewStyle = [...(font.styles || [])].sort((left, right) => (
+        Math.abs((Number(left?.weight) || 400) - 400)
+        - Math.abs((Number(right?.weight) || 400) - 400)
+        || Number(Boolean(left?.italic)) - Number(Boolean(right?.italic))
+      ))[0];
+      const previewFamily = clean(previewStyle?.family) || family;
+      option.style.fontFamily = `"${previewFamily.replace(/["\\]/g, '\\$&')}"`;
+      option.style.fontWeight = String(Number(previewStyle?.weight) || 400);
+      option.style.fontStyle = previewStyle?.italic ? 'italic' : 'normal';
       const label = documentRef.createElement('span');
       label.className = 'hstar-font-row-label';
       label.dataset.fontLabel = 'true';
@@ -491,8 +565,9 @@
 
     function positionFontList(){
       if(!fontList || fontList.hidden) return;
-      const otherTrigger = fontTriggers.find(trigger => trigger.dataset.textFamily === 'other') || fontTriggers[1];
-      const anchor = otherTrigger?.closest('label');
+      const anchor = isPanelFontTrigger(activeFontTrigger)
+        ? activeFontTrigger?.closest('label')
+        : activeFontTrigger;
       const rect = anchor?.getBoundingClientRect?.();
       if(!rect) return;
       fontList.style.position = 'fixed';
@@ -539,16 +614,34 @@
       if(!normalizedFamily) return;
       closeFontList({restoreFocus});
       const style = fontManager.defaultStyleFor?.(normalizedFamily);
-      if(!applyFontStyle(style)) applyProperty('fontFamily', normalizedFamily);
+      if(activeTextObject()) {
+        if(!applyFontStyle(style)) applyProperty('fontFamily', normalizedFamily);
+        return;
+      }
+      const actualFamily = clean(style?.family) || normalizedFamily;
+      editor.state.textFont = actualFamily;
+      if(style) {
+        editor.state.textFontWeight = Number(style.weight) || 400;
+        editor.state.textBold = (Number(style.weight) || 400) >= 600;
+        editor.state.textItalic = Boolean(style.italic);
+      }
+      syncFamilyControl(fontManager.resolveFamily?.(actualFamily) || normalizedFamily);
+      updateStyleOptions(normalizedFamily, null);
+      const bold = documentRef.getElementById('text-bold');
+      const italic = documentRef.getElementById('text-italic');
+      if(bold) bold.checked = Boolean(editor.state.textBold);
+      if(italic) italic.checked = Boolean(editor.state.textItalic);
     }
 
     function openFontList(trigger, {keyboard = false, activeIndex = -1} = {}){
       if(!fontList || !trigger || !fontSpacer || !fontRowsLayer) return;
-      setActiveFontSection(trigger.dataset.textFamily, trigger);
+      setActiveFontSection(sectionForTrigger(trigger), trigger);
       cancelFontRender();
       fontList.hidden = false;
       fontTriggers.forEach(item => item.setAttribute('aria-expanded', item === trigger ? 'true' : 'false'));
-      if(fontListSpace) fontListSpace.style.height = `${FONT_VIEWPORT_HEIGHT + 4}px`;
+      if(fontListSpace) {
+        fontListSpace.style.height = isPanelFontTrigger(trigger) ? `${FONT_VIEWPORT_HEIGHT + 4}px` : '0px';
+      }
       positionFontList();
       const selectedIndex = selectedFontIndex();
       fontActiveIndex = fontRows[activeIndex]?.kind === 'font'
@@ -597,14 +690,10 @@
               <div class="hstar-font-list" data-text-font-list role="listbox" hidden></div>
               <div class="hstar-font-list-space" data-text-font-space aria-hidden="true"></div>
             </div>
-            <label>字形 <select data-text-style></select></label>
+            <label>字型 <select data-text-style></select></label>
             <label>字号 <input type="number" data-text-size min="1" max="1296" step="0.1"></label>
             <label>行距 <input type="number" data-text-line-height min="0.1" max="10" step="0.05"></label>
             <label>字距 <input type="number" data-text-tracking min="-1000" max="1000"></label>
-            <label>字偶距
-              <select data-text-kerning-mode><option value="auto">自动</option><option value="metrics">度量</option><option value="numeric">数值</option></select>
-            </label>
-            <label>数值 <input type="number" data-text-kerning min="-1000" max="1000" disabled></label>
             <label>颜色
               <button type="button" class="hstar-text-color-select" data-text-color aria-haspopup="dialog">
                 <span class="hstar-text-color-swatch" data-text-color-swatch aria-hidden="true"></span>
@@ -629,7 +718,7 @@
     }
 
     function bindPanelControls(){
-      fontTriggers = [...documentRef.querySelectorAll('[data-text-family]')];
+      fontTriggers = [...documentRef.querySelectorAll('[data-text-family], [data-top-text-family]')];
       fontList = documentRef.querySelector('[data-text-font-list]');
       fontListSpace = documentRef.querySelector('[data-text-font-space]');
       if(fontListSpace) fontListSpace.style.height = '0px';
@@ -664,7 +753,7 @@
             fontList.focus?.({preventScroll:true});
             return;
           }
-          setActiveFontSection(trigger.dataset.textFamily, trigger);
+          setActiveFontSection(sectionForTrigger(trigger), trigger);
           const selectedIndex = selectedFontIndex();
           let activeIndex = selectedIndex;
           if(event.key === 'Home') activeIndex = findFontIndex(0, 1);
@@ -806,12 +895,10 @@
     function bindTopBarControls(){
       if(state.topBarBound) return;
       state.topBarBound = true;
-      const family = documentRef.getElementById('text-font');
       const size = documentRef.getElementById('text-size');
       const color = documentRef.getElementById('text-color');
       const bold = documentRef.getElementById('text-bold');
       const italic = documentRef.getElementById('text-italic');
-      addDomListener(family, 'change', event => applyProperty('fontFamily', event.target.value));
       addDomListener(size, 'change', event => applyProperty('fontSize', Number(event.target.value)));
       addDomListener(color, 'change', event => applyProperty('fill', event.target.value));
       addDomListener(bold, 'change', event => applyProperty('fontWeight', event.target.checked ? 700 : 400));
@@ -837,7 +924,11 @@
       state.started = true;
       addListener(editor.canvas, 'selection:created', onSelection);
       addListener(editor.canvas, 'selection:updated', onSelection);
-      addListener(editor.canvas, 'selection:cleared', () => syncControls());
+      addListener(editor.canvas, 'selection:cleared', () => {
+        state.target = null;
+        state.caretStyles = {};
+        syncControls();
+      });
       addListener(editor.canvas, 'text:editing:entered', onEditingEntered);
       addListener(editor.canvas, 'text:selection:changed', onTextSelectionChanged);
       addListener(editor.canvas, 'text:changed', onTextChanged);

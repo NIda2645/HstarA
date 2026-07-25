@@ -520,6 +520,27 @@ describe('Hstar OpenShop editor host runtime', () => {
       project: {...saves[1].payload.project, autosaveVersion: 3},
     }));
     await flushAsync();
+    expect(runtime.getState()).toMatchObject({dirtyRevision:2, savedRevision:2, dirty:false});
+  });
+
+  it('flushes the latest dirty revision immediately on pagehide', async () => {
+    vi.useFakeTimers();
+    dispatch(envelope(protocol.TYPES.OPEN_SESSION, 'open-1'));
+    parentWindow.postMessage.mockClear();
+    window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Last edit'}}));
+
+    window.dispatchEvent(new Event('pagehide'));
+    await flushAsync();
+
+    const saves = posted(protocol.TYPES.SAVE_PROJECT);
+    expect(saves).toHaveLength(1);
+    expect(saves[0].payload).toMatchObject({reason:'pagehide', closeAfter:false});
+    expect(runtime.getState()).toMatchObject({dirtyRevision:1, savedRevision:0, saving:true});
+    dispatch(envelope(protocol.TYPES.SAVE_CONFIRMED, saves[0].requestId, {
+      project:{...saves[0].payload.project, autosaveVersion:2},
+    }));
+    await flushAsync();
+    expect(runtime.getState()).toMatchObject({dirtyRevision:1, savedRevision:1, dirty:false});
   });
 
   it('ignores save confirmations from an obsolete session', async () => {

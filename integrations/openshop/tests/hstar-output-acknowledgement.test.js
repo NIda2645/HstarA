@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const classicPath = resolve(testDir, '..', '..', '..', 'static', 'js', 'canvas-openshop.js');
 const smartPath = resolve(testDir, '..', '..', '..', 'static', 'js', 'smart-canvas-openshop.js');
+const classicCanvasPath = resolve(testDir, '..', '..', '..', 'static', 'js', 'canvas.js');
+const smartCanvasPath = resolve(testDir, '..', '..', '..', 'static', 'js', 'smart-canvas.js');
 
 function deferred() {
   let resolvePromise;
@@ -41,6 +43,7 @@ const variants = [
         selectOnly:vi.fn(),
         render:vi.fn(),
         scheduleSave:vi.fn(),
+        recordAiTaskLog:vi.fn(() => true),
         saveCanvas,
       };
     },
@@ -64,6 +67,7 @@ const variants = [
         selectOnly:vi.fn(),
         render:vi.fn(),
         scheduleSave:vi.fn(),
+        recordAiTaskLog:vi.fn(() => true),
         saveCanvas,
       };
     },
@@ -139,5 +143,62 @@ describe.each(variants)('$name OpenShop output acknowledgement', variant => {
       status:'error',
       message:'canvas save failed',
     });
+  });
+
+  it('forwards one trusted artistic-font terminal log to the canvas hook', () => {
+    const adapter = loadVariant(variant, vi.fn());
+    const data = {
+      type:'hstar-openshop-ai-task-log',
+      context:{...variant.context},
+      log:{
+        taskId:`${variant.name}-art-task`, toolId:'art-font-restore', status:'success',
+        modelId:'image-model', prompt:'Edited title', runMs:1200,
+        output:{assetId:'b'.repeat(64), url:'/api/openshop/assets/art-result', name:'art.png'},
+      },
+    };
+
+    expect(adapter.applyAiTaskLog(data)).toBe(true);
+    expect(adapter.applyAiTaskLog(data)).toBe(false);
+    expect(window[variant.hooks].recordAiTaskLog).toHaveBeenCalledTimes(1);
+    expect(window[variant.hooks].recordAiTaskLog).toHaveBeenCalledWith(data.log, expect.objectContaining({
+      id:variant.context.nodeId,
+      projectId:variant.context.projectId,
+    }));
+  });
+
+  it('forwards one trusted local-redraw terminal log to the canvas hook', () => {
+    const adapter = loadVariant(variant, vi.fn());
+    const data = {
+      type:'hstar-openshop-ai-task-log',
+      context:{...variant.context},
+      log:{
+        taskId:`${variant.name}-redraw-task`, toolId:'local-redraw', status:'failed',
+        modelId:'gpt-image-2', prompt:'Replace the selection', error:'upstream failed', runMs:1200,
+      },
+    };
+
+    expect(adapter.applyAiTaskLog(data)).toBe(true);
+    expect(adapter.applyAiTaskLog(data)).toBe(false);
+    expect(window[variant.hooks].recordAiTaskLog).toHaveBeenCalledOnce();
+    expect(window[variant.hooks].recordAiTaskLog).toHaveBeenCalledWith(data.log, expect.objectContaining({
+      id:variant.context.nodeId,
+      projectId:variant.context.projectId,
+    }));
+  });
+});
+
+describe('OpenShop AI canvas log hooks', () => {
+  it('persists the actual OpenShop tool id in both canvas implementations', () => {
+    const classic = readFileSync(classicCanvasPath, 'utf8');
+    const smart = readFileSync(smartCanvasPath, 'utf8');
+
+    for(const source of [classic, smart]) {
+      expect(source).toContain('recordAiTaskLog');
+      expect(source).toContain("platform:'OpenShop'");
+      expect(source).toContain('openshopTaskId');
+      expect(source).toContain("tool_id:String(log.toolId");
+      expect(source).toContain("const error = ['failed', 'partial'].includes(log.status)");
+      expect(source).toContain("status:log.status === 'partial' ? 'partial' : (error ? 'failed' : 'success')");
+    }
   });
 });

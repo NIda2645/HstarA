@@ -47,6 +47,7 @@ from openshop_ai import (
     normalize_art_font_result,
     normalize_art_font_snapshot,
     normalize_generation_snapshot,
+    is_standard_generation_size,
     normalize_ocr_layout,
     normalize_reference_record,
 )
@@ -108,7 +109,7 @@ assert [item["id"] for item in remove_providers[0]["models"]] == ["gemini-3-pro-
 assert "art-font-restore" in OPENSHOP_AI_TOOL_IDS
 assert "art-font-restore" not in OPENSHOP_GENERATIVE_TOOL_IDS
 art_tool = catalog["tools"]["art-font-restore"]
-assert art_tool["capability"] == "reference-image-generation-transparent"
+assert art_tool["capability"] == "masked-local-redraw"
 assert art_tool["providers"] == remove_providers
 assert art_tool["providers"] is not remove_providers
 assert art_tool["providers"][0] is not remove_providers[0]
@@ -122,6 +123,11 @@ for tool_id in ("generative-fill", "local-redraw"):
     assert capabilities["maxOutputs"] == 6
     assert capabilities["sizes"] == ["auto", "1024x1024"]
     assert capabilities["qualities"] == ["auto", "high"]
+
+for size in ("1024x1024", "3840x2160", "1648x3840"):
+    assert is_standard_generation_size(size) is True
+for size in ("auto", "63x64", "5000x5000", "3840*2160"):
+    assert is_standard_generation_size(size) is False
 
 prompt = build_ocr_prompt(1920, 1080)
 assert "1920" in prompt and "1080" in prompt
@@ -138,6 +144,14 @@ assert "thousandths of an em" in prompt
 assert "lineHeight" in prompt and "ratio" in prompt
 assert "source-image pixels" in prompt
 
+def ocr_run(text, script="en", style=None):
+    return {
+        "start": 0,
+        "end": len(list(text)),
+        "script": script,
+        **(style or {}),
+    }
+
 valid = json.dumps({
     "blocks": [
         {
@@ -152,7 +166,7 @@ valid = json.dumps({
             "script": "mixed",
             "dominantScript": "zh-hant",
             "confidence": 0.62,
-            "font": {
+            "runs": [ocr_run("中文 English", "mixed", {
                 "artistic": True,
                 "familyCandidates": ["Microsoft YaHei UI", "Arial"],
                 "size": 48,
@@ -169,7 +183,7 @@ valid = json.dumps({
                     "offsetX": 2,
                     "offsetY": -3,
                 },
-            },
+            })],
             "color": "#ffffff",
             "align": "center",
             "rotation": 0,
@@ -181,13 +195,14 @@ valid = json.dumps({
             "bbox": {"x": 960, "y": 540, "width": 480, "height": 108},
             "language": "en",
             "confidence": 1.2,
+            "runs": [ocr_run("Second line")],
         },
         {
             "text": "Independent defaults",
             "bbox": {"x": 100, "y": 800, "width": 600, "height": 100},
             "script": "en",
             "confidence": 0.9,
-            "font": {
+            "runs": [ocr_run("Independent defaults", "en", {
                 "familyCandidates": ["Arial"],
                 "size": "bad",
                 "weight": 760,
@@ -202,7 +217,7 @@ valid = json.dumps({
                     "offsetX": 5,
                     "offsetY": "bad",
                 },
-            },
+            })],
             "color": "rgb(1, 2, 3)",
         },
         {
@@ -210,49 +225,62 @@ valid = json.dumps({
             "bbox": {"x": 800, "y": 800, "width": 600, "height": 100},
             "script": "invalid-script",
             "confidence": 0.9,
-            "font": {
+            "runs": [ocr_run("Independent colors", "en", {
                 "strokeColor": "#fff",
                 "strokeWidth": 4,
                 "shadow": {"color": "red", "blur": 8, "offsetX": -2, "offsetY": 3},
-            },
+            })],
             "color": "#A1B2C3D4",
         },
     ]
 }, ensure_ascii=False)
 layout = normalize_ocr_layout(valid, width=1920, height=1080)
-assert layout["schemaVersion"] == 2
+assert layout["schemaVersion"] == 5
 assert layout["width"] == 1920 and layout["height"] == 1080
 assert layout["blocks"][0]["text"] == "中文 English"
 assert layout["blocks"][0]["quad"][2] == {"x": 0.4, "y": 0.2}
 assert layout["blocks"][0]["lowConfidence"] is True
-assert layout["blocks"][0]["font"]["familyCandidates"] == ["Microsoft YaHei UI", "Arial"]
 assert layout["blocks"][0]["script"] == "mixed"
 assert layout["blocks"][0]["dominantScript"] == "zh-hant"
-assert layout["blocks"][0]["font"] == {
+assert [
+    (run["start"], run["end"], run["script"])
+    for run in layout["blocks"][0]["runs"]
+] == [(0, 3, "zh-hans"), (3, 10, "en")]
+expected_first_run_style = {
     "artistic": True,
     "familyCandidates": ["Microsoft YaHei UI", "Arial"],
     "size": 48.0,
     "weight": 800,
     "style": "italic",
     "styleDescription": "hand-painted condensed display lettering",
+    "color": "#ffffff",
     "letterSpacing": 125.0,
     "lineHeight": 1.4,
     "strokeColor": "#abcdef88",
     "strokeWidth": 3.5,
     "shadow": {"color": "#11223344", "blur": 6.0, "offsetX": 2.0, "offsetY": -3.0},
 }
+for run in layout["blocks"][0]["runs"]:
+    assert {
+        key: value for key, value in run.items()
+        if key not in {"start", "end", "script"}
+    } == expected_first_run_style
 assert layout["blocks"][1]["quad"][0] == {"x": 0.5, "y": 0.5}
 assert layout["blocks"][1]["quad"][2] == {"x": 0.75, "y": 0.6}
 assert layout["blocks"][1]["confidence"] == 1.0
 assert layout["blocks"][1]["script"] == "en"
 assert "dominantScript" not in layout["blocks"][1]
-assert layout["blocks"][2]["font"] == {
+assert layout["blocks"][2]["runs"][0] == {
+    "start": 0,
+    "end": len("Independent defaults"),
+    "script": "en",
     "artistic": False,
     "familyCandidates": ["Arial"],
     "size": 0.0,
     "weight": 800,
     "style": "italic",
     "styleDescription": "",
+    "color": "#ffffff",
     "letterSpacing": 0.0,
     "lineHeight": 1.16,
     "strokeColor": "#123456",
@@ -262,15 +290,16 @@ assert layout["blocks"][2]["font"] == {
 assert layout["blocks"][2]["color"] == "#ffffff"
 assert layout["blocks"][3]["script"] == "mixed"
 assert layout["blocks"][3]["color"] == "#a1b2c3d4"
-assert layout["blocks"][3]["font"]["strokeColor"] == "#00000000"
-assert layout["blocks"][3]["font"]["strokeWidth"] == 4.0
-assert layout["blocks"][3]["font"]["shadow"] == {
+assert layout["blocks"][3]["runs"][0]["strokeColor"] == "#00000000"
+assert layout["blocks"][3]["runs"][0]["strokeWidth"] == 4.0
+assert layout["blocks"][3]["runs"][0]["shadow"] == {
     "color": "#00000000", "blur": 8.0, "offsetX": -2.0, "offsetY": 3.0,
 }
 
 mixed = json.dumps({
     "blocks": [
-        {"text": "Keep this block", "bbox": {"x": 10, "y": 10, "width": 200, "height": 40}},
+        {"text": "Keep this block", "bbox": {"x": 10, "y": 10, "width": 200, "height": 40},
+         "runs": [ocr_run("Keep this block")]},
         {
             "text": "FULL OCR TEXT MUST NOT APPEAR IN WARNINGS",
             "quad": [{"x": -1, "y": 0}] * 4,
@@ -285,7 +314,8 @@ mixed = json.dumps({
             "bbox": {"x": 10, "y": 110, "width": 200, "height": 40},
             "confidence": "not-a-number",
         },
-        {"text": "Keep this block too", "bbox": {"x": 10, "y": 160, "width": 200, "height": 40}},
+        {"text": "Keep this block too", "bbox": {"x": 10, "y": 160, "width": 200, "height": 40},
+         "runs": [ocr_run("Keep this block too")]},
     ],
 }, ensure_ascii=False)
 mixed_layout = normalize_ocr_layout(mixed, width=800, height=600)
@@ -303,7 +333,8 @@ assert "FULL OCR TEXT MUST NOT APPEAR IN WARNINGS" not in json.dumps(
 
 warning_bound = normalize_ocr_layout(json.dumps({
     "blocks": [
-        {"text": "Keep one", "bbox": {"x": 10, "y": 10, "width": 20, "height": 20}},
+        {"text": "Keep one", "bbox": {"x": 10, "y": 10, "width": 20, "height": 20},
+         "runs": [ocr_run("Keep one")]},
         *[
             {
                 "text": f"secret invalid block {index}",
@@ -324,7 +355,8 @@ assert "secret invalid block" not in json.dumps(warning_bound["warnings"])
 
 limited = normalize_ocr_layout(json.dumps({
     "blocks": [
-        {"text": f"line {index}", "bbox": {"x": 10, "y": 10, "width": 20, "height": 20}}
+        {"text": f"line {index}", "bbox": {"x": 10, "y": 10, "width": 20, "height": 20},
+         "runs": [ocr_run(f"line {index}")]}
         for index in range(501)
     ]
 }), width=800, height=600)
@@ -345,7 +377,7 @@ for invalid in (
         pass
 
 original_normalize_block = openshop_ai_module._normalize_block
-openshop_ai_module._normalize_block = lambda *args: (_ for _ in ()).throw(RuntimeError("system failure"))
+openshop_ai_module._normalize_block = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("system failure"))
 try:
     try:
         normalize_ocr_layout(json.dumps({
@@ -404,26 +436,30 @@ legacy_record = normalize_ai_task_record({
         }],
     },
 })
-assert legacy_record["result"]["schemaVersion"] == 2
+assert legacy_record["result"]["schemaVersion"] == 5
 legacy_block = legacy_record["result"]["blocks"][0]
 assert legacy_block["script"] == "zh-hant"
 assert "dominantScript" not in legacy_block
 assert legacy_block["color"] == "#abcdef"
 assert legacy_block["align"] == "right"
 assert legacy_block["rotation"] == 12
-assert legacy_block["font"] == {
+assert legacy_block["runs"] == [{
+    "start": 0,
+    "end": len("繁體標題"),
+    "script": "zh-hant",
     "artistic": False,
     "familyCandidates": ["Legacy Serif"],
     "size": 36.0,
     "weight": 400,
     "style": "normal",
     "styleDescription": "",
+    "color": "#abcdef",
     "letterSpacing": 0.0,
     "lineHeight": 1.16,
     "strokeColor": "#00000000",
     "strokeWidth": 0.0,
     "shadow": {"color": "#00000000", "blur": 0.0, "offsetX": 0.0, "offsetY": 0.0},
-}
+}]
 
 weight_boundaries = normalize_ocr_layout(json.dumps({
     "blocks": [
@@ -431,17 +467,17 @@ weight_boundaries = normalize_ocr_layout(json.dumps({
             "text": "Below minimum",
             "bbox": {"x": 10, "y": 10, "width": 200, "height": 40},
             "confidence": 1,
-            "font": {"weight": -50},
+            "runs": [ocr_run("Below minimum", "en", {"weight": -50})],
         },
         {
             "text": "Above maximum",
             "bbox": {"x": 10, "y": 60, "width": 200, "height": 40},
             "confidence": 1,
-            "font": {"weight": 1200},
+            "runs": [ocr_run("Above maximum", "en", {"weight": 1200})],
         },
     ],
 }), width=800, height=600)
-assert [block["font"]["weight"] for block in weight_boundaries["blocks"]] == [100, 900]
+assert [block["runs"][0]["weight"] for block in weight_boundaries["blocks"]] == [100, 900]
 
 record = normalize_ai_task_record({
     "taskId": "task-1",
@@ -553,6 +589,7 @@ assert art_snapshot["quad"] == art_snapshot_input["quad"]
 assert art_snapshot["visualProfile"] == {
     "script": "mixed",
     "dominantScript": "zh-hant",
+    "writingMode": "horizontal",
     "fill": "#7b3f12cc",
     "alignment": "center",
     "rotation": 12.25,
@@ -665,7 +702,7 @@ assert registry.succeed(art_task["taskId"], {
     "mime": "image/png",
     "width": 360,
     "height": 120,
-    "contentBox": {"x": 10, "y": 5, "width": 340, "height": 110},
+    "placementBox": {"x": 10, "y": 5, "width": 360, "height": 120},
 }) is True
 normalized_art_task = normalize_ai_task_record(
     registry.get(art_task["taskId"], "project-a", owner_a)
@@ -682,7 +719,7 @@ assert normalized_art_task["result"] == {
     "mime": "image/png",
     "width": 360,
     "height": 120,
-    "contentBox": {"x": 10, "y": 5, "width": 340, "height": 110},
+    "placementBox": {"x": 10, "y": 5, "width": 360, "height": 120},
 }
 reconciled_art_task = normalize_ai_task_record({
     **normalized_art_task,
@@ -715,18 +752,18 @@ for dimension in ("width", "height"):
 for box_field in ("x", "y", "width", "height"):
     for invalid_number in (
         True,
-        str(strict_art_result["contentBox"][box_field]),
-        float(strict_art_result["contentBox"][box_field]),
+        str(strict_art_result["placementBox"][box_field]),
+        float(strict_art_result["placementBox"][box_field]),
     ):
         try:
             normalize_art_font_result({
                 **strict_art_result,
-                "contentBox": {
-                    **strict_art_result["contentBox"],
+                "placementBox": {
+                    **strict_art_result["placementBox"],
                     box_field: invalid_number,
                 },
             })
-            raise AssertionError(f"art result contentBox {box_field} must require a true integer")
+            raise AssertionError(f"art result placementBox {box_field} must require a true integer")
         except OpenShopAiValidationError:
             pass
 

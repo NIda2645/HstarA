@@ -14,6 +14,10 @@ class OpenShopAiValidationError(ValueError):
     pass
 
 
+class OpenShopAiStructuredResponseError(OpenShopAiValidationError):
+    pass
+
+
 OPENSHOP_GENERATIVE_TOOL_IDS = ("generative-fill", "local-redraw")
 OPENSHOP_AI_TOOL_IDS = (
     "text-extract",
@@ -42,6 +46,7 @@ _CLI_PROTOCOLS = {"codex", "gemini-cli"}
 _ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 _HEX_COLOR_PATTERN = re.compile(r"^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+_GENERATION_SIZE_PATTERN = re.compile(r"^(\d{2,4})x(\d{2,4})$", re.IGNORECASE)
 _CJK_PATTERN = re.compile(r"[\u3400-\u9fff]")
 _LATIN_PATTERN = re.compile(r"[A-Za-z]")
 _TRADITIONAL_MARKERS = frozenset(
@@ -91,6 +96,19 @@ _VISUAL_MODEL_MARKERS = (
     "vl-",
     "-vl-",
 )
+
+
+def is_standard_generation_size(value: Any) -> bool:
+    match = _GENERATION_SIZE_PATTERN.fullmatch(str(value or "").strip())
+    if not match:
+        return False
+    width, height = (int(part) for part in match.groups())
+    return (
+        64 <= width <= 4096
+        and 64 <= height <= 4096
+        and width % 16 == 0
+        and height % 16 == 0
+    )
 
 
 def _clean_text(value: Any, limit: int, fallback: str = "") -> str:
@@ -251,7 +269,7 @@ def build_capability_catalog(
             "art-font-restore": {
                 "id": "art-font-restore",
                 "label": "艺术字体处理",
-                "capability": "reference-image-generation-transparent",
+                "capability": "masked-local-redraw",
                 "providers": deepcopy(remove_providers),
             },
             "generative-fill": {
@@ -274,24 +292,63 @@ def build_ocr_prompt(width: int, height: int) -> str:
     width = _positive_dimension(width, "width")
     height = _positive_dimension(height, "height")
     return (
-        f"Read every visible Chinese, English, and mixed-language text block in this {width}x{height} image. "
-        "Return JSON only with a top-level blocks array, in natural reading order. Return one block per "
-        "visually distinct text line or independently styled text run; never merge unrelated labels, titles, "
-        "or paragraphs. Every block must contain text, quad, language, script (zh-hans, zh-hant, en, or mixed), "
-        "confidence, font, color (the glyph fill), align, writingMode, rotation, paragraphId, and lineIndex. "
+        f"Read every visible Chinese, English, and mixed-language text line in this {width}x{height} image. "
+        "Before writing the response, build an exhaustive whole-image text inventory by scanning the image in "
+        "spatial bands from top to bottom and, within each band, from left to right. Include small, low-contrast, isolated "
+        "text as well as headings, captions, labels, and numeric text; decorative placement is never a reason to omit "
+        "legible text. After the inventory, perform a final omission audit over the entire image and add every missing "
+        "visible line before returning JSON. Return JSON only with a top-level blocks array in spatial scan order. "
+        "Return exactly one block for "
+        "one visible text line; never split a line because its typography changes and never merge separate lines. "
+        "Every block must contain text, quad, runs, language, script (zh-hans, zh-hant, en, or mixed), dominantScript, "
+        "confidence, align, writingMode, rotation, paragraphId, and lineIndex. "
         "writingMode must be horizontal or vertical and describes text flow independently from rotation; "
-        "rotation=90 does not imply vertical writing. For mixed script, "
-        "optionally include dominantScript. quad must contain four clockwise points around the tight visible "
-        "glyph bounds, with normalized x and y values from 0 to 1. Preserve punctuation, whitespace, line "
-        "order, and the original 中文/English spelling. font must contain artistic, ordered familyCandidates, "
-        "size, weight, style, styleDescription, letterSpacing, lineHeight, strokeColor, strokeWidth, and shadow. "
-        "shadow must contain color, blur, offsetX, and offsetY. Define letterSpacing as thousandths of an em and "
-        "lineHeight as a ratio. Report font.size in source-image pixels and glyph fill as a #RRGGBB color, or "
-        "#RRGGBBAA when alpha is present. Define strokeWidth, shadow blur, offsetX, and offsetY in source-image "
-        "pixels. Return fill/color, strokeColor, and shadow color as normalized #RRGGBB or #RRGGBBAA values, "
-        "and preserve alignment "
-        "and rotation. Do not return markdown or image descriptions. If reliable text "
-        "positions cannot be determined, return {\"blocks\":[]}."
+        "rotation=90 does not imply vertical writing. quad must contain four clockwise points around the tight visible "
+        "glyph bounds, ordered top-left, top-right, bottom-right, bottom-left in the text block's local "
+        "unrotated coordinate system, with normalized x and y values from 0 to 1. Preserve punctuation, whitespace, "
+        "line order, and the original 中文/English spelling. runs must completely and without overlap cover text using "
+        "zero-based, left-closed and right-open Unicode code-point indexes named start and end. Every run script must "
+        "be zh-hans, zh-hant, or en; split mixed-language text at script boundaries. Every run must contain script, "
+        "ordered familyCandidates, size, weight, style, artistic, styleDescription, color, letterSpacing, "
+        "lineHeight, strokeColor, strokeWidth, and shadow. shadow must contain color, blur, offsetX, and offsetY. "
+        "Define letterSpacing as thousandths of an em and lineHeight as a ratio. Report each run size in source-image "
+        "pixels and each glyph fill as a #RRGGBB color, or #RRGGBBAA when alpha is present. Define strokeWidth, "
+        "shadow blur, offsetX, and offsetY in source-image pixels. Return color, strokeColor, and shadow color as "
+        "normalized #RRGGBB or #RRGGBBAA values. Estimate every run independently from its own visible glyphs; "
+        "never reuse one run's typography, font size, weight, spacing, line height, family, style, color, stroke, "
+        "or shadow as a default for another run. Preserve alignment and rotation. Do not return markdown or image "
+        "descriptions. If reliable text positions cannot be determined, return {\"blocks\":[]}."
+    )
+
+
+def build_ocr_audit_prompt(
+    width: int,
+    height: int,
+    recognized_lines: Any,
+) -> str:
+    lines: list[str] = []
+    seen: set[str] = set()
+    serialized_length = 2
+    for raw_line in recognized_lines if isinstance(recognized_lines, list) else []:
+        line = _normalize_ocr_text(raw_line, 240).strip()
+        key = re.sub(r"\s+", " ", line).casefold()
+        if not key or key in seen:
+            continue
+        encoded = json.dumps(line, ensure_ascii=False)
+        if serialized_length + len(encoded) + 1 > 12000:
+            break
+        seen.add(key)
+        lines.append(line)
+        serialized_length += len(encoded) + 1
+    return (
+        build_ocr_prompt(width, height)
+        + " This is a dedicated omission audit after an initial OCR pass. The initial pass already returned these "
+        "lines: "
+        + json.dumps(lines, ensure_ascii=False, separators=(",", ":"))
+        + ". Reinspect the entire source image from top to bottom and left to right. For this audit response, return "
+        "blocks ONLY for visible text lines missing from that initial list. Do not repeat listed lines. A nearby larger "
+        "heading does not replace a separate smaller heading. Return {\"blocks\":[]} only if every visible line is "
+        "already listed."
     )
 
 
@@ -311,20 +368,40 @@ def _json_from_text(raw_text: Any) -> dict[str, Any]:
     text = str(raw_text or "").strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
     if not text:
-        raise OpenShopAiValidationError("OCR response is empty")
+        raise OpenShopAiStructuredResponseError("OCR 返回内容为空")
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            raise OpenShopAiValidationError("OCR response does not contain structured JSON")
-        try:
-            value = json.loads(text[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise OpenShopAiValidationError("OCR response is not valid JSON") from exc
+        decoder = json.JSONDecoder()
+        candidates: list[dict[str, Any]] = []
+        cursor = 0
+        while cursor < len(text):
+            start = text.find("{", cursor)
+            if start < 0:
+                break
+            try:
+                candidate, end = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                cursor = start + 1
+                continue
+            if isinstance(candidate, dict):
+                candidates.append(candidate)
+            cursor = max(end, start + 1)
+        if not candidates:
+            if "{" not in text:
+                raise OpenShopAiStructuredResponseError("OCR 返回内容不包含结构化 JSON")
+            raise OpenShopAiStructuredResponseError("OCR 返回内容不是有效 JSON")
+
+        def candidate_score(candidate: dict[str, Any]) -> int:
+            blocks = candidate.get("blocks")
+            return len(blocks) if isinstance(blocks, list) else -1
+
+        value = max(
+            enumerate(candidates),
+            key=lambda item: (candidate_score(item[1]), item[0]),
+        )[1]
     if not isinstance(value, dict):
-        raise OpenShopAiValidationError("OCR response must be an object")
+        raise OpenShopAiStructuredResponseError("OCR 返回的 JSON 顶层必须是对象")
     return value
 
 
@@ -404,6 +481,158 @@ def _normalize_script(value: Any, text: str, language: Any) -> str:
     return _script_alias(value) or "mixed"
 
 
+def _normalize_ocr_run(value: Any, text: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("OCR run must be an object")
+
+    def run_index(name: str) -> int:
+        raw = value.get(name)
+        if isinstance(raw, bool):
+            raise OpenShopAiValidationError("OCR runs must use Unicode code-point indexes")
+        try:
+            number = int(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise OpenShopAiValidationError(
+                "OCR runs must use Unicode code-point indexes"
+            ) from exc
+        if isinstance(raw, float) and not raw.is_integer():
+            raise OpenShopAiValidationError(
+                "OCR runs must use Unicode code-point indexes"
+            )
+        return number
+
+    start = run_index("start")
+    end = run_index("end")
+    codepoints = list(text)
+    if start < 0 or end <= start or end > len(codepoints):
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    run_text = "".join(codepoints[start:end])
+    font = _normalize_font(value)
+    return {
+        "start": start,
+        "end": end,
+        "script": _normalize_script(
+            value.get("script"), run_text, value.get("language")
+        ),
+        "familyCandidates": font["familyCandidates"],
+        "size": font["size"],
+        "weight": font["weight"],
+        "style": font["style"],
+        "artistic": font["artistic"],
+        "styleDescription": font["styleDescription"],
+        "color": _normalize_color(value.get("color", value.get("fill")), "#ffffff"),
+        "letterSpacing": font["letterSpacing"],
+        "lineHeight": font["lineHeight"],
+        "strokeColor": font["strokeColor"],
+        "strokeWidth": font["strokeWidth"],
+        "shadow": font["shadow"],
+    }
+
+
+def _split_mixed_ocr_run(run: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    if run["script"] != "mixed":
+        return [run]
+    codepoints = list(text)
+    run_text = codepoints[run["start"] : run["end"]]
+    cjk_script = (
+        "zh-hant"
+        if any(character in _TRADITIONAL_MARKERS for character in run_text)
+        else "zh-hans"
+    )
+    scripts = [
+        cjk_script
+        if _CJK_PATTERN.fullmatch(character)
+        else "en"
+        if _LATIN_PATTERN.fullmatch(character) or character.isdigit()
+        else ""
+        for character in run_text
+    ]
+    detected = {script for script in scripts if script}
+    if not detected:
+        return [{**run, "script": "zh-hans"}]
+    if len(detected) == 1:
+        return [{**run, "script": next(iter(detected))}]
+
+    previous = ""
+    for index, script in enumerate(scripts):
+        if script:
+            previous = script
+        elif previous:
+            scripts[index] = previous
+    following = ""
+    for index in range(len(scripts) - 1, -1, -1):
+        if scripts[index]:
+            following = scripts[index]
+        elif following:
+            scripts[index] = following
+
+    result: list[dict[str, Any]] = []
+    segment_start = 0
+    for index in range(1, len(scripts) + 1):
+        if index < len(scripts) and scripts[index] == scripts[segment_start]:
+            continue
+        result.append(
+            {
+                **run,
+                "start": run["start"] + segment_start,
+                "end": run["start"] + index,
+                "script": scripts[segment_start],
+            }
+        )
+        segment_start = index
+    return result
+
+
+def _normalize_ocr_runs(value: Any, text: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    normalized = [_normalize_ocr_run(run, text) for run in value]
+    normalized.sort(key=lambda run: (run["start"], run["end"]))
+    cursor = 0
+    for run in normalized:
+        if run["start"] != cursor:
+            raise OpenShopAiValidationError("OCR runs must completely cover text")
+        cursor = run["end"]
+    if cursor != len(list(text)):
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    return [
+        segment
+        for run in normalized
+        for segment in _split_mixed_ocr_run(run, text)
+    ]
+
+
+def _repair_ocr_run_ranges(value: Any, text: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value or not text:
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    codepoint_count = len(list(text))
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for raw_run in value:
+        if not isinstance(raw_run, dict):
+            continue
+        try:
+            start = int(raw_run.get("start", 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        start = max(0, min(codepoint_count - 1, start))
+        if candidates and start <= candidates[-1][0]:
+            continue
+        candidates.append((start, raw_run))
+    if not candidates:
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    if candidates[0][0] != 0:
+        candidates[0] = (0, candidates[0][1])
+    repaired = []
+    for index, (start, raw_run) in enumerate(candidates):
+        end = candidates[index + 1][0] if index + 1 < len(candidates) else codepoint_count
+        if end <= start:
+            continue
+        repaired.append({**raw_run, "start": start, "end": end})
+    if not repaired:
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    return repaired
+
+
 def _normalize_points(points: Any, width: int, height: int) -> list[dict[str, float]]:
     if not isinstance(points, list) or len(points) != 4:
         raise OpenShopAiValidationError("OCR block must contain four quad points")
@@ -434,7 +663,7 @@ def _normalize_points(points: Any, width: int, height: int) -> list[dict[str, fl
 
 def _quad_from_bbox(bbox: Any, width: int, height: int) -> list[dict[str, float]]:
     if not isinstance(bbox, dict):
-        raise OpenShopAiValidationError("OCR block has no reliable position")
+        raise OpenShopAiValidationError("OCR 文字块没有可靠位置")
     x = _finite_number(bbox.get("x", bbox.get("left")), "bbox x")
     y = _finite_number(bbox.get("y", bbox.get("top")), "bbox y")
     w = _finite_number(bbox.get("width", bbox.get("w")), "bbox width")
@@ -513,7 +742,14 @@ def _normalize_writing_mode(
     return "horizontal"
 
 
-def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[str, Any]:
+def _normalize_block(
+    value: Any,
+    index: int,
+    width: int,
+    height: int,
+    *,
+    repair_runs: bool = False,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OpenShopAiValidationError("OCR block must be an object")
     text = _normalize_ocr_text(value.get("text"))
@@ -536,6 +772,13 @@ def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[st
         line_index = max(0, int(line_index))
     except (TypeError, ValueError):
         line_index = index
+    raw_runs = value.get("runs")
+    try:
+        runs = _normalize_ocr_runs(raw_runs, text)
+    except OpenShopAiValidationError:
+        if not repair_runs:
+            raise
+        runs = _normalize_ocr_runs(_repair_ocr_run_ranges(raw_runs, text), text)
     block = {
         "id": _clean_text(value.get("id"), 96, f"ocr-{index + 1}"),
         "text": text,
@@ -544,7 +787,7 @@ def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[st
         "script": script,
         "confidence": round(confidence, 4),
         "lowConfidence": confidence < 0.7,
-        "font": _normalize_font(value.get("font")),
+        "runs": runs,
         "color": color,
         "align": align,
         "writingMode": _normalize_writing_mode(
@@ -561,6 +804,8 @@ def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[st
 
 def _ocr_warning_code(error: Exception) -> str:
     message = str(error).lower()
+    if "run" in message:
+        return "invalid_runs"
     if "confidence" in message:
         return "invalid_confidence"
     if "text" in message:
@@ -570,19 +815,34 @@ def _ocr_warning_code(error: Exception) -> str:
     return "invalid_block"
 
 
-def normalize_ocr_layout(raw_text: Any, width: int, height: int) -> dict[str, Any]:
+def normalize_ocr_layout(
+    raw_text: Any,
+    width: int,
+    height: int,
+    *,
+    allow_empty: bool = False,
+    repair_runs: bool = False,
+) -> dict[str, Any]:
     width = _positive_dimension(width, "width")
     height = _positive_dimension(height, "height")
     payload = _json_from_text(raw_text)
     values = payload.get("blocks")
-    if not isinstance(values, list) or not values:
-        raise OpenShopAiValidationError("OCR model did not return reliable text positions")
+    if not isinstance(values, list) or (not values and not allow_empty):
+        raise OpenShopAiValidationError("OCR 模型没有返回可靠的文字位置")
     blocks: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     invalid_block_count = 0
     for index, value in enumerate(values[:OPENSHOP_OCR_MAX_BLOCKS]):
         try:
-            blocks.append(_normalize_block(value, index, width, height))
+            blocks.append(
+                _normalize_block(
+                    value,
+                    index,
+                    width,
+                    height,
+                    repair_runs=repair_runs,
+                )
+            )
         except (OpenShopAiValidationError, TypeError, ValueError, OverflowError) as exc:
             invalid_block_count += 1
             if len(warnings) < OPENSHOP_OCR_MAX_WARNINGS - 1:
@@ -590,15 +850,15 @@ def normalize_ocr_layout(raw_text: Any, width: int, height: int) -> dict[str, An
                     "blockIndex": index,
                     "code": _ocr_warning_code(exc),
                 })
-    if not blocks:
-        raise OpenShopAiValidationError("OCR model did not return reliable text positions")
+    if not blocks and not (allow_empty and not values):
+        raise OpenShopAiValidationError("OCR 模型没有返回可靠的文字位置")
     if invalid_block_count > OPENSHOP_OCR_MAX_WARNINGS - 1:
         warnings.append({
             "code": "additional_invalid_blocks",
             "count": invalid_block_count - (OPENSHOP_OCR_MAX_WARNINGS - 1),
         })
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 5,
         "width": width,
         "height": height,
         "blocks": blocks,
@@ -614,6 +874,7 @@ def _normalize_ocr_warnings(value: Any) -> list[dict[str, Any]]:
         "invalid_block",
         "invalid_confidence",
         "invalid_geometry",
+        "invalid_runs",
         "invalid_text",
     }
     for raw_warning in value:
@@ -642,6 +903,74 @@ def _normalize_ocr_warnings(value: Any) -> list[dict[str, Any]]:
         if len(warnings) >= OPENSHOP_OCR_MAX_WARNINGS:
             break
     return warnings
+
+
+def _ocr_block_bounds(block: dict[str, Any]) -> tuple[float, float, float, float]:
+    quad = block.get("quad") if isinstance(block, dict) else None
+    if not isinstance(quad, list) or len(quad) != 4:
+        return (0.0, 0.0, 0.0, 0.0)
+    xs = [float(point.get("x", 0.0)) for point in quad if isinstance(point, dict)]
+    ys = [float(point.get("y", 0.0)) for point in quad if isinstance(point, dict)]
+    if len(xs) != 4 or len(ys) != 4:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _ocr_blocks_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_box = _ocr_block_bounds(left)
+    right_box = _ocr_block_bounds(right)
+    intersection_width = max(0.0, min(left_box[2], right_box[2]) - max(left_box[0], right_box[0]))
+    intersection_height = max(0.0, min(left_box[3], right_box[3]) - max(left_box[1], right_box[1]))
+    intersection = intersection_width * intersection_height
+    left_area = max(0.0, left_box[2] - left_box[0]) * max(0.0, left_box[3] - left_box[1])
+    right_area = max(0.0, right_box[2] - right_box[0]) * max(0.0, right_box[3] - right_box[1])
+    smaller_area = min(left_area, right_area)
+    return smaller_area > 0 and intersection / smaller_area >= 0.6
+
+
+def _ocr_text_key(block: dict[str, Any]) -> str:
+    return re.sub(r"\s+", " ", str(block.get("text") or "")).strip().casefold()
+
+
+def merge_ocr_layouts(
+    primary: dict[str, Any],
+    audit: dict[str, Any],
+) -> dict[str, Any]:
+    width = _positive_dimension(primary.get("width"), "width")
+    height = _positive_dimension(primary.get("height"), "height")
+    if int(audit.get("width") or 0) != width or int(audit.get("height") or 0) != height:
+        raise OpenShopAiValidationError("OCR audit dimensions do not match the primary layout")
+    blocks = [
+        deepcopy(block)
+        for block in primary.get("blocks", [])
+        if isinstance(block, dict)
+    ]
+    for candidate in audit.get("blocks", []):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_key = _ocr_text_key(candidate)
+        duplicate = any(
+            candidate_key
+            and candidate_key == _ocr_text_key(existing)
+            and _ocr_blocks_overlap(candidate, existing)
+            for existing in blocks
+        )
+        if not duplicate:
+            blocks.append(deepcopy(candidate))
+    blocks.sort(key=lambda block: (_ocr_block_bounds(block)[1], _ocr_block_bounds(block)[0]))
+    for index, block in enumerate(blocks, start=1):
+        block["id"] = f"ocr-{index}"
+    warnings = [
+        *_normalize_ocr_warnings(primary.get("warnings")),
+        *_normalize_ocr_warnings(audit.get("warnings")),
+    ][:OPENSHOP_OCR_MAX_WARNINGS]
+    return {
+        "schemaVersion": 5,
+        "width": width,
+        "height": height,
+        "blocks": blocks[:OPENSHOP_OCR_MAX_BLOCKS],
+        "warnings": warnings,
+    }
 
 
 def _task_asset_id(value: Any, label: str) -> str:
@@ -845,13 +1174,17 @@ def build_art_font_prompt(snapshot: dict[str, Any]) -> str:
     profile = snapshot["visualProfile"]
     exact_text = json.dumps(snapshot["currentText"], ensure_ascii=False)
     return (
-        f"Render exactly this edited text once: {exact_text}. Produce one lettering rendering only. "
-        "Use the supplied original lettering crop only as the style reference. Preserve the reference's "
-        f"apparent size, weight {profile['weight']}, color {profile['fill']}, angle {profile['rotation']}, "
-        f"and writing direction {profile['writingMode']} independent from rotation. Preserve spacing, stroke, "
-        "shadow, and artistic structure. Return only the lettering on a fully transparent background. Do not "
-        "add symbols, duplicate words, logos, scenery, texture panels, a scene, or any background reconstruction. "
-        "Keep glyphs at natural proportions with no compression or stretch."
+        f"Render exactly this edited text once: {exact_text}. The first supplied image is the source patch. "
+        "The second supplied image is the inverse-alpha edit mask: the transparent mask region is editable and the opaque "
+        "protected mask region must remain visually unchanged. Replace only the original lettering inside the transparent "
+        "mask region. The reference text content is style-only; never copy or restore its original characters. Match the "
+        f"original lettering's exact visible position, apparent size, weight {profile['weight']}, color {profile['fill']}, "
+        f"angle {profile['rotation']}, and writing direction {profile['writingMode']} independent from rotation. Match its "
+        "character spacing, line spacing, alignment, stroke, shadow, texture, material, and artistic structure. Preserve the "
+        "background and every non-lettering detail. Return the complete edited source patch at the same pixel dimensions as "
+        "the first image. Add no extra characters, duplicate words, logos, or decorations; use no glow, halo, aura, color wash, "
+        "colored haze, background tint, or unintended outline. Keep glyphs at natural proportions with no compression, stretch, or "
+        "distortion."
     )
 
 
@@ -864,21 +1197,21 @@ def normalize_art_font_result(value: Any) -> dict[str, Any]:
         raise OpenShopAiValidationError("Invalid art font result width")
     if type(height) is not int or height < 1 or height > 16384:
         raise OpenShopAiValidationError("Invalid art font result height")
-    raw_box = value.get("contentBox")
+    raw_box = value.get("placementBox")
     if not isinstance(raw_box, dict):
-        raise OpenShopAiValidationError("Art font contentBox is invalid")
+        raise OpenShopAiValidationError("Art font placementBox is invalid")
     if any(type(raw_box.get(key)) is not int for key in ("x", "y", "width", "height")):
-        raise OpenShopAiValidationError("Art font contentBox is invalid")
+        raise OpenShopAiValidationError("Art font placementBox is invalid")
     box = {key: raw_box[key] for key in ("x", "y", "width", "height")}
     if (
         box["x"] < 0
         or box["y"] < 0
         or box["width"] < 1
         or box["height"] < 1
-        or box["x"] + box["width"] > width
-        or box["y"] + box["height"] > height
+        or box["width"] != width
+        or box["height"] != height
     ):
-        raise OpenShopAiValidationError("Art font contentBox is outside the image")
+        raise OpenShopAiValidationError("Art font placementBox is invalid")
     asset_id = _task_asset_id(value.get("assetId"), "art font result assetId")
     mime = _clean_text(value.get("mime"), 80).lower()
     if not asset_id or mime != "image/png":
@@ -890,7 +1223,7 @@ def normalize_art_font_result(value: Any) -> dict[str, Any]:
         "mime": mime,
         "width": width,
         "height": height,
-        "contentBox": box,
+        "placementBox": box,
     }
 
 
@@ -1084,6 +1417,62 @@ def _normalize_reconciliation_scope(value: Any) -> tuple[dict[str, str], dict[st
     return context, owner
 
 
+def _migrate_legacy_ocr_result(value: dict[str, Any]) -> dict[str, Any]:
+    try:
+        schema_version = int(value.get("schemaVersion") or 0)
+    except (TypeError, ValueError, OverflowError):
+        schema_version = 0
+    if schema_version >= 5:
+        return value
+
+    migrated = deepcopy(value)
+    for block in migrated.get("blocks", []):
+        if not isinstance(block, dict) or block.get("runs"):
+            continue
+        text = _normalize_ocr_text(block.get("text"))
+        if not text:
+            continue
+        block["text"] = text
+        legacy_font = block.get("font") if isinstance(block.get("font"), dict) else {}
+        block["runs"] = [{
+            **legacy_font,
+            "start": 0,
+            "end": len(list(text)),
+            "script": block.get("script"),
+            "language": block.get("language"),
+            "color": block.get("color", block.get("fill")),
+        }]
+    return migrated
+
+
+def _migrate_legacy_art_font_result(
+    value: dict[str, Any], status: str, reconcile_state: str
+) -> dict[str, Any]:
+    """Convert the pre-placementBox shape only for already-applied results.
+
+    Legacy contentBox coordinates describe glyph bounds inside the generated
+    image, not the image's document placement. Reusing them as placement would
+    move or crop old outputs, so use the complete generated image rectangle as
+    save-safe metadata.
+    """
+    if (
+        status != "succeeded"
+        or reconcile_state != "applied"
+        or "placementBox" in value
+        or not isinstance(value.get("contentBox"), dict)
+    ):
+        return value
+    migrated = deepcopy(value)
+    migrated["placementBox"] = {
+        "x": 0,
+        "y": 0,
+        "width": value.get("width"),
+        "height": value.get("height"),
+    }
+    migrated.pop("contentBox", None)
+    return migrated
+
+
 def normalize_ai_task_record(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OpenShopAiValidationError("OpenShop AI task record must be an object")
@@ -1178,7 +1567,12 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
             record["clientRequestId"] = client_request_id
             record["creationState"] = creation_state
         if isinstance(result, dict):
-            record["result"] = normalize_art_font_result(result)
+            migrated_result = _migrate_legacy_art_font_result(
+                result,
+                status,
+                _clean_text(value.get("reconcileState"), 20).lower(),
+            )
+            record["result"] = normalize_art_font_result(migrated_result)
         reconciliation_keys = {
             "context", "reconcileState", "reconcileReason", "generatedLayerId",
             "staleAt", "discardedAt",
@@ -1202,7 +1596,9 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
     elif isinstance(result, dict) and isinstance(result.get("blocks"), list):
         width = _positive_dimension(result.get("width"), "result width")
         height = _positive_dimension(result.get("height"), "result height")
-        normalized_result = normalize_ocr_layout(json.dumps(result), width, height)
+        normalized_result = normalize_ocr_layout(
+            json.dumps(_migrate_legacy_ocr_result(result)), width, height
+        )
         normalized_warnings = _normalize_ocr_warnings(result.get("warnings"))
         if normalized_warnings:
             normalized_result["warnings"] = normalized_warnings

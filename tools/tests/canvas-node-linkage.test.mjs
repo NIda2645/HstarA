@@ -78,6 +78,25 @@ assert.deepEqual(
   'output node handoff should keep the native default latest-output behavior'
 );
 
+const layered = {
+  id: 'openshop1',
+  type: 'openshop-layered',
+  projectName: '图文分层项目',
+  previewUrl: '/assets/openshop-preview.png',
+};
+const layeredTarget = { id: 'api-openshop', type: 'generator', inputs: [] };
+sandbox.nodes = [layered, layeredTarget];
+sandbox.connections = [{ from: layered.id, to: layeredTarget.id }];
+const layeredSources = sandbox.__exports.orderedSources(
+  layeredTarget,
+  sandbox.__exports.generatorSources(layeredTarget),
+);
+assert.deepEqual(
+  layeredSources.flatMap(src => src.refs || []).map(ref => ref.url),
+  ['/assets/openshop-preview.png'],
+  'OpenShop preview should reach a connected generation node as image reference media',
+);
+
 const upstreamGen = { id: 'gen1', type: 'generator' };
 const bridgeOutput = { id: 'out-bridge', type: 'output', images: [{ url: '/assets/bridge.png', kind: 'image' }] };
 const downstreamGen = { id: 'gen2', type: 'generator' };

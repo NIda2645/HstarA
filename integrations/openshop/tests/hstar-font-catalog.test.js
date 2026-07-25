@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const catalogPath = resolve(testDir, '..', 'host', 'openshop-font-catalog.js');
 const fallbackFamily = '阿里巴巴普惠体 3.0';
+const englishFallbackFamily = '03免 阿里妈妈灵动体VF';
+const englishVariableFallbackFamily = englishFallbackFamily;
 
 function fallbackFont(styles = [
   {id:'alibaba-regular', family:fallbackFamily, label:'Regular', weight:400, italic:false},
@@ -17,6 +19,20 @@ function fallbackFont(styles = [
     languageGroup:'zh-hans',
     freeCommercialCategory:'',
     sortName:fallbackFamily,
+    styles,
+  };
+}
+
+function englishFallbackFont(styles = [
+  {id:'lingdong-regular', family:englishFallbackFamily, label:'Regular', weight:400, italic:false},
+]){
+  return {
+    family:englishFallbackFamily,
+    label:englishFallbackFamily,
+    language:'en',
+    languageGroup:'en',
+    freeCommercialCategory:'03',
+    sortName:englishFallbackFamily,
     styles,
   };
 }
@@ -271,6 +287,77 @@ describe('Hstar OpenShop font catalog', () => {
     ]);
   });
 
+  it('resolves an installed registry face through its local-name alias', async () => {
+    const family = '\u963f\u91cc\u5df4\u5df4\u666e\u60e0\u4f53 3.0';
+    const registryFace = '\u963f\u91cc\u5df4\u5df4\u666e\u60e0\u4f53 3 85 Bold';
+    const style = {
+      id:'alibaba-puhuiti-3.0-700-normal',
+      family:'Alibaba PuHuiTi 3.0',
+      label:'85 Bold',
+      weight:700,
+      italic:false,
+      localNames:['Alibaba PuHuiTi 3.0', registryFace, 'AlibabaPuHuiTi_3_85_Bold'],
+    };
+    const manager = window.HstarOpenShopFontCatalog.createManager({
+      fontProbe:() => false,
+      fetchImpl:async () => ({
+        ok:true,
+        json:async () => ({fonts:[{family, label:family, languageGroup:'zh-hans', styles:[style]}]}),
+      }),
+    });
+    await manager.loadSystemFonts();
+
+    expect(manager.resolveFamily(registryFace)).toBe(family);
+    expect(manager.styleForFace(registryFace)).toMatchObject({
+      id:style.id,
+      family:style.family,
+      label:'85 Bold',
+      weight:700,
+    });
+
+    const editor = {
+      canvas:{getObjects:() => [{type:'i-text', fontFamily:registryFace, text:'85 Bold'}]},
+    };
+    expect(manager.scanEditor(editor)).toEqual([{family:registryFace, status:'available'}]);
+    expect(manager.searchFonts('').filter(font => font.family === registryFace)).toEqual([]);
+  });
+
+  it('preserves every registry alias when duplicate face records share one style', async () => {
+    const family = '\u963f\u91cc\u5df4\u5df4\u666e\u60e0\u4f53 3.0';
+    const regularAlias = '\u963f\u91cc\u5df4\u5df4\u666e\u60e0\u4f53 3.0 55 Regular';
+    const {manager} = await loadCatalog([{
+      family,
+      label:family,
+      languageGroup:'zh-hans',
+      styles:[
+        {
+          id:'alibaba-puhuiti-3.0-400-normal',
+          family:'Alibaba PuHuiTi 3.0',
+          label:'55 Regular',
+          weight:400,
+          italic:false,
+          localNames:['Alibaba PuHuiTi 3.0', regularAlias],
+        },
+        {
+          id:'alibaba-puhuiti-3.0-400-normal',
+          family:'Alibaba PuHuiTi 3.0',
+          label:'55 Regular L3',
+          weight:400,
+          italic:false,
+          localNames:['Alibaba PuHuiTi 3.0', 'AlibabaPuHuiTi_3_55_Regular_L3'],
+        },
+      ],
+    }], {fontProbe:() => false});
+
+    expect(manager.resolveFamily(regularAlias)).toBe(family);
+    expect(manager.styleForFace(regularAlias)).toMatchObject({
+      id:'alibaba-puhuiti-3.0-400-normal',
+      label:'55 Regular',
+      weight:400,
+    });
+    expect(manager.stylesFor(family)).toHaveLength(1);
+  });
+
   it('sorts Chinese fonts before every non-Chinese family', async () => {
     const manager = window.HstarOpenShopFontCatalog.createManager({
       fontProbe:() => true,
@@ -448,6 +535,94 @@ describe('Hstar OpenShop font catalog', () => {
     expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Poster Sans']}})).toMatchObject({family:'03免Poster Sans', fallback:false});
     expect(manager.matchOcrFont({script:'mixed', dominantScript:'zh-hant', font:{familyCandidates:['Poster Sans']}})).toMatchObject({family:'02免Poster Sans', fallback:false});
     expect(manager.matchOcrFont({script:'mixed', font:{familyCandidates:['Commercial Poster']}})).toMatchObject({family:fallbackFamily, fallback:true});
+  });
+
+  it('matches OCR runs by script and uses distinct Chinese and English fallbacks', async () => {
+    const {manager} = await loadCatalog([
+      {
+        family:'01免海报体',
+        languageGroup:'zh-hans',
+        freeCommercialCategory:'01',
+        sortName:'海报体',
+        styles:[{id:'poster-bold', family:'01免海报体 Bold', label:'Bold', weight:700, italic:false}],
+      },
+      {
+        family:'03免Poster',
+        languageGroup:'en',
+        freeCommercialCategory:'03',
+        sortName:'Poster',
+        styles:[{id:'poster-light', family:'03免Poster Light', label:'Light', weight:300, italic:false}],
+      },
+      fallbackFont([
+        {id:'alibaba-light', family:'阿里巴巴普惠体 3.0 Light', label:'Light', weight:300, italic:false},
+        {id:'alibaba-bold', family:'阿里巴巴普惠体 3.0 Bold', label:'Bold', weight:700, italic:false},
+      ]),
+      englishFallbackFont([
+        {id:'lingdong-regular', family:englishFallbackFamily, label:'Regular', weight:400, italic:false},
+        {id:'lingdong-bold', family:englishFallbackFamily, label:'Bold', weight:700, italic:false},
+      ]),
+    ]);
+
+    expect(manager.matchOcrRun({
+      script:'zh-hans', familyCandidates:['海报体'], weight:680,
+    })).toMatchObject({family:'01免海报体', faceFamily:'01免海报体 Bold', weight:700, fallback:false});
+    expect(manager.matchOcrRun({
+      script:'zh-hans', familyCandidates:['Missing'], weight:260,
+    })).toMatchObject({family:fallbackFamily, faceFamily:'阿里巴巴普惠体 3.0 Light', weight:300, fallback:true});
+    expect(manager.matchOcrRun({
+      script:'zh-hant', familyCandidates:['Missing'], weight:680,
+    })).toMatchObject({family:fallbackFamily, faceFamily:'阿里巴巴普惠体 3.0 Bold', weight:700, fallback:true});
+    expect(manager.matchOcrRun({
+      script:'en', familyCandidates:['Missing'], weight:680,
+    })).toMatchObject({family:englishFallbackFamily, faceFamily:englishFallbackFamily, weight:700, fallback:true});
+  });
+
+  it('prefers italic first and the lower real face when weight distances tie', async () => {
+    const {manager} = await loadCatalog([
+      fallbackFont([
+        {id:'alibaba-medium', family:'阿里巴巴普惠体 3.0 Medium', label:'Medium', weight:500, italic:false},
+        {id:'alibaba-bold', family:'阿里巴巴普惠体 3.0 Bold', label:'Bold', weight:700, italic:false},
+        {id:'alibaba-bold-italic', family:'阿里巴巴普惠体 3.0 Bold Italic', label:'Bold Italic', weight:700, italic:true},
+      ]),
+      englishFallbackFont(),
+    ]);
+
+    expect(manager.matchOcrRun({
+      script:'zh-hans', familyCandidates:['Missing'], weight:600, style:'normal',
+    })).toMatchObject({faceFamily:'阿里巴巴普惠体 3.0 Medium', weight:500, italic:false});
+    expect(manager.matchOcrRun({
+      script:'zh-hans', familyCandidates:['Missing'], weight:600, style:'italic',
+    })).toMatchObject({faceFamily:'阿里巴巴普惠体 3.0 Bold Italic', weight:700, italic:true});
+  });
+
+  it('accepts the installed variable-font family as the English OCR fallback', async () => {
+    const {manager} = await loadCatalog([{
+      family:englishVariableFallbackFamily,
+      label:englishVariableFallbackFamily,
+      language:'en',
+      languageGroup:'en',
+      freeCommercialCategory:'03',
+      sortName:englishVariableFallbackFamily,
+      styles:[{
+        id:'lingdong-vf',
+        family:englishVariableFallbackFamily,
+        label:'Variable',
+        weight:400,
+        italic:false,
+        localNames:[englishVariableFallbackFamily],
+      }],
+    }]);
+
+    expect(manager.matchOcrRun({
+      script:'en', familyCandidates:['Unknown English Font'], weight:400, style:'normal',
+    })).toEqual({
+      family:englishVariableFallbackFamily,
+      faceFamily:englishVariableFallbackFamily,
+      styleId:'lingdong-vf',
+      weight:400,
+      italic:false,
+      fallback:true,
+    });
   });
 
   it('normalizes OCR aliases and selects the nearest real light, bold, or italic face', async () => {

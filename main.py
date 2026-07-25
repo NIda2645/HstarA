@@ -32,10 +32,11 @@ import math
 import shlex
 import functools
 import html
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Literal
 from threading import Lock, RLock, Thread
 import httpx
 from PIL import Image, ImageOps
@@ -64,14 +65,18 @@ from openshop_ai import (
     build_art_font_prompt,
     build_capability_catalog,
     build_ocr_prompt,
+    is_standard_generation_size,
     normalize_generation_snapshot,
     normalize_ocr_layout,
 )
 from openshop_image_ops import (
     MAX_ART_FONT_COMPRESSED_BYTES,
-    crop_art_font_reference,
-    normalize_art_font_output,
+    MAX_IMAGE_BYTES,
+    normalize_art_font_patch_output,
+    normalize_generated_text_removal,
     normalize_local_generation,
+    prepare_art_font_edit,
+    prepare_local_generation_inputs,
 )
 from openshop_fonts import OpenShopFontCatalog
 from native_file_picker import (
@@ -79,6 +84,22 @@ from native_file_picker import (
     choose_open_file_path,
     selected_file_metadata,
 )
+
+
+def configure_process_stdio():
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+configure_process_stdio()
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -107,7 +128,13 @@ class QuietAccessLogFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(QuietAccessLogFilter())
 
-app = FastAPI()
+@asynccontextmanager
+async def app_lifespan(_app):
+    await startup_event()
+    yield
+
+
+app = FastAPI(lifespan=app_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -206,7 +233,7 @@ GLOBAL_LOOP = None
 COLLABORATION_KEY = secrets.token_urlsafe(24)
 COLLABORATION_LOCK = Lock()
 APP_VERSION = "2026.06.03"
-OPENSHOP_RUNTIME_REVISION = "2026.07.19.1784476800000"
+OPENSHOP_RUNTIME_REVISION = "2026.07.25.1245000000003"
 OPENSHOP_ENTRY_ASSET_URLS = frozenset({
     "/static/css/openshop-host.css",
     "/static/openshop/host/openshop-protocol.js",
@@ -228,7 +255,6 @@ MODELSCOPE_VERSION_URL = MODELSCOPE_FILE_API_ROOT + "VERSION"
 MODELSCOPE_UPDATE_NOTES_URL = MODELSCOPE_FILE_API_ROOT + "static/update-notes.json"
 MODELSCOPE_TREE_URL = "https://www.modelscope.ai/api/v1/studio/daniel8152/Infinite-Canvas/repo/files?Revision=master&Recursive=true"
 
-@app.on_event("startup")
 async def startup_event():
     global GLOBAL_LOOP
     GLOBAL_LOOP = asyncio.get_running_loop()
@@ -362,7 +388,9 @@ GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
 OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR, canvas_dir=CANVAS_DIR)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
 OPENSHOP_PROJECT_LIFECYCLE_LOCK = RLock()
-OPENSHOP_FONTS = OpenShopFontCatalog()
+OPENSHOP_FONTS = OpenShopFontCatalog(
+    cache_path=os.path.join(DATA_DIR, "openshop-font-catalog-v1.json")
+)
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 LOCAL_IMAGE_IMPORT_MAX_BYTES = int(os.getenv("LOCAL_IMAGE_IMPORT_MAX_BYTES", str(50 * 1024 * 1024)))
 LOCAL_IMAGE_IMPORT_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -2769,6 +2797,8 @@ class CanvasLLMRequest(BaseModel):
     messages: List[Dict[str, Any]] = []
     provider: str = "comfly"
     ms_model: str = ""
+    response_format: Literal["", "json_object"] = ""
+    stream_response: bool = False
     images: List[str] = []   # 可以是 /output/*.png、/assets/*.png 本地路径 或 http(s) URL 或 data URL
     videos: List[str] = []   # 可以是 /output/*.mp4、/assets/*.mp4 本地路径 或 http(s) URL 或 data URL
 
@@ -3755,6 +3785,28 @@ def list_canvases():
 def list_deleted_canvases():
     records = iter_canvas_records(include_deleted=True)
     return sorted(records, key=lambda item: item["deleted_at"], reverse=True)
+
+
+def purge_canvas_storage(canvas_id: str, *, require_deleted: bool = False) -> bool:
+    """Delete one canvas and every OpenShop resource owned by it."""
+    with CANVAS_LOCK:
+        path = canvas_path(canvas_id)
+        if not os.path.exists(path):
+            return False
+        canvas = load_canvas_any(canvas_id)
+        if require_deleted and not canvas.get("deleted_at"):
+            return False
+        canvas_type = normalize_canvas_kind(canvas.get("kind"))
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            removed = OPENSHOP_STORE.delete_canvas_projects(canvas_type, canvas_id)
+            for record in removed:
+                OPENSHOP_AI_TASKS.cancel_project(record["projectId"], record["owner"])
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                return False
+            collect_openshop_garbage()
+        return True
 
 def canvas_asset_url_value(value):
     if isinstance(value, str):
@@ -9728,6 +9780,15 @@ def friendly_chat_error_detail(text, model="", provider=None):
     message_lc = message.lower()
     model_name = str(model or "").strip()
 
+    status = str(payload.get("status") or error.get("status") or "").strip()
+    error_code = str(payload.get("error_code") or error.get("error_code") or "").strip()
+    error_name = str(payload.get("error_name") or error.get("error_name") or "").strip().lower()
+    if status == "524" or error_code == "524" or error_name == "origin_response_timeout":
+        return (
+            "上游模型处理超过 120 秒，Cloudflare 已终止本次请求（524）。"
+            "本次不会自动重试；请再次点击文字提取，或选择响应更快的视觉模型。"
+        )
+
     if is_volcengine_provider(provider):
         if code_lc in {"invalidendpointormodel.notfound", "invalidendpointormodel.modelidaccessdisabled"}:
             provider_name = provider.get("name") or provider.get("id") or "火山方舟"
@@ -9995,10 +10056,56 @@ def baofu_size_for_request(size):
         return "1024x1024"
     return size or "1024x1024"
 
+def qzz_compact_reference_data_url(value, max_size=384):
+    text = str(value or "").strip()
+    if not text.startswith("data:image/") or "," not in text:
+        return text
+    try:
+        header, encoded = text.split(",", 1)
+        if ";base64" not in header.lower():
+            raise ValueError("reference image is not base64 encoded")
+        content = base64.b64decode(encoded, validate=True)
+        if not content or len(content) > MAX_ART_FONT_COMPRESSED_BYTES:
+            raise ValueError("reference image exceeds the size limit")
+        with Image.open(BytesIO(content)) as source:
+            source.load()
+            image = ImageOps.exif_transpose(source).convert("RGBA")
+        limit = max(64, min(1024, int(max_size or 384)))
+        if max(image.size) > limit:
+            image.thumbnail((limit, limit), Image.Resampling.LANCZOS)
+        alpha = image.getchannel("A")
+        if alpha.getextrema()[0] < 255:
+            rgba = image.tobytes()
+            luminance_total = 0.0
+            visible_count = 0
+            for offset in range(0, len(rgba), 4):
+                if rgba[offset + 3] < 32:
+                    continue
+                luminance_total += (
+                    (0.2126 * rgba[offset])
+                    + (0.7152 * rgba[offset + 1])
+                    + (0.0722 * rgba[offset + 2])
+                )
+                visible_count += 1
+            luminance = luminance_total / visible_count if visible_count else 0
+            background = (16, 16, 16) if luminance >= 180 else (248, 248, 248)
+            flattened = Image.new("RGB", image.size, background)
+            flattened.paste(image, mask=alpha)
+        else:
+            flattened = image.convert("RGB")
+        buffer = BytesIO()
+        flattened.save(buffer, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"QZZ 参考图片转换失败：{exc}") from exc
+
+
 def qzz_reference_image_value(ref):
     text = str((ref or {}).get("url") or "").strip()
     if not text:
         return ""
+    if text.startswith("data:image/"):
+        return qzz_compact_reference_data_url(text)
     local_ref = text
     parsed = urllib.parse.urlsplit(text)
     host = (parsed.hostname or "").lower()
@@ -10006,33 +10113,104 @@ def qzz_reference_image_value(ref):
         if host not in {"127.0.0.1", "localhost", "::1"} and not re.match(r"^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)", host):
             return text
         local_ref = urllib.parse.unquote(parsed.path or "")
-    return reference_to_data_url({"url": local_ref}, max_size=384)
+    return qzz_compact_reference_data_url(
+        reference_to_data_url({"url": local_ref}, max_size=384)
+    )
+
+
+def qzz_image_error_detail(response, size="", model=""):
+    text = str(getattr(response, "text", "") or "").strip()
+    payload = parse_error_payload_text(text)
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    message = str(error.get("message") or payload.get("message") or "").strip()
+    friendly = friendly_image_error_detail(text, size, model)
+    raw_reason = message or text[:800] or str(getattr(response, "reason_phrase", "") or "上游拒绝请求")
+    raw_reason = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "sk-[已隐藏]", raw_reason)
+    raw_reason = re.sub(
+        r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?bearer\s+)[A-Za-z0-9._~-]+",
+        r"\1[已隐藏]",
+        raw_reason,
+    )
+    reason = friendly or raw_reason
+    if friendly and raw_reason and raw_reason not in friendly:
+        reason = f"{friendly} 上游原始信息：{raw_reason}"
+    return (
+        f"QZZ 生图接口错误（HTTP {getattr(response, 'status_code', 502)}）：{reason}。"
+        "本次请求已停止，不会自动重试。"
+    )
 
 async def generate_qzz_provider_image(prompt, size, model, reference_images=None, provider=None, quality=""):
     model_name = baofu_model_for_request(model)
     request_size = normalize_gpt_image_2_size(size)
     gen_url = provider_endpoint_url(provider, "image_generation_endpoint", "/v1/images/generations")
+    edit_url = provider_endpoint_url(provider, "image_edit_endpoint", "/v1/images/edits")
     refs = [ref for ref in (reference_images or []) if ref.get("url")]
-    image_refs = image_references(refs)
+    mask_refs = [
+        ref for ref in refs
+        if str(ref.get("role") or "").strip().lower() == "mask"
+        or str(ref.get("name") or "").lower().endswith("_mask.png")
+    ]
+    image_refs = [ref for ref in refs if ref not in mask_refs]
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)
     async with httpx.AsyncClient(
         timeout=request_timeout,
         follow_redirects=True,
         trust_env=provider_uses_system_proxy(provider),
     ) as client:
-        body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
         quality = str(quality or "").strip().lower()
-        if quality in {"low", "medium", "high"}:
-            body["quality"] = quality
         if image_refs:
-            image_payload = require_converted_image_refs(
-                image_refs[:1],
-                [qzz_reference_image_value(ref) for ref in image_refs[:1]],
-                "QZZ 图生图",
+            files = []
+            opened = []
+            temp_paths = []
+            try:
+                for ref in image_refs[:4]:
+                    path, created = await codex_prepare_local_media(ref.get("url", ""))
+                    temp_paths.extend(created)
+                    if not path:
+                        continue
+                    handle = open(path, "rb")
+                    opened.append(handle)
+                    files.append(("image", (os.path.basename(path), handle, content_type_for_path(path))))
+                if mask_refs:
+                    mask_path, created = await codex_prepare_local_media(mask_refs[0].get("url", ""))
+                    temp_paths.extend(created)
+                    if mask_path:
+                        handle = open(mask_path, "rb")
+                        opened.append(handle)
+                        files.append(("mask", (os.path.basename(mask_path), handle, content_type_for_path(mask_path))))
+                if not files:
+                    raise HTTPException(status_code=400, detail="QZZ 图生图需要可读取的参考图片文件")
+                data = {"model": model_name, "prompt": prompt, "size": request_size}
+                if quality in {"low", "medium", "high"}:
+                    data["quality"] = quality
+                response = await client.post(
+                    edit_url,
+                    headers=api_headers(json_body=False, provider=provider, model=model_name),
+                    data=data,
+                    files=files,
+                )
+            finally:
+                for handle in opened:
+                    handle.close()
+                for path in temp_paths:
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+        else:
+            body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
+            if quality in {"low", "medium", "high"}:
+                body["quality"] = quality
+            response = await client.post(
+                gen_url,
+                headers=api_headers(provider=provider, model=model_name),
+                json=body,
             )
-            body["image"] = image_payload
-        response = await client.post(gen_url, headers=api_headers(provider=provider, model=model_name), json=body)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=qzz_image_error_detail(response, request_size, model_name),
+            )
         raw = response.json()
         return extract_image(raw), raw
 
@@ -15360,7 +15538,14 @@ async def query_image_task(payload: ImageTaskQueryRequest):
             raise HTTPException(status_code=502, detail=f"查询 RunningHub 任务失败：{exc}") from exc
     timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=not is_moonly_provider(provider)) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            trust_env=provider_uses_system_proxy(
+                provider,
+                default=not is_moonly_provider(provider),
+            ),
+        ) as client:
             raw = await fetch_image_task_payload(client, task_id, provider)
     except httpx.HTTPStatusError as exc:
         log_net_error(f"查询生图任务 HTTP状态错误 provider={provider.get('id')} task_id={task_id}", exc)
@@ -16581,6 +16766,44 @@ async def canvas_video(payload: CanvasVideoRequest):
 
 # --- Canvas LLM ---
 
+
+async def collect_chat_completion_stream(client, url, headers, body):
+    stream_body = {**body, "stream": True}
+    async with client.stream("POST", url, headers=headers, json=stream_body) as response:
+        if response.status_code >= 400:
+            await response.aread()
+            response.raise_for_status()
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "text/event-stream" not in content_type:
+            content = await response.aread()
+            if not content:
+                raise HTTPException(status_code=502, detail="上游接口返回了空响应")
+            return json.loads(content)
+
+        content_parts = []
+        raw_usage = None
+        async for line in response.aiter_lines():
+            if not line:
+                continue
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if not line or line == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(chunk, dict) and chunk.get("usage"):
+                raw_usage = chunk.get("usage")
+            delta = text_delta_from_chat_chunk(chunk)
+            if delta:
+                content_parts.append(delta)
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "".join(content_parts)}}],
+            "usage": raw_usage,
+        }
+
+
 @app.post("/api/canvas-llm")
 async def canvas_llm(payload: CanvasLLMRequest):
     _provider = get_api_provider(payload.provider)
@@ -16647,17 +16870,28 @@ async def canvas_llm(payload: CanvasLLMRequest):
             trust_env=_llm_provider.get("use_system_proxy", True),
         ) as client:
             req_body = {"model": model, "messages": upstream_messages}
+            if payload.response_format == "json_object":
+                req_body["response_format"] = {"type": "json_object"}
             if _is_apimart:
                 req_body["stream"] = False   # APIMart 默认流式，强制关闭
-            response = await client.post(
-                f"{chat_base}/chat/completions",
-                headers=chat_hdrs,
-                json=req_body,
-            )
-            response.raise_for_status()
-            if not response.content:
-                raise HTTPException(status_code=502, detail="上游接口返回了空响应")
-            raw = response.json()
+            chat_url = f"{chat_base}/chat/completions"
+            if payload.stream_response:
+                raw = await collect_chat_completion_stream(
+                    client,
+                    chat_url,
+                    chat_hdrs,
+                    req_body,
+                )
+            else:
+                response = await client.post(
+                    chat_url,
+                    headers=chat_hdrs,
+                    json=req_body,
+                )
+                response.raise_for_status()
+                if not response.content:
+                    raise HTTPException(status_code=502, detail="上游接口返回了空响应")
+                raw = response.json()
     except httpx.HTTPStatusError as exc:
         body = exc.response.text or ""
         friendly = friendly_chat_error_detail(body, model, _llm_provider)
@@ -16859,9 +17093,11 @@ def validate_openshop_generation_capabilities(
         )
     sizes = [str(item) for item in capabilities.get("sizes") or ["auto"]]
     qualities = [str(item) for item in capabilities.get("qualities") or ["auto"]]
-    if snapshot["size"] not in sizes:
+    if snapshot["size"] not in sizes and not is_standard_generation_size(snapshot["size"]):
         raise HTTPException(status_code=400, detail=f"当前模型不支持尺寸 {snapshot['size']}")
-    if snapshot["quality"] not in qualities:
+    if snapshot["quality"] not in qualities and snapshot["quality"] not in {
+        "auto", "low", "medium", "high"
+    }:
         raise HTTPException(status_code=400, detail=f"当前模型不支持质量 {snapshot['quality']}")
 
 def openshop_ai_asset(asset_id: str, max_size: int = 0) -> Tuple[str, Dict[str, Any], str]:
@@ -17282,18 +17518,188 @@ async def materialize_openshop_ai_image(image_data: Any) -> bytes:
         )
     return await _download_openshop_art_font_remote(value)
 
-def openshop_text_remove_prompt(mode: str, extra: str = "") -> str:
-    scope = (
-        "Remove visible text only inside the supplied mask. Preserve every pixel outside the selected area exactly."
-        if mode == "selection"
-        else "Remove all visible text from the supplied source layer."
+OPENSHOP_TEXT_REMOVE_RATIOS = {
+    "source",
+    "square",
+    "portrait",
+    "landscape",
+    "portrait43",
+    "landscape43",
+    "story",
+    "wide",
+    "ultrawide",
+    "ultratall",
+}
+
+
+def openshop_text_remove_prompt(mode: str, extra: str = "", output_ratio: str = "source") -> str:
+    ratio_key = str(output_ratio or "source").strip().lower()
+    ratio_requirement = (
+        "Preserve the complete source image without cropping or stretching it. Extend only the outer canvas "
+        "background as needed to reach the requested aspect ratio; do not duplicate or invent foreground elements. "
+        if ratio_key in OPENSHOP_TEXT_REMOVE_RATIOS - {"source"}
+        else "Keep the original aspect ratio and framing. Do not crop, resize, reframe, or stretch the source image. "
     )
     prompt = (
-        f"{scope} Inpaint removed text naturally while preserving the original composition, objects, colors, "
-        "lighting, texture, spacing, and image style. Do not add new text, letters, logos, captions, or labels."
+        "Remove every visible text glyph and punctuation mark from the supplied source layer, including letters, "
+        "numbers, CJK characters, captions, labels, and punctuation associated with text. Restrict editing to the "
+        "vacated text and punctuation pixels, then reconstruct only the underlying background. Preserve all non-text "
+        "visual content exactly, especially lines, borders, dividers, arrows, icons, pictograms, geometric shapes, "
+        "purely graphical symbols, color blocks, patterns, illustrations, objects, logos without text, composition, "
+        "colors, lighting, texture, and image style. Do not erase, move, redraw, recolor, blur, or deform any non-text "
+        f"element. {ratio_requirement}Do not redesign or add new text, letters, numbers, logos, captions, or labels."
     )
     extra = re.sub(r"[\x00-\x1f\x7f]", " ", str(extra or "")).strip()[:2000]
-    return f"{prompt}\nAdditional requirement: {extra}" if extra else prompt
+    return f"{prompt}\nAdditional requirement (must not conflict with the preservation rules above): {extra}" if extra else prompt
+
+
+OPENSHOP_TEXT_REMOVE_RESOLUTION_LONG_SIDE = {"1k": 1536, "2k": 2048, "4k": 3840}
+OPENSHOP_TEXT_REMOVE_RESOLUTION_PIXEL_LIMIT = {"1k": 1572864, "2k": 4194304, "4k": 8294400}
+OPENSHOP_TEXT_REMOVE_SIZE_MAP = {
+    "square": {"1k": "1024x1024", "2k": "2048x2048", "4k": "4096x4096"},
+    "portrait": {"1k": "1024x1536", "2k": "1360x2048", "4k": "2352x3520"},
+    "portrait43": {"1k": "1008x1344", "2k": "1536x2048", "4k": "2448x3264"},
+    "landscape43": {"1k": "1344x1008", "2k": "2048x1536", "4k": "3264x2448"},
+    "landscape": {"1k": "1536x1024", "2k": "2048x1360", "4k": "3520x2352"},
+    "story": {"1k": "720x1280", "2k": "1152x2048", "4k": "2160x3840"},
+    "wide": {"1k": "1280x720", "2k": "2048x1152", "4k": "3840x2160"},
+    "ultrawide": {"1k": "1280x544", "2k": "2048x880", "4k": "3840x1648"},
+    "ultratall": {"1k": "544x1280", "2k": "880x2048", "4k": "1648x3840"},
+}
+
+
+def openshop_text_remove_size(
+    width: int,
+    height: int,
+    resolution: str = "auto",
+    output_ratio: str = "source",
+) -> str:
+    source_width = max(1, int(width or 1))
+    source_height = max(1, int(height or 1))
+    resolution_key = str(resolution or "auto").strip().lower()
+    if resolution_key not in OPENSHOP_TEXT_REMOVE_RESOLUTION_LONG_SIDE:
+        return f"{source_width}x{source_height}"
+    ratio_key = str(output_ratio or "source").strip().lower()
+    preset_size = OPENSHOP_TEXT_REMOVE_SIZE_MAP.get(ratio_key, {}).get(resolution_key)
+    if preset_size:
+        return preset_size
+
+    ratio = source_width / source_height
+    long_side = OPENSHOP_TEXT_REMOVE_RESOLUTION_LONG_SIDE[resolution_key]
+    pixel_limit = OPENSHOP_TEXT_REMOVE_RESOLUTION_PIXEL_LIMIT[resolution_key]
+    if ratio >= 1:
+        raw_width = min(long_side, math.sqrt(pixel_limit * ratio))
+        raw_height = min(long_side / ratio, math.sqrt(pixel_limit / ratio))
+    else:
+        raw_width = min(long_side * ratio, math.sqrt(pixel_limit * ratio))
+        raw_height = min(long_side, math.sqrt(pixel_limit / ratio))
+
+    target_width = max(64, math.floor(raw_width / 16) * 16)
+    target_height = max(64, math.floor(raw_height / 16) * 16)
+    return f"{target_width}x{target_height}"
+
+
+def openshop_cached_ocr_layout(
+    project: Dict[str, Any],
+    source_asset_id: str,
+    width: int,
+    height: int,
+) -> Optional[Dict[str, Any]]:
+    records = project.get("aiTaskRecords") if isinstance(project, dict) else []
+    if not isinstance(records, list):
+        return None
+    candidates = sorted(
+        (record for record in records if isinstance(record, dict)),
+        key=lambda record: int(record.get("updatedAt") or record.get("createdAt") or 0),
+        reverse=True,
+    )
+    for record in candidates:
+        result = record.get("result")
+        if (
+            record.get("toolId") != "text-extract"
+            or record.get("status") != "succeeded"
+            or record.get("sourceAssetId") != source_asset_id
+            or not isinstance(result, dict)
+            or int(result.get("width") or 0) != int(width)
+            or int(result.get("height") or 0) != int(height)
+            or not isinstance(result.get("blocks"), list)
+            or not result["blocks"]
+        ):
+            continue
+        return deepcopy(result)
+    return None
+
+
+def openshop_text_extract_selection(project: Dict[str, Any]) -> Tuple[str, str]:
+    providers = public_api_providers()
+    catalog = build_capability_catalog(
+        providers,
+        primary_provider_id=get_primary_provider_id(providers),
+    )
+    available = catalog.get("tools", {}).get("text-extract", {}).get("providers", [])
+    preference = project.get("aiToolPreferences", {}).get("text-extract", {})
+    preference = preference if isinstance(preference, dict) else {}
+    if preference.get("mode") == "project":
+        provider_id = str(preference.get("apiConfigId") or "").strip()
+        model_id = str(preference.get("modelId") or "").strip()
+        provider = next(
+            (item for item in available if item.get("id") == provider_id),
+            None,
+        )
+        model = next(
+            (item for item in provider.get("models", []) if item.get("id") == model_id),
+            None,
+        ) if provider else None
+        if provider and model:
+            return provider_id, model_id
+        raise OpenShopAiValidationError("OpenShop 文字提取项目配置不可用")
+
+    primary_id = str(catalog.get("primaryProviderId") or "").strip()
+    provider = next(
+        (item for item in available if item.get("id") == primary_id),
+        None,
+    )
+    models = provider.get("models", []) if provider else []
+    if not provider or not models:
+        raise OpenShopAiValidationError("OpenShop 没有可用于自动文字定位的 OCR API 配置")
+    return str(provider["id"]), str(models[0]["id"])
+
+
+async def openshop_text_removal_layout(
+    project: Dict[str, Any],
+    source_asset_id: str,
+    source_url: str,
+    width: int,
+    height: int,
+) -> Dict[str, Any]:
+    cached = openshop_cached_ocr_layout(
+        project,
+        source_asset_id,
+        width,
+        height,
+    )
+    if cached:
+        return cached
+    provider_id, model_id = openshop_text_extract_selection(project)
+    return await request_openshop_ocr_layout(
+        prompt=build_ocr_prompt(width, height),
+        system_prompt="You are a strict multilingual OCR layout engine. Return JSON only.",
+        provider_id=provider_id,
+        model_id=model_id,
+        source_url=source_url,
+        width=width,
+        height=height,
+    )
+
+
+def read_openshop_text_removal_source(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        content = handle.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="OpenShop 去字原图超过 64 MiB 限制")
+    if not content:
+        raise HTTPException(status_code=502, detail="OpenShop 去字原图为空")
+    return content
 
 
 def _art_font_quad_aspect(
@@ -17371,13 +17777,18 @@ async def store_openshop_ai_png(
     content: bytes,
     role: str = "art-font-output",
 ) -> Dict[str, Any]:
+    output_name = (
+        f"{project_id}-text-removed.png"
+        if role == "ai-output"
+        else f"{project_id}-art-font.png"
+    )
     asset = await asyncio.to_thread(
         OPENSHOP_STORE.store_image,
         project_id,
         owner,
         content,
         "image/png",
-        f"{project_id}-art-font.png",
+        output_name,
         role,
     )
     asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
@@ -17423,32 +17834,60 @@ OPENSHOP_GENERATION_SEMAPHORE = asyncio.Semaphore(3)
 async def openshop_generation_references(
     snapshot: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    source_aliases = [
-        f"@{item['alias']}"
-        for item in snapshot["references"]
-        if item["assetId"] == snapshot["sourceAssetId"]
-    ]
-    source_name = "全图上下文"
-    if source_aliases:
-        source_name += f"（{'、'.join(source_aliases)}）"
+    """Build provider inputs with the editable source in selection space."""
+    source_path, _source_metadata = await asyncio.to_thread(
+        OPENSHOP_STORE.asset_path, snapshot["sourceAssetId"]
+    )
+    mask_path, _mask_metadata = await asyncio.to_thread(
+        OPENSHOP_STORE.asset_path, snapshot["maskAssetId"]
+    )
+    with open(source_path, "rb") as source_handle, open(mask_path, "rb") as mask_handle:
+        source_bytes = source_handle.read()
+        mask_bytes = mask_handle.read()
+    local_source_bytes, local_mask_bytes = await asyncio.to_thread(
+        prepare_local_generation_inputs,
+        source_bytes,
+        mask_bytes,
+        snapshot["selection"],
+    )
+    local_source_url = (
+        "data:image/png;base64,"
+        + base64.b64encode(local_source_bytes).decode("ascii")
+    )
+    local_mask_url = (
+        "data:image/png;base64,"
+        + base64.b64encode(local_mask_bytes).decode("ascii")
+    )
     ordered = [
-        (snapshot["sourceAssetId"], "visible-composite", source_name),
-        (snapshot["maskAssetId"], "mask", "选区蒙版"),
+        (local_source_url, "editable-source", "selected-region-source.png"),
+        (local_mask_url, "mask", "selected-region-mask.png"),
     ]
+    if snapshot["referenceMode"] == "full":
+        ordered.append(
+            (snapshot["sourceAssetId"], "full-context", "full-document-context.png")
+        )
     ordered.extend(
         (item["assetId"], item["sourceType"], item["alias"])
         for item in snapshot["references"]
         if item["assetId"] != snapshot["sourceAssetId"]
     )
     references = []
-    for asset_id, role, name in ordered:
-        path, metadata, url = await asyncio.to_thread(openshop_ai_asset, asset_id, 0)
+    for asset_or_url, role, name in ordered:
+        if str(asset_or_url).startswith("data:image/"):
+            url = asset_or_url
+            mime = "image/png"
+        else:
+            path, metadata, url = await asyncio.to_thread(
+                openshop_ai_asset, asset_or_url, 0
+            )
+            name = name or os.path.basename(path)
+            mime = metadata["mime"]
         references.append({
             "url": url,
-            "name": name or os.path.basename(path),
+            "name": name,
             "role": role,
             "kind": "image",
-            "mime": metadata["mime"],
+            "mime": mime,
         })
     return references
 
@@ -17459,12 +17898,35 @@ def openshop_generation_prompt(snapshot: Dict[str, Any]) -> str:
         if snapshot["toolId"] == "generative-fill"
         else "Redraw only the selected region. Preserve every pixel outside the supplied mask exactly."
     )
-    mappings = ", ".join(
-        f"@{item['alias']} is reference image {index + 1}"
-        for index, item in enumerate(snapshot["references"])
+    input_contract = (
+        "Provider image order: image 1 is the exact selected crop and defines the "
+        "required output framing; image 2 is its same-size selection mask. Return "
+        "only the edited crop in image 1 framing. Never recreate, miniaturize, or "
+        "return the full document."
     )
+    system_reference_count = 2
+    mapping_parts = []
+    if snapshot["referenceMode"] == "full":
+        input_contract += (
+            " image 3 is full-document context only and must never define the output framing."
+        )
+        system_reference_count = 3
+        mapping_parts.extend(
+            f"@{item['alias']} is reference image 3"
+            for item in snapshot["references"]
+            if item["assetId"] == snapshot["sourceAssetId"]
+        )
+    user_reference_index = system_reference_count + 1
+    for item in snapshot["references"]:
+        if item["assetId"] == snapshot["sourceAssetId"]:
+            continue
+        mapping_parts.append(
+            f"@{item['alias']} is reference image {user_reference_index}"
+        )
+        user_reference_index += 1
+    mappings = ", ".join(mapping_parts)
     prompt = snapshot["prompt"] or "Complete the selected region naturally."
-    parts = [scope, f"User request: {prompt}"]
+    parts = [scope, input_contract, f"User request: {prompt}"]
     if mappings:
         parts.append(f"Reference mapping: {mappings}")
     return "\n".join(parts)
@@ -17572,6 +18034,41 @@ async def run_openshop_generation_child(
         detail = getattr(exc, "detail", None) or str(exc)
         OPENSHOP_AI_TASKS.fail_child(parent_id, child_id, detail)
 
+
+async def request_openshop_ocr_layout(
+    *,
+    prompt: str,
+    system_prompt: str,
+    provider_id: str,
+    model_id: str,
+    source_url: str,
+    width: int,
+    height: int,
+    allow_empty: bool = False,
+) -> Dict[str, Any]:
+    content_contract = (
+        "The client can read only assistant message.content and cannot read hidden reasoning_content. "
+        "You MUST put the complete final JSON object in assistant message.content. "
+        "Do not stop after planning or analysis. Never return empty content."
+    )
+    response = await canvas_llm(CanvasLLMRequest(
+        message=prompt,
+        system_prompt=f"{system_prompt.rstrip()} {content_contract}",
+        provider=provider_id,
+        model=model_id,
+        response_format="json_object",
+        stream_response=True,
+        images=[source_url],
+    ))
+    return normalize_ocr_layout(
+        response.get("text") if isinstance(response, dict) else "",
+        width,
+        height,
+        allow_empty=allow_empty,
+        repair_runs=True,
+    )
+
+
 def create_and_schedule_openshop_generation(
     project_id: str,
     owner: Dict[str, Any],
@@ -17619,47 +18116,64 @@ async def run_openshop_ai_task(
             art_pipeline_acquired = True
             task = OPENSHOP_AI_TASKS.get(task_id, project_id, owner)
             snapshot = task["snapshot"]
-            source_path, _source_metadata = await asyncio.to_thread(
+            source_path, source_metadata = await asyncio.to_thread(
                 OPENSHOP_STORE.asset_path,
                 task["sourceAssetId"],
             )
+            if (
+                int(source_metadata.get("width") or 0) != snapshot["document"]["width"]
+                or int(source_metadata.get("height") or 0) != snapshot["document"]["height"]
+            ):
+                raise OpenShopAiValidationError(
+                    "OpenShop artistic-font source dimensions do not match the document"
+                )
             source_bytes = await _run_openshop_art_font_worker(
                 _read_openshop_art_font_source,
                 source_path,
             )
-            reference_png = await _run_openshop_art_font_worker(
-                crop_art_font_reference,
+            source_patch_png, edit_mask_png, placement_box = await _run_openshop_art_font_worker(
+                prepare_art_font_edit,
                 source_bytes,
                 snapshot["quad"],
             )
-            target_aspect = _art_font_quad_aspect(
-                snapshot["quad"],
-                snapshot["document"],
-                snapshot["visualProfile"],
-            )
-            reference_url = (
+            source_patch_url = (
                 "data:image/png;base64,"
-                + base64.b64encode(reference_png).decode("ascii")
+                + base64.b64encode(source_patch_png).decode("ascii")
+            )
+            edit_mask_url = (
+                "data:image/png;base64,"
+                + base64.b64encode(edit_mask_png).decode("ascii")
             )
             image_data, _raw = await generate_ai_image(
                 build_art_font_prompt(snapshot),
-                "auto",
+                f"{placement_box['width']}x{placement_box['height']}",
                 "high",
                 task["modelId"],
-                [{
-                    "url": reference_url,
-                    "name": "original-lettering.png",
-                    "role": "style-reference",
-                    "kind": "image",
-                    "mime": "image/png",
-                }],
+                [
+                    {
+                        "url": source_patch_url,
+                        "name": "art-font-source.png",
+                        "role": "source",
+                        "kind": "image",
+                        "mime": "image/png",
+                    },
+                    {
+                        "url": edit_mask_url,
+                        "name": "art-font-mask.png",
+                        "role": "mask",
+                        "kind": "image",
+                        "mime": "image/png",
+                    },
+                ],
                 task["apiConfigId"],
             )
             generated_bytes = await materialize_openshop_ai_image(image_data)
             normalized_png, geometry = await _run_openshop_art_font_worker(
-                normalize_art_font_output,
+                normalize_art_font_patch_output,
                 generated_bytes,
-                target_aspect,
+                source_patch_png,
+                edit_mask_png,
+                placement_box,
             )
             if not OPENSHOP_AI_TASKS.can_complete(task_id):
                 return
@@ -17693,55 +18207,63 @@ async def run_openshop_ai_task(
         )
         if payload.tool_id == "text-extract":
             prompt = build_ocr_prompt(source_metadata["width"], source_metadata["height"])
-            response = await canvas_llm(CanvasLLMRequest(
-                message=prompt,
+            layout = await request_openshop_ocr_layout(
+                prompt=prompt,
                 system_prompt="You are a strict multilingual OCR layout engine. Return JSON only.",
-                provider=payload.provider_id,
-                model=payload.model_id,
-                images=[source_url],
-            ))
-            layout = normalize_ocr_layout(
-                response.get("text") if isinstance(response, dict) else "",
-                source_metadata["width"],
-                source_metadata["height"],
+                provider_id=payload.provider_id,
+                model_id=payload.model_id,
+                source_url=source_url,
+                width=source_metadata["width"],
+                height=source_metadata["height"],
             )
             OPENSHOP_AI_TASKS.succeed(task_id, layout)
             return
 
-        references = [{
-            "url": source_url,
-            "name": os.path.basename(source_path) or "source.png",
-            "role": "source",
-            "kind": "image",
-            "mime": source_metadata["mime"],
-        }]
-        if payload.mode == "selection":
-            _mask_path, mask_metadata, mask_url = await asyncio.to_thread(
-                openshop_ai_asset,
-                payload.mask_asset_id,
-                0,
-            )
-            references.append({
-                "url": mask_url,
-                "name": "selection_mask.png",
-                "role": "mask",
-                "kind": "image",
-                "mime": mask_metadata["mime"],
-            })
         quality = str(payload.options.get("quality") or "auto").strip().lower()
         if quality not in {"auto", "low", "medium", "high"}:
             quality = "auto"
+        resolution = str(payload.options.get("resolution") or "auto").strip().lower()
+        ratio = str(payload.options.get("ratio") or "source").strip().lower()
+        if ratio not in OPENSHOP_TEXT_REMOVE_RATIOS:
+            ratio = "source"
+        size = openshop_text_remove_size(
+            source_metadata["width"],
+            source_metadata["height"],
+            resolution,
+            ratio,
+        )
+        target_width, target_height = parse_size_pair(size)
+        references = [
+            {
+                "url": source_url,
+                "name": os.path.basename(source_path),
+                "role": "source",
+                "kind": "image",
+                "mime": source_metadata["mime"],
+            },
+        ]
         image_data, _raw = await generate_ai_image(
-            openshop_text_remove_prompt(payload.mode, payload.options.get("prompt")),
-            f"{source_metadata['width']}x{source_metadata['height']}",
+            openshop_text_remove_prompt(payload.mode, payload.options.get("prompt"), ratio),
+            size,
             quality,
             payload.model_id,
             references,
             payload.provider_id,
         )
+        generated_bytes = await generated_openshop_image_bytes(image_data)
+        normalized_png = await asyncio.to_thread(
+            normalize_generated_text_removal,
+            generated_bytes,
+            (target_width, target_height),
+        )
         if not OPENSHOP_AI_TASKS.can_complete(task_id):
             return
-        asset = await store_openshop_ai_output(project_id, owner, image_data)
+        asset = await store_openshop_ai_png(
+            project_id,
+            owner,
+            normalized_png,
+            "ai-output",
+        )
         if not OPENSHOP_AI_TASKS.succeed(task_id, {
             "assetId": asset["assetId"],
             "url": asset["url"],
@@ -18004,6 +18526,9 @@ async def create_openshop_ai_task(
         *OPENSHOP_GENERATIVE_TOOL_IDS,
     }:
         raise HTTPException(status_code=400, detail="OpenShop AI 功能不存在")
+    if payload.tool_id == "text-remove":
+        payload.mode = "layer"
+        payload.mask_asset_id = ""
     provider = openshop_ai_provider(payload)
     if payload.tool_id == "art-font-restore":
         model = openshop_generation_model(
@@ -18244,6 +18769,20 @@ async def delete_project(project_id: str):
 @app.get("/api/canvases/trash")
 async def trashed_canvases():
     return {"canvases": list_deleted_canvases(), "retention_days": 30}
+
+
+@app.delete("/api/canvases/trash/purge-all")
+async def purge_all_trashed_canvases():
+    def purge_all():
+        deleted_ids = [record["id"] for record in list_deleted_canvases()]
+        return sum(
+            purge_canvas_storage(canvas_id, require_deleted=True)
+            for canvas_id in deleted_ids
+        )
+
+    purged = await asyncio.to_thread(purge_all)
+    return {"ok": True, "purged": purged}
+
 
 @app.post("/api/canvases")
 async def create_canvas(payload: CanvasCreateRequest):
@@ -19494,29 +20033,7 @@ async def restore_canvas(canvas_id: str):
 
 @app.delete("/api/canvases/{canvas_id}/purge")
 async def purge_canvas(canvas_id: str):
-    def delete_canvas_and_projects():
-        with CANVAS_LOCK:
-            path = canvas_path(canvas_id)
-            if not os.path.exists(path):
-                return []
-            canvas = load_canvas_any(canvas_id)
-            canvas_type = normalize_canvas_kind(canvas.get("kind"))
-            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
-                removed = OPENSHOP_STORE.delete_canvas_projects(
-                    canvas_type,
-                    canvas_id,
-                )
-                for record in removed:
-                    OPENSHOP_AI_TASKS.cancel_project(
-                        record["projectId"], record["owner"]
-                    )
-                try:
-                    os.remove(path)
-                except FileNotFoundError:
-                    pass
-                collect_openshop_garbage()
-            return removed
-    await asyncio.to_thread(delete_canvas_and_projects)
+    await asyncio.to_thread(purge_canvas_storage, canvas_id)
     return {"ok": True}
 
 # --- GPT 对话 ---

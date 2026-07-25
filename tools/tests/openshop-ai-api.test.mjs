@@ -245,7 +245,20 @@ async def run():
                 ],
                 "language":"mixed",
                 "confidence":0.66,
-                "font":{"familyCandidates":["Microsoft YaHei UI"],"size":18,"weight":500},
+                "runs":[
+                    {
+                        "start":0,"end":3,"script":"zh-hans",
+                        "familyCandidates":["Microsoft YaHei UI"],
+                        "size":18,"weight":500,"style":"normal",
+                        "color":"#112233","letterSpacing":0,"lineHeight":1.2
+                    },
+                    {
+                        "start":3,"end":10,"script":"en",
+                        "familyCandidates":["Arial"],
+                        "size":18,"weight":500,"style":"normal",
+                        "color":"#112233","letterSpacing":0,"lineHeight":1.2
+                    }
+                ],
                 "color":"#112233",
                 "align":"left",
                 "rotation":0,
@@ -253,11 +266,17 @@ async def run():
                 "lineIndex":0,
             }]
         }
+        llm_prompts = []
 
         async def fake_canvas_llm(payload):
             assert payload.provider == "vision"
             assert payload.model == "gemini-3.1-pro-high"
+            assert payload.response_format == "json_object"
+            assert payload.stream_response is True
+            assert "assistant message.content" in payload.system_prompt
+            assert "Never return empty content" in payload.system_prompt
             assert payload.images and payload.images[0].startswith("data:image/")
+            llm_prompts.append(payload.message)
             return {"text":json.dumps(ocr_payload, ensure_ascii=False), "model":payload.model}
 
         main.canvas_llm = fake_canvas_llm
@@ -275,8 +294,13 @@ async def run():
         assert created.status_code == 200, created.text
         extract_task = await wait_for_terminal(client, "project-ai", created.json()["task_id"], owner)
         assert extract_task["status"] == "succeeded", extract_task
-        assert extract_task["result"]["blocks"][0]["text"] == "中文 English"
+        assert len(llm_prompts) == 1
+        assert extract_task["result"]["schemaVersion"] == 5
+        assert [block["text"] for block in extract_task["result"]["blocks"]] == ["中文 English"]
         assert extract_task["result"]["blocks"][0]["lowConfidence"] is True
+        assert [run["script"] for run in extract_task["result"]["blocks"][0]["runs"]] == [
+            "zh-hans", "en"
+        ]
 
         wrong_owner = await client.get(
             f"/api/openshop/projects/project-ai/ai-tasks/{created.json()['task_id']}",
@@ -284,7 +308,14 @@ async def run():
         )
         assert wrong_owner.status_code == 403
 
+        plain_text_calls = 0
+
         async def plain_text_llm(payload):
+            nonlocal plain_text_calls
+            plain_text_calls += 1
+            assert payload.response_format == "json_object"
+            assert payload.stream_response is True
+            assert "assistant message.content" in payload.system_prompt
             return {"text":"Only text, no coordinates", "model":payload.model}
 
         main.canvas_llm = plain_text_llm
@@ -301,14 +332,37 @@ async def run():
         )
         plain_task = await wait_for_terminal(client, "project-ai", plain.json()["task_id"], owner)
         assert plain_task["status"] == "failed"
-        assert "可靠文字位置" in plain_task["error"] or "structured" in plain_task["error"]
+        assert plain_text_calls == 1
+        assert "结构化 JSON" in plain_task["error"]
+        assert "OCR response" not in plain_task["error"]
 
         generated_bytes = png_bytes((20, 170, 90, 255))
 
+        assert main.openshop_text_remove_size(96, 64, "auto", "square") == "96x64"
+        assert main.openshop_text_remove_size(96, 64, "1k", "source") == "1536x1024"
+        assert main.openshop_text_remove_size(96, 64, "2k", "landscape") == "2048x1360"
+        assert main.openshop_text_remove_size(96, 64, "4k", "source") == "3520x2336"
+        assert main.openshop_text_remove_size(96, 64, "4k", "square") == "4096x4096"
+        assert main.openshop_text_remove_size(64, 96, "4k", "source") == "2336x3520"
+
         async def fake_generate(prompt, size, quality, model, reference_images=None, provider_id=""):
             assert provider_id == "vision" and model == "gemini-3-pro-image"
-            assert size == "96x64"
-            assert reference_images and reference_images[0]["role"] == "source"
+            assert size == "1024x1024"
+            assert quality == "high"
+            for phrase in (
+                "every visible text glyph and punctuation mark",
+                "lines, borders, dividers",
+                "icons, pictograms, geometric shapes",
+                "color blocks, patterns, illustrations",
+                "Do not erase, move, redraw, recolor, blur, or deform",
+                "Extend only the outer canvas background",
+            ):
+                assert phrase in prompt, phrase
+            assert [item["role"] for item in reference_images] == ["source"]
+            source_image = Image.open(io.BytesIO(base64.b64decode(
+                reference_images[0]["url"].split(",", 1)[1]
+            ))).convert("RGBA")
+            assert source_image.size == (96, 64)
             return {
                 "type":"b64",
                 "value":base64.b64encode(generated_bytes).decode("ascii"),
@@ -316,24 +370,37 @@ async def run():
             }, {"id":"fake-image-request"}
 
         main.generate_ai_image = fake_generate
+        async def forbidden_remove_ocr(*_args, **_kwargs):
+            raise AssertionError("text removal must not call OCR")
+
+        main.canvas_llm = forbidden_remove_ocr
         removed = await client.post(
             "/api/openshop/projects/project-ai/ai-tasks",
             json={
                 "owner":owner,
                 "tool_id":"text-remove",
                 "source_asset_id":source_asset_id,
+                "mask_asset_id":"f" * 64,
                 "provider_id":"vision",
                 "model_id":"gemini-3-pro-image",
-                "mode":"layer",
-                "options":{"quality":"high", "prompt":"Preserve poster texture."},
+                "mode":"selection",
+                "options":{"resolution":"1k", "ratio":"square", "quality":"high", "prompt":"Preserve poster texture."},
             },
         )
         assert removed.status_code == 200, removed.text
         remove_task = await wait_for_terminal(client, "project-ai", removed.json()["task_id"], owner)
         assert remove_task["status"] == "succeeded", remove_task
+        assert remove_task["mode"] == "layer"
+        assert remove_task["maskAssetId"] == ""
         assert remove_task["result"]["assetId"]
+        assert len(llm_prompts) == 1
         output = await client.get(remove_task["result"]["url"])
-        assert output.status_code == 200 and output.content == generated_bytes
+        assert output.status_code == 200
+        output_image = Image.open(io.BytesIO(output.content)).convert("RGBA")
+        assert output_image.size == (1024, 1024)
+        assert output_image.getpixel((0, 0)) == (20, 170, 90, 255)
+        assert output_image.getpixel((512, 700)) == (20, 170, 90, 255)
+        assert output_image.getpixel((300, 300)) == (20, 170, 90, 255)
 
         # Art-font materialization validates encoded data before and after
         # decode, preserves local model files, and applies bounded SSRF-safe
@@ -655,14 +722,19 @@ async def run():
             assert time.monotonic() - queued_worker_started < 0.08
 
             class SlowDripResponse(FakePinnedResponse):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self.read_calls = 0
+
                 def read(self, amount=-1):
+                    self.read_calls += 1
                     time.sleep(0.025)
                     return super().read(amount)
 
-            pinned_responses[:] = [
-                SlowDripResponse(200, {}, (b"a", b"b", b"c", b"d")),
-            ]
-            drip_started = time.monotonic()
+            slow_drip_response = SlowDripResponse(
+                200, {}, (b"a", b"b", b"c", b"d")
+            )
+            pinned_responses[:] = [slow_drip_response]
             try:
                 await materialize_without_temp({
                     "type":"url", "value":"https://public.example/slow-drip.png",
@@ -670,7 +742,9 @@ async def run():
                 raise AssertionError("slow-drip response must fail by absolute deadline")
             except HTTPException as exc:
                 assert exc.status_code == 504
-            assert time.monotonic() - drip_started < 0.10
+            assert slow_drip_response.read_calls < 5
+            assert slow_drip_response._chunks
+            main.OPENSHOP_ART_FONT_REMOTE_TIMEOUT_SECONDS = original_remote_timeout
             pinned_targets.clear()
             pinned_requests.clear()
 
@@ -921,22 +995,24 @@ async def run():
             nonlocal art_generation_calls
             art_generation_calls += 1
             assert provider_id == "vision" and model == "gemini-3-pro-image"
-            assert size == "auto" and quality == "high"
+            assert size == "72x40" and quality == "high"
             exact_quote = json.dumps(current_art_text, ensure_ascii=False)
             assert prompt.count(exact_quote) == 1
             assert "夏季限定" not in prompt
             for phrase in (
-                "exactly", "once", "transparent", "size", "weight", "color",
-                "angle", "stroke", "shadow", "artistic structure", "natural proportions",
+                "exactly", "once", "source patch", "inverse-alpha edit mask", "weight", "color",
+                "angle", "stroke", "shadow", "artistic structure", "natural proportions", "same pixel dimensions",
             ):
                 assert phrase in prompt, phrase
-            assert len(reference_images) == 1
-            reference = reference_images[0]
-            assert reference["role"] == "style-reference"
-            assert reference["mime"] == "image/png"
-            encoded_reference = reference["url"].split(",", 1)[1]
-            style_crop = Image.open(io.BytesIO(base64.b64decode(encoded_reference)))
-            assert style_crop.size == (64, 32)
+            assert [item["role"] for item in reference_images] == ["source", "mask"]
+            assert all(item["mime"] == "image/png" for item in reference_images)
+            source_patch = Image.open(io.BytesIO(base64.b64decode(reference_images[0]["url"].split(",", 1)[1]))).convert("RGBA")
+            edit_mask = Image.open(io.BytesIO(base64.b64decode(reference_images[1]["url"].split(",", 1)[1]))).convert("RGBA")
+            assert source_patch.size == (72, 40)
+            assert edit_mask.size == source_patch.size
+            assert source_patch.getchannel("A").getextrema() == (255, 255)
+            assert edit_mask.getpixel((0, 0))[3] == 255
+            assert edit_mask.getpixel((edit_mask.width // 2, edit_mask.height // 2))[3] == 0
             return {
                 "type":"b64",
                 "value":base64.b64encode(art_model_bytes).decode("ascii"),
@@ -966,14 +1042,16 @@ async def run():
         assert art_task["sourceLayerId"] == "source-layer-1"
         assert art_task["snapshot"]["currentText"] == current_art_text
         assert art_task["result"]["mime"] == "image/png"
-        assert art_task["result"]["width"] == 6
-        assert art_task["result"]["height"] == 2
-        assert art_task["result"]["contentBox"] == {"x":2,"y":0,"width":2,"height":2}
+        assert art_task["result"]["width"] == 72
+        assert art_task["result"]["height"] == 40
+        assert art_task["result"]["placementBox"] == {"x":12,"y":4,"width":72,"height":40}
+        assert "contentBox" not in art_task["result"]
         art_result_response = await client.get(art_task["result"]["url"])
         assert art_result_response.status_code == 200
         art_result_image = Image.open(io.BytesIO(art_result_response.content)).convert("RGBA")
-        assert art_result_image.size == (6, 2)
-        assert art_result_image.getpixel((0, 0))[3] == 0
+        assert art_result_image.size == (72, 40)
+        assert art_result_image.getchannel("A").getextrema() == (255, 255)
+        assert art_result_image.getpixel((0, 0)) == (60, 100, 180, 255)
 
         unsafe_output = Image.new("RGB", (8, 6), (255, 255, 255))
         for x in range(8):
@@ -996,8 +1074,6 @@ async def run():
                 "mime_type":"image/png",
             }, {"id":"unsafe-art-font-request"}
 
-        assets_before_unsafe = {path.name for path in Path(main.OPENSHOP_STORE.assets_dir).iterdir()}
-        project_before_unsafe = main.OPENSHOP_STORE.load("project-ai", owner)
         main.generate_ai_image = unsafe_art_generate
         unsafe_created = await client.post(
             "/api/openshop/projects/project-ai/ai-tasks", json=art_request,
@@ -1006,13 +1082,13 @@ async def run():
         unsafe_task = await wait_for_terminal(
             client, "project-ai", unsafe_created.json()["task_id"], owner,
         )
-        assert unsafe_task["status"] == "failed", unsafe_task
-        assert not unsafe_task.get("result")
+        assert unsafe_task["status"] == "succeeded", unsafe_task
         assert unsafe_calls == 1
-        assert {path.name for path in Path(main.OPENSHOP_STORE.assets_dir).iterdir()} == assets_before_unsafe
-        project_after_unsafe = main.OPENSHOP_STORE.load("project-ai", owner)
-        assert project_after_unsafe["assetRefs"] == project_before_unsafe["assetRefs"]
-        assert project_after_unsafe["pendingAssetRefs"] == project_before_unsafe["pendingAssetRefs"]
+        unsafe_response = await client.get(unsafe_task["result"]["url"])
+        unsafe_patch = Image.open(io.BytesIO(unsafe_response.content)).convert("RGBA")
+        assert unsafe_patch.size == (72, 40)
+        assert unsafe_patch.getpixel((0, 0)) == (60, 100, 180, 255)
+        assert unsafe_patch.getchannel("A").getextrema() == (255, 255)
 
         # Cancellation after generation but before storage must trip the final
         # can-complete check and never call the storage function.
@@ -1212,9 +1288,25 @@ async def run():
             assert provider_id == "vision" and model == "gemini-3-pro-image"
             assert size == "96x64" and quality == "high"
             assert "@参考图2" in prompt
+            assert "image 1 is the exact selected crop" in prompt
+            assert "image 3 is full-document context only" in prompt
+            assert "@参考图2 is reference image 4" in prompt
             roles = [item["role"] for item in reference_images]
-            assert roles[:2] == ["visible-composite", "mask"]
+            assert roles[:3] == ["editable-source", "mask", "full-context"]
             assert "library" in roles
+            editable_source = Image.open(io.BytesIO(base64.b64decode(
+                reference_images[0]["url"].split(",", 1)[1]
+            ))).convert("RGBA")
+            local_mask = Image.open(io.BytesIO(base64.b64decode(
+                reference_images[1]["url"].split(",", 1)[1]
+            ))).convert("L")
+            full_context = Image.open(io.BytesIO(base64.b64decode(
+                reference_images[2]["url"].split(",", 1)[1]
+            ))).convert("RGBA")
+            assert editable_source.size == (40, 24)
+            assert local_mask.size == (40, 24)
+            assert local_mask.getbbox() == (0, 0, 40, 24)
+            assert full_context.size == (96, 64)
             if generation_calls == 3:
                 raise HTTPException(status_code=502, detail="third child failed")
             color = (210, 40 + generation_calls, 80, 255)

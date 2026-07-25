@@ -106,6 +106,8 @@
       const local = fabricRef.util.transformPoint(point, inverse);
       const objectWidth = positive(session.target.width, session.width);
       const objectHeight = positive(session.target.height, session.height);
+      // Fabric transform matrices resolve pointer coordinates in an object-center
+      // local space even when the object was positioned with originX/Y left/top.
       const x = (Number(local?.x) + objectWidth / 2) * session.width / objectWidth;
       const y = (Number(local?.y) + objectHeight / 2) * session.height / objectHeight;
       return Number.isFinite(x) && Number.isFinite(y) ? {x, y} : null;
@@ -267,7 +269,8 @@
         return {ok:false, reason:'clone-source-required'};
       }
       const layer = activeLayer();
-      const target = resolveTarget();
+      const target = resolveTarget()
+        || (normalizedTool === 'brush' || normalizedTool === 'eraser' ? editor._ensureActiveRasterTarget?.() : null);
       if(!layer || !target){
         notify('Select an image on the active layer first');
         return {ok:false, reason:'active-layer-image-required'};
@@ -344,6 +347,7 @@
       editor.canvas.requestRenderAll?.();
       if(session.changed){
         editor.saveHistory?.(HISTORY_LABELS[session.tool]);
+        editor._refreshLayerThumbnailForObject?.(session.target);
         editor._scheduleUi?.('status', 'minimap', 'histogram');
       }
       return session.changed;

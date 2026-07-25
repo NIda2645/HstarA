@@ -35,6 +35,110 @@ test('loads the editor shell and supports core UI interactions', async ({ page }
   expect(pageErrors).toEqual([]);
 });
 
+test('paints and erases on a newly created blank layer', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => OS.dismissWelcome());
+
+  const result = await page.evaluate(() => {
+    OS.addLayer();
+    OS.state.fgColor = '#ff0000';
+    OS.state.brushSize = 36;
+    OS.state.brushOpacity = 100;
+    OS.state.brushPreset = 'round';
+    OS.state.brushHardness = 100;
+
+    const point = { x: Math.round(OS.canvasW / 2), y: Math.round(OS.canvasH / 2) };
+    OS.setTool('brush');
+    const brushResult = OS._rasterTools.begin('brush', point);
+    OS._rasterTools.end();
+    const target = OS.layers[OS.activeLayerIdx].objects.find((object) => object?.hstarPaintSurface);
+    const painted = target?.getElement?.().getContext('2d').getImageData(point.x, point.y, 1, 1).data;
+
+    OS.setTool('eraser');
+    const eraserResult = OS._rasterTools.begin('eraser', point);
+    OS._rasterTools.end();
+    const erased = target?.getElement?.().getContext('2d').getImageData(point.x, point.y, 1, 1).data;
+
+    return {
+      brushOk: brushResult?.ok,
+      eraserOk: eraserResult?.ok,
+      targetType: target?.type,
+      targetInLayer: OS.layers[OS.activeLayerIdx].objects.includes(target),
+      paintedAlpha: painted?.[3] ?? -1,
+      erasedAlpha: erased?.[3] ?? -1,
+    };
+  });
+
+  expect(result).toMatchObject({
+    brushOk: true,
+    eraserOk: true,
+    targetType: 'image',
+    targetInLayer: true,
+  });
+  expect(result.paintedAlpha).toBeGreaterThan(0);
+  expect(result.erasedAlpha).toBeLessThan(result.paintedAlpha);
+  expect(pageErrors).toEqual([]);
+});
+
+test('routes real brush and eraser pointer input to a blank active layer', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => OS.dismissWelcome());
+  await page.evaluate(() => {
+    OS.addLayer();
+    OS.state.fgColor = '#00ff00';
+    OS.state.brushSize = 44;
+    OS.state.brushOpacity = 100;
+    OS.state.brushPreset = 'round';
+    OS.state.brushHardness = 100;
+  });
+
+  const canvas = page.locator('.upper-canvas').first();
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+
+  await page.locator('.tool-btn[data-tool="brush"]').first().click();
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 24, y);
+  await page.mouse.up();
+
+  const afterBrush = await page.evaluate(() => {
+    const layer = OS.layers[OS.activeLayerIdx];
+    const target = layer.objects.find((object) => object?.hstarPaintSurface);
+    return {
+      count: layer.objects.length,
+      hasTarget: Boolean(target),
+      history: OS.history.at(-1)?.action,
+      toastText: document.getElementById('toast-container')?.textContent || '',
+    };
+  });
+  expect(afterBrush.hasTarget).toBe(true);
+  expect(afterBrush.history).toBe('Brush');
+  expect(afterBrush.toastText).not.toContain('Select an image');
+
+  await page.locator('.tool-btn[data-tool="eraser"]').first().click();
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 24, y);
+  await page.mouse.up();
+
+  const afterEraser = await page.evaluate(() => ({
+    history: OS.history.at(-1)?.action,
+    toastText: document.getElementById('toast-container')?.textContent || '',
+  }));
+  expect(afterEraser.history).toBe('Eraser');
+  expect(afterEraser.toastText).not.toContain('Select an image');
+  expect(pageErrors).toEqual([]);
+});
+
 test('applies a one-click pixel filter to an active image layer', async ({ page }) => {
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: 'Skip' }).click();

@@ -48,6 +48,8 @@ from openshop_image_ops import (
     crop_art_font_reference,
     normalize_art_font_output,
     normalize_local_generation,
+    prepare_local_generation_inputs,
+    prepare_art_font_reference,
 )
 
 
@@ -79,6 +81,30 @@ assert cropped.size == (8, 6)
 assert cropped.getpixel((1, 2)) == (10, 200, 70, 255)
 assert cropped.getpixel((7, 5))[3] == 0
 
+provider_crop = Image.new("RGB", (2, 5), (80, 120, 220))
+provider_normalized = Image.open(BytesIO(normalize_local_generation(
+    png(source), png(mask), png(provider_crop), {"x": 1, "y": 2, "width": 5, "height": 3},
+))).convert("RGBA")
+assert provider_normalized.size == (8, 6)
+assert provider_normalized.getpixel((2, 3)) == (80, 120, 220, 255)
+
+# The provider edits the selected document crop, never a resized copy of the
+# full scene. Otherwise a full poster can be miniaturized into the selection.
+patterned_source = Image.new("RGBA", (8, 6), (10, 20, 30, 255))
+for py in range(2, 5):
+    for px in range(1, 6):
+        patterned_source.putpixel((px, py), (100 + px, 150 + py, 200, 255))
+local_source_bytes, local_mask_bytes = prepare_local_generation_inputs(
+    png(patterned_source), png(mask), {"x": 1, "y": 2, "width": 5, "height": 3},
+)
+local_source = Image.open(BytesIO(local_source_bytes)).convert("RGBA")
+local_mask = Image.open(BytesIO(local_mask_bytes)).convert("L")
+assert local_source.size == (5, 3)
+assert local_mask.size == (5, 3)
+assert local_source.getpixel((0, 0)) == patterned_source.getpixel((1, 2))
+assert local_source.getpixel((4, 2)) == patterned_source.getpixel((5, 4))
+assert local_mask.getbbox() == (0, 0, 5, 3)
+
 soft_mask = Image.new("L", (8, 6), 0)
 soft_mask.putpixel((2, 2), 128)
 soft = Image.open(BytesIO(normalize_local_generation(
@@ -89,7 +115,6 @@ assert soft.getpixel((2, 2))[3] == 128
 invalid_cases = [
     (Image.new("L", (8, 6), 0), full, {"x": 1, "y": 2, "width": 5, "height": 3}),
     (mask.resize((4, 3)), full, {"x": 1, "y": 2, "width": 5, "height": 3}),
-    (mask, Image.new("RGB", (2, 5), (1, 2, 3)), {"x": 1, "y": 2, "width": 5, "height": 3}),
     (mask, crop, {"x": 7, "y": 5, "width": 5, "height": 3}),
 ]
 for invalid_mask, invalid_result, invalid_bounds in invalid_cases:
@@ -142,6 +167,26 @@ oriented_crop = Image.open(BytesIO(crop_art_font_reference(
 )))
 assert oriented_crop.size == (2, 2)
 
+# Art-style references are tight, background-free, and fully opaque inside
+# the glyph. Nearby decorations outside the OCR quad must not reach the model.
+reference_source = Image.new("RGB", (100, 100), (248, 246, 238))
+for y in range(28, 72):
+    for x in range(42, 58):
+        reference_source.putpixel((x, y), (65, 107, 75))
+for y in range(35, 65):
+    for x in range(84, 94):
+        reference_source.putpixel((x, y), (220, 35, 30))
+isolated_reference = Image.open(BytesIO(prepare_art_font_reference(
+    png(reference_source),
+    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2},
+     {"x": 0.8, "y": 0.8}, {"x": 0.2, "y": 0.8}],
+))).convert("RGBA")
+assert isolated_reference.size == (64, 64)
+assert isolated_reference.getpixel((0, 0))[3] == 0
+assert isolated_reference.getpixel((32, 32)) == (65, 107, 75, 255)
+assert all(pixel[3] in (0, 255) for pixel in isolated_reference.getdata())
+assert not any(pixel[0] > 180 and pixel[1] < 80 for pixel in isolated_reference.getdata())
+
 # A real edge-connected transparent background is accepted and retained.
 alpha_glyph = Image.new("RGBA", (7, 5), (0, 0, 0, 0))
 for y in range(1, 4):
@@ -164,6 +209,29 @@ for point in ((0, 0), (7, 0), (0, 5), (7, 5)):
 false_alpha.putpixel((3, 2), (0, 0, 0, 255))
 false_alpha.putpixel((4, 3), (0, 0, 0, 220))
 expect_art_failure(png(false_alpha))
+
+# A model-created color wash around opaque glyph strokes is removed while the
+# solid lettering core remains available for the OpenShop layer.
+color_halo = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+for y in range(2, 18):
+    for x in range(2, 18):
+        color_halo.putpixel((x, y), (70, 170, 95, 96))
+for y in range(4, 16):
+    for x in range(8, 12):
+        color_halo.putpixel((x, y), (45, 90, 55, 255))
+clean_halo_png, clean_halo_geometry = normalize_art_font_output(png(color_halo), 0.5)
+clean_halo = Image.open(BytesIO(clean_halo_png)).convert("RGBA")
+assert clean_halo_geometry["contentBox"]["width"] <= 8
+assert clean_halo_geometry["contentBox"]["height"] == 16
+assert max(clean_halo.getchannel("A").getdata()) == 255
+assert sum(alpha > 16 for alpha in clean_halo.getchannel("A").getdata()) <= 128
+
+# A translucent wash with no opaque lettering core remains unsafe.
+wash_only = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+for y in range(2, 18):
+    for x in range(2, 18):
+        wash_only.putpixel((x, y), (70, 170, 95, 96))
+expect_art_failure(png(wash_only))
 
 # Opaque output is accepted only with a uniform boundary matte. Flood removal
 # must not erase a same-colored detail enclosed inside the glyph.
@@ -224,6 +292,32 @@ visible_multicolor = {
 assert len(visible_multicolor) >= 4
 assert multicolor_geometry["contentBox"]["width"] == 10
 assert sum(pixel[3] == 0 for pixel in multicolor_result.getdata()) > 0
+
+# Model outputs can contain a low-texture gradient/noise matte along the edge
+# instead of one exact background color. It is safe to remove when the edge
+# remains coherent, while the glyph stays isolated from that matte.
+adaptive_matte = Image.new("RGB", (16, 10), (220, 230, 240))
+boundary = list(image_ops._boundary_indexes(*adaptive_matte.size))
+for order, pixel_index in enumerate(boundary):
+    delta = (order % 7) * 4
+    adaptive_matte.putpixel(
+        (pixel_index % adaptive_matte.width, pixel_index // adaptive_matte.width),
+        (220 + delta, 230, 240),
+    )
+for y in range(3, 7):
+    for x in range(5, 11):
+        adaptive_matte.putpixel((x, y), (18, 28, 42))
+try:
+    image_ops._uniform_boundary_matte(adaptive_matte)
+    raise AssertionError("gradient matte should require adaptive estimation")
+except OpenShopImageNormalizationError:
+    pass
+adaptive_png, adaptive_geometry = normalize_art_font_output(png(adaptive_matte), 1.5)
+adaptive_result = Image.open(BytesIO(adaptive_png)).convert("RGBA")
+assert adaptive_result.size == (6, 4)
+assert adaptive_geometry["contentBox"] == {"x": 0, "y": 0, "width": 6, "height": 4}
+assert adaptive_result.getpixel((2, 2)) == (18, 28, 42, 255)
+assert all(pixel[3] == 0 for pixel in adaptive_result.getdata() if pixel[:3] == (220, 230, 240))
 
 # Dense foreground validation uses streaming counters and a fixed histogram,
 # not one Python integer object per visible pixel.

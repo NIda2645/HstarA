@@ -58,7 +58,7 @@ function createDocument(){
   };
 }
 
-function createImage(name){
+function createImage(name, options = {}){
   const element = {width:100, height:100, naturalWidth:100, naturalHeight:100};
   return {
     type:'image',
@@ -71,6 +71,7 @@ function createImage(name){
     getElement:vi.fn(() => element),
     setElement:vi.fn(function setElement(next){ this.element = next; }),
     calcTransformMatrix:vi.fn(() => [1, 0, 0, 1, 50, 50]),
+    ...options,
   };
 }
 
@@ -87,6 +88,7 @@ function createEditor(){
     activeLayerIdx:1,
     saveHistory:vi.fn(),
     updateLayersPanel:vi.fn(),
+    _refreshLayerThumbnailForObject:vi.fn(),
     copyObj:vi.fn(),
     pasteObj:vi.fn(),
     duplicateSelected:vi.fn(),
@@ -136,6 +138,85 @@ describe('Hstar OpenShop layer-scoped raster tools', () => {
     expect(documentRef.canvases[0].context.assignments).toContain('source-over');
     expect(editor.saveHistory).toHaveBeenCalledTimes(1);
     expect(editor.saveHistory).toHaveBeenCalledWith('Brush');
+    expect(editor._refreshLayerThumbnailForObject).toHaveBeenCalledWith(active);
+  });
+
+  it('asks the editor for a transparent raster target when brushing on an empty layer', () => {
+    const documentRef = createDocument();
+    const {editor} = createEditor();
+    const paintTarget = createImage('Paint Layer');
+    editor.layers[1].objects = [];
+    editor.canvas.getActiveObject = vi.fn(() => null);
+    editor._ensureActiveRasterTarget = vi.fn(() => {
+      editor.layers[1].objects.push(paintTarget);
+      return paintTarget;
+    });
+    const controller = window.HstarOpenShopRasterTools.createController({
+      editor,
+      fabricRef,
+      documentRef,
+      requestFrame:callback => { callback(); return 1; },
+      cancelFrame:vi.fn(),
+    });
+
+    expect(controller.begin('brush', {x:10, y:10})).toMatchObject({ok:true, target:paintTarget});
+
+    expect(editor._ensureActiveRasterTarget).toHaveBeenCalledOnce();
+    expect(editor.layers[1].objects).toEqual([paintTarget]);
+  });
+
+  it('maps brush points onto a left-top transparent paint target instead of outside the canvas', () => {
+    const documentRef = createDocument();
+    const {editor} = createEditor();
+    const paintTarget = createImage('Paint Layer', {
+      originX:'left',
+      originY:'top',
+      hstarPaintSurface:true,
+    });
+    editor.layers[1].objects = [];
+    editor.canvas.getActiveObject = vi.fn(() => null);
+    editor._ensureActiveRasterTarget = vi.fn(() => {
+      editor.layers[1].objects.push(paintTarget);
+      return paintTarget;
+    });
+    const controller = window.HstarOpenShopRasterTools.createController({
+      editor,
+      fabricRef,
+      documentRef,
+      requestFrame:callback => { callback(); return 1; },
+      cancelFrame:vi.fn(),
+    });
+
+    expect(controller.begin('brush', {x:10, y:10})).toMatchObject({ok:true, target:paintTarget});
+
+    expect(documentRef.canvases[0].context.arc)
+      .toHaveBeenCalledWith(10, 10, 6, 0, Math.PI * 2);
+  });
+
+  it('erases brush pixels from the same transparent paint target', () => {
+    const documentRef = createDocument();
+    const {editor} = createEditor();
+    const paintTarget = createImage('Paint Layer');
+    paintTarget.hstarPaintSurface = true;
+    editor.layers[1].objects = [paintTarget];
+    editor.canvas.getActiveObject = vi.fn(() => null);
+    editor._ensureActiveRasterTarget = vi.fn();
+    const controller = window.HstarOpenShopRasterTools.createController({
+      editor,
+      fabricRef,
+      documentRef,
+      requestFrame:callback => { callback(); return 1; },
+      cancelFrame:vi.fn(),
+    });
+
+    expect(controller.begin('eraser', {x:10, y:10})).toMatchObject({ok:true, target:paintTarget});
+    controller.move({x:20, y:20});
+    controller.end();
+
+    expect(editor._ensureActiveRasterTarget).not.toHaveBeenCalled();
+    expect(documentRef.canvases[0].context.assignments).toContain('destination-out');
+    expect(paintTarget.setElement).toHaveBeenCalledOnce();
+    expect(editor.saveHistory).toHaveBeenCalledWith('Eraser');
   });
 
   it('erases pixels only inside the active layer backing canvas', () => {

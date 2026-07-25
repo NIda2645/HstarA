@@ -1,5 +1,7 @@
 import copy
 import ctypes
+import hashlib
+import json
 import os
 import re
 import sys
@@ -25,6 +27,7 @@ COMMON_FONTS = (
 
 DEFAULT_CHARSET = 1
 LF_FACESIZE = 32
+FONT_CATALOG_CACHE_SCHEMA = 3
 
 
 class LOGFONTW(ctypes.Structure):
@@ -98,6 +101,7 @@ SPECIAL_FACE_SUFFIXES = (
 )
 REGISTRY_FORMAT_SUFFIX = re.compile(r"\s*\((?:TrueType|OpenType)\)\s*$", re.IGNORECASE)
 FREE_COMMERCIAL_PREFIX = re.compile(r"^(01|02|03)免")
+NONFREE_NUMERIC_PREFIX = re.compile(r"^(?:01|02|03|04)\s+")
 INSTALLER_DISAMBIGUATOR = re.compile(
     r"\s*\[(?:\d+|other-\d+)\]\s*$",
     re.IGNORECASE,
@@ -109,6 +113,10 @@ HANGUL_TEXT = re.compile(
 )
 ALIBABA_PUHUITI_3 = "阿里巴巴普惠体 3"
 ALIBABA_PUHUITI_3_0 = "阿里巴巴普惠体 3.0"
+ALIBABA_PUHUITI_METADATA_FAMILIES = frozenset((
+    "alibaba puhuiti 3",
+    "alibaba puhuiti 3.0",
+))
 ALIBABA_PUHUITI_NUMBERED_L3_FACE = re.compile(
     rf"^{re.escape(ALIBABA_PUHUITI_3)}(?:\.0)?\s+\d{{2,3}}\s+"
     r"(?:thin|extra\s*light|ultra\s*light|light|regular|normal|medium|"
@@ -146,6 +154,18 @@ KNOWN_ZH_HANT_FAMILIES = frozenset(
 
 def _strip_installer_disambiguator(value):
     return INSTALLER_DISAMBIGUATOR.sub("", str(value or "")).strip()
+
+
+def _is_nonfree_numeric_alias(value):
+    family = _strip_installer_disambiguator(value)
+    return "免" not in family and bool(NONFREE_NUMERIC_PREFIX.match(family))
+
+
+def _strip_nonfree_numeric_prefix(value):
+    family = _strip_installer_disambiguator(value)
+    if not _is_nonfree_numeric_alias(family):
+        return family
+    return NONFREE_NUMERIC_PREFIX.sub("", family).strip()
 
 
 def _font_metadata(family):
@@ -269,6 +289,7 @@ def _ordered_local_names(representative_family, *name_groups):
 def _style_preference(style, group_family):
     family = style["family"]
     return (
+        _is_nonfree_numeric_alias(family),
         family.casefold() == group_family.casefold(),
         family.casefold(),
         family,
@@ -294,33 +315,68 @@ def _normalize_faces(faces):
     vendor_code_groups = {}
     for face in faces:
         family = _strip_installer_disambiguator(face.get("family"))
-        match = VENDOR_CODE_SUFFIX.search(family)
+        catalog_family = _strip_nonfree_numeric_prefix(family)
+        match = VENDOR_CODE_SUFFIX.search(catalog_family)
         if not match:
             continue
-        base = family[: match.start()].strip(" -").casefold()
+        base = catalog_family[: match.start()].strip(" -").casefold()
         vendor_code_groups.setdefault(base, set()).add(match.group("style").upper())
     grouped_vendor_codes = {
         base for base, styles in vendor_code_groups.items() if len(styles) > 1
     }
 
     grouped = {}
+    expanded_faces = []
     for face in faces:
+        weight_range = face.get("variableWeightRange")
+        if not weight_range:
+            expanded_faces.append(face)
+            continue
+        try:
+            minimum = max(1, int(round(float(weight_range[0]))))
+            maximum = min(1000, int(round(float(weight_range[1]))))
+        except (TypeError, ValueError, IndexError):
+            expanded_faces.append(face)
+            continue
+        weights = [weight for weight in range(100, 1000, 100) if minimum <= weight <= maximum]
+        for endpoint in (minimum, maximum):
+            if endpoint not in weights:
+                weights.append(endpoint)
+        italics = (False, True) if face.get("supportsItalic") else (bool(face.get("italic")),)
+        for weight in sorted(set(weights)):
+            for italic in italics:
+                expanded = dict(face)
+                expanded.update({
+                    "family": face.get("groupFamily") or face.get("family"),
+                    "weight": weight,
+                    "italic": italic,
+                    "styleLabel": _style_label(weight, italic),
+                })
+                expanded_faces.append(expanded)
+
+    for face in expanded_faces:
         family = _strip_installer_disambiguator(face.get("family"))
         if not family or family.startswith("@"):
             continue
+        catalog_family = _strip_nonfree_numeric_prefix(family)
         try:
             weight = max(100, min(900, int(face.get("weight") or 400)))
         except (TypeError, ValueError):
             weight = 400
         italic = bool(face.get("italic"))
-        vendor_match = VENDOR_CODE_SUFFIX.search(family)
-        vendor_base = family[: vendor_match.start()].strip(" -").casefold() if vendor_match else ""
-        group_family, weight, italic, style_label = _font_family_for_face(
-            family,
-            weight,
-            italic,
-            allow_vendor_code=vendor_base in grouped_vendor_codes,
-        )
+        authoritative_group = _strip_installer_disambiguator(face.get("groupFamily"))
+        if authoritative_group:
+            group_family = authoritative_group
+            style_label = str(face.get("styleLabel") or _style_label(weight, italic)).strip()
+        else:
+            vendor_match = VENDOR_CODE_SUFFIX.search(catalog_family)
+            vendor_base = catalog_family[: vendor_match.start()].strip(" -").casefold() if vendor_match else ""
+            group_family, weight, italic, style_label = _font_family_for_face(
+                catalog_family,
+                weight,
+                italic,
+                allow_vendor_code=vendor_base in grouped_vendor_codes,
+            )
         key = group_family.casefold()
         group = grouped.setdefault(key, {"family": group_family, "styles": {}})
         style_key = (style_label.casefold(), italic)
@@ -330,7 +386,11 @@ def _normalize_faces(faces):
             "label": style_label,
             "weight": weight,
             "italic": italic,
-            "localNames": list(dict.fromkeys([family, group["family"]])),
+            "localNames": list(dict.fromkeys([
+                family,
+                group["family"],
+                *(face.get("localNames") or []),
+            ])),
         }
         existing = group["styles"].get(style_key)
         group["styles"][style_key] = (
@@ -414,6 +474,223 @@ def _registry_font_path(hive, file_value, winreg_module):
     return os.path.normpath(os.path.join(root, value))
 
 
+def _fonttools_name(name_table, *name_ids):
+    for name_id in name_ids:
+        value = name_table.getDebugName(name_id)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _fonttools_face(font):
+    name_table = font["name"]
+    family = _fonttools_name(name_table, 16, 1, 21)
+    style_label = _fonttools_name(name_table, 17, 2, 22) or "Regular"
+    if not family:
+        return None
+    os2 = font.get("OS/2")
+    head = font.get("head")
+    post = font.get("post")
+    weight = int(getattr(os2, "usWeightClass", 400) or 400)
+    selection = int(getattr(os2, "fsSelection", 0) or 0)
+    mac_style = int(getattr(head, "macStyle", 0) or 0)
+    italic = bool(selection & 0x01 or mac_style & 0x02 or float(getattr(post, "italicAngle", 0) or 0))
+    result = {
+        "groupFamily": family,
+        "family": family,
+        "styleLabel": style_label,
+        "weight": weight,
+        "italic": italic,
+        "localNames": list(dict.fromkeys(filter(None, (
+            family,
+            _fonttools_name(name_table, 1),
+            _fonttools_name(name_table, 4),
+            _fonttools_name(name_table, 6),
+        )))),
+    }
+    fvar = font.get("fvar")
+    if fvar is not None:
+        axes = {axis.axisTag: axis for axis in fvar.axes}
+        weight_axis = axes.get("wght")
+        if weight_axis is not None:
+            result["variableWeightRange"] = (
+                float(weight_axis.minValue),
+                float(weight_axis.maxValue),
+            )
+        italic_axis = axes.get("ital")
+        slant_axis = axes.get("slnt")
+        result["supportsItalic"] = bool(
+            italic_axis is not None and float(italic_axis.maxValue) > float(italic_axis.minValue)
+            or slant_axis is not None and float(slant_axis.maxValue) != float(slant_axis.minValue)
+        )
+    return result
+
+
+def _read_font_file_faces(path):
+    from fontTools.ttLib import TTCollection, TTFont
+
+    fonts = []
+    collection = None
+    try:
+        if str(path).casefold().endswith((".ttc", ".otc")):
+            collection = TTCollection(path, lazy=True)
+            fonts = collection.fonts
+        else:
+            fonts = [TTFont(path, lazy=True)]
+        return [face for face in (_fonttools_face(font) for font in fonts) if face]
+    finally:
+        if collection is not None:
+            collection.close()
+        else:
+            for font in fonts:
+                font.close()
+
+
+def _metadata_name_score(registry_family, metadata_face):
+    registry_group = _font_family_for_face(
+        _strip_nonfree_numeric_prefix(registry_family), 400, False
+    )[0].casefold()
+    candidates = {
+        str(metadata_face.get("groupFamily") or "").casefold(),
+        str(metadata_face.get("family") or "").casefold(),
+        *(str(value).casefold() for value in metadata_face.get("localNames") or []),
+    }
+    return max((
+        3 if candidate == registry_group else
+        2 if registry_group and (registry_group in candidate or candidate in registry_group) else
+        0
+        for candidate in candidates if candidate
+    ), default=0)
+
+
+def _canonical_metadata_group(registry_group, metadata_face):
+    metadata_group = _strip_installer_disambiguator(
+        metadata_face.get("groupFamily") or metadata_face.get("family")
+    ).casefold()
+    if (
+        registry_group.casefold() in {
+            ALIBABA_PUHUITI_3.casefold(),
+            ALIBABA_PUHUITI_3_0.casefold(),
+        }
+        and metadata_group in ALIBABA_PUHUITI_METADATA_FAMILIES
+    ):
+        return ALIBABA_PUHUITI_3_0
+    return ""
+
+
+def _apply_file_metadata(faces, metadata_reader):
+    cache = {}
+    enriched = []
+    for face in faces:
+        path = str(face.get("path") or "").strip()
+        if not path:
+            enriched.append(face)
+            continue
+        if path not in cache:
+            try:
+                cache[path] = metadata_reader(path) or []
+            except Exception:
+                cache[path] = []
+        metadata_faces = cache[path]
+        if not metadata_faces:
+            enriched.append(face)
+            continue
+        metadata = max(
+            metadata_faces,
+            key=lambda candidate: _metadata_name_score(face.get("family"), candidate),
+        )
+        merged = {**face, **metadata}
+        registry_family = _strip_installer_disambiguator(face.get("family"))
+        registry_group = _font_family_for_face(
+            _strip_nonfree_numeric_prefix(registry_family),
+            int(metadata.get("weight") or face.get("weight") or 400),
+            bool(metadata.get("italic")),
+        )[0]
+        canonical_group = _canonical_metadata_group(registry_group, metadata)
+        canonical_registry_face = ""
+        legacy_prefix = f"{ALIBABA_PUHUITI_3} "
+        if canonical_group and registry_family.startswith(legacy_prefix):
+            canonical_registry_face = (
+                f"{ALIBABA_PUHUITI_3_0}{registry_family[len(ALIBABA_PUHUITI_3):]}"
+            )
+        if FREE_COMMERCIAL_PREFIX.match(registry_family):
+            merged["groupFamily"] = registry_group
+            merged["family"] = registry_group
+        elif canonical_group:
+            merged["groupFamily"] = canonical_group
+        merged["localNames"] = list(dict.fromkeys([
+            merged.get("family"),
+            registry_family,
+            canonical_registry_face,
+            *(metadata.get("localNames") or []),
+        ]))
+        enriched.append(merged)
+    return enriched
+
+
+def _faces_fingerprint(faces):
+    records = []
+    for face in faces:
+        path = str(face.get("path") or "").strip()
+        size = 0
+        modified = 0
+        if path:
+            try:
+                stat = os.stat(path)
+                size = int(stat.st_size)
+                modified = int(stat.st_mtime_ns)
+            except OSError:
+                pass
+        records.append((
+            str(face.get("family") or ""),
+            int(face.get("weight") or 400),
+            bool(face.get("italic")),
+            os.path.normcase(path),
+            size,
+            modified,
+        ))
+    serialized = json.dumps(sorted(records), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _read_catalog_cache(path, fingerprint):
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if (
+            payload.get("schemaVersion") != FONT_CATALOG_CACHE_SCHEMA
+            or payload.get("fingerprint") != fingerprint
+            or not isinstance(payload.get("fonts"), list)
+        ):
+            return None
+        return payload["fonts"]
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _write_catalog_cache(path, fingerprint, fonts):
+    if not path:
+        return
+    directory = os.path.dirname(os.path.abspath(path))
+    temporary = f"{path}.tmp-{os.getpid()}"
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump({
+                "schemaVersion": FONT_CATALOG_CACHE_SCHEMA,
+                "fingerprint": fingerprint,
+                "fonts": fonts,
+            }, handle, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+
+
 def _enumerate_windows_registry_faces():
     import winreg
 
@@ -443,7 +720,7 @@ def _enumerate_windows_registry_faces():
                         if len(collection_families) > 1:
                             families = collection_families
                     faces.extend(
-                        {"family": item, "weight": 400, "italic": False}
+                        {"family": item, "weight": 400, "italic": False, "path": font_path}
                         for item in families
                         if item
                     )
@@ -511,9 +788,11 @@ def _enumerate_windows_faces():
 
 
 class OpenShopFontCatalog:
-    def __init__(self, enumerator=None, platform=None):
+    def __init__(self, enumerator=None, platform=None, metadata_reader=None, cache_path=None):
         self._platform = platform or sys.platform
         self._enumerator = enumerator or _enumerate_windows_faces
+        self._metadata_reader = metadata_reader or _read_font_file_faces
+        self._cache_path = cache_path
         self._lock = Lock()
         self._fonts = None
 
@@ -524,11 +803,27 @@ class OpenShopFontCatalog:
                 if self._platform == "win32":
                     try:
                         faces = self._enumerator()
+                        fingerprint = _faces_fingerprint(faces)
+                        disk_fonts = _read_catalog_cache(self._cache_path, fingerprint)
+                        if disk_fonts is not None:
+                            self._fonts = disk_fonts
+                            cached = True
+                            faces = None
+                        else:
+                            faces = _apply_file_metadata(faces, self._metadata_reader)
                     except Exception:
                         faces = _fallback_faces()
                 else:
                     faces = _fallback_faces()
-                self._fonts = _normalize_faces(faces)
+                    fingerprint = ""
+                if faces is not None:
+                    self._fonts = _normalize_faces(faces)
+                    if self._platform == "win32":
+                        _write_catalog_cache(
+                            self._cache_path,
+                            fingerprint,
+                            self._fonts,
+                        )
             return {
                 "platform": "windows" if self._platform == "win32" else self._platform,
                 "cached": cached,

@@ -6,3 +6,4 @@ python-multipart
 httpx
 pillow
 websockets
+fonttools>=4.56,<5

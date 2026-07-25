@@ -194,11 +194,8 @@ test('edits mixed-language text with installed fonts and preserves the project s
   await frame.locator('[data-text-tracking]').fill('18');
   await frame.locator('[data-text-tracking]').dispatchEvent('change');
   await frame.locator('[data-text-align]').selectOption('center');
-  await frame.locator('[data-text-kerning-mode]').selectOption('auto');
-  await frame.locator('[data-text-kerning-mode]').selectOption('metrics');
-  await frame.locator('[data-text-kerning-mode]').selectOption('numeric');
-  await frame.locator('[data-text-kerning]').fill('12');
-  await frame.locator('[data-text-kerning]').dispatchEvent('change');
+  await expect(frame.locator('[data-text-kerning-mode]')).toHaveCount(0);
+  await expect(frame.locator('[data-text-kerning]')).toHaveCount(0);
   await frame.locator('[data-text-bold]').click();
   const textColor = frame.locator('[data-text-color]');
   await expect(textColor).toHaveJSProperty('tagName', 'BUTTON');
@@ -261,7 +258,9 @@ test('edits mixed-language text with installed fonts and preserves the project s
       family:document.querySelector('[data-text-family-label]')?.textContent,
       style:document.querySelector('[data-text-style]')?.value,
       size:document.querySelector('[data-text-size]')?.value,
-      topFamily:document.querySelector('#text-font')?.value,
+      topFamily:[...document.querySelectorAll('[data-top-text-family] [data-text-family-label]')]
+        .map(label => label.textContent?.trim())
+        .find(value => value && value !== '选择字体'),
       topSize:document.querySelector('#text-size')?.value,
     };
   });
@@ -310,7 +309,7 @@ test('edits mixed-language text with installed fonts and preserves the project s
   expect(serialized.document).toEqual({width:800, height:600, resolution:72, colorSpace:'srgb'});
   expect(serialized.fontRefs.some(ref => ref.family === selectedFamily)).toBe(true);
   expect(serialized.fontRefs.some(ref => ref.family === secondaryFamily)).toBe(true);
-  expect(serialized.editor.objects.some(object => object.hstarKerningMode === 'numeric')).toBe(true);
+  expect(serialized.editor.objects.some(object => Number(object.charSpacing) === 18)).toBe(true);
   expect(serialized.editor.objects.some(object => object.styles && Object.keys(object.styles).length > 0)).toBe(true);
 
   const restored = await frame.evaluate(async project => {
@@ -323,7 +322,7 @@ test('edits mixed-language text with installed fonts and preserves the project s
     return {
       text:text?.text,
       family:text?.fontFamily,
-      kerning:text?.hstarKerningMode,
+      kerning:text?.charSpacing,
       width:OS.canvasW,
       height:OS.canvasH,
       insertedFill:text?.getSelectionStyles(text.text.length - 1, text.text.length, true)?.[0]?.fill,
@@ -331,7 +330,7 @@ test('edits mixed-language text with installed fonts and preserves the project s
     };
   }, serialized);
   expect(restored).toMatchObject({
-    text:'中文 EnglishX', family:selectedFamily, kerning:'numeric', insertedFill:'#22c55e',
+    text:'中文 EnglishX', family:selectedFamily, kerning:18, insertedFill:'#22c55e',
     width:800, height:600, nonblank:true,
   });
 

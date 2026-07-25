@@ -4,9 +4,10 @@ import io
 import math
 import warnings
 from collections import Counter, deque
+from statistics import median
 from typing import Any
 
-from PIL import Image, ImageChops, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 
 class OpenShopImageNormalizationError(ValueError):
@@ -32,6 +33,8 @@ _TRANSPARENT_ALPHA_MAX = 16
 _MATTE_DISTANCE = 24
 _MATTE_EDGE_MIN_COVERAGE = 0.02
 _MATTE_EDGE_MAX_COVERAGE = 0.90
+_ADAPTIVE_MATTE_MAX_DISTANCE = 96
+_ADAPTIVE_MATTE_MIN_COVERAGE = 0.72
 
 
 def _decode_image(data: bytes, mode: str, label: str) -> Image.Image:
@@ -154,6 +157,147 @@ def _png_bytes(image: Image.Image, label: str) -> bytes:
     return content
 
 
+def _general_png_bytes(image: Image.Image, label: str) -> bytes:
+    output = io.BytesIO()
+    image.save(output, format="PNG", compress_level=6)
+    content = output.getvalue()
+    if len(content) > MAX_IMAGE_BYTES:
+        raise OpenShopImageNormalizationError(f"OpenShop {label} is too large")
+    return content
+
+
+def normalize_generated_text_removal(
+    generated_bytes: bytes,
+    target_size: tuple[int, int],
+) -> bytes:
+    target_width, target_height = (int(target_size[0]), int(target_size[1]))
+    if (
+        target_width < 64
+        or target_height < 64
+        or target_width > 4096
+        or target_height > 4096
+        or target_width * target_height > 4096 * 4096
+    ):
+        raise OpenShopImageNormalizationError(
+            "OpenShop text removal target dimensions are unsafe"
+        )
+    generated = ImageOps.exif_transpose(
+        _decode_image(generated_bytes, "RGBA", "text removal generated output")
+    )
+    if generated.size != (target_width, target_height):
+        generated = generated.resize(
+            (target_width, target_height),
+            Image.Resampling.LANCZOS,
+        )
+    return _general_png_bytes(generated, "text removal normalized output")
+
+
+def _normalized_text_removal_quad(quad: Any) -> list[tuple[float, float]] | None:
+    if not isinstance(quad, list) or len(quad) != 4:
+        return None
+    points: list[tuple[float, float]] = []
+    for item in quad:
+        if not isinstance(item, dict):
+            return None
+        try:
+            x = float(item.get("x"))
+            y = float(item.get("y"))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(x) or not math.isfinite(y) or not 0 <= x <= 1 or not 0 <= y <= 1:
+            return None
+        points.append((x, y))
+    return points
+
+
+def prepare_text_removal_edit(
+    source_bytes: bytes,
+    layout: dict[str, Any],
+    target_size: tuple[int, int],
+) -> tuple[bytes, bytes, bytes]:
+    source = ImageOps.exif_transpose(
+        _decode_image(source_bytes, "RGBA", "text removal source")
+    )
+    target_width, target_height = (int(target_size[0]), int(target_size[1]))
+    if (
+        target_width < 64
+        or target_height < 64
+        or target_width > 4096
+        or target_height > 4096
+        or target_width * target_height > 4096 * 4096
+    ):
+        raise OpenShopImageNormalizationError("OpenShop text removal target dimensions are unsafe")
+
+    scale = min(target_width / source.width, target_height / source.height)
+    content_width = max(1, min(target_width, round(source.width * scale)))
+    content_height = max(1, min(target_height, round(source.height * scale)))
+    offset_x = (target_width - content_width) // 2
+    offset_y = (target_height - content_height) // 2
+    resized = source.resize((content_width, content_height), Image.Resampling.LANCZOS)
+    average = source.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+    prepared = Image.new("RGBA", (target_width, target_height), average)
+    prepared.alpha_composite(resized, (offset_x, offset_y))
+
+    # White pixels are editable. The outer margins are editable for outpainting;
+    # all original image pixels remain protected except OCR text polygons.
+    edit_mask = Image.new("L", (target_width, target_height), 255)
+    draw = ImageDraw.Draw(edit_mask)
+    draw.rectangle(
+        (
+            offset_x,
+            offset_y,
+            offset_x + content_width - 1,
+            offset_y + content_height - 1,
+        ),
+        fill=0,
+    )
+    for block in layout.get("blocks", []) if isinstance(layout, dict) else []:
+        if not isinstance(block, dict) or not str(block.get("text") or "").strip():
+            continue
+        quad = _normalized_text_removal_quad(block.get("quad"))
+        if not quad:
+            continue
+        draw.polygon(
+            [
+                (
+                    offset_x + x * content_width,
+                    offset_y + y * content_height,
+                )
+                for x, y in quad
+            ],
+            fill=255,
+        )
+    edit_mask = edit_mask.filter(ImageFilter.MaxFilter(9))
+
+    api_mask = Image.new("RGBA", prepared.size, (0, 0, 0, 0))
+    api_mask.putalpha(ImageOps.invert(edit_mask))
+    return (
+        _general_png_bytes(prepared, "text removal prepared source"),
+        _general_png_bytes(api_mask, "text removal API mask"),
+        _general_png_bytes(edit_mask, "text removal edit mask"),
+    )
+
+
+def normalize_text_removal_output(
+    prepared_source_bytes: bytes,
+    edit_mask_bytes: bytes,
+    generated_bytes: bytes,
+) -> bytes:
+    prepared = _decode_image(
+        prepared_source_bytes,
+        "RGBA",
+        "text removal prepared source",
+    )
+    generated = _decode_image(generated_bytes, "RGBA", "text removal generated output")
+    edit_mask = _decode_image(edit_mask_bytes, "L", "text removal edit mask")
+    if generated.size != prepared.size:
+        generated = generated.resize(prepared.size, Image.Resampling.LANCZOS)
+    if edit_mask.size != prepared.size:
+        edit_mask = edit_mask.resize(prepared.size, Image.Resampling.NEAREST)
+    normalized = Image.composite(generated, prepared, edit_mask)
+    return _general_png_bytes(normalized, "text removal normalized output")
+
+
 def crop_art_font_reference(
     source_bytes: bytes,
     quad: Any,
@@ -195,6 +339,161 @@ def crop_art_font_reference(
     if box[2] <= box[0] or box[3] <= box[1]:
         raise OpenShopImageNormalizationError("OpenShop art font reference crop is empty")
     return _png_bytes(source.crop(box), "art font reference")
+
+
+def prepare_art_font_edit(
+    source_bytes: bytes,
+    quad: Any,
+    padding_ratio: float = 0.25,
+    edit_padding_ratio: float = 0.08,
+) -> tuple[bytes, bytes, dict[str, int]]:
+    """Create a local source patch and inverse-alpha edit mask for art text."""
+    source = _decode_art_image(
+        source_bytes,
+        "RGBA",
+        "art font source",
+        exif_transpose=True,
+    )
+    points = [
+        (x * source.width, y * source.height)
+        for x, y in _normalized_art_quad(quad)
+    ]
+    left = min(x for x, _ in points)
+    top = min(y for _, y in points)
+    right = max(x for x, _ in points)
+    bottom = max(y for _, y in points)
+    quad_width = right - left
+    quad_height = bottom - top
+    if quad_width < 1 or quad_height < 1:
+        raise OpenShopImageNormalizationError("OpenShop art font quad has no usable area")
+    try:
+        crop_ratio = float(padding_ratio)
+        edit_ratio = float(edit_padding_ratio)
+    except (TypeError, ValueError) as exc:
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font edit padding is invalid"
+        ) from exc
+    if not math.isfinite(crop_ratio) or not math.isfinite(edit_ratio):
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font edit padding is invalid"
+        )
+    span = max(quad_width, quad_height)
+    crop_padding = span * max(0.05, min(0.75, crop_ratio))
+    crop_box = (
+        max(0, math.floor(left - crop_padding)),
+        max(0, math.floor(top - crop_padding)),
+        min(source.width, math.ceil(right + crop_padding)),
+        min(source.height, math.ceil(bottom + crop_padding)),
+    )
+    if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+        raise OpenShopImageNormalizationError("OpenShop art font edit crop is empty")
+    patch_size = (crop_box[2] - crop_box[0], crop_box[3] - crop_box[1])
+    _validate_art_dimensions(
+        *patch_size,
+        "art font edit patch",
+        generated_output=True,
+    )
+
+    # The result is an opaque replacement patch. Flattening here also gives
+    # image providers deterministic context when the source PNG has alpha.
+    opaque_source = Image.alpha_composite(
+        Image.new("RGBA", source.size, (255, 255, 255, 255)),
+        source,
+    )
+    patch = opaque_source.crop(crop_box)
+
+    edit_padding = span * max(0.0, min(0.35, edit_ratio))
+    center_x = sum(x for x, _ in points) / len(points)
+    center_y = sum(y for _, y in points) / len(points)
+    scale_x = (quad_width + edit_padding * 2) / quad_width
+    scale_y = (quad_height + edit_padding * 2) / quad_height
+    expanded_points = [
+        (
+            center_x + (x - center_x) * scale_x - crop_box[0],
+            center_y + (y - center_y) * scale_y - crop_box[1],
+        )
+        for x, y in points
+    ]
+    mask = Image.new("RGBA", patch_size, (0, 0, 0, 255))
+    ImageDraw.Draw(mask).polygon(expanded_points, fill=(0, 0, 0, 0))
+    placement = {
+        "x": crop_box[0],
+        "y": crop_box[1],
+        "width": patch.width,
+        "height": patch.height,
+    }
+    return (
+        _png_bytes(patch, "art font edit source"),
+        _png_bytes(mask, "art font edit mask"),
+        placement,
+    )
+
+
+def normalize_art_font_patch_output(
+    generated_bytes: bytes,
+    source_patch_bytes: bytes,
+    mask_bytes: bytes,
+    placement_box: Any,
+) -> tuple[bytes, dict[str, Any]]:
+    """Fit a generated patch and restore every inverse-mask protected pixel."""
+    source = _decode_art_image(
+        source_patch_bytes,
+        "RGBA",
+        "art font edit source",
+    )
+    mask = _decode_art_image(mask_bytes, "RGBA", "art font edit mask")
+    generated = _decode_art_image(
+        generated_bytes,
+        "RGBA",
+        "art font edit output",
+        generated_output=True,
+    )
+    if mask.size != source.size:
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font edit mask is misaligned"
+        )
+    if not isinstance(placement_box, dict):
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font placement box is invalid"
+        )
+    placement: dict[str, int] = {}
+    for key in ("x", "y", "width", "height"):
+        value = placement_box.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise OpenShopImageNormalizationError(
+                "OpenShop art font placement box is invalid"
+            )
+        placement[key] = value
+    if (
+        placement["x"] < 0
+        or placement["y"] < 0
+        or placement["width"] != source.width
+        or placement["height"] != source.height
+    ):
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font placement box is invalid"
+        )
+
+    if generated.size != source.size:
+        generated = ImageOps.fit(
+            generated,
+            source.size,
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+    opaque_source = Image.alpha_composite(
+        Image.new("RGBA", source.size, (255, 255, 255, 255)),
+        source,
+    )
+    generated_over_source = Image.alpha_composite(opaque_source, generated)
+    protected = mask.getchannel("A").point(lambda value: 255 if value >= 128 else 0)
+    output = Image.composite(opaque_source, generated_over_source, protected)
+    geometry = {
+        "width": output.width,
+        "height": output.height,
+        "placementBox": placement,
+    }
+    return _png_bytes(output, "art font edit normalized output"), geometry
 
 
 def _boundary_indexes(width: int, height: int) -> list[int]:
@@ -286,6 +585,36 @@ def _uniform_boundary_matte(image: Image.Image) -> tuple[tuple[int, int, int], b
     return matte, rgb_data
 
 
+def _adaptive_boundary_matte(
+    image: Image.Image,
+) -> tuple[tuple[int, int, int], bytes, int]:
+    """Estimate a low-texture opaque background when the model adds mild noise."""
+    rgb_data = image.convert("RGB").tobytes()
+    boundary = _boundary_indexes(*image.size)
+    colors = [tuple(rgb_data[index * 3 : index * 3 + 3]) for index in boundary]
+    matte = tuple(
+        round(median(color[channel] for color in colors))
+        for channel in range(3)
+    )
+    distances = sorted(
+        math.sqrt(sum((color[channel] - matte[channel]) ** 2 for channel in range(3)))
+        for color in colors
+    )
+    percentile_index = max(0, min(len(distances) - 1, math.ceil(len(distances) * 0.90) - 1))
+    percentile_distance = distances[percentile_index]
+    if percentile_distance > _ADAPTIVE_MATTE_MAX_DISTANCE:
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font output has no safe transparent matte"
+        )
+    tolerance = max(32, min(_ADAPTIVE_MATTE_MAX_DISTANCE, math.ceil(percentile_distance + 8)))
+    inlier_count = sum(distance <= tolerance for distance in distances)
+    if inlier_count / len(distances) < _ADAPTIVE_MATTE_MIN_COVERAGE:
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font output has no safe transparent matte"
+        )
+    return matte, rgb_data, tolerance
+
+
 def _matte_coverage(
     rgb_data: bytes,
     index: int,
@@ -319,10 +648,16 @@ def _decontaminate_rgb(
         rgba_data[rgba_offset + channel] = max(0, min(255, round(foreground)))
 
 
-def _remove_boundary_matte(image: Image.Image) -> Image.Image:
+def _remove_boundary_matte(
+    image: Image.Image,
+    matte: tuple[int, int, int] | None = None,
+    rgb_data: bytes | None = None,
+    background_distance: int = _MATTE_DISTANCE,
+) -> Image.Image:
     width, height = image.size
     total = width * height
-    matte, rgb_data = _uniform_boundary_matte(image)
+    if matte is None or rgb_data is None:
+        matte, rgb_data = _uniform_boundary_matte(image)
     rgba_data = bytearray(image.tobytes())
     visited = bytearray(total)
     queue: deque[int] = deque()
@@ -333,7 +668,7 @@ def _remove_boundary_matte(image: Image.Image) -> Image.Image:
     while queue:
         index = queue.popleft()
         distance = _rgb_distance_squared(rgb_data, index, matte)
-        if distance <= _MATTE_DISTANCE**2:
+        if distance <= background_distance**2:
             rgba_data[index * 4 + 3] = 0
         else:
             coverage = _matte_coverage(rgb_data, index, matte)
@@ -361,6 +696,49 @@ def _remove_boundary_matte(image: Image.Image) -> Image.Image:
                 visited[neighbor] = 1
                 queue.append(neighbor)
     return Image.frombytes("RGBA", image.size, bytes(rgba_data))
+
+
+def prepare_art_font_reference(
+    source_bytes: bytes,
+    quad: Any,
+    padding_ratio: float = 0.02,
+) -> bytes:
+    """Build a tight, opaque-glyph reference without surrounding artwork."""
+    cropped_bytes = crop_art_font_reference(source_bytes, quad, padding_ratio)
+    image = _decode_art_image(cropped_bytes, "RGBA", "art font reference")
+    if image.getchannel("A").getextrema()[0] < 255:
+        isolated = image
+    else:
+        try:
+            matte, rgb_data = _uniform_boundary_matte(image)
+            background_distance = _MATTE_DISTANCE
+        except OpenShopImageNormalizationError:
+            matte, rgb_data, background_distance = _adaptive_boundary_matte(image)
+        isolated = _remove_boundary_matte(
+            image,
+            matte=matte,
+            rgb_data=rgb_data,
+            background_distance=background_distance,
+        )
+
+    source_rgba = bytearray(image.tobytes())
+    isolated_alpha = isolated.getchannel("A").tobytes()
+    visible_pixels = 0
+    for index, alpha in enumerate(isolated_alpha):
+        offset = index * 4
+        if alpha >= 32:
+            source_rgba[offset + 3] = 255
+            visible_pixels += 1
+        else:
+            source_rgba[offset : offset + 4] = b"\x00\x00\x00\x00"
+    if not visible_pixels:
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font reference has no isolated glyph pixels"
+        )
+    return _png_bytes(
+        Image.frombytes("RGBA", image.size, bytes(source_rgba)),
+        "art font isolated reference",
+    )
 
 
 def _transparent_boundary_matte(image: Image.Image) -> tuple[int, int, int] | None:
@@ -498,6 +876,124 @@ def _validate_art_font_no_scene(image: Image.Image) -> None:
         )
 
 
+def _art_font_has_color_halo(image: Image.Image) -> bool:
+    content_box = image.getchannel("A").getbbox()
+    if not content_box:
+        return False
+    left, top, right, bottom = content_box
+    if (right - left) * (bottom - top) < 256:
+        return False
+    alpha = image.getchannel("A").tobytes()
+    visible = 0
+    opaque = 0
+    soft = 0
+    width = image.width
+    for y in range(top, bottom):
+        row = y * width
+        for x in range(left, right):
+            value = alpha[row + x]
+            if value <= _TRANSPARENT_ALPHA_MAX:
+                continue
+            visible += 1
+            if value >= 240:
+                opaque += 1
+            else:
+                soft += 1
+    return bool(
+        visible
+        and soft / visible >= 0.75
+        and soft >= max(128, opaque * 3)
+    )
+
+
+def _art_font_opaque_palette(image: Image.Image) -> list[tuple[int, int, int]]:
+    rgba = image.tobytes()
+    bins: dict[tuple[int, int, int], list[int]] = {}
+    for offset in range(0, len(rgba), 4):
+        if rgba[offset + 3] < 240:
+            continue
+        key = tuple(rgba[offset + channel] // 16 for channel in range(3))
+        stats = bins.setdefault(key, [0, 0, 0, 0])
+        stats[0] += 1
+        for channel in range(3):
+            stats[channel + 1] += rgba[offset + channel]
+    total = sum(stats[0] for stats in bins.values())
+    if not total:
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font output contains a color halo or translucent wash"
+        )
+    selected = []
+    covered = 0
+    for _key, stats in sorted(
+        bins.items(), key=lambda item: item[1][0], reverse=True
+    ):
+        count = stats[0]
+        selected.append(tuple(round(stats[channel + 1] / count) for channel in range(3)))
+        covered += count
+        if covered >= total * 0.95 or len(selected) >= 8:
+            break
+    return selected
+
+
+def _remove_art_font_color_halo(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    total = width * height
+    alpha = image.getchannel("A")
+    palette = _art_font_opaque_palette(image)
+    opaque = alpha.point(lambda value: 255 if value >= 240 else 0)
+    supported = opaque.filter(ImageFilter.MaxFilter(5))
+
+    # A padded flood fill marks every area connected to the outside. Soft
+    # pixels are restored as solid interiors only when a reliable opaque
+    # contour encloses them and their color belongs to the glyph palette.
+    padded = Image.new("L", (width + 2, height + 2), 0)
+    padded.paste(supported, (1, 1))
+    ImageDraw.floodfill(padded, (0, 0), 128)
+    external = padded.crop((1, 1, width + 1, height + 1)).tobytes()
+    support = supported.tobytes()
+    source = image.tobytes()
+    cleaned = bytearray(source)
+    visible = 0
+    for index in range(total):
+        offset = index * 4
+        value = source[offset + 3]
+        if value <= _TRANSPARENT_ALPHA_MAX:
+            cleaned[offset : offset + 4] = b"\x00\x00\x00\x00"
+            continue
+        nearest = palette[0]
+        nearest_distance = math.inf
+        for color in palette:
+            distance = sum(
+                (source[offset + channel] - color[channel]) ** 2
+                for channel in range(3)
+            )
+            if distance < nearest_distance:
+                nearest = color
+                nearest_distance = distance
+        if support[index]:
+            if value < 240:
+                cleaned[offset : offset + 3] = bytes(nearest)
+            visible += 1
+            continue
+        if external[index] == 0 and nearest_distance <= 40**2:
+            cleaned[offset + 3] = 255
+            visible += 1
+            continue
+        cleaned[offset : offset + 4] = b"\x00\x00\x00\x00"
+    if not visible:
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font output has no visible glyph pixels"
+        )
+    return Image.frombytes("RGBA", image.size, bytes(cleaned))
+
+
+def _validate_art_font_no_color_halo(image: Image.Image) -> None:
+    if _art_font_has_color_halo(image):
+        raise OpenShopImageNormalizationError(
+            "OpenShop art font output contains a color halo or translucent wash"
+        )
+
+
 def normalize_art_font_output(
     generated_bytes: bytes,
     target_aspect: Any,
@@ -523,8 +1019,21 @@ def normalize_art_font_output(
             )
         image = _decontaminate_transparent_matte(image)
     else:
-        image = _remove_boundary_matte(image)
+        try:
+            matte, rgb_data = _uniform_boundary_matte(image)
+            background_distance = _MATTE_DISTANCE
+        except OpenShopImageNormalizationError:
+            matte, rgb_data, background_distance = _adaptive_boundary_matte(image)
+        image = _remove_boundary_matte(
+            image,
+            matte=matte,
+            rgb_data=rgb_data,
+            background_distance=background_distance,
+        )
 
+    if _art_font_has_color_halo(image):
+        image = _remove_art_font_color_halo(image)
+    _validate_art_font_no_color_halo(image)
     _validate_art_font_no_scene(image)
     content_box = image.getchannel("A").getbbox()
     if not content_box:
@@ -589,18 +1098,13 @@ def _non_negative_integer(value: Any, label: str) -> int:
     return number
 
 
-def normalize_local_generation(
-    source_bytes: bytes,
-    mask_bytes: bytes,
-    generated_bytes: bytes,
+def _validated_local_generation_bounds(
+    source: Image.Image,
+    mask: Image.Image,
     bounds: dict[str, Any],
-) -> bytes:
+) -> tuple[int, int, int, int]:
     if not isinstance(bounds, dict):
         raise OpenShopImageNormalizationError("OpenShop selection bounds are invalid")
-
-    source = _decode_image(source_bytes, "RGBA", "source image")
-    mask = _decode_image(mask_bytes, "L", "selection mask")
-    generated = _decode_image(generated_bytes, "RGBA", "generated image")
     if mask.size != source.size or not mask.getbbox():
         raise OpenShopImageNormalizationError(
             "OpenShop selection mask is empty or misaligned"
@@ -614,15 +1118,58 @@ def normalize_local_generation(
         raise OpenShopImageNormalizationError(
             "OpenShop selection bounds are outside the document"
         )
+    return x, y, width, height
+
+
+def prepare_local_generation_inputs(
+    source_bytes: bytes,
+    mask_bytes: bytes,
+    bounds: dict[str, Any],
+) -> tuple[bytes, bytes]:
+    """Return source and mask crops in the exact document selection space."""
+    source = _decode_image(source_bytes, "RGBA", "source image")
+    mask = _decode_image(mask_bytes, "L", "selection mask")
+    x, y, width, height = _validated_local_generation_bounds(source, mask, bounds)
+    crop_box = (x, y, x + width, y + height)
+    local_source = source.crop(crop_box)
+    local_mask = mask.crop(crop_box)
+    if not local_mask.getbbox():
+        raise OpenShopImageNormalizationError(
+            "OpenShop selection mask does not overlap selection bounds"
+        )
+    return (
+        _general_png_bytes(local_source, "local source image"),
+        _general_png_bytes(local_mask, "local selection mask"),
+    )
+
+
+def normalize_local_generation(
+    source_bytes: bytes,
+    mask_bytes: bytes,
+    generated_bytes: bytes,
+    bounds: dict[str, Any],
+) -> bytes:
+    source = _decode_image(source_bytes, "RGBA", "source image")
+    mask = _decode_image(mask_bytes, "L", "selection mask")
+    generated = _decode_image(generated_bytes, "RGBA", "generated image")
+    x, y, width, height = _validated_local_generation_bounds(source, mask, bounds)
 
     if generated.size == source.size:
         full = generated
     else:
         generated_ratio = generated.width / generated.height
         bounds_ratio = width / height
-        if abs(generated_ratio - bounds_ratio) / bounds_ratio > MAX_CROP_RATIO_ERROR:
-            raise OpenShopImageNormalizationError(
-                "OpenShop generated crop aspect ratio is misaligned"
+        if generated_ratio > bounds_ratio:
+            crop_width = max(1, min(generated.width, round(generated.height * bounds_ratio)))
+            crop_left = max(0, (generated.width - crop_width) // 2)
+            generated = generated.crop(
+                (crop_left, 0, crop_left + crop_width, generated.height)
+            )
+        elif generated_ratio < bounds_ratio:
+            crop_height = max(1, min(generated.height, round(generated.width / bounds_ratio)))
+            crop_top = max(0, (generated.height - crop_height) // 2)
+            generated = generated.crop(
+                (0, crop_top, generated.width, crop_top + crop_height)
             )
         crop = generated.resize((width, height), Image.Resampling.LANCZOS)
         full = Image.new("RGBA", source.size, (0, 0, 0, 0))

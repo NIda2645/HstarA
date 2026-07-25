@@ -5,7 +5,8 @@
 
     const HIDDEN_SESSION_IDLE_MS = 15 * 60 * 1000;
     const MAX_IDLE_SESSIONS = 3;
-    const OPENSHOP_RUNTIME_REVISION = '2026.07.20.1784529300000';
+    const OPENSHOP_RUNTIME_REVISION = '2026.07.25.1245000000003';
+    const AI_LOG_TOOL_IDS = new Set(['art-font-restore', 'generative-fill', 'local-redraw']);
     const state = {
         sessions:new Map(),
         activeScope:'',
@@ -13,6 +14,7 @@
         status:'idle',
         error:'',
     };
+    let noticeTimer = 0;
 
     function uuid(prefix){
         if(window.crypto && typeof window.crypto.randomUUID === 'function'){
@@ -26,10 +28,21 @@
     }
 
     function safeError(error){
-        return clean(error?.message || error || 'OpenShop 请求失败')
+        const message = clean(error?.message || error || 'OpenShop 请求失败')
             .replace(/[\u0000-\u001f\u007f]/g, ' ')
             .replace(/\s+/g, ' ')
             .slice(0, 300) || 'OpenShop 请求失败';
+        if(/OCR model did not return reliable text positions|OCR block has no reliable position/i.test(message)){
+            return 'OCR 模型没有返回可靠的文字位置，请重新执行文字提取';
+        }
+        if(/^OpenShop request failed$/i.test(message)) return 'OpenShop 请求失败';
+        if(/^OpenShop save was rejected$/i.test(message)) return 'OpenShop 保存被拒绝';
+        return message;
+    }
+
+    function isOcrToolError(error){
+        return /OCR model did not return reliable text positions|OCR block has no reliable position|OCR 模型没有返回可靠的文字位置|OCR 文字块没有可靠位置/i
+            .test(clean(error?.message || error));
     }
 
     function createHostMarkup(){
@@ -49,10 +62,14 @@
                 <button class="openshop-host-command" data-openshop-save type="button">
                     <i data-lucide="save"></i><span>保存</span>
                 </button>
+                <button class="openshop-host-command" data-openshop-download type="button" disabled>
+                    <i data-lucide="download"></i><span>下载到本地</span>
+                </button>
                 <button class="openshop-host-command openshop-host-primary" data-openshop-send type="button">
                     <i data-lucide="send"></i><span>发送到画布</span>
                 </button>
             </header>
+            <div class="openshop-host-notice" data-openshop-notice role="status" aria-live="polite" hidden></div>
             <aside class="openshop-source-panel" data-openshop-source-panel aria-hidden="true"></aside>`;
         const stage = document.querySelector?.('.stage');
         (stage || document.body).appendChild(section);
@@ -74,12 +91,15 @@
         const overlay = state.overlay || document.getElementById('openshop-host');
         if(!overlay) return;
         const pageHidden = !canvasPageIsActive();
-        overlay.hidden = pageHidden;
-        overlay.setAttribute('aria-hidden', String(pageHidden || !overlay.classList.contains('is-open')));
+        const overlayOpen = overlay.classList.contains('is-open');
+        const overlayHidden = pageHidden || !overlayOpen;
+        overlay.hidden = overlayHidden;
+        overlay.setAttribute('aria-hidden', String(overlayHidden));
         state.sessions.forEach(session => {
+            if(!session.frameLoaded || !session.openSent) return;
             const visible = Boolean(
                 !pageHidden
-                && overlay.classList.contains('is-open')
+                && overlayOpen
                 && session.scope === state.activeScope
                 && !session.frame.hidden
             );
@@ -174,6 +194,24 @@
         label.textContent = labels[status] || message || status;
         label.dataset.state = status;
         label.title = status === 'error' ? clean(message) : '';
+    }
+
+    function showNotice(message, kind='success'){
+        const notice = ui('[data-openshop-notice]');
+        if(!notice) return;
+        window.clearTimeout(noticeTimer);
+        notice.textContent = clean(message);
+        notice.dataset.kind = kind;
+        notice.hidden = !notice.textContent;
+        noticeTimer = window.setTimeout(() => {
+            notice.hidden = true;
+            notice.textContent = '';
+        }, 2200);
+    }
+
+    function syncDownloadButton(session=activeSession()){
+        const button = ui('[data-openshop-download]');
+        if(button) button.disabled = !session?.editorReady || Boolean(session.downloadRequestId);
     }
 
     function sessionSnapshot(session){
@@ -398,6 +436,9 @@
             activeTaskCount:0,
             pollingVisible:null,
             savePending:false,
+            downloadRequestId:'',
+            pendingCanvasOutputs:new Map(),
+            publishedAiTaskLogs:new Set(),
             idleSince:0,
         };
         frame.addEventListener?.('load', () => {
@@ -484,6 +525,7 @@
         renderSourcePanel(session, session.project);
         showOverlay({forceVisibility:true});
         setStatus(session, session.status || 'loading', session.error);
+        syncDownloadButton(session);
         if(sourcesChanged && session.editorReady && session.project) void refreshSessionSources(session);
         collectIdleSessions();
         window.lucide?.createIcons?.();
@@ -566,6 +608,115 @@
         session.activeTaskCount = tasks.filter(task => (
             ['queued', 'running'].includes(clean(task?.status))
         )).length;
+        publishAiTaskLogs(session, tasks);
+    }
+
+    function artTaskLog(record){
+        if(clean(record?.toolId) !== 'art-font-restore' || !clean(record?.taskId)) return null;
+        const reconcileState = clean(record.reconcileState);
+        const success = reconcileState === 'applied';
+        const failed = ['discarded', 'stale'].includes(reconcileState)
+            || ['failed', 'cancelled'].includes(clean(record.status));
+        if(!success && !failed) return null;
+        const result = record.result && typeof record.result === 'object' ? record.result : {};
+        const outputAssetId = clean(record.outputAssetId || result.assetId);
+        const terminalAt = Number(record.appliedAt || record.discardedAt || record.staleAt || record.completedAt || record.updatedAt || 0);
+        const createdAt = Number(record.createdAt || 0);
+        return {
+            taskId:clean(record.taskId),
+            toolId:'art-font-restore',
+            status:success ? 'success' : 'failed',
+            apiConfigId:clean(record.apiConfigId),
+            modelId:clean(record.modelId),
+            prompt:clean(record.snapshot?.currentText),
+            textLayerId:clean(record.snapshot?.textLayerId),
+            generatedLayerId:clean(record.generatedLayerId),
+            runMs:terminalAt > createdAt ? terminalAt - createdAt : 0,
+            error:success ? '' : safeError(record.error || record.reconcileReason || '艺术字体处理失败'),
+            output:success && outputAssetId ? {
+                assetId:outputAssetId,
+                url:clean(result.url) || `/api/openshop/assets/${encodeURIComponent(outputAssetId)}`,
+                name:clean(result.name) || 'artistic-font.png',
+                width:Math.max(0, Number(result.width || 0)),
+                height:Math.max(0, Number(result.height || 0)),
+                kind:'image',
+            } : null,
+        };
+    }
+
+    function generativeTaskLog(record){
+        const toolId = clean(record?.toolId);
+        const taskId = clean(record?.taskId);
+        const status = clean(record?.status);
+        if(!['generative-fill', 'local-redraw'].includes(toolId) || !taskId
+            || !['succeeded', 'partial', 'failed', 'cancelled'].includes(status)) return null;
+        const children = Array.isArray(record.children) ? record.children : [];
+        const outputs = children
+            .filter(child => child?.status === 'succeeded' && clean(child.outputAssetId || child.result?.assetId))
+            .sort((left, right) => Number(left.index || 0) - Number(right.index || 0))
+            .map(child => {
+                const result = child.result && typeof child.result === 'object' ? child.result : {};
+                const assetId = clean(child.outputAssetId || result.assetId);
+                return {
+                    assetId,
+                    url:clean(result.url) || `/api/openshop/assets/${encodeURIComponent(assetId)}`,
+                    name:clean(result.name) || `${toolId}-${Number(child.index || 0) + 1}.png`,
+                    width:Math.max(0, Number(result.width || 0)),
+                    height:Math.max(0, Number(result.height || 0)),
+                    kind:'image',
+                };
+            });
+        const childError = children.find(child => (
+            ['failed', 'cancelled'].includes(clean(child?.status)) && clean(child?.error)
+        ))?.error;
+        const failed = ['failed', 'cancelled'].includes(status);
+        const terminalAt = Number(record.completedAt || record.updatedAt || 0);
+        const createdAt = Number(record.createdAt || 0);
+        return {
+            taskId,
+            toolId,
+            status:status === 'succeeded' ? 'success' : (status === 'partial' ? 'partial' : 'failed'),
+            apiConfigId:clean(record.apiConfigId),
+            modelId:clean(record.modelId),
+            prompt:clean(record.snapshot?.prompt),
+            generatedLayerId:'',
+            runMs:terminalAt > createdAt ? terminalAt - createdAt : 0,
+            error:status === 'succeeded' ? '' : safeError(
+                record.error || childError || (failed ? 'OpenShop 图片生成失败' : '部分图片生成失败')
+            ),
+            output:outputs[0] || null,
+            outputs,
+        };
+    }
+
+    function aiTaskLog(record){
+        if(!AI_LOG_TOOL_IDS.has(clean(record?.toolId))) return null;
+        return artTaskLog(record) || generativeTaskLog(record);
+    }
+
+    function publishAiTaskLogs(session, tasks){
+        if(!session) return;
+        session.publishedAiTaskLogs = session.publishedAiTaskLogs || new Set();
+        tasks.forEach(record => {
+            const log = aiTaskLog(record);
+            if(!log) return;
+            const outputKey = (log.outputs || [log.output]).filter(Boolean)
+                .map(output => clean(output.assetId || output.url)).join(',');
+            const key = `${log.taskId}:${log.status}:${log.generatedLayerId}:${outputKey}`;
+            if(session.publishedAiTaskLogs.has(key)) return;
+            session.publishedAiTaskLogs.add(key);
+            postToOrigin(session, {
+                type:'hstar-openshop-ai-task-log',
+                requestId:`openshop-ai-log-${log.taskId}`,
+                context:{
+                    canvasType:session.context.canvasType,
+                    canvasId:session.context.canvasId,
+                    nodeId:session.context.nodeId,
+                    projectId:session.context.projectId,
+                },
+                log,
+            });
+        });
     }
 
     function nodeMeta(session, project, saveState=session.status || 'saved'){
@@ -591,6 +742,26 @@
 
     function postToOrigin(session, message){
         originFrame(session)?.contentWindow?.postMessage(message, window.location.origin);
+    }
+
+    function validCanvasAcknowledgement(event){
+        if(event.origin !== window.location.origin) return null;
+        const data = event.data || {};
+        if(data.type !== 'hstar-openshop-output-applied') return null;
+        const session = [...state.sessions.values()].find(item => (
+            event.source === originFrame(item)?.contentWindow
+            && sameContext(data.context, item.context)
+        ));
+        const requestId = clean(data.requestId);
+        if(!session || !requestId || !session.pendingCanvasOutputs.has(requestId)) return null;
+        return {session, data, requestId};
+    }
+
+    function applyCanvasAcknowledgement({session, data, requestId}){
+        session.pendingCanvasOutputs.delete(requestId);
+        if(session.scope !== state.activeScope) return;
+        if(data.status === 'success') showNotice('已发送到画布');
+        else showNotice(safeError(data.message || '发送到画布失败'), 'error');
     }
 
     function publishNodeMeta(session, requestId, saveState=session.status){
@@ -668,11 +839,17 @@
     }
 
     async function onMessage(event){
+        const canvasAcknowledgement = validCanvasAcknowledgement(event);
+        if(canvasAcknowledgement){
+            applyCanvasAcknowledgement(canvasAcknowledgement);
+            return;
+        }
         const valid = validEditorEvent(event);
         if(!valid) return;
         const {session, envelope} = valid;
         if(envelope.type === Protocol.TYPES.READY){
             session.editorReady = true;
+            syncDownloadButton(session);
             await bootstrapEditorSession(session);
             return;
         }
@@ -691,16 +868,33 @@
             } else if(envelope.type === Protocol.TYPES.SEND_TO_CANVAS){
                 const output = validOutput(envelope.payload);
                 if(!output) throw new Error('OpenShop 输出资源无效');
+                session.pendingCanvasOutputs.set(envelope.requestId, {createdAt:Date.now()});
                 postToOrigin(session, {
                     type:'hstar-openshop-output',
                     requestId:envelope.requestId,
                     context:{...session.context},
                     output,
                 });
+            } else if(envelope.type === Protocol.TYPES.DOWNLOAD_LOCAL_RESULT){
+                if(session.downloadRequestId !== envelope.requestId) return;
+                session.downloadRequestId = '';
+                if(session.scope === state.activeScope){
+                    syncDownloadButton(session);
+                    const status = clean(envelope.payload?.status);
+                    if(status === 'success'){
+                        showNotice(`已保存：${clean(envelope.payload?.filename) || 'openshop-export.png'}`);
+                    } else if(status === 'error'){
+                        showNotice(safeError(envelope.payload?.message), 'error');
+                    }
+                }
             } else if(envelope.type === Protocol.TYPES.OPEN_API_SETTINGS){
                 if(session.scope === state.activeScope) openApiSettings();
             } else if(envelope.type === Protocol.TYPES.ERROR){
-                setStatus(session, 'error', envelope.payload?.message || 'OpenShop 编辑器发生错误');
+                if(isOcrToolError(envelope.payload?.message)){
+                    setStatus(session, session.project ? 'saved' : 'idle');
+                } else {
+                    setStatus(session, 'error', safeError(envelope.payload?.message || 'OpenShop 编辑器发生错误'));
+                }
             }
         } catch(error){
             const message = safeError(error);
@@ -729,6 +923,15 @@
         const session = activeSession();
         if(!session?.editorReady) return null;
         return postToEditor(session, Protocol.TYPES.REQUEST_SEND_TO_CANVAS, {});
+    }
+
+    function requestDownloadLocal(){
+        const session = activeSession();
+        if(!session?.editorReady || session.downloadRequestId) return null;
+        const requestId = uuid('openshop-download');
+        session.downloadRequestId = requestId;
+        syncDownloadButton(session);
+        return postToEditor(session, Protocol.TYPES.REQUEST_DOWNLOAD_LOCAL, {format:'png'}, requestId);
     }
 
     function close(){
@@ -802,6 +1005,7 @@
         hookPageSwitch();
         ui('[data-openshop-back]')?.addEventListener?.('click', () => close());
         ui('[data-openshop-save]')?.addEventListener?.('click', () => requestSave());
+        ui('[data-openshop-download]')?.addEventListener?.('click', requestDownloadLocal);
         ui('[data-openshop-send]')?.addEventListener?.('click', requestSendToCanvas);
         ui('[data-openshop-sources]')?.addEventListener?.('click', () => {
             const panel = ui('[data-openshop-source-panel]');
@@ -820,6 +1024,7 @@
         openNodeSession,
         disposeProject,
         requestSave,
+        requestDownloadLocal,
         requestSendToCanvas,
         refreshSources,
         close,

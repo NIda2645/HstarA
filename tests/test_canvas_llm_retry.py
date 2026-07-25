@@ -60,7 +60,132 @@ class _TransientDisconnectClient:
         return await self._send()
 
 
+class _RecordingClient:
+    def __init__(self):
+        self.request_body = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def post(self, *_args, **kwargs):
+        self.request_body = kwargs.get("json")
+        return _Response()
+
+
+class _StreamingResponse:
+    status_code = 200
+    headers = {"content-type": "text/event-stream"}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def aiter_lines(self):
+        yield 'data: {"choices":[{"delta":{"content":"{\\"blocks\\":[]}"}}]}'
+        yield "data: [DONE]"
+
+
+class _StreamingClient:
+    def __init__(self):
+        self.request_body = None
+        self.stream_calls = 0
+        self.post_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def stream(self, *_args, **kwargs):
+        self.stream_calls += 1
+        self.request_body = kwargs.get("json")
+        return _StreamingResponse()
+
+    async def post(self, *_args, **_kwargs):
+        self.post_calls += 1
+        raise AssertionError("streaming canvas LLM request must not send a second request")
+
+
 class CanvasLlmRequestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_response_uses_one_sse_request_and_collects_content(self):
+        client = _StreamingClient()
+        payload = main.CanvasLLMRequest(
+            provider="test-vision",
+            model="vision-model",
+            message="return OCR JSON",
+            response_format="json_object",
+            stream_response=True,
+        )
+
+        with (
+            patch.object(
+                main,
+                "get_api_provider",
+                return_value={"id": "test-vision", "use_system_proxy": False},
+            ),
+            patch.object(
+                main,
+                "resolve_chat_provider",
+                return_value=("https://example.invalid/v1", {"Authorization": "Bearer test"}, "vision-model"),
+            ),
+            patch.object(main.httpx, "AsyncClient", return_value=client),
+        ):
+            result = await main.canvas_llm(payload)
+
+        self.assertEqual(result["text"], '{"blocks":[]}')
+        self.assertEqual(client.stream_calls, 1)
+        self.assertEqual(client.post_calls, 0)
+        self.assertIs(client.request_body["stream"], True)
+
+    async def test_json_object_response_mode_is_forwarded_to_openai_compatible_provider(self):
+        client = _RecordingClient()
+        payload = main.CanvasLLMRequest(
+            provider="test-vision",
+            model="vision-model",
+            message="return OCR JSON",
+            response_format="json_object",
+        )
+
+        with (
+            patch.object(
+                main,
+                "get_api_provider",
+                return_value={"id": "test-vision", "use_system_proxy": False},
+            ),
+            patch.object(
+                main,
+                "resolve_chat_provider",
+                return_value=("https://example.invalid/v1", {"Authorization": "Bearer test"}, "vision-model"),
+            ),
+            patch.object(main.httpx, "AsyncClient", return_value=client),
+        ):
+            await main.canvas_llm(payload)
+
+        self.assertEqual(client.request_body["response_format"], {"type": "json_object"})
+
+    def test_cloudflare_524_error_is_translated_without_promising_a_retry(self):
+        detail = main.friendly_chat_error_detail(
+            json.dumps({
+                "title": "Error 524: A timeout occurred",
+                "status": 524,
+                "detail": "The origin web server did not return a complete response within the 120-second Proxy Read Timeout window.",
+                "error_code": 524,
+                "error_name": "origin_response_timeout",
+            }),
+            "gpt-5.6-luna",
+            {"id": "test-vision"},
+        )
+
+        self.assertIn("超过 120 秒", detail)
+        self.assertIn("不会自动重试", detail)
+        self.assertNotIn("origin web server", detail)
+
     async def test_does_not_retry_a_transient_upstream_disconnect(self):
         client = _TransientDisconnectClient()
         client_factory = Mock(return_value=client)

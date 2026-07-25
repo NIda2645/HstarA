@@ -7,6 +7,7 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const controllerPath = resolve(testDir, '..', 'host', 'openshop-text-properties.js');
 const controllerCssPath = resolve(testDir, '..', 'host', 'openshop-text-properties.css');
 const fontCatalogPath = resolve(testDir, '..', 'host', 'openshop-font-catalog.js');
+const editorHtmlPath = resolve(testDir, '..', 'index.html');
 const FONT_ROW_HEIGHT = 30;
 const FONT_VIEWPORT_HEIGHT = 210;
 const FONT_OVERSCAN = 4;
@@ -210,7 +211,10 @@ describe('Hstar OpenShop text properties', () => {
     delete window.HstarOpenShopTextProperties;
     document.body.innerHTML = `
       <div id="tool-options">
-        <select id="text-font"><option>Microsoft YaHei UI</option></select>
+        <div data-top-text-font-selectors>
+          <button type="button" data-top-text-family="zh"><span data-text-family-label>选择字体</span></button>
+          <button type="button" data-top-text-family="other"><span data-text-family-label>选择字体</span></button>
+        </div>
         <input id="text-size" value="24">
         <input id="text-color" value="#ffffff">
         <input id="text-bold" type="checkbox">
@@ -241,6 +245,60 @@ describe('Hstar OpenShop text properties', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('renders separate local-font selectors in the top text toolbar', () => {
+    const html = readFileSync(editorHtmlPath, 'utf8');
+    expect(html).toContain('data-top-text-font-selectors');
+    expect(html).toContain('data-top-text-family="zh"');
+    expect(html).toContain('data-top-text-family="other"');
+    expect(html).not.toContain('<select id="text-font"');
+  });
+
+  it('uses the shared local-font catalog from the top toolbar without expanding the side panel', async () => {
+    const rows = createSectionedCatalogRows();
+    const {controller, canvas, editor, fontManager} = createHarness({catalogRows:rows});
+    canvas.activeObject = null;
+    fontManager.stylesFor = vi.fn(family => family === 'Virtual Font 1250' ? [
+      {id:'virtual-regular', family, label:'Regular', weight:400, italic:false},
+      {id:'virtual-bold-italic', family, label:'Bold Italic', weight:700, italic:true},
+    ] : []);
+    fontManager.defaultStyleFor = vi.fn(family => ({
+      id:`${family}-bold-italic`,
+      family,
+      label:'Bold Italic',
+      weight:700,
+      italic:true,
+    }));
+    await controller.start();
+
+    const trigger = document.querySelector('[data-top-text-family="other"]');
+    const list = document.querySelector('[data-text-font-list]');
+    const listSpace = document.querySelector('[data-text-font-space]');
+    trigger.getBoundingClientRect = () => ({left:120, right:310, top:20, bottom:45, width:190, height:25});
+    trigger.click();
+
+    expect(list.hidden).toBe(false);
+    expect(list.style.left).toBe('120px');
+    expect(list.style.top).toBe('49px');
+    expect(list.style.width).toBe('190px');
+    expect(listSpace.style.height).toBe('0px');
+
+    const option = list.querySelector('[data-family="Virtual Font 1250"]');
+    option.click();
+
+    expect(editor.state).toMatchObject({
+      textFont:'Virtual Font 1250',
+      textBold:true,
+      textItalic:true,
+    });
+    expect(editor.saveHistory).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-top-text-family="other"] [data-text-family-label]').textContent)
+      .toBe('Virtual Font 1250');
+    expect([...document.querySelector('[data-text-style]').options].map(option => option.textContent))
+      .toEqual(['Regular', 'Bold Italic']);
+    expect(document.querySelector('[data-text-style]').value).toBe('virtual-bold-italic');
+    controller.destroy();
   });
 
   it('opens the text tab when a text object is selected or edited', async () => {
@@ -379,6 +437,33 @@ describe('Hstar OpenShop text properties', () => {
     expect(selected.getAttribute('aria-selected')).toBe('true');
     expect(missing.querySelector('[data-font-missing-badge]')).not.toBeNull();
     expect(missing.style.fontFamily).toContain('Missing Project Font');
+    controller.destroy();
+  });
+
+  it('labels font variants as 字型 and previews each family with a real available style', async () => {
+    const family = '03免 阿里妈妈灵动体VF';
+    const catalogRows = [
+      {kind:'section', key:'section-en', label:'英文字体'},
+      {kind:'group', key:'group-03', label:'03免 英文字体'},
+      {
+        kind:'font', key:`font:${family}`, family,
+        font:{
+          family, label:family, status:'available',
+          styles:[{id:'agile-thin', family, label:'Thin', weight:100, italic:false}],
+        },
+      },
+    ];
+    const {controller} = createHarness({catalogRows});
+
+    await controller.start();
+    document.querySelector('[data-text-family="other"]').click();
+    const option = document.querySelector(`[data-family="${family}"]`);
+
+    expect(document.querySelector('[data-text-style]').parentElement.textContent).toContain('字型');
+    expect(document.querySelector('[data-text-style]').parentElement.textContent).not.toContain('字形');
+    expect(option.style.fontFamily).toContain(family);
+    expect(option.style.fontWeight).toBe('100');
+    expect(option.style.fontStyle).toBe('normal');
     controller.destroy();
   });
 
@@ -811,9 +896,40 @@ describe('Hstar OpenShop text properties', () => {
     controller.applyProperty('fontFamily', 'Century Gothic');
 
     expect(textObject.set).toHaveBeenCalledWith({fontFamily:'Century Gothic'});
-    expect(document.getElementById('text-font').value).toBe('Century Gothic');
+    expect(document.querySelector('[data-top-text-family="other"] [data-text-family-label]').textContent)
+      .toBe('Century Gothic');
     expect(editor.saveHistory).toHaveBeenCalledWith(expect.stringContaining('修改文字'));
     expect(fontManager.scanEditor).toHaveBeenCalledWith(editor);
+    controller.destroy();
+  });
+
+  it('removes matching character overrides when a whole-object text property changes', async () => {
+    const {controller, canvas, textObject} = createHarness();
+    textObject.styles = {
+      0:{
+        0:{fontSize:24, fill:'#112233'},
+        1:{fontSize:30},
+      },
+      1:{0:{fontFamily:'Arial', fontSize:32}},
+      2:{0:{fontSize:18}},
+    };
+    textObject.initDimensions = vi.fn();
+    textObject.setCoords = vi.fn();
+    textObject.dirty = false;
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    controller.applyProperty('fontSize', 72);
+
+    expect(textObject.set).toHaveBeenCalledWith({fontSize:96});
+    expect(textObject.styles).toEqual({
+      0:{0:{fill:'#112233'}},
+      1:{0:{fontFamily:'Arial'}},
+    });
+    expect(textObject.initDimensions).toHaveBeenCalledOnce();
+    expect(textObject.setCoords).toHaveBeenCalledOnce();
+    expect(textObject.dirty).toBe(true);
+    expect(canvas.renderAll).toHaveBeenCalled();
     controller.destroy();
   });
 
@@ -846,6 +962,87 @@ describe('Hstar OpenShop text properties', () => {
     expect(textObject.set).toHaveBeenCalledWith({fontFamily:'DengXian'});
     expect(textObject.set).toHaveBeenCalledWith({fontWeight:400});
     expect(textObject.set).toHaveBeenCalledWith({fontStyle:'normal'});
+    controller.destroy();
+  });
+
+  it('selects the current variable-font weight instead of the first Thin face', async () => {
+    const family = 'Variable Sans';
+    const styles = [
+      {id:'variable-thin', family, label:'Thin', weight:100, italic:false},
+      {id:'variable-regular', family, label:'Regular', weight:400, italic:false},
+      {id:'variable-bold', family, label:'Bold', weight:700, italic:false},
+    ];
+    const {controller, canvas, textObject, fontManager} = createHarness();
+    textObject.fontFamily = family;
+    textObject.fontWeight = 700;
+    fontManager.resolveFamily = vi.fn(value => value);
+    fontManager.stylesFor = vi.fn(value => value === family ? styles : []);
+    fontManager.styleForFace = vi.fn(() => styles[0]);
+
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    expect(document.querySelector('[data-text-style]').value).toBe('variable-bold');
+    controller.destroy();
+  });
+
+  it('refreshes family and face when the text-properties tab is opened for the current object', async () => {
+    const family = 'Current Panel Sans';
+    const styles = [
+      {id:'current-regular', family, label:'Regular', weight:400, italic:false},
+      {id:'current-bold-italic', family, label:'Bold Italic', weight:700, italic:true},
+    ];
+    const {controller, canvas, textObject, fontManager} = createHarness();
+    const currentObject = createTextObject();
+    currentObject.fontFamily = family;
+    currentObject.fontWeight = 700;
+    currentObject.fontStyle = 'italic';
+    fontManager.resolveFamily = vi.fn(value => value);
+    fontManager.stylesFor = vi.fn(value => value === family ? styles : []);
+    fontManager.styleForFace = vi.fn(() => null);
+
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+    canvas.activeObject = currentObject;
+    document.querySelector('[data-hstar-text-properties-tab]').click();
+
+    expect(document.querySelector('[data-text-family="other"] [data-text-family-label]').textContent)
+      .toBe('Current Panel Sans');
+    expect(document.querySelector('[data-text-style]').value).toBe('current-bold-italic');
+    controller.destroy();
+  });
+
+  it('shows and updates the current creation face when no text object is selected', async () => {
+    const family = 'Default Creation Sans';
+    const styles = [
+      {id:'creation-regular', family, label:'Regular', weight:400, italic:false},
+      {id:'creation-medium', family, label:'Medium', weight:500, italic:false},
+      {id:'creation-bold', family, label:'Bold', weight:700, italic:false},
+    ];
+    const {controller, canvas, editor, fontManager} = createHarness();
+    canvas.activeObject = null;
+    editor.state.textFont = family;
+    editor.state.textFontWeight = 500;
+    fontManager.resolveFamily = vi.fn(value => value);
+    fontManager.stylesFor = vi.fn(value => value === family ? styles : []);
+    fontManager.styleForFace = vi.fn(() => styles[0]);
+
+    await controller.start();
+
+    const style = document.querySelector('[data-text-style]');
+    expect(document.querySelector('[data-text-family="other"] [data-text-family-label]').textContent)
+      .toBe(family);
+    expect(style.value).toBe('creation-medium');
+
+    style.value = 'creation-bold';
+    style.dispatchEvent(new Event('change', {bubbles:true}));
+    expect(editor.state).toMatchObject({
+      textFont:family,
+      textFontWeight:700,
+      textBold:true,
+      textItalic:false,
+    });
+    expect(style.value).toBe('creation-bold');
     controller.destroy();
   });
 
@@ -895,7 +1092,8 @@ describe('Hstar OpenShop text properties', () => {
     expect(document.querySelector('[data-text-family-label]').textContent).toBe('Microsoft YaHei UI');
     expect(document.querySelector('[data-text-style]').value).not.toBe('');
     expect(document.querySelector('[data-text-size]').value).toBe('36');
-    expect(document.getElementById('text-font').value).toBe('Microsoft YaHei UI');
+    expect(document.querySelector('[data-top-text-family="zh"] [data-text-family-label]').textContent)
+      .toBe('Microsoft YaHei UI');
     expect(document.getElementById('text-size').value).toBe('36');
     controller.destroy();
   });
@@ -939,7 +1137,7 @@ describe('Hstar OpenShop text properties', () => {
     controller.destroy();
   });
 
-  it('keeps paragraph properties object-level and exposes tracking and kerning modes', async () => {
+  it('keeps paragraph properties object-level and exposes one non-duplicated spacing control', async () => {
     const {controller, canvas, textObject} = createHarness({editing:true, selectionStart:1, selectionEnd:3});
     await controller.start();
     canvas.fire('selection:created', {selected:[textObject]});
@@ -954,7 +1152,40 @@ describe('Hstar OpenShop text properties', () => {
 
     controller.applyKerning('numeric', 80);
     expect(textObject.set).toHaveBeenCalledWith({charSpacing:80, hstarKerningMode:'numeric'});
-    expect(document.querySelector('[data-text-kerning-mode]').value).toBe('numeric');
+    expect(document.querySelectorAll('[data-text-tracking]')).toHaveLength(1);
+    expect(document.querySelector('[data-text-kerning-mode]')).toBeNull();
+    expect(document.querySelector('[data-text-kerning]')).toBeNull();
+    controller.destroy();
+  });
+
+  it('clears legacy per-character spacing overrides when tracking changes on a selected text object', async () => {
+    const {controller, canvas, textObject} = createHarness();
+    textObject.styles = {0:{0:{charSpacing:0}, 1:{charSpacing:0}, 2:{charSpacing:0}}};
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    const tracking = document.querySelector('[data-text-tracking]');
+    tracking.value = '80';
+    tracking.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(textObject.charSpacing).toBe(80);
+    expect(textObject.styles).toEqual({});
+    controller.destroy();
+  });
+
+  it('keeps the edited tracking value after removing legacy selection overrides', async () => {
+    const {controller, canvas, textObject} = createHarness({editing:true, selectionStart:0, selectionEnd:3});
+    textObject.styles = {0:{0:{charSpacing:0}, 1:{charSpacing:0}, 2:{charSpacing:0}}};
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    const tracking = document.querySelector('[data-text-tracking]');
+    tracking.value = '120';
+    tracking.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(textObject.charSpacing).toBe(120);
+    expect(textObject.styles).toEqual({});
+    expect(tracking.value).toBe('120');
     controller.destroy();
   });
 

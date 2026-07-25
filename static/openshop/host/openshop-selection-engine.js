@@ -5,11 +5,11 @@
     return Math.max(minimum, Math.min(maximum, number));
   }
 
-  function selectionMode(event = {}){
+  function selectionMode(event = {}, fallback = 'new'){
     if(event.shiftKey && event.altKey) return 'intersect';
     if(event.shiftKey) return 'add';
     if(event.altKey) return 'subtract';
-    return 'new';
+    return ['new', 'add', 'subtract', 'intersect'].includes(fallback) ? fallback : 'new';
   }
 
   function composeMasks(existing, incoming, mode = 'new'){
@@ -53,6 +53,68 @@
         h:maximumY - minimumY + 1,
       } : null,
     };
+  }
+
+  function maskRegions(mask, widthValue, heightValue, options={}){
+    const width = Math.max(1, Math.round(Number(widthValue) || 1));
+    const height = Math.max(1, Math.round(Number(heightValue) || 1));
+    if(!mask || mask.length !== width * height){
+      throw new Error('Selection mask dimensions do not match');
+    }
+    const visited = new Uint8Array(mask.length);
+    const queue = new Int32Array(mask.length);
+    const regions = [];
+    const includeMask = options?.includeMask === true;
+    for(let seed = 0; seed < mask.length; seed += 1){
+      if(!mask[seed] || visited[seed]) continue;
+      let head = 0;
+      let tail = 0;
+      let minimumX = width;
+      let minimumY = height;
+      let maximumX = -1;
+      let maximumY = -1;
+      let count = 0;
+      const componentMask = includeMask ? new Uint8Array(mask.length) : null;
+      queue[tail++] = seed;
+      visited[seed] = 1;
+      while(head < tail){
+        const index = queue[head++];
+        if(componentMask) componentMask[index] = 1;
+        const x = index % width;
+        const y = Math.floor(index / width);
+        minimumX = Math.min(minimumX, x);
+        minimumY = Math.min(minimumY, y);
+        maximumX = Math.max(maximumX, x);
+        maximumY = Math.max(maximumY, y);
+        count += 1;
+        if(x > 0 && mask[index - 1] && !visited[index - 1]){
+          visited[index - 1] = 1;
+          queue[tail++] = index - 1;
+        }
+        if(x + 1 < width && mask[index + 1] && !visited[index + 1]){
+          visited[index + 1] = 1;
+          queue[tail++] = index + 1;
+        }
+        if(y > 0 && mask[index - width] && !visited[index - width]){
+          visited[index - width] = 1;
+          queue[tail++] = index - width;
+        }
+        if(y + 1 < height && mask[index + width] && !visited[index + width]){
+          visited[index + width] = 1;
+          queue[tail++] = index + width;
+        }
+      }
+      const region = {
+        x:minimumX,
+        y:minimumY,
+        w:maximumX - minimumX + 1,
+        h:maximumY - minimumY + 1,
+        count,
+      };
+      if(componentMask) region.mask = componentMask;
+      regions.push(region);
+    }
+    return regions.sort((left, right) => left.y - right.y || left.x - right.x);
   }
 
   function simplifyPath(points, minimumDistance = 1){
@@ -194,6 +256,7 @@
     selectionMode,
     composeMasks,
     maskBounds,
+    maskRegions,
     simplifyPath,
     polygonMask,
     magicWand,

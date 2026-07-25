@@ -70,7 +70,7 @@ html[data-studio-scale="off"].studio-scale-managed .workspace {
 .ws-side-title { font-size:15px; font-weight:850; letter-spacing:0; color:var(--text); }
 .ws-side-add { width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:var(--muted); background:var(--panel-solid); border:1px solid var(--line); transition:all .15s var(--ease); cursor:pointer; }
 .ws-side-add:hover { color:var(--text); border-color:var(--line-2); background:var(--soft); box-shadow:0 6px 14px var(--shadow); }
-.ws-side-add:focus-visible,.ws-icon-btn:focus-visible,.ws-primary-btn:focus-visible,.ws-paste-btn:focus-visible,.ws-trash-act:focus-visible,.ws-pop-item:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.ws-side-add:focus-visible,.ws-icon-btn:focus-visible,.ws-primary-btn:focus-visible,.ws-paste-btn:focus-visible,.ws-trash-act:focus-visible,.ws-pop-item:focus-visible,.ws-trash-purge-all:focus-visible,.ws-trash-bulk-actions button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
 .ws-newproj-row { display:none; align-items:center; gap:4px; margin:0 12px 8px; padding:4px; border:1px solid var(--line); border-radius:8px; background:var(--card-solid); box-shadow:0 8px 18px var(--shadow); }
 .ws-newproj-row.active { display:flex; }
@@ -229,6 +229,10 @@ html[data-studio-scale="off"].studio-scale-managed .workspace {
 .ws-trash-panel.active { display:flex; }
 .ws-trash-head { display:flex; align-items:center; justify-content:space-between; min-height:60px; padding:11px 18px; border-bottom:1px solid var(--line); background:var(--panel); backdrop-filter:blur(14px); }
 .ws-trash-head-title { display:flex; align-items:center; gap:8px; font-size:15px; font-weight:850; color:var(--text); }
+.ws-trash-head-actions { display:flex; align-items:center; gap:8px; }
+.ws-trash-purge-all { height:36px; padding:0 12px; border-radius:8px; display:flex; align-items:center; justify-content:center; gap:6px; color:var(--danger); background:var(--card-solid); border:1px solid var(--line); font-size:12px; font-weight:800; cursor:pointer; transition:all .15s var(--ease); }
+.ws-trash-purge-all:hover:not(:disabled) { background:var(--danger-soft); border-color:#fecaca; box-shadow:0 6px 14px var(--shadow); }
+.ws-trash-purge-all:disabled,.ws-trash-head .ws-icon-btn:disabled { opacity:.42; cursor:not-allowed; box-shadow:none; }
 .ws-trash-note { display:flex; align-items:center; gap:7px; margin:14px 18px 0; padding:10px 12px; border-radius:8px; background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent-line); font-size:12px; font-weight:700; }
 .ws-trash-list { flex:1; min-height:0; overflow:auto; padding:16px 18px 24px; display:grid; grid-template-columns:repeat(auto-fill, minmax(248px, 1fr)); gap:14px; align-content:start; }
 .ws-trash-empty { grid-column:1/-1; min-height:280px; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--faint); font-size:14px; font-weight:750; }
@@ -246,6 +250,19 @@ html[data-studio-scale="off"].studio-scale-managed .workspace {
 .ws-trash-confirm-actions button { flex:1; height:30px; border-radius:8px; font-size:11px; font-weight:800; cursor:pointer; border:none; }
 .ws-trash-confirm-yes { background:var(--danger); color:#fff; }
 .ws-trash-confirm-no { background:var(--soft); color:var(--muted); border:1px solid var(--line); }
+.ws-trash-bulk-dialog { position:absolute; inset:0; z-index:40; display:grid; place-items:center; padding:24px; background:rgba(15,23,42,.28); backdrop-filter:blur(3px); }
+.ws-trash-bulk-dialog[hidden] { display:none; }
+.ws-trash-bulk-dialog-card { width:min(360px, 100%); border-radius:8px; padding:22px; background:var(--panel-solid); border:1px solid var(--line); box-shadow:0 24px 64px rgba(15,23,42,.22); text-align:center; }
+.ws-trash-bulk-icon { width:40px; height:40px; margin:0 auto 13px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--danger); background:var(--danger-soft); }
+.ws-trash-bulk-title { color:var(--text); font-size:15px; line-height:1.5; font-weight:850; }
+.ws-trash-bulk-copy { margin-top:6px; color:var(--muted); font-size:12px; line-height:1.5; }
+.ws-trash-bulk-actions { display:flex; gap:8px; margin-top:20px; }
+.ws-trash-bulk-actions button { flex:1; height:36px; border-radius:8px; border:1px solid var(--line); font-size:12px; font-weight:800; cursor:pointer; transition:all .14s var(--ease); }
+.ws-trash-bulk-cancel { color:var(--muted); background:var(--soft); }
+.ws-trash-bulk-cancel:hover:not(:disabled) { color:var(--text); border-color:var(--line-2); }
+.ws-trash-bulk-confirm { color:#fff; background:var(--danger); border-color:var(--danger) !important; }
+.ws-trash-bulk-confirm:hover:not(:disabled) { background:#b91c1c; }
+.ws-trash-bulk-actions button:disabled { opacity:.56; cursor:wait; }
 
 /* ===== Status toast ===== */
 .ws-status { position:absolute; left:50%; bottom:18px; transform:translateX(-50%); z-index:30; padding:8px 16px; border-radius:999px; background:var(--strong); color:var(--strong-text); font-size:12px; font-weight:700; box-shadow:0 10px 30px var(--shadow); opacity:0; pointer-events:none; transition:opacity .2s var(--ease); }
@@ -268,6 +285,7 @@ html[data-studio-scale="off"].studio-scale-managed .workspace {
 .theme-dark .ws-create-toggle-btn.active { background:#d8dee9; color:#0f172a; }
 .theme-dark .ws-trash-act.restore:hover { color:#6ee7b7; background:rgba(5,150,105,.15); border-color:rgba(110,231,183,.35); }
 .theme-dark .ws-trash-act.purge:hover { color:#fecaca; background:rgba(220,38,38,.18); border-color:rgba(248,113,113,.35); }
+.theme-dark .ws-trash-purge-all:hover:not(:disabled) { color:#fecaca; background:rgba(220,38,38,.18); border-color:rgba(248,113,113,.35); }
 .theme-dark .ws-pop-item.danger:hover { background:rgba(220,38,38,.18); }
 .theme-dark .ws-card-delete-no { background:var(--soft); }
 
@@ -295,6 +313,10 @@ html[data-studio-scale="off"].studio-scale-managed .workspace {
     .ws-card-meta { padding:8px; gap:5px; }
     .ws-trash-list { grid-template-columns:1fr; padding:12px; }
     .ws-trash-note { margin:12px 12px 0; }
+    .ws-trash-head { padding:10px 12px; }
+    .ws-trash-head-actions { gap:6px; }
+    .ws-trash-purge-all { padding:0 10px; }
+    .ws-trash-bulk-dialog { padding:16px; }
 }
 html[data-studio-scale="off"].studio-scale-managed .ws-primary-btn span {
     display:inline;

@@ -55,6 +55,7 @@ describe('OpenShop export service availability', () => {
     expect(editor).toContain(`./host/openshop-project-adapter.js?v=${revision}`);
     expect(editor).toContain(`./host/openshop-export-service.js?v=${revision}`);
     expect(editor).toContain(`./host/openshop-host-runtime.js?v=${revision}`);
+    expect(editor).toContain(`./host/openshop-font-catalog.js?v=${revision}`);
     expect(editor).toContain(`./host/openshop-writing-mode.css?v=${revision}`);
     expect(editor).toContain(`./host/openshop-writing-mode.js?v=${revision}`);
     expect(editor).toContain(`./host/openshop-text-tools.js?v=${revision}`);

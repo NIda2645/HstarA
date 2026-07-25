@@ -272,6 +272,7 @@ const frameA = frameFor(contextA);
 assert.ok(frameA, 'project A should create a dedicated iframe');
 assert.equal(frameA.hidden, true, 'sourced editor should stay hidden until source synchronization finishes');
 assert.equal(overlay.classList.contains('is-open'), true);
+assert.deepEqual(editorMessages(frameA), [], 'the host must not message an iframe before its first load');
 frameA.dispatch('load');
 frameA.dispatch('load');
 assert.equal(
@@ -283,6 +284,7 @@ const sessionA = readyFrame(frameA, contextA, 'ready-a');
 await flushAsync();
 assert.deepEqual(editorMessages(frameA).map(message => message.type), [
   protocol.TYPES.OPEN_SESSION,
+  protocol.TYPES.SESSION_VISIBILITY,
   protocol.TYPES.OPEN_SESSION,
   protocol.TYPES.LOAD_PROJECT,
   protocol.TYPES.SYNC_SOURCES,

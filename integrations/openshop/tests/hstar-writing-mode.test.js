@@ -322,7 +322,9 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(editor.style.fontSize).toBe('28px');
     expect(editor.style.fontWeight).toBe('700');
     expect(editor.style.fontStyle).toBe('italic');
-    expect(editor.style.color).toBe('red');
+    expect(editor.style.color).toBe('transparent');
+    expect(editor.style.getPropertyValue('-webkit-text-fill-color')).toBe('transparent');
+    expect(editor.style.caretColor).toBe('transparent');
     expect(editor.style.lineHeight).toBe('1.4');
     expect(editor.style.transform).toBe('none');
     expect(editor.style.left).toBe('110px');
@@ -342,6 +344,94 @@ describe('Hstar OpenShop writing mode runtime', () => {
 
     expect(document.querySelectorAll('textarea[data-hstar-vertical-editor]')).toHaveLength(1);
     expect(document.querySelector('textarea[data-hstar-vertical-editor]')).toBe(editor);
+  });
+
+  it('refreshes the active vertical editor after viewport or typography changes', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '缩放', {
+      hstarWritingMode:'vertical',
+      fontSize:28,
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    vertical.fontSize = 64;
+
+    expect(runtime.refreshActiveEditor()).toBe(true);
+    expect(editor.style.fontSize).toBe('64px');
+
+    vertical.exitEditing();
+    expect(runtime.refreshActiveEditor()).toBe(false);
+  });
+
+  it('positions a custom collapsed caret from the vertical glyph layout', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '大大', {
+      hstarWritingMode:'vertical',
+      fontSize:20,
+      lineHeight:1.5,
+      fill:'red',
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const caret = document.querySelector('[data-hstar-vertical-caret]');
+
+    expect(caret).not.toBeNull();
+    expect(editor.style.caretColor).toBe('transparent');
+    expect(caret.style.display).toBe('block');
+    expect(caret.style.left).toBe(editor.style.left);
+    expect(caret.style.top).toBe(editor.style.top);
+    expect(caret.style.width).toBe(editor.style.width);
+    expect(caret.style.height).toBe(editor.style.height);
+    expect(caret.style.color).toBe('red');
+    expect(caret.style.getPropertyValue('--hstar-vertical-caret-left')).toBe('0%');
+    expect(caret.style.getPropertyValue('--hstar-vertical-caret-top')).toBe('83.333333%');
+    expect(caret.style.getPropertyValue('--hstar-vertical-caret-width')).toBe('100%');
+
+    editor.setSelectionRange(1, 1);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+    expect(caret.style.getPropertyValue('--hstar-vertical-caret-top')).toBe('50%');
+
+    editor.setSelectionRange(0, 2);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+    expect(caret.style.display).toBe('none');
+  });
+
+  it('wraps selected vertical glyphs using the same layout as the canvas renderer', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '大大', {
+      hstarWritingMode:'vertical',
+      fontSize:20,
+      lineHeight:1.5,
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const selection = document.querySelector('[data-hstar-vertical-selection]');
+    const css = readFileSync(editorCssPath, 'utf8');
+
+    editor.setSelectionRange(0, 2);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+
+    expect(selection).not.toBeNull();
+    expect(selection.style.display).toBe('block');
+    expect(selection.style.left).toBe(editor.style.left);
+    expect(selection.style.top).toBe(editor.style.top);
+    expect(selection.style.width).toBe(editor.style.width);
+    expect(selection.style.height).toBe(editor.style.height);
+    expect(selection.children).toHaveLength(1);
+    expect(selection.firstElementChild.style.left).toBe('0%');
+    expect(selection.firstElementChild.style.top).toBe('0%');
+    expect(selection.firstElementChild.style.width).toBe('100%');
+    expect(selection.firstElementChild.style.height).toBe('83.333333%');
+    expect(css).toMatch(/\.hstar-vertical-text-selection\s*\{[^}]*pointer-events:\s*none;/s);
+    expect(css).toMatch(/\.hstar-vertical-text-selection__rect\s*\{[^}]*background:\s*rgba\(37, 99, 235, 0\.24\);/s);
+    expect(css).toMatch(/\.hstar-vertical-text-editor::selection\s*\{[^}]*background:\s*transparent;/s);
+
+    editor.setSelectionRange(2, 2);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+    expect(selection.style.display).toBe('none');
   });
 
   it('uses CSS canvas ratios without applying viewport zoom twice to transformed bounds', () => {
@@ -491,6 +581,9 @@ describe('Hstar OpenShop writing mode runtime', () => {
 
     expect(editor.getAttribute('aria-label')).toBe('竖排文字编辑');
     expect(editor.spellcheck).toBe(false);
+    expect(css).toMatch(/\.hstar-vertical-text-editor\s*\{[^}]*color:\s*transparent;[^}]*-webkit-text-fill-color:\s*transparent;/s);
+    expect(css).toMatch(/\.hstar-vertical-text-editor::selection\s*\{[^}]*color:\s*transparent;[^}]*-webkit-text-fill-color:\s*transparent;[^}]*background:/s);
+    expect(css).toMatch(/\.hstar-vertical-text-caret::after\s*\{[^}]*--hstar-vertical-caret-top/s);
     expect(css).toMatch(/\.hstar-vertical-text-editor:focus-visible\s*\{[^}]*outline:/s);
     editor.dispatchEvent(new KeyboardEvent('keydown', {
       key:'Enter', code:'Enter', bubbles:true, cancelable:true,
@@ -1209,6 +1302,40 @@ describe('Hstar OpenShop writing mode runtime', () => {
     }
   });
 
+  it('updates OCR writing metadata while retaining the source visual metrics', () => {
+    new Function(readFileSync(vendorFabricPath, 'utf8'))();
+    const realFabric = window.fabric;
+    runtime.registerFabricClass(realFabric);
+    const source = new realFabric.IText('激活', {
+      left:120,
+      top:300,
+      fontFamily:'Microsoft YaHei UI',
+      fontSize:24,
+      fontWeight:500,
+      fontStyle:'normal',
+      fill:'#8763c9',
+      charSpacing:0,
+      lineHeight:1.1,
+      scaleX:0.974,
+      scaleY:0.974,
+      hstarOcrVisualProfile:{writingMode:'horizontal', size:24, weight:500, fill:'#8763c9'},
+      hstarOcrBlockId:'ocr-12',
+    });
+
+    const vertical = runtime.convertTextObject(realFabric, source, 'vertical');
+
+    expect(vertical).toMatchObject({
+      type:'hstar-vertical-text', text:'激活', fontFamily:'Microsoft YaHei UI',
+      fontSize:24, fontWeight:500, fill:'#8763c9',
+      hstarOcrBlockId:'ocr-12',
+    });
+    expect(vertical.scaleX).toBeCloseTo(0.974, 2);
+    expect(vertical.scaleY).toBeCloseTo(0.974, 2);
+    expect(vertical.hstarOcrVisualProfile).toMatchObject({writingMode:'vertical', size:24});
+    expect(vertical._hstarVerticalLayout.glyphs.every(glyph => glyph.width === 24)).toBe(true);
+    delete window.fabric;
+  });
+
   it('renders every glyph in vertical top-to-bottom and right-to-left coordinate order', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, 'AB\nC', {
@@ -1228,11 +1355,38 @@ describe('Hstar OpenShop writing mode runtime', () => {
 
     vertical._render(context);
 
-    expect(context.font).toBe('italic 700 24px Render Sans');
+    expect(context.font).toBe('italic 700 24px "Render Sans"');
     expect(context.fillStyle).toBe('#ff00aa');
     expect(calls.map(([glyph]) => glyph)).toEqual(['A', 'B', 'C']);
     expect(calls[1][2]).toBeGreaterThan(calls[0][2]);
     expect(calls[0][1]).toBeGreaterThan(calls[2][1]);
+  });
+
+  it('quotes local font family names that contain version and style numbers', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '微风不燥，', {
+      hstarWritingMode:'vertical',
+      fontFamily:'阿里巴巴普惠体 3.0 55 Regular',
+      fontSize:56.539119,
+      fontWeight:400,
+    });
+    const fonts = [];
+    const context = {
+      save() {},
+      restore() {},
+      set font(value) { fonts.push(value); },
+      fillText() {},
+    };
+
+    vertical._render(context);
+
+    expect(fonts).toEqual([
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+    ]);
   });
 
   it('recomputes dimensions after text and typography changes', () => {
@@ -1246,6 +1400,22 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(vertical.height).toBeGreaterThan(initial.height);
     expect(vertical._hstarVerticalLayout.glyphs.map(glyph => glyph.character)).toEqual(['A', 'B', 'C', 'D']);
     expect(vertical.dirty).toBe(true);
+  });
+
+  it('offsets only trailing vertical punctuation without moving primary glyphs', () => {
+    const fabric = createFabricMock();
+    const baseline = runtime.createTextObject(fabric, '微风不燥，', {
+      hstarWritingMode:'vertical', fontSize:40, lineHeight:1.2, charSpacing:0,
+    });
+    const adjusted = runtime.createTextObject(fabric, '微风不燥，', {
+      hstarWritingMode:'vertical', fontSize:40, lineHeight:1.2, charSpacing:0,
+      hstarVerticalTrailingPunctuationOffset:18,
+    });
+
+    expect(adjusted._hstarVerticalLayout.glyphs.slice(0, 4).map(glyph => glyph.y))
+      .toEqual(baseline._hstarVerticalLayout.glyphs.slice(0, 4).map(glyph => glyph.y));
+    expect(adjusted._hstarVerticalLayout.glyphs[4].y)
+      .toBe(baseline._hstarVerticalLayout.glyphs[4].y - 18);
   });
 
   it('marks paint changes dirty and sizes cells from per-glyph styles', () => {
@@ -1307,6 +1477,26 @@ describe('Hstar OpenShop writing mode runtime', () => {
     expect(rects).toHaveLength(1);
   });
 
+  it('does not paint glyph background blocks for Fabric empty text backgrounds', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '小暑', {
+      hstarWritingMode:'vertical',
+      fill:'#3f6f4d',
+      textBackgroundColor:'',
+    });
+    const context = {
+      save() {},
+      restore() {},
+      fillText:vi.fn(),
+      fillRect:vi.fn(),
+    };
+
+    vertical._render(context);
+
+    expect(context.fillText).toHaveBeenCalledTimes(2);
+    expect(context.fillRect).not.toHaveBeenCalled();
+  });
+
   it('renders defaults, glyph overrides, stroke, backgrounds, and decorations', () => {
     const fabric = createFabricMock();
     const vertical = runtime.createTextObject(fabric, 'AB', {
@@ -1341,7 +1531,7 @@ describe('Hstar OpenShop writing mode runtime', () => {
     vertical._render(context);
 
     expect(fonts).toContain('normal normal 40px sans-serif');
-    expect(fonts).toContain('italic 700 24px Override Sans');
+    expect(fonts).toContain('italic 700 24px "Override Sans"');
     expect(context.fillTexts.map(([glyph]) => glyph)).toEqual(['A', 'B']);
     expect(context.strokeTexts).toHaveLength(2);
     expect(fills).toContain('#ff0000');

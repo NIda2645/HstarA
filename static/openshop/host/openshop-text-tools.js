@@ -3,6 +3,7 @@
   const TOOL_REMOVE = 'text-remove';
   const TOOL_ART_FONT = 'art-font-restore';
   const MAX_TASK_RECORDS = 100;
+  const OCR_LAYOUT_VERSION = 5;
   const TERMINAL_STATES = new Set(['succeeded', 'failed', 'cancelled']);
   const TERMINAL_RECONCILE_STATES = new Set(['applied', 'stale', 'discarded']);
 
@@ -45,6 +46,87 @@
       : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
+  function unicodeLength(value){
+    return Array.from(String(value ?? '')).length;
+  }
+
+  function scriptForCharacter(character){
+    if(/[\u3400-\u9fff]/u.test(character)) return 'zh';
+    if(/[A-Za-z0-9]/u.test(character)) return 'en';
+    return '';
+  }
+
+  function validatedRuns(text, runs){
+    const length = unicodeLength(text);
+    if(!Array.isArray(runs) || !runs.length) throw new Error('OCR 文字区段无效');
+    const normalized = runs.map(run => ({
+      ...clone(run),
+      start:Number(run?.start),
+      end:Number(run?.end),
+    })).sort((left, right) => left.start - right.start || left.end - right.end);
+    let cursor = 0;
+    normalized.forEach(run => {
+      if(
+        !Number.isInteger(run.start)
+        || !Number.isInteger(run.end)
+        || run.start !== cursor
+        || run.end <= run.start
+        || run.end > length
+      ) throw new Error('OCR 文字区段无效');
+      cursor = run.end;
+    });
+    if(cursor !== length) throw new Error('OCR 文字区段无效');
+    return normalized;
+  }
+
+  function reconcileOcrRuns(originalText, editedText, runs){
+    const source = Array.from(String(originalText ?? ''));
+    const target = Array.from(String(editedText ?? ''));
+    const normalized = validatedRuns(originalText, runs);
+    if(!target.length) return [];
+    if(normalized.length === 1) return [{...normalized[0], start:0, end:target.length}];
+
+    const sourceStyles = source.map((_character, index) => (
+      normalized.find(run => run.start <= index && index < run.end)
+    ));
+    const targetStyles = new Array(target.length);
+    let prefix = 0;
+    while(prefix < source.length && prefix < target.length && source[prefix] === target[prefix]){
+      targetStyles[prefix] = sourceStyles[prefix];
+      prefix += 1;
+    }
+    let suffix = 0;
+    while(
+      suffix < source.length - prefix
+      && suffix < target.length - prefix
+      && source[source.length - suffix - 1] === target[target.length - suffix - 1]
+    ){
+      targetStyles[target.length - suffix - 1] = sourceStyles[source.length - suffix - 1];
+      suffix += 1;
+    }
+    for(let index = prefix; index < target.length - suffix; index += 1){
+      const script = scriptForCharacter(target[index]);
+      const left = targetStyles[index - 1];
+      const right = targetStyles[target.length - suffix];
+      targetStyles[index] = [left, right, ...normalized].find(run => {
+        if(!run) return false;
+        if(!script) return true;
+        return script === 'zh'
+          ? clean(run.script).startsWith('zh')
+          : clean(run.script) === 'en';
+      }) || left || right || normalized[0];
+    }
+
+    const reconciled = [];
+    targetStyles.forEach((run, index) => {
+      const signature = JSON.stringify({...run, start:undefined, end:undefined});
+      const previous = reconciled.at(-1);
+      if(previous?.signature === signature) previous.end = index + 1;
+      else reconciled.push({start:index, end:index + 1, run, signature});
+    });
+    return reconciled.map(({start, end, run}) => ({...clone(run), start, end}));
+  }
+
   function createController(options = {}){
     const editor = options.editor;
     const runtime = options.runtime;
@@ -53,9 +135,9 @@
     const fontManager = options.fontManager;
     const fabricRef = options.fabricRef || root.fabric;
     const writingModeRuntime = options.writingModeRuntime || root.HstarOpenShopWritingMode;
+    const ocrLayout = options.ocrLayout || root.HstarOpenShopOcrLayout;
     const documentRef = options.documentRef || root.document;
     const imageLoader = options.imageLoader || defaultImageLoader;
-    const maskRenderer = options.maskRenderer || defaultMaskRenderer;
     const artPollMaxAttempts = Math.min(5, Math.max(1, Math.floor(Number(options.artPollMaxAttempts) || 3)));
     const artPollRetryWait = typeof options.artPollRetryWait === 'function'
       ? options.artPollRetryWait
@@ -68,7 +150,11 @@
           }, {once:true});
         });
     if(!editor || !runtime || !aiClient || !assetApi || !fontManager || !fabricRef
-      || typeof writingModeRuntime?.createTextObject !== 'function'){
+      || typeof writingModeRuntime?.createTextObject !== 'function'
+      || typeof ocrLayout?.quadGeometry !== 'function'
+      || typeof ocrLayout?.fitLineObject !== 'function'
+      || typeof ocrLayout?.paragraphPlan !== 'function'
+      || typeof fontManager?.matchOcrRun !== 'function'){
       throw new Error('OpenShop 文字工具依赖不完整');
     }
 
@@ -91,8 +177,9 @@
       artRunsByLayerId:new Map(),
       artRunsByTaskId:new Map(),
       artCreatesByClientRequestId:new Map(),
+      artReconcileRuns:new Map(),
       detachedArtTasks:new Map(),
-      lastRemovalOptions:{mode:'layer', quality:'auto', prompt:''},
+      lastRemovalOptions:{resolution:'4k', ratio:'source', quality:'auto', prompt:''},
       unsubscribeCatalog:null,
       listeners:[],
     };
@@ -135,6 +222,20 @@
         }
       }
       return null;
+    }
+
+    function selectedPixelLayer(){
+      const layers = Array.isArray(editor.layers) ? editor.layers : [];
+      const selected = editor.canvas?.getActiveObject?.();
+      const selectedObjects = selected?._objects?.length ? selected._objects : selected ? [selected] : [];
+      const selectedLayer = layers.find(layer => selectedObjects.some(object => layer?.objects?.includes(object)));
+      if(selectedLayer){
+        const selectedImages = pixelImages(selectedLayer);
+        return selectedImages.length ? {layer:selectedLayer, images:selectedImages} : null;
+      }
+      const layer = activeLayer();
+      const images = pixelImages(layer);
+      return layer && images.length ? {layer, images} : null;
     }
 
     function preferenceFor(toolId){
@@ -332,11 +433,22 @@
       return record;
     }
 
+    function localizedOcrError(error){
+      const message = clean(error?.message || error);
+      if(/reliable text positions|reliable position/i.test(message)){
+        return 'OCR 模型没有返回可靠的文字位置，请重新执行文字提取';
+      }
+      return message || '文字提取失败，请重试';
+    }
+
     function updateTaskRecord(record, task){
       if(!record || !task) return;
       record.status = clean(task.status) || record.status;
       record.updatedAt = Date.now();
-      record.error = clean(task.error).slice(0, 500);
+      const taskError = record.toolId === TOOL_EXTRACT
+        ? localizedOcrError(task.error)
+        : clean(task.error);
+      record.error = taskError.slice(0, 500);
       const result = task.result && typeof task.result === 'object' ? clone(task.result) : null;
       if(result){
         if(record.toolId === TOOL_EXTRACT) record.result = result;
@@ -352,8 +464,8 @@
       renderPanel();
     }
 
-    function captureActiveLayer(){
-      const subject = activePixelLayer();
+    function captureActiveLayer({strictSelection = false} = {}){
+      const subject = strictSelection ? selectedPixelLayer() : activePixelLayer();
       if(!subject) throw new Error('请先选择一个包含图片的像素图层');
       const canvas = editor.canvas;
       if(!canvas?.toDataURL) throw new Error('OpenShop 图层导出不可用');
@@ -383,8 +495,8 @@
       }
     }
 
-    async function uploadActiveLayer(){
-      const captured = captureActiveLayer();
+    async function uploadActiveLayer(options = {}){
+      const captured = captureActiveLayer(options);
       const asset = await assetApi.upload({
         dataUrl:captured.dataUrl,
         role:'ai-source',
@@ -392,22 +504,6 @@
       });
       if(!asset?.assetId) throw new Error('文字工具源图上传失败');
       return {captured, asset};
-    }
-
-    function selectionAvailable(){
-      return Boolean(editor._selectionMask || editor._selectionBounds);
-    }
-
-    async function uploadSelectionMask(){
-      if(!selectionAvailable()) throw new Error('当前没有可用选区');
-      const dataUrl = maskRenderer(editor, documentRef);
-      const asset = await assetApi.upload({
-        dataUrl,
-        role:'ai-mask',
-        name:`${currentContext().projectId}-selection-mask.png`,
-      });
-      if(!asset?.assetId) throw new Error('选区蒙版上传失败');
-      return asset;
     }
 
     async function executeTask(toolId, request, sourceDataUrl){
@@ -452,6 +548,11 @@
         if(!Array.isArray(result?.blocks) || !result.blocks.length){
           throw new Error('模型没有返回可靠文字位置，无法创建文字图层');
         }
+        state.reviewTaskRecord = [...taskRecords()].reverse().find(record => (
+          record.toolId === TOOL_EXTRACT
+          && record.status === 'succeeded'
+          && !record.appliedAt
+        )) || null;
         state.reviewBlocks = clone(result.blocks);
         setStatus('review');
         return result;
@@ -463,12 +564,13 @@
           setStatus('cancelled');
           return null;
         }
+        const message = localizedOcrError(error);
         if(state.activeTaskRecord && !TERMINAL_STATES.has(state.activeTaskRecord.status)){
-          updateTaskRecord(state.activeTaskRecord, {status:'failed', error:error?.message || error});
+          updateTaskRecord(state.activeTaskRecord, {status:'failed', error:message});
         }
         state.activeTaskId = '';
         state.activeTaskRecord = null;
-        setStatus('failed', error?.message || error);
+        setStatus('failed', message);
         return null;
       }
     }
@@ -485,36 +587,11 @@
       };
     }
 
-    function quadGeometry(quad, canvasWidth, canvasHeight, fallbackRotation = 0){
-      const points = (Array.isArray(quad) ? quad : []).map(point => ({
-        x:Number(point?.x) * canvasWidth,
-        y:Number(point?.y) * canvasHeight,
-      }));
-      if(points.length !== 4 || points.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))){
-        throw new Error('文字块坐标无效');
-      }
-      const topEdge = {x:points[1].x - points[0].x, y:points[1].y - points[0].y};
-      const sideEdge = {x:points[3].x - points[0].x, y:points[3].y - points[0].y};
-      const width = Math.hypot(topEdge.x, topEdge.y);
-      const height = Math.hypot(sideEdge.x, sideEdge.y);
-      if(width <= 0 || height <= 0) throw new Error('文字块坐标没有有效面积');
-      const quadAngle = Math.atan2(topEdge.y, topEdge.x) * 180 / Math.PI;
-      const requestedAngle = Number(fallbackRotation);
-      return {
-        left:points[0].x,
-        top:points[0].y,
-        width,
-        height,
-        angle:Math.abs(quadAngle) > 0.01
-          ? quadAngle
-          : (Number.isFinite(requestedAngle) ? requestedAngle : 0),
-      };
-    }
-
     function fontCandidatesForBlock(block){
-      return Array.isArray(block?.font?.familyCandidates)
-        ? [...new Set(block.font.familyCandidates.map(clean).filter(Boolean))]
-        : [];
+      return [...new Set((Array.isArray(block?.runs) ? block.runs : [])
+        .flatMap(run => Array.isArray(run?.familyCandidates) ? run.familyCandidates : [])
+        .map(clean)
+        .filter(Boolean))];
     }
 
     function finite(value, fallback = 0){
@@ -530,25 +607,27 @@
     }
 
     function ocrVisualProfile(block){
-      const font = block?.font && typeof block.font === 'object' ? block.font : {};
-      const shadow = font.shadow && typeof font.shadow === 'object' ? font.shadow : {};
+      const run = Array.isArray(block?.runs) && block.runs[0] && typeof block.runs[0] === 'object'
+        ? block.runs[0]
+        : {};
+      const shadow = run.shadow && typeof run.shadow === 'object' ? run.shadow : {};
       return {
         writingMode:normalizeWritingMode(block?.writingMode),
-        script:clean(block?.script) || 'mixed',
+        script:clean(run.script || block?.script) || 'mixed',
         dominantScript:clean(block?.dominantScript),
-        fill:clean(block?.color || block?.fill) || '#ffffff',
+        fill:clean(run.color || run.fill) || '#ffffff',
         alignment:['left', 'center', 'right', 'justify'].includes(block?.align) ? block.align : 'left',
         rotation:finite(block?.rotation),
-        artistic:font.artistic === true,
+        artistic:run.artistic === true,
         familyCandidates:fontCandidatesForBlock(block),
-        size:finite(font.size),
-        weight:finite(font.weight, 400),
-        style:font.style === 'italic' ? 'italic' : 'normal',
-        styleDescription:clean(font.styleDescription),
-        letterSpacing:finite(font.letterSpacing),
-        lineHeight:finite(font.lineHeight, 1.16),
-        strokeColor:clean(font.strokeColor) || '#00000000',
-        strokeWidth:finite(font.strokeWidth),
+        size:finite(run.size),
+        weight:finite(run.weight, 400),
+        style:run.style === 'italic' ? 'italic' : 'normal',
+        styleDescription:clean(run.styleDescription),
+        letterSpacing:finite(run.letterSpacing),
+        lineHeight:finite(run.lineHeight, 1.16),
+        strokeColor:clean(run.strokeColor) || '#00000000',
+        strokeWidth:finite(run.strokeWidth),
         shadow:{
           color:clean(shadow.color) || '#00000000',
           blur:finite(shadow.blur),
@@ -558,27 +637,75 @@
       };
     }
 
-    function fitTextUniformly(object, geometry){
-      object.initDimensions?.();
-      const naturalWidth = Math.max(1, finite(object.width, geometry.width));
-      const naturalHeight = Math.max(1, finite(object.height, geometry.height));
-      const fontSize = Math.max(1, finite(object.fontSize, 1));
-      const graphemeGaps = Math.max(0, Array.from(String(object.text || '')).length - 1);
-      if(object.hstarWritingMode !== 'vertical' && graphemeGaps){
-        const heightScale = geometry.height / naturalHeight;
-        const targetNaturalWidth = heightScale > 0 ? geometry.width / heightScale : naturalWidth;
-        const spacingDelta = (targetNaturalWidth - naturalWidth) * 1000 / (fontSize * graphemeGaps);
-        const charSpacing = Math.max(-1000, Math.min(10000, finite(object.charSpacing) + spacingDelta));
-        if(typeof object.set === 'function') object.set({charSpacing});
-        else object.charSpacing = charSpacing;
-        object.initDimensions?.();
+    function assertOcrV5Result(record, canvasWidth, canvasHeight){
+      const result = record?.result;
+      if(Number(result?.schemaVersion) !== 5){
+        throw new Error('旧版识别结果，请重新执行文字提取');
       }
-      const fittedWidth = Math.max(1, finite(object.width, naturalWidth));
-      const fittedHeight = Math.max(1, finite(object.height, naturalHeight));
-      const scale = Math.max(0.0001, Math.min(geometry.width / fittedWidth, geometry.height / fittedHeight));
-      if(typeof object.set === 'function') object.set({scaleX:scale, scaleY:scale});
-      else Object.assign(object, {scaleX:scale, scaleY:scale});
-      object.setCoords?.();
+      if(
+        !Number.isFinite(Number(result.width))
+        || !Number.isFinite(Number(result.height))
+        || Number(result.width) !== Number(canvasWidth)
+        || Number(result.height) !== Number(canvasHeight)
+      ) throw new Error('识别图像尺寸与当前画板不一致，请重新执行文字提取');
+      if(!Array.isArray(result.blocks) || !result.blocks.length){
+        throw new Error('没有可确认的文字提取结果');
+      }
+      return result;
+    }
+
+    function runStyle(run){
+      return {
+        fontFamily:run.faceFamily,
+        fontWeight:run.weight,
+        fontStyle:run.italic ? 'italic' : 'normal',
+        fontSize:Math.max(1, finite(run.size, 40)),
+        fill:clean(run.color) || '#ffffff',
+        stroke:clean(run.strokeColor) || '#00000000',
+        strokeWidth:Math.max(0, finite(run.strokeWidth)),
+        shadow:new fabricRef.Shadow({
+          color:clean(run.shadow?.color) || '#00000000',
+          blur:Math.max(0, finite(run.shadow?.blur)),
+          offsetX:finite(run.shadow?.offsetX),
+          offsetY:finite(run.shadow?.offsetY),
+        }),
+      };
+    }
+
+    function fabricStylesForRuns(text, resolvedRuns){
+      const styles = {};
+      let lineIndex = 0;
+      let characterIndex = 0;
+      Array.from(String(text ?? '')).forEach((character, codePointIndex) => {
+        if(character === '\n'){
+          lineIndex += 1;
+          characterIndex = 0;
+          return;
+        }
+        const run = resolvedRuns.find(item => item.start <= codePointIndex && codePointIndex < item.end);
+        if(!run) throw new Error('OCR 文字区段没有覆盖全部文字');
+        styles[lineIndex] = styles[lineIndex] || {};
+        styles[lineIndex][characterIndex] = runStyle(run);
+        characterIndex += 1;
+      });
+      return styles;
+    }
+
+    function runStyleSignature(resolvedRuns){
+      return JSON.stringify(resolvedRuns.map(run => ({
+        script:run.script,
+        family:run.family,
+        faceFamily:run.faceFamily,
+        weight:run.weight,
+        italic:run.italic,
+        size:run.size,
+        color:run.color,
+        letterSpacing:run.letterSpacing,
+        lineHeight:run.lineHeight,
+        strokeColor:run.strokeColor,
+        strokeWidth:run.strokeWidth,
+        shadow:run.shadow,
+      })));
     }
 
     function textLayerName(text, index){
@@ -605,10 +732,9 @@
     }
 
     function pendingOcrRecord(){
-      return taskRecords().find(record => (
+      return [...taskRecords()].reverse().find(record => (
         record?.toolId === TOOL_EXTRACT
         && record.status === 'succeeded'
-        && !record.appliedAt
         && Array.isArray(record.result?.blocks)
         && record.result.blocks.length
       )) || null;
@@ -616,11 +742,12 @@
 
     function activeOcrReviewRecord(){
       if(!state.reviewBlocks.length) return null;
-      return state.reviewTaskRecord
+        return state.reviewTaskRecord
         || [...taskRecords()].reverse().find(item => (
           item.toolId === TOOL_EXTRACT
           && item.status === 'succeeded'
-          && !item.appliedAt
+          && Array.isArray(item.result?.blocks)
+          && item.result.blocks.length
         ))
         || null;
     }
@@ -644,11 +771,24 @@
       if(!record) return false;
       state.activeTool = TOOL_EXTRACT;
       state.reviewTaskRecord = record;
-      state.reviewBlocks = clone(record.result.blocks);
+      state.reviewBlocks = clone(
+        Array.isArray(record.reviewBlocks) && record.reviewBlocks.length
+          ? record.reviewBlocks
+          : record.result.blocks
+      );
       state.reviewSourceDataUrl = record.sourceAssetId
         ? `/api/openshop/assets/${encodeURIComponent(record.sourceAssetId)}`
         : '';
-      setStatus('review');
+      setStatus(record.appliedAt ? 'applied' : 'review');
+      return true;
+    }
+
+    function persistReviewBlocks(){
+      const record = state.reviewTaskRecord;
+      if(!record?.result || !Array.isArray(state.reviewBlocks)) return false;
+      record.reviewBlocks = clone(state.reviewBlocks);
+      record.updatedAt = Date.now();
+      markDirty('Edit OCR review text');
       return true;
     }
 
@@ -660,6 +800,7 @@
       let context;
       try {
         context = currentContext();
+        assertOcrV5Result(record, editor.canvasW, editor.canvasH);
       } catch(error){
         return Promise.reject(error);
       }
@@ -679,91 +820,198 @@
         rejectApply = reject;
       });
       state.pendingTextApply = owner;
+      record.reviewBlocks = clone(blocks);
+      record.updatedAt = Date.now();
       renderPanel();
 
-      const canvasWidth = Number(editor.canvasW || record?.result?.width || 1920);
-      const canvasHeight = Number(editor.canvasH || record?.result?.height || 1080);
-      const resultWidth = Number(record?.result?.width || canvasWidth);
-      const resultHeight = Number(record?.result?.height || canvasHeight);
-      const widthRatio = resultWidth > 0 ? canvasWidth / resultWidth : 1;
-      const heightRatio = resultHeight > 0 ? canvasHeight / resultHeight : 1;
-      const sourcePixelScale = Math.min(widthRatio, heightRatio);
-      const sourceLayerId = clean(record?.sourceLayerId);
-      const sourceAssetId = clean(record?.sourceAssetId);
-      const originalBlocks = Array.isArray(record?.result?.blocks) ? record.result.blocks : [];
+      const sourceLayerId = clean(record.sourceLayerId);
+      const sourceAssetId = clean(record.sourceAssetId);
+      const originalBlocks = record.result.blocks;
+
       const runApply = async () => {
         try {
           if(!ownsTextApply(owner)) return [];
           await fontManager.loadSystemFonts?.();
           if(!ownsTextApply(owner)) return [];
-          const matches = blocks.map(block => fontManager.matchOcrFont(block));
-          const createdLayers = [];
-          blocks.forEach((block, index) => {
+
+          const prepared = blocks.flatMap((block, index) => {
             const text = String(block?.text ?? '');
-            if(!text.trim()) return;
-            const match = matches[index];
-            if(!clean(match?.faceFamily)) throw new Error('OCR font match did not return a usable face');
-            const geometry = quadGeometry(block.quad, canvasWidth, canvasHeight, block.rotation);
-            const reportedSize = Number(block?.font?.size);
-            const inferredSize = Math.max(1, geometry.height * 0.8);
-            const fontSize = Math.max(1, Number.isFinite(reportedSize) && reportedSize > 0
-              ? reportedSize * sourcePixelScale
-              : inferredSize);
-            const fontCandidates = fontCandidatesForBlock(block);
-            const visualProfile = ocrVisualProfile(block);
-            const originalBlock = originalBlocks.find(item => clean(item?.id) && clean(item.id) === clean(block?.id))
-              || originalBlocks[index]
-              || block;
+            if(!text.trim()) return [];
+            const originalBlock = originalBlocks.find(item => (
+              clean(item?.id) && clean(item.id) === clean(block?.id)
+            )) || originalBlocks[index];
+            if(!originalBlock) throw new Error('识别文字与原始结果不一致');
+            const rawRuns = reconcileOcrRuns(
+              String(originalBlock.text ?? ''),
+              text,
+              originalBlock.runs,
+            );
+            const resolvedRuns = rawRuns.map(run => ({
+              ...run,
+              ...fontManager.matchOcrRun(run),
+            }));
+            if(!resolvedRuns.length) return [];
+            const geometry = ocrLayout.quadGeometry(
+              originalBlock.quad,
+              editor.canvasW,
+              editor.canvasH,
+              originalBlock.rotation,
+            );
+            return [{
+              index,
+              block:{...block, quad:clone(originalBlock.quad), runs:rawRuns},
+              originalBlock,
+              text,
+              rawRuns,
+              resolvedRuns,
+              geometry,
+              visualProfile:ocrVisualProfile({...block, runs:rawRuns}),
+            }];
+          });
+          if(!prepared.length) throw new Error('校对结果没有可创建的文字');
+
+          const fontLoads = new Map();
+          prepared.forEach(item => item.resolvedRuns.forEach(run => {
+            const face = clean(run.faceFamily);
+            if(!face) throw new Error('OCR font match did not return a usable face');
+            const key = `${face}\u0000${run.weight}\u0000${run.italic}`;
+            if(fontLoads.has(key) || typeof documentRef.fonts?.load !== 'function') return;
+            const escapedFace = face.replaceAll('"', '\\"');
+            const sample = Array.from(item.text).slice(run.start, run.end).join('');
+            fontLoads.set(key, documentRef.fonts.load(
+              `${run.italic ? 'italic' : 'normal'} ${run.weight || 400} ${Math.max(1, finite(run.size, 40))}px "${escapedFace}"`,
+              sample,
+            ));
+          }));
+          await Promise.all(fontLoads.values());
+          if(!ownsTextApply(owner)) return [];
+
+          const candidates = prepared.map(item => {
+            const base = item.resolvedRuns[0];
             const layerId = createId('hstar-text-layer').replaceAll('-', '_');
-            const object = writingModeRuntime.createTextObject(fabricRef, text, {
-              left:Math.round(geometry.left),
-              top:Math.round(geometry.top),
+            const object = writingModeRuntime.createTextObject(fabricRef, item.text, {
+              left:item.geometry.left,
+              top:item.geometry.top,
               originX:'left',
               originY:'top',
-              fontFamily:match.faceFamily,
-              fontSize,
-              fill:visualProfile.fill,
-              fontWeight:match.weight,
-              fontStyle:match.italic ? 'italic' : 'normal',
-              charSpacing:visualProfile.letterSpacing,
-              lineHeight:visualProfile.lineHeight,
-              textAlign:visualProfile.alignment,
-              hstarWritingMode:visualProfile.writingMode,
-              angle:geometry.angle,
-              stroke:visualProfile.strokeColor,
-              strokeWidth:visualProfile.strokeWidth * sourcePixelScale,
+              fontFamily:base.faceFamily,
+              fontSize:Math.max(1, finite(base.size, 40)),
+              fill:clean(base.color) || '#ffffff',
+              fontWeight:base.weight,
+              fontStyle:base.italic ? 'italic' : 'normal',
+              charSpacing:0,
+              lineHeight:Math.max(0.1, finite(base.lineHeight, 1.16)),
+              textAlign:item.visualProfile.alignment,
+              hstarWritingMode:item.visualProfile.writingMode,
+              angle:item.geometry.angle,
+              stroke:clean(base.strokeColor) || '#00000000',
+              strokeWidth:Math.max(0, finite(base.strokeWidth)),
               shadow:new fabricRef.Shadow({
-                color:visualProfile.shadow.color,
-                blur:visualProfile.shadow.blur * sourcePixelScale,
-                offsetX:visualProfile.shadow.offsetX * sourcePixelScale,
-                offsetY:visualProfile.shadow.offsetY * sourcePixelScale,
+                color:clean(base.shadow?.color) || '#00000000',
+                blur:Math.max(0, finite(base.shadow?.blur)),
+                offsetX:finite(base.shadow?.offsetX),
+                offsetY:finite(base.shadow?.offsetY),
               }),
+              styles:fabricStylesForRuns(item.text, item.resolvedRuns),
               editable:true,
               selectable:true,
-              name:textLayerName(text, index),
+              name:textLayerName(item.text, item.index),
               hstarLayerId:layerId,
+              hstarOcrSchemaVersion:5,
               hstarOcrSourceAssetId:sourceAssetId,
-              hstarOcrBlockId:clean(block.id) || `ocr-${index + 1}`,
+              hstarOcrBlockId:clean(item.originalBlock.id) || `ocr-${item.index + 1}`,
               hstarOcrSourceLayerId:sourceLayerId,
-              hstarOcrQuad:clone(originalBlock.quad || block.quad),
-              hstarOcrVisualProfile:visualProfile,
-              hstarOcrOriginalText:String(originalBlock.text ?? block.text ?? ''),
+              hstarOcrQuad:clone(item.originalBlock.quad),
+              hstarOcrRuns:clone(item.rawRuns),
+              hstarOcrVisualProfile:item.visualProfile,
+              hstarOcrOriginalText:String(item.originalBlock.text ?? ''),
               hstarArtFontRequestGeneration:0,
-              hstarOcrConfidence:Number(block.confidence || 0),
-              hstarOcrLanguage:clean(block.language) || 'unknown',
-              hstarOcrFontCandidates:fontCandidates,
+              hstarOcrConfidence:Number(item.originalBlock.confidence || 0),
+              hstarOcrLanguage:clean(item.originalBlock.language) || 'unknown',
+              hstarOcrFontCandidates:fontCandidatesForBlock(item.block),
+              hstarOcrLayoutVersion:OCR_LAYOUT_VERSION,
             });
-            fitTextUniformly(object, geometry);
-            createdLayers.push({
+            ocrLayout.fitLineObject(object, item.geometry, {
+              writingMode:item.visualProfile.writingMode,
+              documentRef,
+            });
+            return {
+              ...item,
+              object,
               layerId,
-              name:textLayerName(text, index),
-              visible:true,
-              opacity:100,
-              blend:'source-over',
-              objects:[object],
-            });
+              styleSignature:runStyleSignature(item.resolvedRuns),
+            };
           });
-          if(!createdLayers.length) throw new Error('校对结果没有可创建的文字');
+
+          const createdLayers = [];
+          const consumed = new Set();
+          candidates.forEach(candidate => {
+            if(consumed.has(candidate)) return;
+            const paragraphId = clean(candidate.originalBlock.paragraphId);
+            const group = paragraphId
+              ? candidates.filter(item => clean(item.originalBlock.paragraphId) === paragraphId)
+              : [candidate];
+            group.forEach(item => consumed.add(item));
+            const plan = group.length > 1 ? ocrLayout.paragraphPlan(group.map(item => ({
+              paragraphId,
+              lineIndex:item.originalBlock.lineIndex,
+              writingMode:item.visualProfile.writingMode,
+              rotation:item.geometry.angle,
+              geometry:item.geometry,
+              styleSignature:item.styleSignature,
+              resolvedRuns:item.resolvedRuns,
+            }))) : {merge:false, reason:'single-line'};
+            const first = group[0];
+            const fittedCompatible = group.every(item => (
+              Math.abs(finite(item.object.fontSize) - finite(first.object.fontSize)) <= 1
+              && Math.abs(finite(item.object.charSpacing) - finite(first.object.charSpacing)) <= 1
+              && Math.abs(finite(item.object.scaleX, 1) - finite(first.object.scaleX, 1)) <= 0.001
+              && Math.abs(finite(item.object.scaleY, 1) - finite(first.object.scaleY, 1)) <= 0.001
+            ));
+            if(plan.merge && fittedCompatible){
+              let offset = 0;
+              const mergedRawRuns = [];
+              const mergedResolvedRuns = [];
+              group.forEach((item, lineIndex) => {
+                item.rawRuns.forEach(run => mergedRawRuns.push({...run, start:run.start + offset, end:run.end + offset}));
+                item.resolvedRuns.forEach(run => mergedResolvedRuns.push({...run, start:run.start + offset, end:run.end + offset}));
+                offset += unicodeLength(item.text) + (lineIndex < group.length - 1 ? 1 : 0);
+              });
+              const mergedText = group.map(item => item.text).join('\n');
+              first.object.set({
+                text:mergedText,
+                styles:fabricStylesForRuns(mergedText, mergedResolvedRuns),
+                lineHeight:Math.max(0.1, Math.min(10, Math.abs(finite(plan.interval)) / Math.max(1, finite(first.object.fontSize)))),
+                left:first.object.left,
+                top:first.object.top,
+                scaleX:finite(first.object.scaleX, 1),
+                scaleY:finite(first.object.scaleY, 1),
+                name:textLayerName(mergedText, first.index),
+                hstarOcrRuns:clone(mergedRawRuns),
+                hstarOcrOriginalText:group.map(item => String(item.originalBlock.text ?? '')).join('\n'),
+              });
+              first.object.initDimensions?.();
+              first.object.setCoords?.();
+              createdLayers.push({
+                layerId:first.layerId,
+                name:textLayerName(mergedText, first.index),
+                visible:true,
+                opacity:100,
+                blend:'source-over',
+                objects:[first.object],
+              });
+            }else{
+              group.forEach(item => createdLayers.push({
+                layerId:item.layerId,
+                name:textLayerName(item.text, item.index),
+                visible:true,
+                opacity:100,
+                blend:'source-over',
+                objects:[item.object],
+              }));
+            }
+          });
+
           if(!ownsTextApply(owner)) return [];
           createdLayers.forEach(layer => editor.canvas.add?.(layer.objects[0]));
           const sourceIndex = sourceLayerId
@@ -777,11 +1025,9 @@
           editor.updateLayersPanel?.();
           editor.saveHistory?.('文字提取');
           fontManager.scanEditor(editor);
-          if(record){ record.appliedAt = Date.now(); record.updatedAt = record.appliedAt; }
-          state.reviewBlocks = [];
-          state.reviewSourceDataUrl = '';
-          state.reviewTaskRecord = null;
-          if(!showOcrReview(pendingOcrRecord())) setStatus('applied');
+          record.appliedAt = Date.now();
+          record.updatedAt = record.appliedAt;
+          setStatus('applied');
           markDirty('Apply extracted text');
           return createdLayers;
         } catch(error){
@@ -811,11 +1057,14 @@
       const layerId = createId('hstar-remove-layer').replaceAll('-', '_');
       const width = Number(image.width || result.width || editor.canvasW || 1);
       const height = Number(image.height || result.height || editor.canvasH || 1);
+      const canvasWidth = Number(editor.canvasW || width);
+      const canvasHeight = Number(editor.canvasH || height);
+      const scale = Math.min(canvasWidth / width, canvasHeight / height);
       const values = {
-        left:0,
-        top:0,
-        scaleX:Number(editor.canvasW || width) / width,
-        scaleY:Number(editor.canvasH || height) / height,
+        left:(canvasWidth - width * scale) / 2,
+        top:(canvasHeight - height * scale) / 2,
+        scaleX:scale,
+        scaleY:scale,
         selectable:true,
         name:clean(result.name) || '去除文字',
         hstarAssetId:clean(result.assetId),
@@ -832,6 +1081,7 @@
         || [...taskRecords()].reverse().find(item => item.toolId === TOOL_REMOVE && item.status === 'succeeded' && !item.appliedAt);
       insertLayerAboveSource(layer, record?.sourceLayerId);
       editor.canvas.add?.(image);
+      syncCanvasObjectOrder();
       editor.canvas.renderAll?.();
       editor.updateLayersPanel?.();
       editor.saveHistory?.('去除文字');
@@ -998,15 +1248,20 @@
       const result = record?.result;
       const width = Number(result?.width);
       const height = Number(result?.height);
-      const box = result?.contentBox;
+      const box = result?.placementBox;
+      const documentWidth = Number(record?.snapshot?.document?.width);
+      const documentHeight = Number(record?.snapshot?.document?.height);
       const integerBox = box && ['x', 'y', 'width', 'height'].every(key => Number.isInteger(box[key]));
       if(
         !result || clean(result.assetId) !== clean(record.outputAssetId)
         || clean(result.mime).toLowerCase() !== 'image/png'
         || !Number.isInteger(width) || width < 1
         || !Number.isInteger(height) || height < 1
+        || !Number.isInteger(documentWidth) || documentWidth < 1
+        || !Number.isInteger(documentHeight) || documentHeight < 1
         || !integerBox || box.x < 0 || box.y < 0 || box.width < 1 || box.height < 1
-        || box.x + box.width > width || box.y + box.height > height
+        || box.width !== width || box.height !== height
+        || box.x + box.width > documentWidth || box.y + box.height > documentHeight
       ) throw invalidArtOutput('艺术字体结果 PNG 无效');
       return {
         ...clone(result), width, height,
@@ -1014,18 +1269,18 @@
       };
     }
 
-    function artGenerationMetadata(record, contentBox){
+    function artGenerationMetadata(record, placementBox){
       return {
         taskId:clean(record.taskId),
         textLayerId:clean(record.snapshot?.textLayerId),
         requestGeneration:Number(record.snapshot?.requestGeneration),
         outputAssetId:clean(record.outputAssetId),
         toolId:TOOL_ART_FONT,
-        contentBox:clone(contentBox),
+        placementBox:clone(placementBox),
       };
     }
 
-    async function reconcileArtRecord(record, scope = captureArtScope(currentContext())){
+    async function reconcileArtRecordOnce(record, scope = captureArtScope(currentContext())){
       if(!record || record.toolId !== TOOL_ART_FONT || record.reconcileState !== 'pending') return record;
       if(!artScopeIsCurrent(scope)) return isolateArtTask(record, 'scope-changed');
       if(!artPollIsCurrent(scope)) return record;
@@ -1076,21 +1331,13 @@
         historyLength = Array.isArray(editor.history) ? editor.history.length : 0;
         priorHistoryIndex = Number(editor.historyIdx);
         priorLastAction = editor._lastAction;
-        const geometry = quadGeometry(snapshot.quad, snapshot.document.width, snapshot.document.height, snapshot.visualProfile?.rotation);
-        const scale = Math.max(0.0001, Math.min(
-          geometry.width / result.contentBox.width,
-          geometry.height / result.contentBox.height
-        ));
-        const localX = (geometry.width - result.contentBox.width * scale) / 2 - result.contentBox.x * scale;
-        const localY = (geometry.height - result.contentBox.height * scale) / 2 - result.contentBox.y * scale;
-        const radians = geometry.angle * Math.PI / 180;
         const layerId = createId('hstar-art-font-layer').replaceAll('-', '_');
-        const generation = artGenerationMetadata(record, result.contentBox);
+        const generation = artGenerationMetadata(record, result.placementBox);
         const values = {
-          left:geometry.left + Math.cos(radians) * localX - Math.sin(radians) * localY,
-          top:geometry.top + Math.sin(radians) * localX + Math.cos(radians) * localY,
-          originX:'left', originY:'top', angle:geometry.angle,
-          scaleX:scale, scaleY:scale, selectable:true, visible:true,
+          left:result.placementBox.x,
+          top:result.placementBox.y,
+          originX:'left', originY:'top', angle:0,
+          scaleX:1, scaleY:1, selectable:true, visible:true,
           name:clean(result.name) || '艺术字体处理',
           hstarAssetId:clean(result.assetId), hstarAssetRole:'ai-output', hstarLayerId:layerId,
           hstarAiGeneration:generation,
@@ -1167,6 +1414,44 @@
         editor.updateLayersPanel?.();
         return updateArtReconcile(record, 'discarded', error?.artReconcileReason || 'apply-failed', scope);
       }
+    }
+
+    function artRecordIdentity(record){
+      const snapshot = record?.snapshot || {};
+      return [
+        contextFingerprint(record?.context),
+        clean(record?.clientRequestId),
+        clean(record?.taskId),
+        clean(snapshot.textLayerId),
+        Number(snapshot.requestGeneration) || 0,
+        clean(record?.outputAssetId),
+      ].join('|');
+    }
+
+    function reconcileArtRecord(record, scope = captureArtScope(currentContext())){
+      if(!record) return Promise.resolve(record);
+      const key = artRecordIdentity(record);
+      const existing = state.artReconcileRuns.get(key);
+      if(existing){
+        return existing.promise.then(result => {
+          if(
+            record.reconcileState !== 'pending'
+            || TERMINAL_RECONCILE_STATES.has(clean(record.reconcileState))
+          ) return result;
+          let retryScope = null;
+          try { retryScope = captureArtScope(currentContext()); }
+          catch(error) { return result; }
+          return reconcileArtRecord(record, retryScope);
+        });
+      }
+      const run = {promise:null};
+      run.promise = Promise.resolve()
+        .then(() => reconcileArtRecordOnce(record, scope))
+        .finally(() => {
+          if(state.artReconcileRuns.get(key) === run) state.artReconcileRuns.delete(key);
+        });
+      state.artReconcileRuns.set(key, run);
+      return run.promise;
     }
 
     function artPollErrorStatus(error){
@@ -1521,27 +1806,29 @@
 
     async function runTextRemoval(runOptions = {}){
       state.activeTool = TOOL_REMOVE;
-      const mode = runOptions.mode === 'selection' ? 'selection' : 'layer';
+      const resolution = ['auto', '1k', '2k', '4k'].includes(runOptions.resolution) ? runOptions.resolution : '4k';
+      const ratio = [
+        'source', 'square', 'portrait', 'landscape', 'portrait43', 'landscape43',
+        'story', 'wide', 'ultrawide', 'ultratall',
+      ].includes(runOptions.ratio) ? runOptions.ratio : 'source';
       const quality = ['auto', 'low', 'medium', 'high'].includes(runOptions.quality) ? runOptions.quality : 'auto';
       const prompt = clean(runOptions.prompt).slice(0, 2000);
-      state.lastRemovalOptions = {mode, quality, prompt};
+      state.lastRemovalOptions = {resolution, ratio, quality, prompt};
       renderPanel();
       try {
         const selected = resolvedPreference(TOOL_REMOVE);
         if(!selected.available) throw new Error(selected.reason || '配置不可用');
-        if(mode === 'selection' && !selectionAvailable()) throw new Error('当前没有可用选区');
         setStatus('preparing');
-        const {captured, asset} = await uploadActiveLayer();
-        const mask = mode === 'selection' ? await uploadSelectionMask() : null;
+        const {captured, asset} = await uploadActiveLayer({strictSelection:true});
         const task = await executeTask(TOOL_REMOVE, {
           toolId:TOOL_REMOVE,
           sourceLayerId:clean(captured.layer?.layerId),
           sourceAssetId:asset.assetId,
-          maskAssetId:mask?.assetId || '',
+          maskAssetId:'',
           apiConfigId:selected.apiConfigId,
           modelId:selected.modelId,
-          mode,
-          options:{quality, prompt},
+          mode:'layer',
+          options:{resolution, ratio, quality, prompt},
         }, captured.dataUrl);
         const layer = await createRemovedImageLayer(task.result);
         setStatus('applied');
@@ -1594,10 +1881,9 @@
         .hstar-text-head strong{font-size:13px}.hstar-text-head button{margin-left:auto}.hstar-text-body{padding:12px}.hstar-text-section{padding:10px 0;border-bottom:1px solid var(--border)}
         .hstar-text-section:last-child{border-bottom:0}.hstar-text-label{font-size:11px;color:var(--text-muted);margin-bottom:6px}.hstar-text-model{font-size:12px;line-height:1.5;word-break:break-word}
         .hstar-text-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.hstar-text-actions .btn{padding:6px 10px}.hstar-text-actions .btn-primary{flex:1;min-width:128px}
-        .hstar-text-segments{display:grid;grid-template-columns:1fr 1fr;gap:2px;background:var(--bg-depth-3);padding:2px;border:1px solid var(--border);border-radius:4px}.hstar-text-segments button{border:0;border-radius:3px;background:transparent;color:var(--text-secondary);padding:6px;font-size:11px}.hstar-text-segments button.active{background:var(--bg-depth-1);color:var(--text-primary)}
         .hstar-text-provider-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}.hstar-text-provider-grid label{display:grid;gap:5px;min-width:0;font-size:11px;color:var(--text-muted)}.hstar-text-provider-grid select{width:100%;min-width:0;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px;font-size:12px;box-sizing:border-box}
         .hstar-text-field{display:grid;gap:5px;margin-top:9px}.hstar-text-field label{font-size:11px;color:var(--text-muted)}.hstar-text-field select,.hstar-text-field textarea{width:100%;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px;font-size:12px;box-sizing:border-box}.hstar-text-field textarea{min-height:70px;resize:vertical}
-        .hstar-text-status{font-size:11px;line-height:1.5;color:var(--text-secondary);min-height:18px}.hstar-text-status.error{color:var(--danger)}
+        .hstar-text-status{font-size:11px;line-height:1.5;color:var(--text-secondary);min-height:18px}#hstar-text-tools-panel[data-status="preparing"] .hstar-text-status,#hstar-text-tools-panel[data-status="running"] .hstar-text-status{color:#42d985;font-weight:800}.hstar-text-status.error{color:var(--danger)}
         .hstar-ocr-preview{position:relative;aspect-ratio:16/9;background:#171717;border:1px solid var(--border);overflow:hidden}.hstar-ocr-preview img{width:100%;height:100%;object-fit:contain}.hstar-ocr-box{position:absolute;border:1px solid #f7c948;background:rgba(247,201,72,.12);pointer-events:none}.hstar-ocr-box.low{border-color:#ff6b6b;background:rgba(255,107,107,.14)}
         .hstar-ocr-list{display:grid;gap:7px;margin-top:9px}.hstar-ocr-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:start}.hstar-ocr-row textarea{width:100%;min-width:0;min-height:34px;max-height:96px;overflow:auto;resize:vertical;background:var(--bg-depth-3);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:7px;font:inherit;line-height:1.35;box-sizing:border-box}.hstar-ocr-confidence{padding-top:8px;font-size:10px;color:var(--text-muted)}.hstar-ocr-confidence.low{color:#ff8c8c;font-weight:700}
         .hstar-text-modal{position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:16px}.hstar-text-dialog{width:min(560px,100%);max-height:min(720px,90vh);overflow:auto;background:var(--bg-depth-1);border:1px solid var(--border-active);border-radius:6px;box-shadow:0 18px 60px rgba(0,0,0,.45);padding:16px}.hstar-text-dialog h3{font-size:15px;margin:0 0 12px}.hstar-font-list{display:grid;gap:5px;max-height:360px;overflow:auto}.hstar-font-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
@@ -1692,6 +1978,7 @@
 
     function reviewHtml(){
       if(!state.reviewBlocks.length) return '';
+      const legacyResult = Number(activeOcrReviewRecord()?.result?.schemaVersion) !== 5;
       const applyPending = Boolean(state.pendingTextApply
         && state.pendingTextApply.generation === state.runGeneration
         && state.pendingTextApply.record === activeOcrReviewRecord());
@@ -1706,15 +1993,17 @@
       return `<section class="hstar-text-section"><div class="hstar-text-label">识别校对</div>
         <div class="hstar-ocr-preview"><img src="${escapeHtml(state.reviewSourceDataUrl)}" alt="文字识别校对预览">${boxes}</div>
         <div class="hstar-ocr-list">${rows}</div>
-        <div class="hstar-text-actions"><button type="button" class="btn btn-primary" data-hstar-action="apply-extraction" ${applyPending ? 'disabled' : ''}>确认并创建文字图层</button></div>
+        ${legacyResult ? '<div class="hstar-text-status error">旧版识别结果，请重新执行文字提取</div>' : ''}
+        <div class="hstar-text-actions"><button type="button" class="btn btn-primary" data-hstar-action="apply-extraction" ${applyPending || legacyResult ? 'disabled' : ''}>创建文字图层</button></div>
       </section>`;
     }
 
     function renderPanel(){
       const panel = ensurePanel();
       panel.dataset.toolId = state.activeTool;
+      panel.dataset.status = state.status;
       const running = ['preparing', 'running'].includes(state.status);
-      const pixelReady = Boolean(activePixelLayer());
+      const pixelReady = Boolean(state.activeTool === TOOL_REMOVE ? selectedPixelLayer() : activePixelLayer());
       const selected = resolvedPreference(state.activeTool);
       const disabled = running || !pixelReady || !selected.available;
       const title = state.activeTool === TOOL_EXTRACT ? '文字提取' : '去除文字';
@@ -1725,9 +2014,10 @@
           <div class="hstar-text-actions"><button type="button" class="btn btn-primary" data-hstar-action="run-extraction" ${disabled ? 'disabled' : ''}>执行文字提取</button><button type="button" class="btn" data-hstar-action="cancel" ${running ? '' : 'disabled'}>取消</button></div></section>
           ${reviewHtml()}`
         : `${modelSection(TOOL_REMOVE)}
-          <section class="hstar-text-section"><div class="hstar-text-label">处理范围</div>
-            <div class="hstar-text-segments"><button type="button" data-hstar-remove-mode="layer" class="${state.lastRemovalOptions.mode === 'layer' ? 'active' : ''}">整层自动去字</button><button type="button" data-hstar-remove-mode="selection" class="${state.lastRemovalOptions.mode === 'selection' ? 'active' : ''}" ${selectionAvailable() ? '' : 'disabled'}>选区去字</button></div>
-            <div class="hstar-text-field"><label for="hstar-remove-quality">质量</label><select id="hstar-remove-quality"><option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></div>
+          <section class="hstar-text-section">
+            <div class="hstar-text-field"><label for="hstar-remove-resolution">画质</label><select id="hstar-remove-resolution"><option value="auto">自动</option><option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option></select></div>
+            <div class="hstar-text-field"><label for="hstar-remove-ratio">图片比例</label><select id="hstar-remove-ratio" ${state.lastRemovalOptions.resolution === 'auto' ? 'disabled' : ''}><option value="source">适配原图</option><option value="square">1:1</option><option value="portrait">2:3</option><option value="landscape">3:2</option><option value="portrait43">3:4</option><option value="landscape43">4:3</option><option value="story">9:16</option><option value="wide">16:9</option><option value="ultrawide">21:9</option><option value="ultratall">9:21</option></select></div>
+            <div class="hstar-text-field"><label for="hstar-remove-quality">生成质量</label><select id="hstar-remove-quality"><option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></div>
             <div class="hstar-text-field"><label for="hstar-remove-prompt">补充要求</label><textarea id="hstar-remove-prompt" maxlength="2000" placeholder="例如：保留纸张纹理">${escapeHtml(state.lastRemovalOptions.prompt)}</textarea></div>
             <div class="hstar-text-actions"><button type="button" class="btn btn-primary" data-hstar-action="run-removal" ${disabled ? 'disabled' : ''}>执行去除文字</button><button type="button" class="btn" data-hstar-action="cancel" ${running ? '' : 'disabled'}>取消</button></div>
           </section>`;
@@ -1736,6 +2026,10 @@
         const block = state.reviewBlocks[Number(control.dataset.hstarOcrIndex)];
         if(block) control.value = String(block.text ?? '');
       });
+      const resolution = panel.querySelector('#hstar-remove-resolution');
+      if(resolution) resolution.value = state.lastRemovalOptions.resolution;
+      const ratio = panel.querySelector('#hstar-remove-ratio');
+      if(ratio) ratio.value = state.lastRemovalOptions.ratio;
       const quality = panel.querySelector('#hstar-remove-quality');
       if(quality) quality.value = state.lastRemovalOptions.quality;
     }
@@ -1766,8 +2060,6 @@
           setStatus('failed', error instanceof Error ? error.message : String(error));
         }
       }
-      const mode = event.target.closest?.('[data-hstar-remove-mode]')?.dataset?.hstarRemoveMode;
-      if(mode){ state.lastRemovalOptions.mode = mode === 'selection' ? 'selection' : 'layer'; renderPanel(); }
     }
 
     function handlePanelInput(event){
@@ -1791,11 +2083,20 @@
         setPreference(toolId, {mode:'project', apiConfigId:providerId, modelId:clean(event.target.value)});
         return;
       }
+      if(event.target.id === 'hstar-remove-resolution'){
+        state.lastRemovalOptions.resolution = event.target.value;
+        renderPanel();
+        return;
+      }
+      if(event.target.id === 'hstar-remove-ratio') state.lastRemovalOptions.ratio = event.target.value;
       if(event.target.id === 'hstar-remove-quality') state.lastRemovalOptions.quality = event.target.value;
       if(event.target.id === 'hstar-remove-prompt') state.lastRemovalOptions.prompt = event.target.value.slice(0, 2000);
       if(event.target.dataset?.hstarOcrIndex !== undefined){
         const block = state.reviewBlocks[Number(event.target.dataset.hstarOcrIndex)];
-        if(block) block.text = event.target.value;
+        if(block) {
+          block.text = event.target.value;
+          persistReviewBlocks();
+        }
       }
     }
 
@@ -1842,6 +2143,7 @@
       state.reviewBlocks = [];
       state.reviewSourceDataUrl = '';
       state.reviewTaskRecord = null;
+      syncCanvasObjectOrder();
       fontManager.scanEditor(editor);
       renderPanel();
       void restoreTaskRecords(generation).catch(error => {
@@ -1906,7 +2208,6 @@
       if(state.started) return;
       state.started = true;
       injectStyles();
-      injectToolbar();
       injectFontButton();
       ensurePanel();
       try { aiClient.startSession(currentContext()); } catch(error) {}
@@ -1919,6 +2220,7 @@
       addListener(root, 'openshop:art-font-restore', onArtFontRequested);
       addListener(root, 'openshop:history-restored', onHistoryRestored);
       await aiClient.loadCatalog().catch(error => { state.error = clean(error?.message || error); });
+      injectToolbar();
       fontManager.scanEditor(editor);
       renderPanel();
     }
@@ -1955,41 +2257,6 @@
           fabric.Image.fromURL(result.url, image => image ? resolve(image) : reject(new Error('图片解码失败')), {crossOrigin:'anonymous'});
         } catch(error){ reject(error); }
       });
-    }
-
-    function defaultMaskRenderer(currentEditor, currentDocument){
-      const width = Math.max(1, Math.round(Number(currentEditor.canvasW || 1)));
-      const height = Math.max(1, Math.round(Number(currentEditor.canvasH || 1)));
-      const canvas = currentDocument.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext('2d');
-      if(!context) throw new Error('选区蒙版画布不可用');
-      context.fillStyle = '#ffffff';
-      context.fillRect(0, 0, width, height);
-      if(currentEditor._selectionMask?.mask){
-        const source = currentEditor._selectionMask;
-        const image = context.createImageData(width, height);
-        for(let y = 0; y < height; y += 1){
-          for(let x = 0; x < width; x += 1){
-            const targetIndex = (y * width + x) * 4;
-            const sourceX = Math.floor(x * Number(source.w || width) / width);
-            const sourceY = Math.floor(y * Number(source.h || height) / height);
-            const selected = source.mask[sourceY * Number(source.w || width) + sourceX];
-            image.data[targetIndex] = 255;
-            image.data[targetIndex + 1] = 255;
-            image.data[targetIndex + 2] = 255;
-            image.data[targetIndex + 3] = selected ? 0 : 255;
-          }
-        }
-        context.putImageData(image, 0, 0);
-      } else if(currentEditor._selectionBounds){
-        const bounds = currentEditor._selectionBounds;
-        context.clearRect(Number(bounds.x || 0), Number(bounds.y || 0), Number(bounds.w || 0), Number(bounds.h || 0));
-      } else {
-        throw new Error('当前没有可用选区');
-      }
-      return canvas.toDataURL('image/png');
     }
 
     return Object.freeze({

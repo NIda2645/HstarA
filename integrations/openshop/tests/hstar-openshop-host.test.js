@@ -7,6 +7,7 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const protocolPath = resolve(testDir, '..', 'host', 'openshop-protocol.js');
 const hostPath = resolve(testDir, '..', '..', '..', 'static', 'js', 'openshop-host.js');
 const shellPath = resolve(testDir, '..', '..', '..', 'static', 'index.html');
+const hostCssPath = resolve(testDir, '..', '..', '..', 'static', 'css', 'openshop-host.css');
 
 async function mountHost() {
   delete window.HstarOpenShopHost;
@@ -32,6 +33,16 @@ async function mountHost() {
 async function flushMutations() {
   await Promise.resolve();
   await new Promise(resolvePromise => setTimeout(resolvePromise, 0));
+}
+
+function deferred() {
+  let resolvePromise;
+  let rejectPromise;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {promise, resolve:resolvePromise, reject:rejectPromise};
 }
 
 function dispatchEditorReady(host, frame) {
@@ -77,9 +88,52 @@ function dispatchProjectChanged(host, frame, requestId, reason = 'sources-synchr
   window.dispatchEvent(event);
 }
 
+function dispatchEditorEnvelope(host, frame, type, requestId, payload = {}) {
+  const activeSession = host.getState().activeSession;
+  const event = new MessageEvent('message', {
+    origin:window.location.origin,
+    source:frame.contentWindow,
+    data:window.HstarOpenShopProtocol.createEnvelope({
+      type,
+      requestId,
+      payload,
+      sessionId:activeSession.sessionId,
+      context:activeSession.context,
+    }),
+  });
+  window.dispatchEvent(event);
+}
+
+function dispatchCanvasMessage(data, frame = document.getElementById('frame-canvas')) {
+  window.dispatchEvent(new MessageEvent('message', {
+    data,
+    origin:window.location.origin,
+    source:frame.contentWindow,
+  }));
+}
+
 describe('Hstar OpenShop host page visibility', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('keeps a live OpenShop session visually hidden outside the canvas page', async () => {
+    const style = document.createElement('style');
+    style.textContent = readFileSync(hostCssPath, 'utf8');
+    document.head.appendChild(style);
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-hidden', nodeId:'node-hidden',
+      projectId:'project-hidden', frameId:'frame-canvas', projectName:'Hidden session',
+    });
+
+    const overlay = document.getElementById('openshop-host');
+    expect(getComputedStyle(overlay).display).toBe('grid');
+    window.switchUI(null, 'api-settings');
+
+    expect(overlay.hidden).toBe(true);
+    expect(overlay.classList.contains('is-open')).toBe(true);
+    expect(getComputedStyle(overlay).display).toBe('none');
   });
 
   it('uses one current runtime revision for the host script and editor iframe', async () => {
@@ -166,6 +220,7 @@ describe('Hstar OpenShop host page visibility', () => {
       projectName:'Layered text', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
     });
     const frame = document.querySelector('iframe.openshop-session-frame');
+    frame.dispatchEvent(new Event('load'));
     const postMessage = vi.spyOn(frame.contentWindow, 'postMessage');
 
     host.close();
@@ -174,6 +229,36 @@ describe('Hstar OpenShop host page visibility', () => {
       message.type === window.HstarOpenShopProtocol.TYPES.SESSION_VISIBILITY
       && message.payload?.visible === false
     ))).toBe(true);
+  });
+
+  it('hides OpenShop immediately and leaves persistence to autosave', async () => {
+    const project = {
+      projectId:'project-close-save',
+      owner:{canvasType:'classic', canvasId:'canvas-close-save', nodeId:'node-close-save'},
+      document:{width:1920, height:1080},
+      layers:[], sourceBindings:[], aiTaskRecords:[], autosaveVersion:1,
+    };
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok:true, status:200, json:vi.fn().mockResolvedValue({project}),
+    })));
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-close-save', nodeId:'node-close-save',
+      projectId:'project-close-save', frameId:'frame-canvas',
+    });
+    const overlay = document.getElementById('openshop-host');
+    const frame = document.querySelector('iframe.openshop-session-frame');
+    dispatchEditorReady(host, frame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('saved'));
+    const postMessage = vi.spyOn(frame.contentWindow, 'postMessage');
+
+    host.close();
+
+    expect(overlay.hidden).toBe(true);
+    expect(postMessage.mock.calls.some(([message]) => (
+      message.type === window.HstarOpenShopProtocol.TYPES.REQUEST_SAVE
+    ))).toBe(false);
+    expect(frame.isConnected).toBe(true);
   });
 
   it('resumes the existing same-node editor after an explicit hide', async () => {
@@ -188,6 +273,7 @@ describe('Hstar OpenShop host page visibility', () => {
     }];
     host.openNodeSession(context, sources);
     const frame = document.querySelector('iframe.openshop-session-frame');
+    frame.dispatchEvent(new Event('load'));
     const editorWindow = frame.contentWindow;
     const sessionBefore = host.getState().activeSession;
     const postMessage = vi.spyOn(editorWindow, 'postMessage');
@@ -259,6 +345,111 @@ describe('Hstar OpenShop host page visibility', () => {
     await flushMutations();
 
     expect(host.getState().sessions[0].activeTaskCount).toBe(1);
+  });
+
+  it('publishes one canvas log when an artistic-font task is applied', async () => {
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-art-log', nodeId:'node-art-log', projectId:'project-art-log',
+      projectName:'Layered text', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
+    });
+    const session = host.getState().activeSession;
+    const editorFrame = document.querySelector('iframe.openshop-session-frame');
+    const canvasFrame = document.getElementById('frame-canvas');
+    const postMessage = vi.spyOn(canvasFrame.contentWindow, 'postMessage');
+    const project = {
+      projectId:'project-art-log',
+      owner:{canvasType:'classic', canvasId:'canvas-art-log', nodeId:'node-art-log'},
+      sourceBindings:[],
+      aiTaskRecords:[{
+        taskId:'task-art-applied', toolId:'art-font-restore', status:'succeeded',
+        reconcileState:'applied', apiConfigId:'image-provider', modelId:'image-model',
+        outputAssetId:'a'.repeat(64), generatedLayerId:'art-layer-1',
+        createdAt:1000, completedAt:2100, appliedAt:2500,
+        snapshot:{textLayerId:'text-layer-1', currentText:'Edited artistic title'},
+        result:{
+          assetId:'a'.repeat(64), url:'/api/openshop/assets/art-output', name:'art-output.png',
+          mime:'image/png', width:640, height:180, contentBox:{x:0, y:0, width:640, height:180},
+        },
+      }],
+    };
+    const envelope = window.HstarOpenShopProtocol.createEnvelope({
+      type:window.HstarOpenShopProtocol.TYPES.PROJECT_CHANGED,
+      sessionId:session.sessionId,
+      requestId:'project-art-applied',
+      context:session.context,
+      payload:{reason:'art-font-applied', project},
+    });
+    const event = new Event('message');
+    Object.defineProperties(event, {
+      origin:{value:window.location.origin}, source:{value:editorFrame.contentWindow}, data:{value:envelope},
+    });
+
+    window.dispatchEvent(event);
+    window.dispatchEvent(event);
+    await flushMutations();
+
+    const messages = postMessage.mock.calls.map(([message]) => message)
+      .filter(message => message.type === 'hstar-openshop-ai-task-log');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      context:{canvasType:'classic', canvasId:'canvas-art-log', nodeId:'node-art-log', projectId:'project-art-log'},
+      log:{
+        taskId:'task-art-applied', toolId:'art-font-restore', status:'success',
+        apiConfigId:'image-provider', modelId:'image-model', prompt:'Edited artistic title',
+        output:{assetId:'a'.repeat(64), url:'/api/openshop/assets/art-output', width:640, height:180},
+        generatedLayerId:'art-layer-1', textLayerId:'text-layer-1', runMs:1500,
+      },
+    });
+  });
+
+  it('publishes a failed local-redraw log with the child error', async () => {
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-redraw-log', nodeId:'node-redraw-log', projectId:'project-redraw-log',
+      projectName:'Layered redraw', frameId:'frame-canvas', documentWidth:2448, documentHeight:3264,
+    });
+    const session = host.getState().activeSession;
+    const editorFrame = document.querySelector('iframe.openshop-session-frame');
+    const canvasFrame = document.getElementById('frame-canvas');
+    const postMessage = vi.spyOn(canvasFrame.contentWindow, 'postMessage');
+    const project = {
+      projectId:'project-redraw-log',
+      owner:{canvasType:'classic', canvasId:'canvas-redraw-log', nodeId:'node-redraw-log'},
+      sourceBindings:[],
+      aiTaskRecords:[{
+        taskId:'task-redraw-failed', kind:'parent', toolId:'local-redraw', status:'failed',
+        apiConfigId:'image-provider', modelId:'gpt-image-2', targetCount:1,
+        completedCount:0, failedCount:1, createdAt:1000, completedAt:2500, error:'',
+        snapshot:{prompt:'将选区变为一个锤子', references:[]},
+        children:[{childTaskId:'child-redraw', status:'failed', error:'crop ratio mismatch'}],
+      }],
+    };
+    const envelope = window.HstarOpenShopProtocol.createEnvelope({
+      type:window.HstarOpenShopProtocol.TYPES.PROJECT_CHANGED,
+      sessionId:session.sessionId,
+      requestId:'project-redraw-failed',
+      context:session.context,
+      payload:{reason:'ai-generation', project},
+    });
+    const event = new Event('message');
+    Object.defineProperties(event, {
+      origin:{value:window.location.origin}, source:{value:editorFrame.contentWindow}, data:{value:envelope},
+    });
+
+    window.dispatchEvent(event);
+    window.dispatchEvent(event);
+    await flushMutations();
+
+    const messages = postMessage.mock.calls.map(([message]) => message)
+      .filter(message => message.type === 'hstar-openshop-ai-task-log');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      log:{
+        taskId:'task-redraw-failed', toolId:'local-redraw', status:'failed',
+        modelId:'gpt-image-2', prompt:'将选区变为一个锤子', error:'crop ratio mismatch', runMs:1500,
+      },
+    });
   });
 });
 
@@ -485,5 +676,225 @@ describe('Hstar OpenShop host clone ownership', () => {
       ['/api/openshop/projects/project-copy/clone', 'POST'],
       ['/api/openshop/projects/project-copy/clone', 'POST'],
     ]);
+  });
+
+  it('orders the download command before send and correlates its success result', async () => {
+    const project = {
+      projectId:'project-download',
+      owner:{canvasType:'classic', canvasId:'canvas-download', nodeId:'node-download'},
+      document:{width:1920, height:1080},
+      layers:[], sourceBindings:[], aiTaskRecords:[], autosaveVersion:1,
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok:true,
+      status:200,
+      json:vi.fn().mockResolvedValue({project}),
+    }));
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-download', nodeId:'node-download',
+      projectId:'project-download', frameId:'frame-canvas', projectName:'下载测试',
+    });
+    const commands = [...document.querySelectorAll('.openshop-host-command')]
+      .map(button => button.textContent.trim());
+    expect(commands.slice(-3)).toEqual(['保存', '下载到本地', '发送到画布']);
+
+    const frame = document.querySelector('iframe.openshop-session-frame');
+    const postMessage = vi.spyOn(frame.contentWindow, 'postMessage');
+    dispatchEditorReady(host, frame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('saved'));
+    postMessage.mockClear();
+
+    const download = document.querySelector('[data-openshop-download]');
+    download.click();
+    expect(download.disabled).toBe(true);
+    const request = postMessage.mock.calls
+      .map(([message]) => message)
+      .find(message => message.type === window.HstarOpenShopProtocol.TYPES.REQUEST_DOWNLOAD_LOCAL);
+    expect(request).toMatchObject({payload:{format:'png'}});
+
+    dispatchEditorEnvelope(
+      host, frame, window.HstarOpenShopProtocol.TYPES.DOWNLOAD_LOCAL_RESULT,
+      'wrong-request', {status:'success', filename:'wrong.png'},
+    );
+    expect(download.disabled).toBe(true);
+    expect(document.querySelector('[data-openshop-notice]').textContent).not.toContain('wrong.png');
+
+    dispatchEditorEnvelope(
+      host, frame, window.HstarOpenShopProtocol.TYPES.DOWNLOAD_LOCAL_RESULT,
+      request.requestId, {status:'success', filename:'design.png'},
+    );
+    expect(download.disabled).toBe(false);
+    expect(document.querySelector('[data-openshop-notice]').textContent).toBe('已保存：design.png');
+  });
+
+  it('keeps cancellation silent and shows a bounded native download error', async () => {
+    const project = {
+      projectId:'project-download-result',
+      owner:{canvasType:'classic', canvasId:'canvas-result', nodeId:'node-result'},
+      document:{width:800, height:600},
+      layers:[], sourceBindings:[], aiTaskRecords:[], autosaveVersion:1,
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok:true,
+      status:200,
+      json:vi.fn().mockResolvedValue({project}),
+    }));
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-result', nodeId:'node-result',
+      projectId:'project-download-result', frameId:'frame-canvas',
+    });
+    const frame = document.querySelector('iframe.openshop-session-frame');
+    const postMessage = vi.spyOn(frame.contentWindow, 'postMessage');
+    dispatchEditorReady(host, frame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('saved'));
+    postMessage.mockClear();
+
+    const button = document.querySelector('[data-openshop-download]');
+    button.click();
+    let request = postMessage.mock.calls.map(([message]) => message)
+      .find(message => message.type === window.HstarOpenShopProtocol.TYPES.REQUEST_DOWNLOAD_LOCAL);
+    dispatchEditorEnvelope(
+      host, frame, window.HstarOpenShopProtocol.TYPES.DOWNLOAD_LOCAL_RESULT,
+      request.requestId, {status:'cancelled'},
+    );
+    expect(button.disabled).toBe(false);
+    expect(document.querySelector('[data-openshop-notice]').hidden).toBe(true);
+
+    postMessage.mockClear();
+    button.click();
+    request = postMessage.mock.calls.map(([message]) => message)
+      .find(message => message.type === window.HstarOpenShopProtocol.TYPES.REQUEST_DOWNLOAD_LOCAL);
+    dispatchEditorEnvelope(
+      host, frame, window.HstarOpenShopProtocol.TYPES.DOWNLOAD_LOCAL_RESULT,
+      request.requestId, {status:'error', message:'disk\nfailed'},
+    );
+    const notice = document.querySelector('[data-openshop-notice]');
+    expect(notice.textContent).toBe('disk failed');
+    expect(notice.dataset.kind).toBe('error');
+  });
+
+  it('shows send success only for a trusted pending canvas acknowledgement', async () => {
+    const project = {
+      projectId:'project-send-ack',
+      owner:{canvasType:'classic', canvasId:'canvas-ack', nodeId:'node-ack'},
+      document:{width:640, height:480},
+      layers:[], sourceBindings:[], aiTaskRecords:[], autosaveVersion:1,
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok:true,
+      status:200,
+      json:vi.fn().mockResolvedValue({project}),
+    }));
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-ack', nodeId:'node-ack',
+      projectId:'project-send-ack', frameId:'frame-canvas',
+    });
+    const editorFrame = document.querySelector('iframe.openshop-session-frame');
+    dispatchEditorReady(host, editorFrame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('saved'));
+
+    dispatchEditorEnvelope(
+      host, editorFrame, window.HstarOpenShopProtocol.TYPES.SEND_TO_CANVAS,
+      'send-ack-1',
+      {assetId:'a'.repeat(64), url:'/api/openshop/assets/output-1', name:'output.png', width:640, height:480},
+    );
+    const acknowledgement = {
+      type:'hstar-openshop-output-applied',
+      requestId:'send-ack-1',
+      context:{canvasType:'classic', canvasId:'canvas-ack', nodeId:'node-ack', projectId:'project-send-ack'},
+      status:'success',
+      nodeId:'image-1',
+    };
+
+    dispatchCanvasMessage({...acknowledgement, requestId:'unknown'});
+    dispatchCanvasMessage({...acknowledgement, context:{...acknowledgement.context, canvasId:'other'}});
+    expect(document.querySelector('[data-openshop-notice]').hidden).toBe(true);
+
+    dispatchCanvasMessage(acknowledgement);
+    const notice = document.querySelector('[data-openshop-notice]');
+    expect(notice.textContent).toBe('已发送到画布');
+    expect(notice.dataset.kind).toBe('success');
+
+    notice.hidden = true;
+    notice.textContent = '';
+    dispatchCanvasMessage(acknowledgement);
+    expect(notice.hidden).toBe(true);
+  });
+
+  it('shows send failure without a false success notice', async () => {
+    const project = {
+      projectId:'project-send-error',
+      owner:{canvasType:'classic', canvasId:'canvas-error', nodeId:'node-error'},
+      document:{width:640, height:480},
+      layers:[], sourceBindings:[], aiTaskRecords:[], autosaveVersion:1,
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok:true,
+      status:200,
+      json:vi.fn().mockResolvedValue({project}),
+    }));
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-error', nodeId:'node-error',
+      projectId:'project-send-error', frameId:'frame-canvas',
+    });
+    const editorFrame = document.querySelector('iframe.openshop-session-frame');
+    dispatchEditorReady(host, editorFrame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('saved'));
+    dispatchEditorEnvelope(
+      host, editorFrame, window.HstarOpenShopProtocol.TYPES.SEND_TO_CANVAS,
+      'send-ack-error',
+      {assetId:'b'.repeat(64), url:'/api/openshop/assets/output-2', name:'output-2.png', width:640, height:480},
+    );
+
+    dispatchCanvasMessage({
+      type:'hstar-openshop-output-applied',
+      requestId:'send-ack-error',
+      context:{canvasType:'classic', canvasId:'canvas-error', nodeId:'node-error', projectId:'project-send-error'},
+      status:'error',
+      message:'画布\n保存失败',
+    });
+
+    const notice = document.querySelector('[data-openshop-notice]');
+    expect(notice.textContent).toBe('画布 保存失败');
+    expect(notice.textContent).not.toBe('已发送到画布');
+    expect(notice.dataset.kind).toBe('error');
+  });
+
+  it('does not promote an OCR tool failure into the global project status', async () => {
+    const project = {
+      projectId:'project-ocr-error',
+      owner:{canvasType:'classic', canvasId:'canvas-ocr-error', nodeId:'node-ocr-error'},
+      document:{width:1920, height:1080},
+      layers:[], sourceBindings:[], aiTaskRecords:[], autosaveVersion:1,
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok:true, status:200, json:vi.fn().mockResolvedValue({project}),
+    }));
+    const host = await mountHost();
+    host.openNodeSession({
+      canvasType:'classic', canvasId:'canvas-ocr-error', nodeId:'node-ocr-error',
+      projectId:'project-ocr-error', frameId:'frame-canvas',
+    });
+    const frame = document.querySelector('iframe.openshop-session-frame');
+    dispatchEditorReady(host, frame);
+    await vi.waitFor(() => expect(host.getState().status).toBe('saved'));
+
+    dispatchEditorEnvelope(
+      host,
+      frame,
+      window.HstarOpenShopProtocol.TYPES.ERROR,
+      'ocr-tool-error',
+      {code:'OPENSHOP_REQUEST_FAILED', message:'OCR model did not return reliable text positions'},
+    );
+    await flushMutations();
+
+    expect(host.getState().status).toBe('saved');
+    expect(document.querySelector('[data-openshop-state]').textContent).toBe('已保存');
+    expect(document.getElementById('openshop-host').textContent)
+      .not.toContain('OCR model did not return reliable text positions');
   });
 });

@@ -4,6 +4,11 @@
   const HORIZONTAL = 'horizontal';
   const VERTICAL = 'vertical';
   const VERTICAL_TYPE = 'hstar-vertical-text';
+  const GENERIC_FONT_FAMILIES = new Set([
+    'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
+    'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji',
+    'fangsong',
+  ]);
   const VERTICAL_TEXT_PROPERTIES = [
     'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
     'charSpacing', 'lineHeight', 'textAlign', 'textBackgroundColor', 'backgroundColor',
@@ -22,6 +27,7 @@
   ]);
   const LAYOUT_PROPERTIES = new Set([
     'text', 'fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'lineHeight', 'charSpacing', 'styles',
+    'hstarVerticalTrailingPunctuationOffset',
   ]);
   const PAINT_PROPERTIES = new Set([
     'fill', 'stroke', 'strokeWidth', 'strokeDashArray', 'strokeDashOffset', 'strokeLineCap',
@@ -29,9 +35,13 @@
     'underline', 'overline', 'linethrough', 'opacity', 'styles', 'backgroundColor',
   ]);
   const VERTICAL_EDITOR_SELECTOR = 'textarea[data-hstar-vertical-editor]';
+  const VERTICAL_CARET_SELECTOR = '[data-hstar-vertical-caret]';
+  const VERTICAL_SELECTION_SELECTOR = '[data-hstar-vertical-selection]';
   const MIN_EDITOR_WIDTH = 32;
   const MIN_EDITOR_HEIGHT = 48;
   let editorElement = null;
+  let caretElement = null;
+  let selectionElement = null;
   let activeObject = null;
   let activeFabric = null;
   let activeOriginalText = null;
@@ -195,14 +205,26 @@
     };
   }
 
+  function applyOverlayGeometry(element, geometry) {
+    if(!element) return;
+    element.style.position = 'fixed';
+    element.style.zIndex = '2147483647';
+    element.style.transform = geometry.matrix
+      ? `matrix(${geometry.matrix.join(', ')}, 0, 0) translate(-50%, -50%)`
+      : 'none';
+    element.style.transformOrigin = '0px 0px';
+    element.style.left = `${geometry.left}px`;
+    element.style.top = `${geometry.top}px`;
+    element.style.width = `${geometry.width}px`;
+    element.style.height = `${geometry.height}px`;
+  }
+
   function applyEditorStyles(object, fabric = activeFabric) {
     if(!editorElement) return;
     const geometry = editorGeometry(object, fabric);
     const fontSize = positiveNumber(object && object.fontSize, 40);
     const lineHeight = positiveNumber(object && object.lineHeight, 1.16);
     editorElement.style.display = 'block';
-    editorElement.style.position = 'fixed';
-    editorElement.style.zIndex = '2147483647';
     editorElement.style.resize = 'none';
     editorElement.style.writingMode = 'vertical-rl';
     editorElement.style.textOrientation = 'mixed';
@@ -210,16 +232,18 @@
     editorElement.style.fontSize = `${fontSize}px`;
     editorElement.style.fontWeight = String(object && object.fontWeight || 'normal');
     editorElement.style.fontStyle = String(object && object.fontStyle || 'normal');
-    editorElement.style.color = String(object && object.fill || 'currentColor');
+    const caretColor = typeof (object && object.fill) === 'string'
+      ? String(object.fill) : '#111111';
+    // Fabric remains the single glyph renderer while the textarea supplies
+    // native input, selection, and IME behavior.
+    editorElement.style.color = 'transparent';
+    editorElement.style.setProperty('-webkit-text-fill-color', 'transparent');
+    editorElement.style.caretColor = 'transparent';
     editorElement.style.lineHeight = String(lineHeight);
-    editorElement.style.transform = geometry.matrix
-      ? `matrix(${geometry.matrix.join(', ')}, 0, 0) translate(-50%, -50%)`
-      : 'none';
-    editorElement.style.transformOrigin = '0px 0px';
-    editorElement.style.left = `${geometry.left}px`;
-    editorElement.style.top = `${geometry.top}px`;
-    editorElement.style.width = `${geometry.width}px`;
-    editorElement.style.height = `${geometry.height}px`;
+    applyOverlayGeometry(editorElement, geometry);
+    if(caretElement) caretElement.style.color = caretColor;
+    updateEditorSelection(object, geometry);
+    updateEditorCaret(object, geometry);
   }
 
   function requestObjectRender(object, canvas = object && object.canvas) {
@@ -515,6 +539,8 @@
       editorElement.style.display = 'none';
       editorElement.blur?.();
     }
+    if(caretElement) caretElement.style.display = 'none';
+    if(selectionElement) selectionElement.style.display = 'none';
     if(changed) fireEvent(canvas, 'object:modified', {target:object});
     focusCanvas(object, canvas);
     requestObjectRender(object, canvas);
@@ -588,6 +614,8 @@
     const end = Math.max(start, Math.min(length, Number(editorElement.selectionEnd) || start));
     activeObject.selectionStart = start;
     activeObject.selectionEnd = end;
+    updateEditorSelection(activeObject);
+    updateEditorCaret(activeObject);
     fireEvent(activeCanvas || activeObject.canvas, 'text:selection:changed', {target:activeObject});
   }
 
@@ -660,7 +688,39 @@
     editorElement.spellcheck = false;
     existing.filter(element => element !== editorElement).forEach(element => element.remove());
     if(!editorElement.isConnected) documentRef.body.append(editorElement);
+    ensureCaret(documentRef);
+    ensureSelection(documentRef);
     return editorElement;
+  }
+
+  function ensureCaret(documentRef) {
+    if(caretElement && caretElement.ownerDocument !== documentRef) {
+      caretElement.remove();
+      caretElement = null;
+    }
+    const existing = [...documentRef.querySelectorAll(VERTICAL_CARET_SELECTOR)];
+    if(!caretElement) caretElement = existing.find(element => element.tagName === 'DIV') || documentRef.createElement('div');
+    caretElement.classList.add('hstar-vertical-text-caret');
+    caretElement.setAttribute('data-hstar-vertical-caret', '');
+    caretElement.setAttribute('aria-hidden', 'true');
+    existing.filter(element => element !== caretElement).forEach(element => element.remove());
+    if(!caretElement.isConnected) documentRef.body.append(caretElement);
+    return caretElement;
+  }
+
+  function ensureSelection(documentRef) {
+    if(selectionElement && selectionElement.ownerDocument !== documentRef) {
+      selectionElement.remove();
+      selectionElement = null;
+    }
+    const existing = [...documentRef.querySelectorAll(VERTICAL_SELECTION_SELECTOR)];
+    if(!selectionElement) selectionElement = existing.find(element => element.tagName === 'DIV') || documentRef.createElement('div');
+    selectionElement.classList.add('hstar-vertical-text-selection');
+    selectionElement.setAttribute('data-hstar-vertical-selection', '');
+    selectionElement.setAttribute('aria-hidden', 'true');
+    existing.filter(element => element !== selectionElement).forEach(element => element.remove());
+    if(!selectionElement.isConnected) documentRef.body.append(selectionElement);
+    return selectionElement;
   }
 
   function enterEditing(object, event, fabric) {
@@ -721,13 +781,29 @@
     const columnLayouts = columns.map((column, columnIndex) => {
       let height = 0;
       let width = 0;
+      let trailingPunctuationStart = column.length;
+      while(trailingPunctuationStart > 0 && /^\p{P}$/u.test(column[trailingPunctuationStart - 1])) {
+        trailingPunctuationStart -= 1;
+      }
+      const trailingPunctuationOffset = Math.max(
+        0,
+        finiteValue(style.hstarVerticalTrailingPunctuationOffset),
+      );
       const glyphs = column.map((character, rowIndex) => {
         const glyphStyle = styleForCell(style, columnIndex, rowIndex);
         const size = positiveNumber(glyphStyle.fontSize, 40);
         const glyphLineHeight = positiveNumber(glyphStyle.lineHeight, 1.16);
         const charSpacing = Number.isFinite(Number(glyphStyle.charSpacing)) ? Number(glyphStyle.charSpacing) : 0;
         const advance = Math.max(1, (size * glyphLineHeight) + (size * charSpacing / 1000));
-        const glyph = {character, columnIndex, rowIndex, width:size, height:size, advance, y:height};
+        const glyph = {
+          character,
+          columnIndex,
+          rowIndex,
+          width:size,
+          height:size,
+          advance,
+          y:height - (rowIndex >= trailingPunctuationStart ? trailingPunctuationOffset : 0),
+        };
         height += advance;
         width = Math.max(width, size);
         return glyph;
@@ -770,7 +846,7 @@
     let styles = '';
     try { styles = JSON.stringify(object.styles || null); } catch(error) { styles = String(object.styles); }
     return [object.text, object.fontSize, object.fontFamily, object.fontWeight, object.fontStyle,
-      object.lineHeight, object.charSpacing, styles].join('\u0001');
+      object.lineHeight, object.charSpacing, object.hstarVerticalTrailingPunctuationOffset, styles].join('\u0001');
   }
 
   function currentLayout(object) {
@@ -778,6 +854,139 @@
       return applyVerticalDimensions(object);
     }
     return object._hstarVerticalLayout;
+  }
+
+  function caretPercentage(value, total) {
+    const percentage = total > 0 ? (value / total) * 100 : 0;
+    const rounded = Math.abs(percentage - Math.round(percentage)) < 1e-9
+      ? Math.round(percentage) : Number(percentage.toFixed(6));
+    return `${rounded}%`;
+  }
+
+  function verticalCaretMetrics(object, rawOffset) {
+    const layout = currentLayout(object);
+    const text = rawText(object && object.text);
+    const offset = Math.max(0, Math.min(text.length, Number(rawOffset) || 0));
+    const locations = verticalGlyphLocations(text);
+    const entries = locations.map((location, index) => ({location, glyph:layout.glyphs[index]}))
+      .filter(entry => entry.glyph);
+    let entry = entries.find(candidate => candidate.location.offset === offset);
+    let y;
+    if(entry) {
+      y = entry.glyph.y;
+    } else {
+      for(let index = entries.length - 1; index >= 0; index -= 1) {
+        const candidate = entries[index];
+        if(candidate.location.offset + candidate.location.length <= offset) {
+          entry = candidate;
+          y = candidate.glyph.y + candidate.glyph.height;
+          break;
+        }
+      }
+    }
+    if(!entry && entries.length) {
+      entry = entries[0];
+      y = entry.glyph.y;
+    }
+    const width = positiveNumber(layout.width, positiveNumber(object && object.width, 1));
+    const height = positiveNumber(layout.height, positiveNumber(object && object.height, 1));
+    if(!entry) {
+      const size = positiveNumber(object && object.fontSize, 40);
+      return {left:Math.max(0, width - size), top:0, width:Math.min(width, size), thickness:1, boxWidth:width, boxHeight:height};
+    }
+    const glyph = entry.glyph;
+    const glyphWidth = Math.min(width, positiveNumber(glyph.width, positiveNumber(object && object.fontSize, 40)));
+    const left = Math.max(0, Math.min(width - glyphWidth, glyph.x - (glyphWidth / 2)));
+    const top = Math.max(0, Math.min(height, finiteValue(y, glyph.y)));
+    const thickness = Math.max(1, Math.min(2, positiveNumber(glyph.height, 40) / 64));
+    return {left, top, width:glyphWidth, thickness, boxWidth:width, boxHeight:height};
+  }
+
+  function updateEditorCaret(object, geometry = null) {
+    if(!caretElement || !editorElement || !object) return false;
+    const text = rawText(editorElement.value);
+    const selection = boundedTextRange(text, editorElement.selectionStart, editorElement.selectionEnd);
+    if(activeObject !== object || editorElement.style.display === 'none' || selection.start !== selection.end) {
+      caretElement.style.display = 'none';
+      return false;
+    }
+    const metrics = verticalCaretMetrics(object, selection.start);
+    applyOverlayGeometry(caretElement, geometry || editorGeometry(object, activeFabric));
+    caretElement.style.setProperty('--hstar-vertical-caret-left', caretPercentage(metrics.left, metrics.boxWidth));
+    caretElement.style.setProperty('--hstar-vertical-caret-top', caretPercentage(metrics.top, metrics.boxHeight));
+    caretElement.style.setProperty('--hstar-vertical-caret-width', caretPercentage(metrics.width, metrics.boxWidth));
+    caretElement.style.setProperty('--hstar-vertical-caret-thickness', caretPercentage(metrics.thickness, metrics.boxHeight));
+    caretElement.style.display = 'block';
+    return true;
+  }
+
+  function verticalSelectionMetrics(object, rawStart, rawEnd) {
+    const layout = currentLayout(object);
+    const text = rawText(object && object.text);
+    const selection = boundedTextRange(text, rawStart, rawEnd);
+    const boxWidth = positiveNumber(layout.width, positiveNumber(object && object.width, 1));
+    const boxHeight = positiveNumber(layout.height, positiveNumber(object && object.height, 1));
+    const entries = verticalGlyphLocations(text)
+      .map((location, index) => ({location, glyph:layout.glyphs[index]}))
+      .filter(({location, glyph}) => glyph
+        && location.offset < selection.end
+        && location.offset + location.length > selection.start);
+    const groups = [];
+    entries.forEach(entry => {
+      const previous = groups[groups.length - 1];
+      const followsPrevious = previous
+        && previous.columnIndex === entry.location.columnIndex
+        && previous.lastRowIndex + 1 === entry.location.rowIndex;
+      if(followsPrevious) {
+        previous.entries.push(entry);
+        previous.lastRowIndex = entry.location.rowIndex;
+      } else {
+        groups.push({
+          columnIndex:entry.location.columnIndex,
+          lastRowIndex:entry.location.rowIndex,
+          entries:[entry],
+        });
+      }
+    });
+    const rects = groups.map(group => {
+      const left = Math.max(0, Math.min(...group.entries.map(({glyph}) => glyph.x - (glyph.width / 2))));
+      const right = Math.min(boxWidth, Math.max(...group.entries.map(({glyph}) => glyph.x + (glyph.width / 2))));
+      const top = Math.max(0, Math.min(...group.entries.map(({glyph}) => glyph.y)));
+      const bottom = Math.min(boxHeight, Math.max(...group.entries.map(({glyph}) => glyph.y + glyph.height)));
+      return {left, top, width:Math.max(0, right - left), height:Math.max(0, bottom - top)};
+    });
+    return {rects, boxWidth, boxHeight};
+  }
+
+  function updateEditorSelection(object, geometry = null) {
+    if(!selectionElement || !editorElement || !object) return false;
+    const text = rawText(editorElement.value);
+    const selection = boundedTextRange(text, editorElement.selectionStart, editorElement.selectionEnd);
+    if(activeObject !== object || editorElement.style.display === 'none' || selection.start === selection.end) {
+      selectionElement.replaceChildren();
+      selectionElement.style.display = 'none';
+      return false;
+    }
+    const metrics = verticalSelectionMetrics(object, selection.start, selection.end);
+    const documentRef = selectionElement.ownerDocument;
+    const rectangles = metrics.rects.map(rect => {
+      const element = documentRef.createElement('div');
+      element.classList.add('hstar-vertical-text-selection__rect');
+      element.setAttribute('data-hstar-vertical-selection-rect', '');
+      element.style.left = caretPercentage(rect.left, metrics.boxWidth);
+      element.style.top = caretPercentage(rect.top, metrics.boxHeight);
+      element.style.width = caretPercentage(rect.width, metrics.boxWidth);
+      element.style.height = caretPercentage(rect.height, metrics.boxHeight);
+      return element;
+    });
+    selectionElement.replaceChildren(...rectangles);
+    if(!rectangles.length) {
+      selectionElement.style.display = 'none';
+      return false;
+    }
+    applyOverlayGeometry(selectionElement, geometry || editorGeometry(object, activeFabric));
+    selectionElement.style.display = 'block';
+    return true;
   }
 
   function glyphStyle(object, glyph) {
@@ -823,8 +1032,19 @@
     return object;
   }
 
+  function canvasFontFamily(value) {
+    const raw = String(value || 'sans-serif').trim();
+    if(!raw) return 'sans-serif';
+    return raw.split(',').map(part => {
+      const family = part.trim().replace(/^(['"])(.*)\1$/, '$2');
+      if(!family) return '';
+      if(GENERIC_FONT_FAMILIES.has(family.toLowerCase())) return family;
+      return `"${family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+    }).filter(Boolean).join(', ');
+  }
+
   function fontString(style) {
-    return `${style.fontStyle || 'normal'} ${style.fontWeight || 'normal'} ${positiveNumber(style.fontSize, 40)}px ${style.fontFamily || 'sans-serif'}`;
+    return `${style.fontStyle || 'normal'} ${style.fontWeight || 'normal'} ${positiveNumber(style.fontSize, 40)}px ${canvasFontFamily(style.fontFamily)}`;
   }
 
   function paintOffset(value) {
@@ -904,6 +1124,13 @@
         return exitEditing(this);
       },
 
+      // Fabric calls this while changing the viewport for an editing object.
+      // Vertical text uses the HTML textarea overlay instead of Fabric's top
+      // context cursor, so there is no canvas cursor state to clear here.
+      clearContextTop() {
+        return this;
+      },
+
       getSelectionStyles(start, end, complete) {
         return selectionStylesForRange(this, start, end, complete);
       },
@@ -958,7 +1185,7 @@
           const y = offsetY + glyph.y;
           if(context.save) context.save();
           context.font = fontString(style);
-          if(typeof style.textBackgroundColor === 'string' && context.fillRect) {
+          if(style.textBackgroundColor && context.fillRect) {
             if(context.save) context.save();
             context.fillStyle = style.textBackgroundColor;
             context.fillRect(x - (size / 2), y, size, size);
@@ -1147,6 +1374,13 @@
     const options = copyConvertibleOptions(source);
     options.styles = normalizeStyles(fabric, options.styles, text);
     options.hstarWritingMode = normalizeWritingMode(mode);
+    if(source?.hstarOcrVisualProfile && typeof source.hstarOcrVisualProfile === 'object') {
+      options.hstarOcrVisualProfile = Object.assign(
+        {},
+        cloneSerializable(source.hstarOcrVisualProfile),
+        {writingMode:normalizeWritingMode(mode)},
+      );
+    }
     const converted = createTextObject(fabric, text, options);
     ['selectionStart', 'selectionEnd'].forEach(property => {
       if(Number.isFinite(Number(source && source[property]))) converted[property] = Number(source[property]);
@@ -1158,12 +1392,22 @@
     return activeObject;
   }
 
+  function refreshActiveEditor() {
+    if(!activeObject || !editorElement) return false;
+    applyEditorStyles(activeObject, activeFabric);
+    return true;
+  }
+
   function destroy() {
     if(activeObject) exitEditing(activeObject);
     else unbindActiveCanvas();
     detachEditorListeners();
     if(editorElement) editorElement.remove();
+    if(caretElement) caretElement.remove();
+    if(selectionElement) selectionElement.remove();
     editorElement = null;
+    caretElement = null;
+    selectionElement = null;
     activeObject = null;
     activeFabric = null;
     activeOriginalText = null;
@@ -1180,6 +1424,7 @@
     convertTextObject,
     setGlyphStyle,
     activeEditorObject,
+    refreshActiveEditor,
     destroy,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

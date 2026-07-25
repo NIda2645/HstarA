@@ -84,6 +84,8 @@ describe('OpenShop desktop input foundation', () => {
     expect(rows.map(row => row.querySelector('.tool-flyout-label')?.textContent.trim())).toEqual([
       '横排文字工具', '直排文字工具',
     ]);
+    expect(rows.map(row => row.dataset.tip)).toEqual(['横排文字工具', '直排文字工具']);
+    expect(rows.map(row => row.dataset.i18nTip || '')).toEqual(['', '']);
     expect(rows.map(row => row.querySelector('.tool-flyout-shortcut')?.textContent.trim())).toEqual(['T', 'T']);
   });
 
@@ -248,7 +250,7 @@ describe('OpenShop desktop input foundation', () => {
 
   it('loads the desktop module before the editor core and uses a body tooltip', () => {
     const html = readFileSync(indexPath, 'utf8');
-    const moduleIndex = html.indexOf('<script src="./host/openshop-desktop-input.js"></script>');
+    const moduleIndex = html.indexOf('<script src="./host/openshop-desktop-input.js?v=');
     const coreIndex = html.indexOf('const OS = {');
 
     expect(moduleIndex).toBeGreaterThan(0);

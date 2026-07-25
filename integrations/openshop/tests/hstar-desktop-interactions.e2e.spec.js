@@ -135,7 +135,7 @@ test('keeps Delete context separate and suppresses shortcuts while editing', asy
   const beforeCanvasDelete = await page.evaluate(() => OS.layers.length);
   const beforeObjectDelete = await page.evaluate(() => OS.canvas.getObjects().length);
   await page.keyboard.press('Delete');
-  expect(await page.evaluate(() => OS.layers.length)).toBe(beforeCanvasDelete);
+  expect(await page.evaluate(() => OS.layers.length)).toBe(beforeCanvasDelete - 1);
   expect(await page.evaluate(() => OS.canvas.getObjects().length)).toBe(beforeObjectDelete - 1);
 
   await layerRow(page, 'A').locator('.layer-name').dblclick();
@@ -143,7 +143,59 @@ test('keeps Delete context separate and suppresses shortcuts while editing', asy
   await rename.fill('A Delete U');
   await rename.press('Backspace');
   expect(await rename.inputValue()).toBe('A Delete ');
-  expect(await page.evaluate(() => OS.layers.length)).toBe(beforeCanvasDelete);
+  expect(await page.evaluate(() => OS.layers.length)).toBe(beforeCanvasDelete - 1);
+});
+
+test('renders live layer thumbnails and removes a layer with its final object', async ({page}) => {
+  await openPreparedEditor(page);
+  await expect(page.locator('#topbar .logo')).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const shape = new fabric.Rect({
+      left:200,
+      top:150,
+      width:400,
+      height:300,
+      fill:'#ff0000',
+      name:'Thumbnail probe',
+    });
+    OS.canvas.add(shape);
+    const layer = OS._createObjectLayer(shape, 'Thumbnail probe');
+    OS.canvas.setActiveObject(shape);
+    OS.updateLayersPanel();
+    window.__thumbnailProbe = {shape, layer};
+
+    const text = new fabric.IText('Text layer', {left:20, top:20, fill:'#ffffff'});
+    OS.canvas.add(text);
+    OS._createObjectLayer(text, 'Text layer');
+    OS.updateLayersPanel();
+  });
+
+  const shapeRow = layerRow(page, 'Thumbnail probe');
+  const textRow = layerRow(page, 'Text layer');
+  await expect(shapeRow.locator('.layer-thumb-canvas')).toHaveCount(1);
+  await expect(textRow.locator('.layer-thumb')).toHaveCount(0);
+  await expect.poll(() => shapeRow.locator('.layer-thumb-canvas').evaluate(canvas => {
+    const {data} = canvas.getContext('2d').getImageData(canvas.width / 2, canvas.height / 2, 1, 1);
+    return [data[0], data[1], data[2], data[3]];
+  })).toEqual([255, 0, 0, 255]);
+
+  await page.evaluate(() => {
+    window.__thumbnailProbe.shape.set('fill', '#0000ff');
+    OS.canvas.fire('object:modified', {target:window.__thumbnailProbe.shape});
+  });
+  await expect.poll(() => shapeRow.locator('.layer-thumb-canvas').evaluate(canvas => {
+    const {data} = canvas.getContext('2d').getImageData(canvas.width / 2, canvas.height / 2, 1, 1);
+    return [data[0], data[1], data[2], data[3]];
+  })).toEqual([0, 0, 255, 255]);
+
+  await page.evaluate(() => {
+    OS.canvas.setActiveObject(window.__thumbnailProbe.shape);
+    OS._keyboardContext = 'canvas';
+  });
+  await page.keyboard.press('Delete');
+  await expect(shapeRow).toHaveCount(0);
+  expect(await page.evaluate(() => OS.layers.some(layer => layer.name === 'Background'))).toBe(true);
 });
 
 test('confirms text editing with NumpadEnter while regular Enter inserts a newline', async ({page}) => {
@@ -414,4 +466,104 @@ test('offers only horizontal and vertical text tools and creates real text layer
     type:'i-text',
     writingMode:'horizontal',
   });
+});
+
+test('keeps converted vertical text transparent and zoomable while editing', async ({page}) => {
+  await page.setViewportSize({width:1024, height:720});
+  await openPreparedEditor(page);
+
+  const result = await page.evaluate(() => {
+    const source = new fabric.IText('A', {
+      left:120,
+      top:120,
+      fontSize:40,
+      fill:'#ffffff',
+      textBackgroundColor:'',
+      backgroundColor:'',
+      underline:false,
+      overline:false,
+      linethrough:false,
+    });
+    OS.layers[OS.activeLayerIdx].objects.push(source);
+    OS.canvas.add(source);
+    OS.canvas.setActiveObject(source);
+    const converted = OS.setTextWritingMode('vertical');
+    const renderCanvas = document.createElement('canvas');
+    renderCanvas.width = 200;
+    renderCanvas.height = 200;
+    const context = renderCanvas.getContext('2d');
+    const fills = [];
+    const originalFillRect = CanvasRenderingContext2D.prototype.fillRect;
+    CanvasRenderingContext2D.prototype.fillRect = function(...args) {
+      fills.push({fillStyle:String(this.fillStyle), args});
+      return originalFillRect.apply(this, args);
+    };
+    try {
+      converted.render(context);
+    } finally {
+      CanvasRenderingContext2D.prototype.fillRect = originalFillRect;
+    }
+    return {
+      type:converted.type,
+      writingMode:converted.hstarWritingMode,
+      background:converted.textBackgroundColor,
+      fillRectCount:fills.length,
+      fills,
+    };
+  });
+  expect(result.type).toBe('hstar-vertical-text');
+  expect(result.writingMode).toBe('vertical');
+  expect(result.background).toBe('');
+  expect(result.fillRectCount).toBe(0);
+
+  const face = page.locator('#toolbar > .tool-group[data-group="text"] > .tool-btn');
+  await face.click();
+  const flyout = page.locator('#flyout-host .tool-flyout').filter({
+    has:page.locator('.tool-btn[data-tool="text-vertical"]'),
+  });
+  await flyout.locator('.tool-btn[data-tool="text-vertical"]').click();
+  await page.locator('.upper-canvas').click({position:{x:300, y:180}});
+  const editor = page.locator('textarea[data-hstar-vertical-editor]');
+  await expect(editor).toHaveCount(1);
+
+  const zoom = await page.evaluate(() => {
+    const editorElement = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const before = OS.zoom;
+    const event = new WheelEvent('wheel', {
+      bubbles:true,
+      cancelable:true,
+      ctrlKey:true,
+      deltaY:-120,
+      clientX:300,
+      clientY:180,
+    });
+    editorElement.dispatchEvent(event);
+    return {before, after:OS.zoom, defaultPrevented:event.defaultPrevented};
+  });
+  expect(zoom.after).toBeGreaterThan(zoom.before);
+  expect(zoom.defaultPrevented).toBe(true);
+});
+
+test('enters an existing vertical text layer on double-click from the select tool', async ({page}) => {
+  await page.setViewportSize({width:1024, height:720});
+  await openPreparedEditor(page);
+
+  const face = page.locator('#toolbar > .tool-group[data-group="text"] > .tool-btn');
+  await face.click();
+  const flyout = page.locator('#flyout-host .tool-flyout').filter({
+    has:page.locator('.tool-btn[data-tool="text-vertical"]'),
+  });
+  await flyout.locator('.tool-btn[data-tool="text-vertical"]').click();
+  const canvas = page.locator('.upper-canvas');
+  await canvas.click({position:{x:300, y:180}});
+  const editor = page.locator('textarea[data-hstar-vertical-editor]');
+  await expect(editor).toHaveCount(1);
+  await editor.fill('双击编辑');
+  await editor.press('NumpadEnter');
+
+  await page.locator('[data-tool="select"]').click();
+  await canvas.dblclick({position:{x:300, y:180}});
+  await expect(editor).toHaveCount(1);
+  await expect(editor).toBeVisible();
+  expect(await page.evaluate(() => OS.canvas.getActiveObject()?.type)).toBe('hstar-vertical-text');
 });

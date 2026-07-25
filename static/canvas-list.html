@@ -16,13 +16,13 @@
             } catch(e) {}
         })();
     </script>
-    <script src="/static/vendor/js/tailwindcss-cdn.js?v=2026.07.11.1783583255"></script>
-    <script src="/static/vendor/js/lucide.js?v=2026.07.11.1783470418"></script>
-    <script src="/static/js/theme.js?v=2026.07.11.1783470418"></script>
-    <script src="/static/js/touch-mouse.js?v=2026.07.11.1783470418"></script>
-    <script src="/static/js/i18n.js?v=2026.07.11.1783749136"></script>
-    <link rel="stylesheet" href="/static/css/canvas-list.css?v=2026.07.11.1783470418">
-    <link rel="stylesheet" href="/static/css/theme.css?v=2026.07.11.1783470418">
+    <script src="/static/vendor/js/tailwindcss-cdn.js?v=2026.07.20.1784096542"></script>
+    <script src="/static/vendor/js/lucide.js?v=2026.07.20.1784096542"></script>
+    <script src="/static/js/theme.js?v=2026.07.20.1784096541"></script>
+    <script src="/static/js/touch-mouse.js?v=2026.07.20.1784096541"></script>
+    <script src="/static/js/i18n.js?v=2026.07.20.1784096541"></script>
+    <link rel="stylesheet" href="/static/css/canvas-list.css?v=2026.07.20.1784987634">
+    <link rel="stylesheet" href="/static/css/theme.css?v=2026.07.20.1784096541">
 </head>
 <body>
     <div id="workspace" class="workspace">
@@ -81,15 +81,29 @@
             <div id="trashPanel" class="ws-trash-panel">
                 <div class="ws-trash-head">
                     <div class="ws-trash-head-title"><i data-lucide="trash-2" class="w-4 h-4"></i><span>回收站</span></div>
-                    <button id="trashClose" class="ws-icon-btn" type="button" title="关闭" aria-label="关闭"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    <div class="ws-trash-head-actions">
+                        <button id="trashPurgeAll" class="ws-trash-purge-all" type="button" disabled><i data-lucide="trash-2" class="w-3.5 h-3.5"></i><span>删除全部</span></button>
+                        <button id="trashClose" class="ws-icon-btn" type="button" title="关闭" aria-label="关闭"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    </div>
                 </div>
                 <div class="ws-trash-note"><i data-lucide="info" class="w-3.5 h-3.5"></i><span>回收站中的画布会在 30 天后自动清理。</span></div>
                 <div id="trashList" class="ws-trash-list"></div>
+                <div id="trashPurgeAllDialog" class="ws-trash-bulk-dialog" role="dialog" aria-modal="true" aria-labelledby="trashPurgeAllTitle" hidden>
+                    <div class="ws-trash-bulk-dialog-card">
+                        <div class="ws-trash-bulk-icon"><i data-lucide="triangle-alert" class="w-5 h-5"></i></div>
+                        <div id="trashPurgeAllTitle" class="ws-trash-bulk-title">是否确认删除回收站内全部可回收画布？</div>
+                        <div class="ws-trash-bulk-copy">删除后无法恢复。</div>
+                        <div class="ws-trash-bulk-actions">
+                            <button id="trashPurgeAllCancel" class="ws-trash-bulk-cancel" type="button">取消</button>
+                            <button id="trashPurgeAllConfirm" class="ws-trash-bulk-confirm" type="button"><span>确认删除</span></button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div id="boardStatus" class="ws-status"></div>
         </main>
     </div>
-    <script src="/static/js/canvas-list.js?v=2026.07.11.1783572506"></script>
+    <script src="/static/js/canvas-list.js?v=2026.07.20.1784987634"></script>
 </body>
 </html>

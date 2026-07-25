@@ -3442,6 +3442,52 @@ function openDirector3DNode(nodeId){
 function importDirector3DCaptures(payload){
     return window.HstarClassicDirectorAdapter?.importDirectorCaptures?.(payload);
 }
+function recordOpenShopAiTaskLog(log, sourceNode){
+    if(!canvas || !log?.taskId) return false;
+    canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+    const openshopTaskId = String(log.taskId);
+    if(canvas.logs.some(entry => entry?.request?.openshopTaskId === openshopTaskId)) return false;
+    const toolId = String(log.toolId || '');
+    const toolLabel = ({
+        'art-font-restore':'艺术字体处理',
+        'generative-fill':'生成式填充',
+        'local-redraw':'局部重绘',
+    })[toolId] || 'OpenShop AI';
+    const rawOutputs = [
+        ...(Array.isArray(log.outputs) ? log.outputs : []),
+        ...(log.output ? [log.output] : []),
+    ].filter(output => output?.url);
+    const outputs = [...new Map(rawOutputs.map(output => [String(output.assetId || output.url), {
+        ...output, kind:'image',
+    }])).values()];
+    const error = ['failed', 'partial'].includes(log.status)
+        ? String(log.error || `${toolLabel}${log.status === 'partial' ? '部分生成失败' : '失败'}`)
+        : '';
+    canvas.logs = [{
+        id:uid('log'),
+        createdAt:Date.now(),
+        status:log.status === 'partial' ? 'partial' : (error ? 'failed' : 'success'),
+        platform:'OpenShop',
+        nodeId:sourceNode?.id || '',
+        nodeType:'openshop-layered',
+        model:String(log.modelId || toolLabel),
+        request:{
+            openshopTaskId,
+            task_id:openshopTaskId,
+            provider_id:String(log.apiConfigId || ''),
+            tool_id:String(log.toolId || ''),
+            generated_layer_id:String(log.generatedLayerId || ''),
+        },
+        prompt:String(log.prompt || ''),
+        outputs,
+        refs:[],
+        runMs:Math.max(0, Number(log.runMs || 0)),
+        error,
+    }, ...canvas.logs].slice(0, 500);
+    renderCanvasLog();
+    scheduleSave();
+    return true;
+}
 window.HstarClassicOpenShopHooks = Object.freeze({
     uid,
     getCanvasId:() => canvas?.id || new URLSearchParams(window.location.search).get('id') || '',
@@ -3449,6 +3495,7 @@ window.HstarClassicOpenShopHooks = Object.freeze({
     getConnections:() => connections,
     mediaRefsFromNode,
     mediaKindForRef,
+    sourceSizeForNode:openShopLayeredInputNaturalSize,
     displayMediaUrl:canvasDisplayMediaUrl,
     t:tr,
     addNode:node => { nodes.push(node); return node; },
@@ -3457,15 +3504,33 @@ window.HstarClassicOpenShopHooks = Object.freeze({
     render,
     scheduleSave,
     saveCanvas,
+    recordAiTaskLog:recordOpenShopAiTaskLog,
     selectOnly:id => { selected.clear(); selected.add(id); },
 });
+function positionCanvasMenu(menu, clientX, clientY){
+    if(!menu) return;
+    const margin = 12;
+    menu.classList.add('open');
+    const offsetParent = menu.offsetParent;
+    const parentRect = offsetParent?.getBoundingClientRect?.() || {left:0, top:0};
+    menu.style.left = `${clientX - parentRect.left}px`;
+    menu.style.top = `${clientY - parentRect.top}px`;
+    const rect = menu.getBoundingClientRect();
+    const marginX = Math.min(margin, Math.max(0, (window.innerWidth - rect.width) / 2));
+    const marginY = Math.min(margin, Math.max(0, (window.innerHeight - rect.height) / 2));
+    const maxLeft = Math.max(marginX, window.innerWidth - marginX - rect.width);
+    const maxTop = Math.max(marginY, window.innerHeight - marginY - rect.height);
+    const left = Math.min(Math.max(marginX, clientX), maxLeft);
+    const top = Math.min(Math.max(marginY, clientY), maxTop);
+    menu.style.left = `${left - parentRect.left}px`;
+    menu.style.top = `${top - parentRect.top}px`;
+}
 function openCreateMenu(clientX, clientY){
     menuPoint = screenToWorld(clientX, clientY);
     closeLinkCreateMenu();
-    createMenu.style.left = `${clientX}px`;
-    createMenu.style.top = `${clientY}px`;
-    createMenu.classList.add('open');
+    positionCanvasMenu(createMenu, clientX, clientY);
     refreshIcons();
+    positionCanvasMenu(createMenu, clientX, clientY);
 }
 function closeCreateMenu(){
     createMenu.classList.remove('open');
@@ -3478,8 +3543,8 @@ function linkCreateOptions(state){
     if(state.originKind === 'out'){
         if(['image','prompt','controller','loop','group','promptGroup','llm','output'].includes(node.type)){
             return [
-                ...(['image','group','output'].includes(node.type) ? [{type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'}] : []),
                 {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
+                {type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'},
                 {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
                 {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
                 {type:'rh', label:tr('canvas.rhGenerate'), icon:'workflow'},
@@ -3495,6 +3560,7 @@ function linkCreateOptions(state){
         return [
             {type:'image', label:tr('canvas.imageCard'), icon:'image-plus'},
             {type:'prompt', label:tr('canvas.prompt'), icon:'text-cursor-input'},
+            {type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'},
             {type:'controller', label:'综合控制器', icon:'sliders-horizontal'},
             {type:'loop', label:tr('canvas.loopNode'), icon:'repeat-2'},
             {type:'group', label:tr('canvas.group'), icon:'group'},
@@ -3510,9 +3576,7 @@ function openLinkCreateMenu(originId, originKind, clientX, clientY){
     linkCreateState = state;
     createMenu.classList.remove('open');
     linkCreateMenu.innerHTML = options.map(opt => `<button class="menu-btn" data-link-create="${escapeAttr(opt.type)}"><i data-lucide="${escapeAttr(opt.icon)}" class="w-4 h-4"></i><span>${escapeHtml(opt.label)}</span></button>`).join('');
-    linkCreateMenu.style.left = `${clientX}px`;
-    linkCreateMenu.style.top = `${clientY}px`;
-    linkCreateMenu.classList.add('open');
+    positionCanvasMenu(linkCreateMenu, clientX, clientY);
     linkCreateMenu.querySelectorAll('[data-link-create]').forEach(btn => {
         btn.onclick = e => {
             e.stopPropagation();
@@ -3520,7 +3584,21 @@ function openLinkCreateMenu(originId, originKind, clientX, clientY){
         };
     });
     refreshIcons();
+    positionCanvasMenu(linkCreateMenu, clientX, clientY);
     return true;
+}
+function generatorNodeOutputOptions(node){
+    return [
+        {type:'output', label:'Output', icon:'circle-dot'},
+        ...(CANVAS_IMAGE_OUTPUT_TYPES.includes(node.type) ? [
+            {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
+            {type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'},
+            {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
+            {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
+            {type:'ltxDirector', label:tr('canvas.ltxDirector'), icon:'film'},
+            {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'}
+        ] : [])
+    ];
 }
 function openGeneratorNodeMenu(nodeId, clientX, clientY){
     const node = nodes.find(n => n.id === nodeId);
@@ -3529,16 +3607,7 @@ function openGeneratorNodeMenu(nodeId, clientX, clientY){
     const rect = el?.getBoundingClientRect();
     const point = screenToWorld(clientX, clientY);
     const inputOptions = linkCreateOptions({originId:nodeId, originKind:'in', point});
-    const outputOptions = [
-        {type:'output', label:'Output', icon:'circle-dot'},
-        ...(CANVAS_IMAGE_OUTPUT_TYPES.includes(node.type) ? [
-            {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
-            {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
-            {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
-            {type:'ltxDirector', label:tr('canvas.ltxDirector'), icon:'film'},
-            {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'}
-        ] : [])
-    ];
+    const outputOptions = generatorNodeOutputOptions(node);
     const buttonsHtml = (options, kind) => `<div class="node-port-menu-grid">${options.map(opt => `<button class="menu-btn" data-link-create="${escapeAttr(opt.type)}" data-link-kind="${kind}" title="${escapeAttr(opt.label)}"><i data-lucide="${escapeAttr(opt.icon)}"></i><span>${escapeHtml(opt.label.replace('生成', ''))}</span></button>`).join('')}</div>`;
     linkCreateState = {originId:nodeId, originKind:'in', point};
     createMenu.classList.remove('open');
@@ -3550,12 +3619,8 @@ function openGeneratorNodeMenu(nodeId, clientX, clientY){
     const inputLeft = Math.max(10, (rect?.left || clientX) - 158);
     const outputLeft = Math.min(window.innerWidth - 158, (rect?.right || clientX) + 10);
     const menuTop = Math.max(10, Math.min(window.innerHeight - 260, (rect?.top || clientY) + 36));
-    nodeInputMenu.style.left = `${inputLeft}px`;
-    nodeInputMenu.style.top = `${menuTop}px`;
-    nodeOutputMenu.style.left = `${outputLeft}px`;
-    nodeOutputMenu.style.top = `${menuTop}px`;
-    nodeInputMenu.classList.add('open');
-    nodeOutputMenu.classList.add('open');
+    positionCanvasMenu(nodeInputMenu, inputLeft, menuTop);
+    positionCanvasMenu(nodeOutputMenu, outputLeft, menuTop);
     [nodeInputMenu, nodeOutputMenu].forEach(menu => menu.querySelectorAll('[data-link-create]').forEach(btn => {
         btn.onclick = e => {
             e.stopPropagation();
@@ -3589,9 +3654,7 @@ function openImageNodeMenu(nodeId, clientX, clientY){
         ${canEdit ? `<button class="menu-btn" data-image-edit="${escapeAttr(nodeId)}"><i data-lucide="pencil" class="w-4 h-4"></i><span>编辑</span></button>` : ''}
         <button class="menu-btn" data-image-replace="${escapeAttr(nodeId)}"><i data-lucide="image-plus" class="w-4 h-4"></i><span>替换</span></button>
     `;
-    imageNodeMenu.style.left = `${clientX}px`;
-    imageNodeMenu.style.top = `${clientY}px`;
-    imageNodeMenu.classList.add('open');
+    positionCanvasMenu(imageNodeMenu, clientX, clientY);
     const previewBtn = imageNodeMenu.querySelector('[data-image-preview]');
     if(previewBtn){
         previewBtn.onclick = e => {
@@ -3614,6 +3677,7 @@ function openImageNodeMenu(nodeId, clientX, clientY){
         pickImageForNode(nodeId);
     };
     refreshIcons();
+    positionCanvasMenu(imageNodeMenu, clientX, clientY);
 }
 function openImageNodePreview(nodeId){
     const node = nodes.find(n => n.id === nodeId);
@@ -3637,10 +3701,7 @@ function openOutputNodeMenu(nodeId, clientX, clientY){
         <div class="menu-section-title">${tr('canvas.outputFileActions')}</div>
         <button class="menu-btn" data-output-download="${escapeAttr(nodeId)}" ${downloadableCount ? '' : 'disabled'}><i data-lucide="download" class="w-4 h-4"></i><span>${tr('canvas.outputDownloadAllImages')}</span></button>
     `;
-    const menuWidth = 260;
-    imageNodeMenu.style.left = `${Math.max(10, Math.min(window.innerWidth - menuWidth - 10, clientX))}px`;
-    imageNodeMenu.style.top = `${clientY}px`;
-    imageNodeMenu.classList.add('open');
+    positionCanvasMenu(imageNodeMenu, clientX, clientY);
     const convertBtn = imageNodeMenu.querySelector('[data-output-convert]');
     if(convertBtn){
         convertBtn.onclick = e => {
@@ -3843,6 +3904,7 @@ function createLinkedNode(type){
     const toId = state.originKind === 'out' ? created.id : origin.id;
     if(canConnect(fromId, toId) && !connections.some(c => c.from === fromId && c.to === toId)){
         connections.push({id:uid('c'), from:fromId, to:toId});
+        syncOpenShopLayeredConnectionTarget(toId);
         syncLatestGeneratedOutputToConnection(fromId, toId);
         syncGeneratorInputs();
         scheduleSave();
@@ -6189,9 +6251,163 @@ function measureCanvasOriginalImageNodes(root=nodesEl){
             if(!size || node.natural_w || node.natural_h) return;
             node.natural_w = size.w;
             node.natural_h = size.h;
+            if(syncOpenShopLayeredNodesForSource(node.id)) render();
             scheduleSave();
         });
     });
+}
+
+function strictCanvasNaturalImageSize(value){
+    const width = Number(
+        value?.natural_w || value?.naturalWidth
+        || value?.original_w || value?.originalWidth
+        || value?.source_w || value?.sourceWidth
+        || value?.asset_w || value?.assetWidth
+        || value?.image_w || value?.imageWidth
+        || value?.intrinsic_w || value?.intrinsicWidth
+        || value?.metadata?.width || value?.meta?.width
+        || 0
+    );
+    const height = Number(
+        value?.natural_h || value?.naturalHeight
+        || value?.original_h || value?.originalHeight
+        || value?.source_h || value?.sourceHeight
+        || value?.asset_h || value?.assetHeight
+        || value?.image_h || value?.imageHeight
+        || value?.intrinsic_h || value?.intrinsicHeight
+        || value?.metadata?.height || value?.meta?.height
+        || 0
+    );
+    return width > 0 && height > 0
+        ? {width:Math.round(width), height:Math.round(height)}
+        : null;
+}
+
+function openShopLayeredSourceImageRecord(sourceNode){
+    if(!sourceNode || sourceNode.type === 'openshop-layered') return null;
+    if(sourceNode.type === 'image' && sourceNode.url && mediaKindForNode(sourceNode) === 'image'){
+        return {sourceNode, target:sourceNode, ref:sourceNode, url:sourceNode.url};
+    }
+    if(sourceNode.type === 'group'){
+        const child = (sourceNode.items || [])
+            .map(id => nodes.find(candidate => candidate.id === id))
+            .find(candidate => candidate?.type === 'image' && candidate.url && mediaKindForNode(candidate) === 'image');
+        if(child) return {sourceNode, target:child, ref:child, url:child.url};
+    }
+    const items = sourceNode.type === 'output'
+        ? (sourceNode.images || [])
+        : CANVAS_MEDIA_OUTPUT_TYPES.includes(sourceNode.type)
+            ? (sourceNode.generatedOutputs || [])
+            : [];
+    const item = items.find(candidate => outputUrlValue(candidate) && mediaKindForOutputItem(candidate) === 'image');
+    if(item){
+        const url = outputUrlValue(item);
+        return {sourceNode, target:typeof item === 'object' ? item : null, ref:item, url};
+    }
+    const ref = mediaRefsFromNode(sourceNode).find(candidate => candidate?.url && mediaKindForRef(candidate) === 'image');
+    return ref ? {sourceNode, target:ref, ref, url:ref.url} : null;
+}
+
+function openShopLayeredInputImageRecords(node){
+    if(!node || node.type !== 'openshop-layered') return [];
+    return connections
+        .map((connection, index) => ({connection, index}))
+        .filter(entry => entry.connection?.to === node.id)
+        .sort((left, right) => left.index - right.index || String(left.connection?.id || '').localeCompare(String(right.connection?.id || '')))
+        .map(entry => openShopLayeredSourceImageRecord(nodes.find(candidate => candidate.id === entry.connection.from)))
+        .filter(Boolean);
+}
+
+function cachedOpenShopNaturalSize(record){
+    const direct = strictCanvasNaturalImageSize(record?.target) || strictCanvasNaturalImageSize(record?.ref);
+    if(direct) return direct;
+    return strictCanvasNaturalImageSize(record?.sourceNode?._openShopNaturalSizes?.[record?.url]);
+}
+
+function openShopLayeredInputNaturalSize(node){
+    const primary = openShopLayeredInputImageRecords(node)[0];
+    return primary ? cachedOpenShopNaturalSize(primary) : null;
+}
+
+function rememberOpenShopNaturalSize(record, size){
+    if(!record?.sourceNode || !record.url || !(size?.w > 0 && size?.h > 0)) return false;
+    const natural = {natural_w:Math.round(size.w), natural_h:Math.round(size.h)};
+    if(record.target && typeof record.target === 'object') Object.assign(record.target, natural);
+    record.sourceNode._openShopNaturalSizes = {
+        ...(record.sourceNode._openShopNaturalSizes || {}),
+        [record.url]:natural,
+    };
+    return true;
+}
+
+function syncOpenShopLayeredNodeFromInputs(node){
+    if(!node || node.type !== 'openshop-layered') return false;
+    const size = openShopLayeredInputNaturalSize(node);
+    if(!(size?.width > 0 && size?.height > 0)) return false;
+    let changed = false;
+    if(Number(node.documentWidth || 0) !== size.width){
+        node.documentWidth = size.width;
+        changed = true;
+    }
+    if(Number(node.documentHeight || 0) !== size.height){
+        node.documentHeight = size.height;
+        changed = true;
+    }
+    return changed;
+}
+
+function downstreamOpenShopLayeredNodesForSource(sourceNodeId){
+    if(!sourceNodeId) return [];
+    const ids = new Set(connections.filter(connection => connection.from === sourceNodeId).map(connection => connection.to));
+    return [...ids]
+        .map(id => nodes.find(node => node.id === id && node.type === 'openshop-layered'))
+        .filter(Boolean);
+}
+
+function syncOpenShopLayeredNodesForSource(sourceNodeId){
+    let changed = false;
+    downstreamOpenShopLayeredNodesForSource(sourceNodeId).forEach(node => {
+        if(syncOpenShopLayeredNodeFromInputs(node)) changed = true;
+    });
+    return changed;
+}
+
+function ensureOpenShopLayeredInputNaturalSizes(targetNode=null){
+    const targets = (targetNode ? [targetNode] : nodes).filter(node => node?.type === 'openshop-layered');
+    let immediateChange = false;
+    targets.forEach(node => {
+        if(syncOpenShopLayeredNodeFromInputs(node)) immediateChange = true;
+        const record = openShopLayeredInputImageRecords(node)[0];
+        if(!record?.url || cachedOpenShopNaturalSize(record)) return;
+        const loading = record.sourceNode._openShopNaturalSizeLoading || {};
+        if(loading[record.url]) return;
+        record.sourceNode._openShopNaturalSizeLoading = {...loading, [record.url]:true};
+        loadCanvasOriginalImageDimensions(canvasDisplayMediaUrl(record.url)).then(size => {
+            const nextLoading = {...(record.sourceNode._openShopNaturalSizeLoading || {})};
+            delete nextLoading[record.url];
+            if(Object.keys(nextLoading).length) record.sourceNode._openShopNaturalSizeLoading = nextLoading;
+            else delete record.sourceNode._openShopNaturalSizeLoading;
+            if(!size || cachedOpenShopNaturalSize(record)) return;
+            rememberOpenShopNaturalSize(record, size);
+            syncOpenShopLayeredNodesForSource(record.sourceNode.id);
+            render();
+            scheduleSave();
+        });
+    });
+    if(immediateChange){
+        requestAnimationFrame(() => {
+            render();
+            scheduleSave();
+        });
+    }
+}
+
+function syncOpenShopLayeredConnectionTarget(toId){
+    const to = nodes.find(node => node.id === toId && node.type === 'openshop-layered');
+    if(!to) return false;
+    syncOpenShopLayeredNodeFromInputs(to);
+    ensureOpenShopLayeredInputNaturalSizes(to);
+    return true;
 }
 
 function render(){
@@ -6229,6 +6445,7 @@ function render(){
     bindCanvasPreviewImageFallbacks(nodesEl);
     syncCanvasSelectedImageResolution(nodesEl);
     measureCanvasOriginalImageNodes(nodesEl);
+    ensureOpenShopLayeredInputNaturalSizes();
     refreshOutputTimer();
     refreshControllerEffectBadges();
 }
@@ -8938,13 +9155,18 @@ function renderNode(node){
     normalizeApiNodeLayout(node);
     if(node.type === 'rh' && Number(node.h) === 560) delete node.h;
     const el = document.createElement('div');
-    const size = defaultNodeSize(node.type);
-    const hasFixedSize = Boolean(node.h || size.h);
+    const openShopLayout = node.type === 'openshop-layered'
+        ? window.HstarClassicOpenShopAdapter?.layoutForNode?.(node)
+        : null;
+    const size = openShopLayout || defaultNodeSize(node.type);
+    const renderedWidth = openShopLayout?.width || node.w || size.w;
+    const renderedHeight = openShopLayout?.height || node.h || size.h;
+    const hasFixedSize = Boolean(renderedHeight);
     el.className = `node ${node.type}-node ${node.url ? 'has-image' : ''} ${hasFixedSize ? 'sized' : ''} ${selected.has(node.id) ? 'selected' : ''}`;
     el.style.left = `${node.x}px`;
     el.style.top = `${node.y}px`;
-    el.style.width = `${node.w || size.w}px`;
-    if(node.h || size.h) el.style.height = `${node.h || size.h}px`;
+    el.style.width = `${renderedWidth}px`;
+    if(renderedHeight) el.style.height = `${renderedHeight}px`;
     el.dataset.id = node.id;
     el.onclick = (e) => {
         e.stopPropagation();
@@ -8971,7 +9193,10 @@ function renderNode(node){
         const label = { queued:'排队中', running:'运行中', done:'完成', failed:'失败' }[node.runStatus] || '';
         return `<span class="node-run-status ${node.runStatus}"><span class="dot"></span>${escapeHtml(label)}${node._cascadeIdx?' '+node._cascadeIdx:''}</span>`;
     })() : '';
-    el.innerHTML = `<div class="node-head"><span class="node-title">${displayTitle}</span><div style="display:flex;align-items:center;gap:8px">${statusHtml}<button onclick="deleteNodeFromButton('${node.id}', event)" class="text-gray-300 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button></div></div>`;
+    const deleteButton = node.type === 'openshop-layered'
+        ? `<button onclick="deleteNodeFromButton('${node.id}', event)" class="node-delete" type="button" title="${escapeAttr(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
+        : `<button onclick="deleteNodeFromButton('${node.id}', event)" class="text-gray-300 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button>`;
+    el.innerHTML = `<div class="node-head"><span class="node-title">${displayTitle}</span><div style="display:flex;align-items:center;gap:8px">${statusHtml}${node.type === 'openshop-layered' ? '' : deleteButton}</div></div>${node.type === 'openshop-layered' ? `<div class="openshop-layered-actions">${deleteButton}</div>` : ''}`;
     const body = document.createElement('div');
     body.className = 'node-body';
     if(node.type === 'controller') body.appendChild(renderControllerBody(node));
@@ -12529,7 +12754,7 @@ function renderRhBody(node){
         node.instanceType = e.target.value === 'plus' ? 'plus' : '';
         scheduleSave();
     };
-    if(mode === 'model') renderPromptPreview(wrap.querySelector('.rh-prompt-list'), media.visiblePromptInputsForNode(sources));
+    if(mode === 'model') renderPromptPreview(wrap.querySelector('.rh-prompt-list'), visiblePromptInputsForNode(media.sources));
     else renderRhPromptFields(wrap.querySelector('.rh-prompt-list'), node, fields);
     renderRhInputs(wrap.querySelector('.rh-input-list'), node, media);
     renderRhParams(wrap.querySelector('.rh-param-list'), node, fields, media);
@@ -13400,6 +13625,14 @@ function mediaRefsFromNode(node){
         const kind = mediaKindForNode(node);
         return [imageRefWithMarkers(node, {kind})];
     }
+    if(node.type === 'openshop-layered' && node.previewUrl){
+        return [{
+            url:node.previewUrl,
+            name:node.projectName || tr('canvas.openshopLayered'),
+            kind:'image',
+            nodeId:node.id,
+        }];
+    }
     if(node.type === 'group'){
         return (node.items || [])
             .map(id => nodes.find(x => x.id === id))
@@ -13440,6 +13673,19 @@ function generatorSources(gen){
                     refs:[ref],
                     prompt:''
                 }));
+            }
+        }
+        if(n.type === 'openshop-layered'){
+            const refs = mediaRefsFromNode(n);
+            if(refs.length){
+                return {
+                    id:n.id,
+                    type:'openshopImage',
+                    label:n.projectName || tr('canvas.openshopLayered'),
+                    preview:refs[0].url,
+                    refs,
+                    prompt:''
+                };
             }
         }
         if(n.type === 'image' && n.url) {
@@ -13560,7 +13806,7 @@ function refreshGeneratorInputViews(){
         if(gen.type === 'video') renderVideoImageInputs(el.querySelector('.video-img-list'), gen, imageInputs);
         if(gen.type === 'rh'){
             const media = rhMediaSources(gen);
-            if(rhCurrentKind(gen) === 'model') renderPromptPreview(el.querySelector('.rh-prompt-list'), media.visiblePromptInputsForNode(sources));
+            if(rhCurrentKind(gen) === 'model') renderPromptPreview(el.querySelector('.rh-prompt-list'), visiblePromptInputsForNode(media.sources));
             else renderRhPromptFields(el.querySelector('.rh-prompt-list'), gen, rhActiveFields(gen));
             renderRhInputs(el.querySelector('.rh-input-list'), gen, media);
             renderRhParams(el.querySelector('.rh-param-list'), gen, rhActiveFields(gen), media);
@@ -17795,15 +18041,21 @@ function startNodeResize(e, node){
 function onNodeResize(e){
     if(!resizeNode) return;
     const min = defaultNodeSize(resizeNode.node.type);
-    const nextW = Math.max(Math.min(min.w, 220), resizeNode.sw + (e.clientX - resizeNode.sx) / viewport.scale);
+    const isOpenShop = resizeNode.node.type === 'openshop-layered';
+    const nextW = Math.max(isOpenShop ? 240 : Math.min(min.w, 220), resizeNode.sw + (e.clientX - resizeNode.sx) / viewport.scale);
     const nextH = Math.max(96, resizeNode.sh + (e.clientY - resizeNode.sy) / viewport.scale);
     resizeNode.node.w = Math.round(nextW);
-    resizeNode.node.h = Math.round(nextH);
+    resizeNode.node.h = isOpenShop
+        ? window.HstarClassicOpenShopAdapter?.layoutForNode?.(resizeNode.node)?.height || Math.round(nextH)
+        : Math.round(nextH);
+    const openShopLayout = isOpenShop
+        ? window.HstarClassicOpenShopAdapter?.layoutForNode?.(resizeNode.node)
+        : null;
     const el = nodesEl.querySelector(`.node[data-id="${resizeNode.node.id}"]`);
     if(el){
         el.classList.add('sized');
-        el.style.width = `${resizeNode.node.w}px`;
-        el.style.height = `${resizeNode.node.h}px`;
+        el.style.width = `${openShopLayout?.width || resizeNode.node.w}px`;
+        el.style.height = `${openShopLayout?.height || resizeNode.node.h}px`;
     }
     scheduleLinksRender();
     renderSelectionHub();
@@ -17833,6 +18085,7 @@ function startLink(e, originId, originKind){
                 if(!connections.some(c => c.from === fromId && c.to === toId)){
                     pushUndo();
                     connections.push({id:uid('c'), from:fromId, to:toId});
+                    syncOpenShopLayeredConnectionTarget(toId);
                     syncLatestGeneratedOutputToConnection(fromId, toId);
                 }
                 syncGeneratorInputs();
@@ -18556,6 +18809,7 @@ board.addEventListener('mousedown', e => {
 board.addEventListener('mouseup', handleCanvasClickZoomGesture);
 board.onwheel = e => {
     if(!canvas) return;
+    if(e.target.closest?.('.create-menu')) return;
     e.preventDefault();
     const before = screenToWorld(e.clientX, e.clientY);
     viewport.scale = viewport.scale * (e.deltaY > 0 ? .92 : 1.08);

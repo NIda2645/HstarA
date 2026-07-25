@@ -134,4 +134,36 @@ describe('Hstar OpenShop Photoshop-style selection engine', () => {
     expect(boundary).toHaveLength(8);
     expect(boundary).not.toContain(12);
   });
+
+  it('returns ordered bounds for disconnected selection regions', () => {
+    const engine = window.HstarOpenShopSelectionEngine;
+    const mask = Uint8Array.from([
+      1,1,0,0,0,0,
+      1,1,0,0,1,1,
+      0,0,0,0,1,1,
+      0,1,1,0,0,0,
+    ]);
+
+    expect(engine.maskRegions(mask, 6, 4)).toEqual([
+      {x:0, y:0, w:2, h:2, count:4},
+      {x:4, y:1, w:2, h:2, count:4},
+      {x:1, y:3, w:2, h:1, count:2},
+    ]);
+  });
+
+  it('can return each disconnected region mask for linked thumbnail removal', () => {
+    const engine = window.HstarOpenShopSelectionEngine;
+    const mask = Uint8Array.from([
+      1,1,0,0,0,0,
+      1,1,0,0,1,1,
+      0,0,0,0,1,1,
+      0,1,1,0,0,0,
+    ]);
+
+    const regions = engine.maskRegions(mask, 6, 4, {includeMask:true});
+    expect(regions).toHaveLength(3);
+    expect([...regions[1].mask].filter(Boolean)).toHaveLength(4);
+    expect(regions[1].mask[1 * 6 + 4]).toBe(1);
+    expect(regions[1].mask[0]).toBe(0);
+  });
 });

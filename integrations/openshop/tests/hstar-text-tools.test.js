@@ -38,8 +38,39 @@ function createOcrBlock({id='ocr-race', text='Deferred OCR'} = {}) {
   return {
     id, text, language:'en', script:'en', confidence:0.96, lowConfidence:false,
     quad:[{x:0.1,y:0.1},{x:0.4,y:0.1},{x:0.4,y:0.2},{x:0.1,y:0.2}],
-    font:{familyCandidates:['Arial'], size:40, weight:400, style:'normal'},
-    color:'#112233', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+    runs:[{
+      start:0, end:Array.from(text).length, script:'en', familyCandidates:['Arial'],
+      size:40, weight:400, style:'normal', artistic:false, styleDescription:'clean sans',
+      color:'#112233', letterSpacing:0, lineHeight:1.16,
+      strokeColor:'#00000000', strokeWidth:0,
+      shadow:{color:'#00000000', blur:0, offsetX:0, offsetY:0},
+    }],
+    align:'left', writingMode:'horizontal', rotation:0, paragraphId:'p1', lineIndex:0,
+  };
+}
+
+function upgradeBlockToV5(block) {
+  if(Array.isArray(block?.runs)) return block;
+  const font = block?.font && typeof block.font === 'object' ? block.font : {};
+  return {
+    ...block,
+    runs:[{
+      start:0,
+      end:Array.from(String(block?.text ?? '')).length,
+      script:block?.script || 'mixed',
+      familyCandidates:Array.isArray(font.familyCandidates) ? font.familyCandidates : [],
+      size:Number(font.size || 40),
+      weight:Number(font.weight || 400),
+      style:font.style === 'italic' ? 'italic' : 'normal',
+      artistic:font.artistic === true,
+      styleDescription:String(font.styleDescription || ''),
+      color:block?.color || block?.fill || '#ffffff',
+      letterSpacing:Number(font.letterSpacing || 0),
+      lineHeight:Number(font.lineHeight || 1.16),
+      strokeColor:font.strokeColor || '#00000000',
+      strokeWidth:Number(font.strokeWidth || 0),
+      shadow:font.shadow || {color:'#00000000', blur:0, offsetX:0, offsetY:0},
+    }],
   };
 }
 
@@ -78,10 +109,15 @@ function addArtCarrier(harness, {
   return {layer, object};
 }
 
-function artResult({assetId=OUTPUT_ASSET_ID, width=360, height=120} = {}) {
+function artResult({
+  assetId=OUTPUT_ASSET_ID,
+  width=360,
+  height=120,
+  placementBox={x:180, y:200, width, height},
+} = {}) {
   return {
     assetId, url:TRANSPARENT_PNG, name:'art-font.png', mime:'image/png', width, height,
-    contentBox:{x:10, y:5, width:340, height:110},
+    placementBox,
   };
 }
 
@@ -166,6 +202,36 @@ function createFakeWritingModeRuntime() {
   };
 }
 
+function createFakeOcrLayoutRuntime() {
+  return {
+    quadGeometry:vi.fn((quad, documentWidth, documentHeight, fallbackRotation=0) => {
+      const points = quad.map(point => ({x:point.x * documentWidth, y:point.y * documentHeight}));
+      const topEdge = {x:points[1].x - points[0].x, y:points[1].y - points[0].y};
+      const sideEdge = {x:points[3].x - points[0].x, y:points[3].y - points[0].y};
+      const angle = Math.atan2(topEdge.y, topEdge.x) * 180 / Math.PI;
+      return {
+        left:points[0].x,
+        top:points[0].y,
+        width:Math.hypot(topEdge.x, topEdge.y),
+        height:Math.hypot(sideEdge.x, sideEdge.y),
+        angle:Math.abs(angle) > 0.01 ? angle : fallbackRotation,
+      };
+    }),
+    fitLineObject:vi.fn((object, geometry, options={}) => {
+      object.set({
+        left:geometry.left,
+        top:geometry.top,
+        angle:geometry.angle,
+        scaleX:1,
+        scaleY:1,
+      });
+      object.setCoords?.();
+      return {writingMode:options.writingMode};
+    }),
+    paragraphPlan:vi.fn(() => ({merge:false, reason:'single-line'})),
+  };
+}
+
 function createEditor() {
   const sourceImage = {
     type:'image', name:'source.png', visible:true, width:1920, height:1080,
@@ -207,7 +273,7 @@ function createEditor() {
   return {editor, sourceImage, sourceLayer, objects};
 }
 
-function createHarness({pollResults={}, fontManagerOverrides={}, controllerOptions={}} = {}) {
+function createHarness({pollResults={}, fontManagerOverrides={}, aiClientOverrides={}, controllerOptions={}} = {}) {
   const {editor, sourceImage, sourceLayer, objects} = createEditor();
   let taskSequence = 0;
   const createdTasks = [];
@@ -263,11 +329,26 @@ function createHarness({pollResults={}, fontManagerOverrides={}, controllerOptio
     }),
     pollTask:vi.fn(async (_context, taskId) => {
       const request = createdTasks[Number(taskId.split('-')[1]) - 1];
-      return pollResults[request.toolId] || {taskId, status:'failed', error:'missing test result'};
+      const task = pollResults[request.toolId] || {taskId, status:'failed', error:'missing test result'};
+      if(
+        request.toolId !== 'text-extract'
+        || task.status !== 'succeeded'
+        || !task.result
+        || task.result.schemaVersion !== undefined
+      ) return task;
+      return {
+        ...task,
+        result:{
+          ...task.result,
+          schemaVersion:5,
+          blocks:(task.result.blocks || []).map(upgradeBlockToV5),
+        },
+      };
     }),
     cancelTask:vi.fn(async (_context, taskId) => ({taskId, status:'cancelled'})),
     discoverModels:vi.fn(async () => ({total:2, all:['model-a', 'model-b']})),
     getCatalog:vi.fn(() => catalog),
+    ...aiClientOverrides,
   };
   const assetApi = {
     upload:vi.fn(async payload => {
@@ -278,12 +359,17 @@ function createHarness({pollResults={}, fontManagerOverrides={}, controllerOptio
   const fontManager = {
     isAvailable:vi.fn(family => family !== 'Missing Font'),
     loadSystemFonts:vi.fn(async () => []),
-    matchOcrFont:vi.fn(block => ({
-      faceFamily:['zh', 'zh-hans', 'zh-hant', 'mixed'].includes(block.script || block.language)
+    matchOcrRun:vi.fn(run => ({
+      family:['zh', 'zh-hans', 'zh-hant', 'mixed'].includes(run.script)
+        ? '阿里巴巴普惠体 3.0'
+        : '阿里妈妈灵动体',
+      faceFamily:['zh', 'zh-hans', 'zh-hant', 'mixed'].includes(run.script)
         ? 'Microsoft YaHei UI'
         : 'Arial',
-      weight:Number(block.font?.weight || 400),
-      italic:block.font?.style === 'italic',
+      styleId:'fixture-style',
+      weight:Number(run.weight || 400),
+      italic:run.style === 'italic',
+      fallback:false,
     })),
     scanEditor:vi.fn(() => []),
     replaceFont:vi.fn(),
@@ -302,6 +388,7 @@ function createHarness({pollResults={}, fontManagerOverrides={}, controllerOptio
     requestSave:vi.fn(async () => ({saved:true})),
   };
   const writingModeRuntime = controllerOptions.writingModeRuntime || window.HstarOpenShopWritingMode;
+  const ocrLayout = controllerOptions.ocrLayout || window.HstarOpenShopOcrLayout;
   const controller = window.HstarOpenShopTextTools.createController({
     editor,
     runtime,
@@ -311,11 +398,12 @@ function createHarness({pollResults={}, fontManagerOverrides={}, controllerOptio
     fabricRef:{IText:FakeIText, HstarVerticalText:FakeVerticalText, Shadow:FakeShadow},
     imageLoader,
     maskRenderer:vi.fn(() => 'data:image/png;base64,SELECTION_MASK'),
+    ocrLayout,
     ...controllerOptions,
   });
   return {
     controller, editor, sourceImage, sourceLayer, objects, aiClient, assetApi, fontManager,
-    imageLoader, runtime, writingModeRuntime, createdTasks,
+    imageLoader, runtime, writingModeRuntime, ocrLayout, createdTasks,
   };
 }
 
@@ -325,6 +413,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     vi.resetModules();
     delete window.HstarOpenShopTextTools;
     window.HstarOpenShopWritingMode = createFakeWritingModeRuntime();
+    window.HstarOpenShopOcrLayout = createFakeOcrLayoutRuntime();
     document.body.innerHTML = `
       <div id="toolbar"></div>
       <div id="tool-options"><div id="opt-text"><select id="text-font"><option>Arial</option></select></div></div>
@@ -351,9 +440,127 @@ describe('Hstar OpenShop multilingual text tools', () => {
 
     removeButton.click();
     expect(panel.dataset.toolId).toBe('text-remove');
-    expect(panel.textContent).toContain('整层自动去字');
-    expect(panel.textContent).toContain('选区去字');
+    expect(panel.textContent).not.toContain('处理范围');
     expect(panel.textContent).toContain('执行去除文字');
+    controller.destroy();
+  });
+
+  it('waits for the initial API catalog before exposing text tool controls', async () => {
+    const catalogPending = createDeferred();
+    let loadedCatalog = null;
+    let catalogListener = null;
+    const initialCatalog = {
+      tools:{
+        'text-remove':{
+          providers:[
+            {id:'image-api', name:'生图 API', available:true, models:[
+              {id:'gemini-3-pro-image', name:'gemini-3-pro-image', available:true},
+            ]},
+            {id:'image-custom', name:'备用生图 API', available:true, models:[
+              {id:'image-model-b', name:'生图模型 B', available:true},
+            ]},
+          ],
+        },
+      },
+    };
+    const {controller, aiClient} = createHarness({
+      aiClientOverrides:{
+        getCatalog:vi.fn(() => loadedCatalog),
+        subscribe:vi.fn(listener => {
+          catalogListener = listener;
+          return () => { catalogListener = null; };
+        }),
+        loadCatalog:vi.fn(async () => {
+          loadedCatalog = await catalogPending.promise;
+          catalogListener?.(loadedCatalog);
+          return loadedCatalog;
+        }),
+      },
+    });
+
+    const start = controller.start();
+    await vi.waitFor(() => expect(aiClient.loadCatalog).toHaveBeenCalledOnce());
+    expect(document.querySelector('[data-hstar-text-tool="text-remove"]')).toBeNull();
+
+    catalogPending.resolve(initialCatalog);
+    await start;
+    document.querySelector('[data-hstar-text-tool="text-remove"]').click();
+
+    const provider = document.querySelector('[data-provider-tool="text-remove"]');
+    expect([...provider.options].map(option => option.value)).toEqual(['image-api', 'image-custom']);
+    controller.destroy();
+  });
+
+  it('uses one whole-layer removal workflow without range controls', async () => {
+    const {controller} = createHarness();
+    await controller.start();
+    controller.openTool('text-remove');
+
+    const panel = document.getElementById('hstar-text-tools-panel');
+    expect(panel.textContent).not.toContain('处理范围');
+    expect(panel.textContent).not.toContain('整层自动去字');
+    expect(panel.textContent).not.toContain('选区去字');
+    expect(panel.querySelector('[data-hstar-remove-mode]')).toBeNull();
+    expect(panel.querySelector('[data-hstar-action="run-removal"]')).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('defaults text removal to 4K with the source aspect ratio available', async () => {
+    const {controller} = createHarness();
+    await controller.start();
+    controller.openTool('text-remove');
+
+    expect(document.getElementById('hstar-remove-resolution').value).toBe('4k');
+    expect(document.getElementById('hstar-remove-ratio').value).toBe('source');
+    expect(document.getElementById('hstar-remove-ratio').disabled).toBe(false);
+    controller.destroy();
+  });
+
+  it('shows a bold green processing state while OCR is running', async () => {
+    const pending = createDeferred();
+    const {controller, aiClient} = createHarness();
+    aiClient.pollTask.mockReturnValue(pending.promise);
+    await controller.start();
+    const extraction = controller.runTextExtraction();
+    await vi.waitFor(() => expect(controller.getState().status).toBe('running'));
+
+    const panel = document.getElementById('hstar-text-tools-panel');
+    const status = panel.querySelector('.hstar-text-status');
+    expect(status.textContent).toBe('模型正在处理');
+    expect(panel.dataset.status).toBe('running');
+    expect(document.getElementById('hstar-text-tools-style').textContent).toContain('font-weight:800');
+
+    pending.resolve({
+      taskId:'task-1',
+      status:'succeeded',
+      result:{width:1920, height:1080, blocks:[createOcrBlock()]},
+    });
+    await extraction;
+    controller.destroy();
+  });
+
+  it('shows a bold green processing state while text removal is running', async () => {
+    const pending = createDeferred();
+    const {controller, aiClient} = createHarness();
+    aiClient.pollTask.mockReturnValue(pending.promise);
+    await controller.start();
+    controller.openTool('text-remove');
+    const removal = controller.runTextRemoval({mode:'layer'});
+    await vi.waitFor(() => expect(controller.getState().status).toBe('running'));
+
+    const panel = document.getElementById('hstar-text-tools-panel');
+    const status = panel.querySelector('.hstar-text-status');
+    expect(status.textContent).toBe('模型正在处理');
+    expect(panel.dataset.status).toBe('running');
+    expect(getComputedStyle(status).color).toBe('rgb(66, 217, 133)');
+    expect(getComputedStyle(status).fontWeight).toBe('800');
+
+    pending.resolve({
+      taskId:'task-1',
+      status:'succeeded',
+      result:{assetId:OUTPUT_ASSET_ID, url:TRANSPARENT_PNG, width:1920, height:1080},
+    });
+    await removal;
     controller.destroy();
   });
 
@@ -395,12 +602,12 @@ describe('Hstar OpenShop multilingual text tools', () => {
   });
 
   it('extracts from the topmost visible image layer when the active layer is empty', async () => {
-    const blocks = [{
+    const blocks = [upgradeBlockToV5({
       id:'ocr-fallback', text:'可识别文字', language:'zh', confidence:0.95, lowConfidence:false,
       quad:[{x:0.1,y:0.1},{x:0.4,y:0.1},{x:0.4,y:0.2},{x:0.1,y:0.2}],
       font:{familyCandidates:['Microsoft YaHei UI'], size:40, weight:400, style:'normal'},
       color:'#111111', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
-    }];
+    })];
     const {controller, editor, sourceLayer, createdTasks} = createHarness({
       pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
     });
@@ -421,13 +628,229 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
+  it('rejects legacy OCR results before font loading or canvas mutation', async () => {
+    const block = createOcrBlock({id:'ocr-v4'});
+    const {controller, editor, fontManager, objects} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-v4', status:'succeeded',
+        result:{schemaVersion:4, width:1920, height:1080, blocks:[block]},
+      }},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+    const previousLayers = [...editor.layers];
+    const previousObjects = [...objects];
+
+    await expect(controller.applyTextExtraction()).rejects.toThrow('旧版识别结果，请重新执行文字提取');
+
+    expect(fontManager.loadSystemFonts).not.toHaveBeenCalled();
+    expect(editor.layers).toEqual(previousLayers);
+    expect(objects).toEqual(previousObjects);
+    expect(editor.canvas.add).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+
+  it('rejects OCR source dimensions that differ from the current canvas', async () => {
+    const block = createOcrBlock({id:'ocr-wrong-size'});
+    const {controller, editor, fontManager} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-size', status:'succeeded',
+        result:{schemaVersion:5, width:960, height:540, blocks:[block]},
+      }},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    await expect(controller.applyTextExtraction()).rejects.toThrow('识别图像尺寸与当前画板不一致');
+
+    expect(fontManager.matchOcrRun).not.toHaveBeenCalled();
+    expect(editor.canvas.add).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+
+  it('creates one editable mixed-script object with independent Unicode run styles', async () => {
+    const text = 'Open夏日';
+    const block = {
+      ...createOcrBlock({id:'ocr-mixed-runs', text}),
+      language:'mixed', script:'mixed',
+      runs:[
+        {...createOcrBlock({text:'Open'}).runs[0], start:0, end:4, script:'en', size:48, weight:300, color:'#112233', letterSpacing:125},
+        {...createOcrBlock({text:'夏日'}).runs[0], start:4, end:6, script:'zh-hans', size:52, weight:700, color:'#cc3300', letterSpacing:30},
+      ],
+    };
+    const matchOcrRun = vi.fn(run => run.script === 'en'
+      ? {family:'03免Poster', faceFamily:'03免Poster Light', styleId:'poster-light', weight:300, italic:false, fallback:false}
+      : {family:'01免海报体', faceFamily:'01免海报体 Bold', styleId:'poster-bold', weight:700, italic:false, fallback:false});
+    const {controller, editor, fontManager} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-mixed', status:'succeeded',
+        result:{schemaVersion:5, width:1920, height:1080, blocks:[block]},
+      }},
+      fontManagerOverrides:{matchOcrRun},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const [layer] = await controller.applyTextExtraction();
+    const object = layer.objects[0];
+
+    expect(matchOcrRun).toHaveBeenCalledTimes(2);
+    expect(object.text).toBe(text);
+    expect(object.styles[0][0]).toMatchObject({fontFamily:'03免Poster Light', fontWeight:300, fill:'#112233'});
+    expect(object.styles[0][3]).toMatchObject({fontFamily:'03免Poster Light', fontWeight:300});
+    expect(object.styles[0][4]).toMatchObject({fontFamily:'01免海报体 Bold', fontWeight:700, fill:'#cc3300'});
+    expect(object.styles[0][5]).toMatchObject({fontFamily:'01免海报体 Bold', fontWeight:700});
+    expect(object.styles[0][0]).not.toHaveProperty('charSpacing');
+    expect(object.styles[0][4]).not.toHaveProperty('charSpacing');
+    expect(object).toMatchObject({hstarOcrSchemaVersion:5, charSpacing:0, scaleX:1, scaleY:1});
+    expect(object).not.toHaveProperty('hstarOcrFontMetricQuad');
+    expect(object).not.toHaveProperty('hstarOcrGlyphQuads');
+    expect(fontManager.scanEditor).toHaveBeenCalledWith(editor);
+    controller.destroy();
+  });
+
+  it('reconciles edited Unicode text and keeps creation repeatable', async () => {
+    const original = 'Open夏日';
+    const edited = 'OpenAI夏日';
+    const block = {
+      ...createOcrBlock({id:'ocr-edited-runs', text:original}),
+      language:'mixed', script:'mixed',
+      runs:[
+        {...createOcrBlock({text:'Open'}).runs[0], start:0, end:4, script:'en'},
+        {...createOcrBlock({text:'夏日'}).runs[0], start:4, end:6, script:'zh-hans', color:'#884400'},
+      ],
+    };
+    const {controller, editor} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-edited', status:'succeeded',
+        result:{schemaVersion:5, width:1920, height:1080, blocks:[block]},
+      }},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+    const reviewed = [{...block, text:edited}];
+
+    const first = await controller.applyTextExtraction(reviewed);
+    const second = await controller.applyTextExtraction(reviewed);
+
+    expect(first[0].objects[0].styles[0][4].fontFamily).toBe('Arial');
+    expect(first[0].objects[0].styles[0][5].fontFamily).toBe('Arial');
+    expect(first[0].objects[0].styles[0][6].fontFamily).toBe('Microsoft YaHei UI');
+    expect(first[0].objects[0].hstarOcrRuns).toEqual(expect.arrayContaining([
+      expect.objectContaining({start:0, end:6, script:'en'}),
+      expect.objectContaining({start:6, end:8, script:'zh-hans'}),
+    ]));
+    expect(second[0]).not.toBe(first[0]);
+    expect(editor.layers).toHaveLength(3);
+    controller.destroy();
+  });
+
+  it('merges representable paragraph lines into one editable text layer', async () => {
+    const blocks = [
+      {...createOcrBlock({id:'line-1', text:'Line A'}), paragraphId:'paragraph-a', lineIndex:0,
+        quad:[{x:0.1,y:0.1},{x:0.4,y:0.1},{x:0.4,y:0.16},{x:0.1,y:0.16}]},
+      {...createOcrBlock({id:'line-2', text:'Line B'}), paragraphId:'paragraph-a', lineIndex:1,
+        quad:[{x:0.1,y:0.18},{x:0.4,y:0.18},{x:0.4,y:0.24},{x:0.1,y:0.24}]},
+    ];
+    const ocrLayout = createFakeOcrLayoutRuntime();
+    ocrLayout.paragraphPlan.mockReturnValue({
+      merge:true, paragraphId:'paragraph-a', writingMode:'horizontal', rotation:0,
+      interval:86.4, crossSize:64.8,
+    });
+    const {controller, editor} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-paragraph', status:'succeeded',
+        result:{schemaVersion:5, width:1920, height:1080, blocks},
+      }},
+      controllerOptions:{writingModeRuntime:createFakeWritingModeRuntime(), ocrLayout},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const layers = await controller.applyTextExtraction();
+
+    expect(layers).toHaveLength(1);
+    expect(layers[0].objects).toHaveLength(1);
+    expect(layers[0].objects[0].text).toBe('Line A\nLine B');
+    expect(editor.canvas.add).toHaveBeenCalledOnce();
+    controller.destroy();
+  });
+
+  it('keeps fitted paragraph lines separate when their flow scales differ', async () => {
+    const blocks = [
+      {...createOcrBlock({id:'scaled-line-1', text:'Wide line'}), paragraphId:'scaled-paragraph', lineIndex:0},
+      {...createOcrBlock({id:'scaled-line-2', text:'Narrow line'}), paragraphId:'scaled-paragraph', lineIndex:1},
+    ];
+    const ocrLayout = createFakeOcrLayoutRuntime();
+    ocrLayout.fitLineObject
+      .mockImplementationOnce(object => {
+        object.set({left:100, top:100, scaleX:1.25, scaleY:1});
+      })
+      .mockImplementationOnce(object => {
+        object.set({left:100, top:180, scaleX:0.8, scaleY:1});
+      });
+    ocrLayout.paragraphPlan.mockReturnValue({
+      merge:true, paragraphId:'scaled-paragraph', writingMode:'horizontal', rotation:0,
+      interval:80, crossSize:60,
+    });
+    const {controller, editor} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-scaled-paragraph', status:'succeeded',
+        result:{schemaVersion:5, width:1920, height:1080, blocks},
+      }},
+      controllerOptions:{writingModeRuntime:createFakeWritingModeRuntime(), ocrLayout},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+
+    const layers = await controller.applyTextExtraction();
+
+    expect(layers).toHaveLength(2);
+    expect(layers.map(layer => layer.objects[0].scaleX)).toEqual([1.25, 0.8]);
+    expect(editor.canvas.add).toHaveBeenCalledTimes(2);
+    controller.destroy();
+  });
+
+  it('does not mutate canvas, layers, or history when any v5 line layout fails', async () => {
+    const blocks = [
+      {...createOcrBlock({id:'line-ok', text:'First'}), paragraphId:'p-1'},
+      {...createOcrBlock({id:'line-fail', text:'Second'}), paragraphId:'p-2', lineIndex:1},
+    ];
+    const ocrLayout = createFakeOcrLayoutRuntime();
+    ocrLayout.fitLineObject
+      .mockImplementationOnce((object, geometry) => {
+        object.set({left:geometry.left, top:geometry.top, scaleX:1, scaleY:1});
+        return {visibleBox:{left:0, top:0, width:100, height:40}};
+      })
+      .mockImplementationOnce(() => { throw new Error('second line cannot be measured'); });
+    const {controller, editor, objects} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-atomic', status:'succeeded',
+        result:{schemaVersion:5, width:1920, height:1080, blocks},
+      }},
+      controllerOptions:{writingModeRuntime:createFakeWritingModeRuntime(), ocrLayout},
+    });
+    await controller.start();
+    await controller.runTextExtraction();
+    const previousLayers = [...editor.layers];
+    const previousObjects = [...objects];
+
+    await expect(controller.applyTextExtraction()).rejects.toThrow('second line cannot be measured');
+
+    expect(editor.layers).toEqual(previousLayers);
+    expect(objects).toEqual(previousObjects);
+    expect(editor.canvas.add).not.toHaveBeenCalled();
+    expect(editor.saveHistory).not.toHaveBeenCalledWith('文字提取');
+    controller.destroy();
+  });
+
   it('keeps OCR non-destructive until review is confirmed, then creates editable mixed-language text', async () => {
-    const blocks = [{
+    const blocks = [upgradeBlockToV5({
       id:'ocr-1', text:'中文 English', language:'mixed', confidence:0.62, lowConfidence:true,
       quad:[{x:0.1,y:0.2},{x:0.5,y:0.2},{x:0.5,y:0.3},{x:0.1,y:0.3}],
       font:{familyCandidates:['Microsoft YaHei UI', 'Arial'], size:48, weight:600, style:'normal'},
       color:'#112233', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
-    }];
+    })];
     const {controller, editor, sourceLayer, sourceImage, aiClient, assetApi, createdTasks} = createHarness({
       pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
     });
@@ -452,10 +875,40 @@ describe('Hstar OpenShop multilingual text tools', () => {
       type:'i-text', text:'中文 English', left:192, top:216,
       fontFamily:'Microsoft YaHei UI', fontSize:48, fill:'#112233', fontWeight:600,
     });
+    expect(layers[0].objects[0].scaleX).toBe(1);
+    expect(layers[0].objects[0].scaleY).toBe(1);
     expect(editor.layers).toHaveLength(2);
+    const repeatedLayers = await controller.applyTextExtraction();
+    expect(repeatedLayers).toHaveLength(1);
+    expect(editor.layers).toHaveLength(3);
+    expect(repeatedLayers[0]).not.toBe(layers[0]);
+    expect(document.querySelector('[data-hstar-action="apply-extraction"]')?.disabled).toBe(false);
     expect(sourceLayer.objects).toContain(sourceImage);
     expect(editor.saveHistory).toHaveBeenCalledWith('文字提取');
+    expect(controller.getState()).toMatchObject({status:'applied', reviewBlocks:blocks});
+    expect(document.querySelector('[data-hstar-action="apply-extraction"]')?.disabled).toBe(false);
+    expect(document.querySelector('.hstar-text-status').textContent).toBe('已创建新图层');
     expect(aiClient.createTask).toHaveBeenCalledTimes(1);
+    controller.destroy();
+  });
+
+  it('localizes unreliable OCR position failures inside the extraction panel', async () => {
+    const {controller} = createHarness({
+      pollResults:{'text-extract':{
+        taskId:'task-unreliable-position', status:'failed',
+        error:'OCR model did not return reliable text positions',
+      }},
+    });
+    await controller.start();
+
+    const result = await controller.runTextExtraction();
+
+    expect(result).toBeNull();
+    expect(controller.getState()).toMatchObject({status:'failed'});
+    expect(document.querySelector('.hstar-text-status').textContent)
+      .toContain('OCR 模型没有返回可靠的文字位置，请重新执行文字提取');
+    expect(document.getElementById('hstar-text-tools-panel').textContent)
+      .not.toContain('OCR model did not return reliable text positions');
     controller.destroy();
   });
 
@@ -465,7 +918,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
       writingMode:'vertical',
       quad:[{x:0.1,y:0.1},{x:0.2,y:0.1},{x:0.2,y:0.6},{x:0.1,y:0.6}],
     };
-    const {controller} = createHarness({
+    const {controller, editor:openShopEditor} = createHarness({
       pollResults:{'text-extract':{
         taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks:[block]},
       }},
@@ -481,10 +934,12 @@ describe('Hstar OpenShop multilingual text tools', () => {
     editor.dispatchEvent(new Event('input', {bubbles:true}));
 
     expect(controller.getState().reviewBlocks[0].text).toBe('甲乙\n丙丁');
+    expect(openShopEditor.__hstarAiTaskRecords[0].reviewBlocks[0].text).toBe('甲乙\n丙丁');
+    expect(openShopEditor.__hstarAiTaskRecords[0].result.blocks[0].text).toBe('甲乙\n丙');
     controller.destroy();
   });
 
-  it('creates precisely fitted horizontal and vertical OCR layers in reading order', async () => {
+  it.skip('legacy v4 integration fixture is replaced by schema v5 mixed-run and layout tests', async () => {
     const verticalText = ' 甲乙 \n丙 ';
     const blocks = [
       {
@@ -517,14 +972,19 @@ describe('Hstar OpenShop multilingual text tools', () => {
       ? {faceFamily:'01免Title Face', weight:800, italic:true}
       : {faceFamily:'03免Subtitle Face', weight:500, italic:false});
     const injectedWritingModeRuntime = createFakeWritingModeRuntime();
+    const injectedOcrLayout = createFakeOcrLayoutRuntime();
     const {
-      controller, editor, sourceLayer, sourceImage, objects, fontManager, writingModeRuntime,
+      controller, editor, sourceLayer, sourceImage, objects, fontManager, writingModeRuntime, ocrLayout,
     } = createHarness({
       pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:960, height:540, blocks}}},
       fontManagerOverrides:{loadSystemFonts, matchOcrFont},
-      controllerOptions:{writingModeRuntime:injectedWritingModeRuntime},
+      controllerOptions:{
+        writingModeRuntime:injectedWritingModeRuntime,
+        ocrLayout:injectedOcrLayout,
+      },
     });
     expect(writingModeRuntime).toBe(injectedWritingModeRuntime);
+    expect(ocrLayout).toBe(injectedOcrLayout);
     const existingTopObject = {type:'rect', name:'existing top object'};
     const existingTopLayer = {
       layerId:'layer-existing-top', name:'Existing top layer', visible:true, opacity:100,
@@ -564,16 +1024,15 @@ describe('Hstar OpenShop multilingual text tools', () => {
     });
     expect(title.initialOptions.charSpacing).toBe(125);
     expect(title.initialOptions.charSpacing).not.toBe(250);
-    expect(title.charSpacing).not.toBe(title.initialOptions.charSpacing);
+    expect(title.charSpacing).toBe(title.initialOptions.charSpacing);
     const spacingMutationIndex = title.setHistory.findIndex(values => 'charSpacing' in values);
     const scaleMutationIndex = title.setHistory.findIndex(values => 'scaleX' in values || 'scaleY' in values);
-    expect(spacingMutationIndex).toBeGreaterThanOrEqual(0);
-    expect(spacingMutationIndex).toBeLessThan(scaleMutationIndex);
+    expect(spacingMutationIndex).toBe(-1);
+    expect(scaleMutationIndex).toBeGreaterThanOrEqual(0);
     expect(title.shadow).toEqual(expect.objectContaining({color:'#10203080', blur:12, offsetX:4, offsetY:-6}));
     expect(title.shadow).toBeInstanceOf(FakeShadow);
-    expect(title.scaleX).toBeCloseTo(title.scaleY, 10);
-    expect(title.width * title.scaleX).toBeLessThanOrEqual(576.001);
-    expect(title.height * title.scaleY).toBeLessThanOrEqual(108.001);
+    expect(title.scaleX).toBe(1);
+    expect(title.scaleY).toBe(1);
     expect(title.hstarOcrQuad).toEqual(blocks[0].quad);
     expect(title.angle).toBe(90);
     expect(title.hstarOcrVisualProfile).toEqual({
@@ -600,9 +1059,8 @@ describe('Hstar OpenShop multilingual text tools', () => {
     });
     expect(subtitle.text.match(/\n/g)).toHaveLength(1);
     expect(subtitle.angle).toBeCloseTo(5.356, 2);
-    expect(subtitle.scaleX).toBeCloseTo(subtitle.scaleY, 10);
-    expect(subtitle.width * subtitle.scaleX).toBeLessThanOrEqual(115.707);
-    expect(subtitle.height * subtitle.scaleY).toBeLessThanOrEqual(442.539);
+    expect(subtitle.scaleX).toBe(1);
+    expect(subtitle.scaleY).toBe(1);
     expect(subtitle.shadow).toEqual(expect.objectContaining({
       color:'#00000000', blur:0, offsetX:0, offsetY:0,
     }));
@@ -628,6 +1086,18 @@ describe('Hstar OpenShop multilingual text tools', () => {
       expect.objectContaining({IText:FakeIText, HstarVerticalText:FakeVerticalText}),
       verticalText,
       expect.objectContaining({hstarWritingMode:'vertical'}),
+    );
+    expect(ocrLayout.fitTextObject).toHaveBeenNthCalledWith(
+      1,
+      title,
+      expect.objectContaining({left:192, top:216, width:576, height:108}),
+      expect.objectContaining({writingMode:'horizontal'}),
+    );
+    expect(ocrLayout.fitTextObject).toHaveBeenNthCalledWith(
+      2,
+      subtitle,
+      expect.objectContaining({left:1056, top:270}),
+      expect.objectContaining({writingMode:'vertical'}),
     );
     expect(editor.activeLayerIdx).toBe(2);
     expect(fontManager.scanEditor).toHaveBeenCalledWith(editor);
@@ -694,13 +1164,13 @@ describe('Hstar OpenShop multilingual text tools', () => {
         font:{familyCandidates:['Missing Face'], size:32, weight:400, style:'normal'}, color:'#445566',
       },
     ];
-    const matchOcrFont = vi.fn(block => {
-      if(block.id === 'ocr-missing') throw new Error('No free-commercial local font match');
+    const matchOcrRun = vi.fn(run => {
+      if(run.familyCandidates?.includes('Missing Face')) throw new Error('No free-commercial local font match');
       return {faceFamily:'03免Arial', weight:400, italic:false};
     });
     const {controller, editor, objects} = createHarness({
-      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:960, height:540, blocks}}},
-      fontManagerOverrides:{matchOcrFont},
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
+      fontManagerOverrides:{matchOcrRun},
     });
     await controller.start();
     await controller.runTextExtraction();
@@ -709,7 +1179,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
 
     await expect(controller.applyTextExtraction()).rejects.toThrow('No free-commercial local font match');
 
-    expect(matchOcrFont).toHaveBeenCalledTimes(2);
+    expect(matchOcrRun).toHaveBeenCalledTimes(2);
     expect(editor.layers).toEqual(originalLayers);
     expect(objects).toEqual(originalObjects);
     expect(editor.canvas.add).not.toHaveBeenCalled();
@@ -718,14 +1188,14 @@ describe('Hstar OpenShop multilingual text tools', () => {
   });
 
   it('surfaces review-button font preflight failures without an unhandled async apply', async () => {
-    const blocks = [{
+    const blocks = [upgradeBlockToV5({
       id:'ocr-missing-click', text:'Missing', script:'en', confidence:0.9,
       quad:[{x:0.1,y:0.1},{x:0.3,y:0.1},{x:0.3,y:0.2},{x:0.1,y:0.2}],
       font:{familyCandidates:['Missing Face'], size:32, weight:400, style:'normal'}, color:'#112233',
-    }];
+    })];
     const {controller, editor} = createHarness({
-      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:960, height:540, blocks}}},
-      fontManagerOverrides:{matchOcrFont:vi.fn(() => { throw new Error('No local OCR face'); })},
+      pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
+      fontManagerOverrides:{matchOcrRun:vi.fn(() => { throw new Error('No local OCR face'); })},
     });
     await controller.start();
     await controller.runTextExtraction();
@@ -793,7 +1263,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
       taskId:'task-new-project', toolId:'text-extract', status:'succeeded',
       sourceLayerId:'layer-source', sourceAssetId:SOURCE_ASSET_ID,
       createdAt:3, updatedAt:4, completedAt:4, appliedAt:0, error:'',
-      result:{width:1920, height:1080, blocks:newBlocks},
+      result:{schemaVersion:5, width:1920, height:1080, blocks:newBlocks},
     };
     runtime.getState.mockReturnValue({activeSession:{context:newContext}});
     editor.__hstarAiTaskRecords = [newRecord];
@@ -854,10 +1324,10 @@ describe('Hstar OpenShop multilingual text tools', () => {
   it('disables apply during font preflight and restores it for the same review', async () => {
     const blocks = [createOcrBlock({id:'ocr-button-pending'})];
     const fontLoad = createDeferred();
-    const matchOcrFont = vi.fn(() => { throw new Error('Deferred font match failed'); });
+    const matchOcrRun = vi.fn(() => { throw new Error('Deferred font match failed'); });
     const {controller, editor} = createHarness({
       pollResults:{'text-extract':{taskId:'task-1', status:'succeeded', result:{width:1920, height:1080, blocks}}},
-      fontManagerOverrides:{loadSystemFonts:vi.fn(() => fontLoad.promise), matchOcrFont},
+      fontManagerOverrides:{loadSystemFonts:vi.fn(() => fontLoad.promise), matchOcrRun},
     });
     await controller.start();
     await controller.runTextExtraction();
@@ -877,7 +1347,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
 
     expect(disabledWhilePending).toBe(true);
     expect(canvasCallsWhilePending).toBe(0);
-    expect(matchOcrFont).toHaveBeenCalledOnce();
+    expect(matchOcrRun).toHaveBeenCalledOnce();
     expect(disabledAfterCompletion).toBe(false);
     expect(finalCanvasCalls).toBe(0);
   });
@@ -919,48 +1389,155 @@ describe('Hstar OpenShop multilingual text tools', () => {
     }
   });
 
-  it('removes text without OCR and adds a new pixel layer while preserving the source', async () => {
+  it('removes all text from only the selected image layer and inserts the result directly above it', async () => {
     const output = {
       assetId:OUTPUT_ASSET_ID,
       url:`/api/openshop/assets/${OUTPUT_ASSET_ID}`,
       name:'removed.png', width:1920, height:1080, mime:'image/png',
     };
-    const {controller, editor, sourceLayer, sourceImage, aiClient, createdTasks} = createHarness({
+    const {controller, editor, sourceLayer, sourceImage, aiClient, assetApi, createdTasks} = createHarness({
       pollResults:{'text-remove':{taskId:'task-1', status:'succeeded', result:output}},
     });
     await controller.start();
-    const layer = await controller.runTextRemoval({mode:'layer', quality:'high', prompt:'保留纸张纹理'});
+    controller.openTool('text-remove');
+    const resolution = document.getElementById('hstar-remove-resolution');
+    expect([...resolution.options].map(option => [option.value, option.textContent])).toEqual([
+      ['auto', '自动'], ['1k', '1K'], ['2k', '2K'], ['4k', '4K'],
+    ]);
+    expect(resolution.value).toBe('4k');
+    expect(document.getElementById('hstar-remove-ratio').disabled).toBe(false);
+    editor._selectionBounds = {x:100, y:80, w:500, h:200};
+    resolution.value = '4k';
+    resolution.dispatchEvent(new Event('change', {bubbles:true}));
+    const ratio = document.getElementById('hstar-remove-ratio');
+    expect([...ratio.options].map(option => [option.value, option.textContent])).toEqual([
+      ['source', '适配原图'], ['square', '1:1'], ['portrait', '2:3'], ['landscape', '3:2'],
+      ['portrait43', '3:4'], ['landscape43', '4:3'], ['story', '9:16'], ['wide', '16:9'],
+      ['ultrawide', '21:9'], ['ultratall', '9:21'],
+    ]);
+    expect(ratio.disabled).toBe(false);
+    ratio.value = 'square';
+    ratio.dispatchEvent(new Event('change', {bubbles:true}));
+    const quality = document.getElementById('hstar-remove-quality');
+    quality.value = 'high';
+    quality.dispatchEvent(new Event('change', {bubbles:true}));
+    const prompt = document.getElementById('hstar-remove-prompt');
+    prompt.value = '保留纸张纹理';
+    prompt.dispatchEvent(new Event('input', {bubbles:true}));
+    document.querySelector('[data-hstar-action="run-removal"]').click();
+    await vi.waitFor(() => expect(editor.layers).toHaveLength(2));
+    const layer = editor.layers[1];
 
     expect(layer.name).toBe('去除文字');
     expect(layer.objects[0]).toMatchObject({
       type:'image', hstarAssetId:OUTPUT_ASSET_ID, hstarAssetRole:'ai-output', left:0, top:0,
     });
     expect(editor.layers).toHaveLength(2);
+    expect(editor.layers[0]).toBe(sourceLayer);
+    expect(editor.layers[1]).toBe(layer);
+    expect(editor.activeLayerIdx).toBe(1);
     expect(sourceLayer.objects).toContain(sourceImage);
     expect(createdTasks[0]).toMatchObject({
       toolId:'text-remove', apiConfigId:'image-api', modelId:'gemini-3-pro-image', mode:'layer',
-      options:{quality:'high', prompt:'保留纸张纹理'},
+      sourceLayerId:sourceLayer.layerId, sourceAssetId:SOURCE_ASSET_ID, maskAssetId:'',
+      options:{resolution:'4k', ratio:'square', quality:'high', prompt:'保留纸张纹理'},
     });
+    expect(assetApi.upload).toHaveBeenCalledTimes(1);
+    expect(assetApi.upload).toHaveBeenCalledWith(expect.objectContaining({role:'ai-source'}));
     expect(createdTasks.some(task => task.toolId === 'text-extract')).toBe(false);
     expect(aiClient.createTask).toHaveBeenCalledTimes(1);
     controller.destroy();
   });
 
-  it('uploads an explicit selection mask for selection-only text removal', async () => {
-    const output = {assetId:OUTPUT_ASSET_ID, url:`/api/openshop/assets/${OUTPUT_ASSET_ID}`, name:'selection.png', width:1920, height:1080};
-    const {controller, editor, assetApi, createdTasks} = createHarness({
+  it('centers a changed-aspect removal result without stretching it', async () => {
+    const {controller, editor} = createHarness();
+    await controller.start();
+
+    const layer = await controller.createRemovedImageLayer({
+      assetId:OUTPUT_ASSET_ID, url:TRANSPARENT_PNG, name:'square.png', width:1024, height:1024,
+    });
+    const image = layer.objects[0];
+
+    expect(image.scaleX).toBeCloseTo(1.0546875);
+    expect(image.scaleY).toBeCloseTo(1.0546875);
+    expect(image.left).toBeCloseTo(420);
+    expect(image.top).toBe(0);
+    expect(editor.layers.at(-1)).toBe(layer);
+    controller.destroy();
+  });
+
+  it('keeps a removal image below existing text layers in the canvas object stack', async () => {
+    const {controller, editor, sourceLayer, sourceImage, objects} = createHarness();
+    const firstText = new FakeIText('小暑', {hstarLayerId:'text-layer-first'});
+    const secondText = new FakeIText('节气', {hstarLayerId:'text-layer-second'});
+    const firstTextLayer = {
+      layerId:'text-layer-first', name:'小暑', visible:true, opacity:100,
+      blend:'source-over', objects:[firstText],
+    };
+    const secondTextLayer = {
+      layerId:'text-layer-second', name:'节气', visible:true, opacity:100,
+      blend:'source-over', objects:[secondText],
+    };
+    editor.layers.push(firstTextLayer, secondTextLayer);
+    objects.push(firstText, secondText);
+    await controller.start();
+
+    const layer = await controller.createRemovedImageLayer({
+      assetId:OUTPUT_ASSET_ID, url:TRANSPARENT_PNG, name:'removed.png', width:1920, height:1080,
+    }, {
+      toolId:'text-remove', status:'succeeded', sourceLayerId:sourceLayer.layerId,
+      appliedAt:0, updatedAt:0,
+    });
+
+    expect(editor.layers).toEqual([sourceLayer, layer, firstTextLayer, secondTextLayer]);
+    expect(objects).toEqual([sourceImage, layer.objects[0], firstText, secondText]);
+    controller.destroy();
+  });
+
+  it('repairs a persisted removal-image stack when the project is loaded', async () => {
+    const {controller, editor, sourceImage, objects} = createHarness();
+    const removalImage = {type:'image', hstarLayerId:'remove-layer'};
+    const text = new FakeIText('小暑', {hstarLayerId:'text-layer'});
+    const removalLayer = {
+      layerId:'remove-layer', name:'去除文字', visible:true, opacity:100,
+      blend:'source-over', objects:[removalImage],
+    };
+    const textLayer = {
+      layerId:'text-layer', name:'小暑', visible:true, opacity:100,
+      blend:'source-over', objects:[text],
+    };
+    editor.layers.push(removalLayer, textLayer);
+    objects.push(text, removalImage);
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {
+      detail:{project:{projectId:'project-1'}},
+    }));
+
+    expect(objects).toEqual([sourceImage, removalImage, text]);
+    controller.destroy();
+  });
+
+  it('does not fall back to another image layer when the selected layer has no image', async () => {
+    const output = {assetId:OUTPUT_ASSET_ID, url:`/api/openshop/assets/${OUTPUT_ASSET_ID}`, name:'removed.png', width:1920, height:1080};
+    const {controller, editor, assetApi, aiClient, createdTasks} = createHarness({
       pollResults:{'text-remove':{taskId:'task-1', status:'succeeded', result:output}},
     });
-    editor._selectionBounds = {x:100, y:80, w:500, h:200};
-    await controller.start();
-    await controller.runTextRemoval({mode:'selection'});
-
-    expect(assetApi.upload).toHaveBeenCalledWith(expect.objectContaining({
-      role:'ai-mask', dataUrl:'data:image/png;base64,SELECTION_MASK',
-    }));
-    expect(createdTasks[0]).toMatchObject({
-      toolId:'text-remove', mode:'selection', maskAssetId:MASK_ASSET_ID,
+    editor.layers.unshift({
+      layerId:'layer-empty', name:'当前空图层', visible:true, opacity:100,
+      blend:'source-over', objects:[],
     });
+    editor.activeLayerIdx = 0;
+    await controller.start();
+    const result = await controller.runTextRemoval();
+
+    expect(result).toBeNull();
+    expect(controller.getState()).toMatchObject({
+      status:'failed', error:'请先选择一个包含图片的像素图层',
+    });
+    expect(assetApi.upload).not.toHaveBeenCalled();
+    expect(aiClient.createTask).not.toHaveBeenCalled();
+    expect(createdTasks).toEqual([]);
     controller.destroy();
   });
 
@@ -1015,7 +1592,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     controller.destroy();
   });
 
-  it('restores completed unapplied OCR results for review after reopening a project', async () => {
+  it('restores legacy OCR results for review but requires a new extraction before apply', async () => {
     const blocks = [{
       id:'ocr-restored', text:'恢复的 Mixed 文本', language:'mixed', confidence:0.91, lowConfidence:false,
       quad:[{x:0.15,y:0.2},{x:0.55,y:0.2},{x:0.55,y:0.3},{x:0.15,y:0.3}],
@@ -1040,8 +1617,189 @@ describe('Hstar OpenShop multilingual text tools', () => {
       .toBe(`/api/openshop/assets/${SOURCE_ASSET_ID}`);
     expect(aiClient.pollTask).not.toHaveBeenCalled();
 
+    await expect(controller.applyTextExtraction()).rejects.toThrow('旧版识别结果，请重新执行文字提取');
+    expect(editor.__hstarAiTaskRecords[0].appliedAt).toBe(0);
+    controller.destroy();
+  });
+
+  it('restores the last applied OCR review until the next extraction run', async () => {
+    const blocks = [createOcrBlock({id:'ocr-applied-restored', text:'已转图层的文字'})];
+    const {controller, editor} = createHarness();
+    editor.__hstarAiTaskRecords = [{
+      taskId:'task-applied-restored', toolId:'text-extract', status:'succeeded',
+      apiConfigId:'vision-api', modelId:'gemini-3.1-pro-high', mode:'layer',
+      sourceAssetId:SOURCE_ASSET_ID, maskAssetId:'', outputAssetId:'',
+      createdAt:1, updatedAt:2, completedAt:2, appliedAt:3, error:'',
+      result:{schemaVersion:3, width:1920, height:1080, blocks},
+    }];
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded', {detail:{project:{projectId:'project-1'}}}));
+    await vi.waitFor(() => expect(controller.getState().status).toBe('applied'));
+
+    expect(controller.getState()).toMatchObject({activeTool:'text-extract', reviewBlocks:blocks});
+    expect(document.querySelector('[data-hstar-action="apply-extraction"]')?.disabled).toBe(true);
+    controller.destroy();
+  });
+
+  it('keeps the OCR reported size while fitting vertical glyphs without transform scaling', async () => {
+    const block = {
+      id:'ocr-vertical-size', text:'甲乙丙丁', language:'zh', script:'zh-hans',
+      confidence:0.98, lowConfidence:false, writingMode:'vertical',
+      quad:[{x:0.2,y:0.2},{x:0.26,y:0.2},{x:0.26,y:0.62},{x:0.2,y:0.62}],
+      font:{familyCandidates:['Microsoft YaHei UI'], size:48, weight:600, style:'normal',
+        letterSpacing:0, lineHeight:1.1, strokeColor:'#00000000', strokeWidth:0,
+        shadow:{color:'#00000000', blur:0, offsetX:0, offsetY:0}},
+      color:'#123456', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+    };
+    const injectedWritingModeRuntime = createFakeWritingModeRuntime();
+    const injectedOcrLayout = createFakeOcrLayoutRuntime();
+    const {controller, fontManager} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-vertical-size', status:'succeeded', result:{width:1920, height:1080, blocks:[block]}}},
+      controllerOptions:{writingModeRuntime:injectedWritingModeRuntime, ocrLayout:injectedOcrLayout},
+    });
+    fontManager.matchOcrRun = vi.fn(() => ({family:'01免测试', faceFamily:'Microsoft YaHei UI', weight:600, italic:false}));
+    await controller.start();
+    await controller.runTextExtraction();
+    const [layer] = await controller.applyTextExtraction();
+    const object = layer.objects[0];
+
+    expect(object.fontSize).toBe(48);
+    expect(object.scaleX).toBe(1);
+    expect(object.scaleY).toBe(1);
+    expect(injectedOcrLayout.fitLineObject).toHaveBeenCalledWith(
+      object,
+      expect.objectContaining({left:384, top:216, height:453.6}),
+      expect.objectContaining({writingMode:'vertical'}),
+    );
+    expect(injectedOcrLayout.fitLineObject.mock.calls[0][1].width).toBeCloseTo(115.2, 8);
+    controller.destroy();
+  });
+
+  it.skip('schema v4 fontMetricQuad fitting is intentionally removed', async () => {
+    const block = {
+      id:'ocr-vertical-punctuation', text:'微风不燥，', language:'zh', script:'zh-hans',
+      confidence:0.98, lowConfidence:false, writingMode:'vertical',
+      quad:[{x:0.2,y:0.2},{x:0.26,y:0.2},{x:0.26,y:0.62},{x:0.2,y:0.62}],
+      fontMetricQuad:[{x:0.205,y:0.2},{x:0.255,y:0.2},{x:0.255,y:0.53},{x:0.205,y:0.53}],
+      font:{familyCandidates:['Microsoft YaHei UI'], size:48, weight:600, style:'normal',
+        letterSpacing:0, lineHeight:1.1, strokeColor:'#00000000', strokeWidth:0,
+        shadow:{color:'#00000000', blur:0, offsetX:0, offsetY:0}},
+      color:'#123456', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+    };
+    const injectedWritingModeRuntime = createFakeWritingModeRuntime();
+    const injectedOcrLayout = createFakeOcrLayoutRuntime();
+    const {controller, fontManager} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-vertical-punctuation', status:'succeeded', result:{width:1920, height:1080, blocks:[block]}}},
+      controllerOptions:{writingModeRuntime:injectedWritingModeRuntime, ocrLayout:injectedOcrLayout},
+    });
+    fontManager.matchOcrFont = vi.fn(() => ({faceFamily:'Microsoft YaHei UI', weight:600, italic:false}));
+    await controller.start();
+    await controller.runTextExtraction();
     await controller.applyTextExtraction();
-    expect(editor.__hstarAiTaskRecords[0].appliedAt).toBeGreaterThan(0);
+
+    const [, geometry, options] = injectedOcrLayout.fitTextObject.mock.calls[0];
+    expect(geometry).toMatchObject({left:384, top:216, height:453.6});
+    expect(geometry.width).toBeCloseTo(115.2, 8);
+    expect(options).toMatchObject({writingMode:'vertical', metricText:'微风不燥'});
+    expect(options.metricGeometry).toMatchObject({top:216, height:356.4});
+    expect(options.metricGeometry.left).toBeCloseTo(393.6, 8);
+    expect(options.metricGeometry.width).toBeCloseTo(96, 8);
+    controller.destroy();
+  });
+
+  it.skip('schema v4 glyphQuads fitting is intentionally removed', async () => {
+    const block = {
+      id:'ocr-glyph-positions', text:'微风，', language:'zh', script:'zh-hans',
+      confidence:0.98, lowConfidence:false, writingMode:'vertical',
+      quad:[{x:0.2,y:0.2},{x:0.26,y:0.2},{x:0.26,y:0.62},{x:0.2,y:0.62}],
+      glyphQuads:[
+        {charIndex:0, text:'微', role:'primary', quad:[{x:0.205,y:0.2},{x:0.255,y:0.2},{x:0.255,y:0.28},{x:0.205,y:0.28}]},
+        {charIndex:1, text:'风', role:'primary', quad:[{x:0.205,y:0.34},{x:0.255,y:0.34},{x:0.255,y:0.42},{x:0.205,y:0.42}]},
+        {charIndex:2, text:'，', role:'punctuation', quad:[{x:0.235,y:0.58},{x:0.25,y:0.58},{x:0.25,y:0.61},{x:0.235,y:0.61}]},
+      ],
+      font:{familyCandidates:['Microsoft YaHei UI'], size:48, weight:600, style:'normal',
+        letterSpacing:0, lineHeight:1.1, strokeColor:'#00000000', strokeWidth:0,
+        shadow:{color:'#00000000', blur:0, offsetX:0, offsetY:0}},
+      color:'#123456', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+    };
+    const injectedOcrLayout = createFakeOcrLayoutRuntime();
+    const {controller, fontManager} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-glyph-positions', status:'succeeded', result:{width:1920, height:1080, blocks:[block]}}},
+      controllerOptions:{writingModeRuntime:createFakeWritingModeRuntime(), ocrLayout:injectedOcrLayout},
+    });
+    fontManager.matchOcrFont = vi.fn(() => ({faceFamily:'Microsoft YaHei UI', weight:600, italic:false}));
+    await controller.start();
+    await controller.runTextExtraction();
+    const [layer] = await controller.applyTextExtraction();
+
+    const object = layer.objects[0];
+    const options = injectedOcrLayout.fitTextObject.mock.calls[0][2];
+    expect(options).toMatchObject({metricText:'微风'});
+    expect(options.metricGeometry.top).toBe(216);
+    expect(options.metricGeometry.left).toBeCloseTo(393.6, 8);
+    expect(options.metricGeometry.width).toBeCloseTo(96, 8);
+    expect(options.metricGeometry.height).toBeCloseTo(237.6, 8);
+    expect(object.hstarOcrGlyphQuads).toEqual(block.glyphQuads);
+    controller.destroy();
+  });
+
+  it.skip('schema v4 punctuation metric fitting is intentionally removed', async () => {
+    const block = {
+      id:'ocr-legacy-punctuation', text:'微风不燥，', language:'zh', script:'zh-hans',
+      confidence:0.98, lowConfidence:false, writingMode:'vertical',
+      quad:[{x:0.2,y:0.2},{x:0.26,y:0.2},{x:0.26,y:0.62},{x:0.2,y:0.62}],
+      font:{familyCandidates:['Microsoft YaHei UI'], size:48, weight:600, style:'normal',
+        letterSpacing:0, lineHeight:1.1, strokeColor:'#00000000', strokeWidth:0,
+        shadow:{color:'#00000000', blur:0, offsetX:0, offsetY:0}},
+      color:'#123456', align:'left', rotation:0, paragraphId:'p1', lineIndex:0,
+    };
+    const injectedOcrLayout = createFakeOcrLayoutRuntime();
+    const {controller, fontManager} = createHarness({
+      pollResults:{'text-extract':{taskId:'task-legacy-punctuation', status:'succeeded', result:{width:1920, height:1080, blocks:[block]}}},
+      controllerOptions:{writingModeRuntime:createFakeWritingModeRuntime(), ocrLayout:injectedOcrLayout},
+    });
+    fontManager.matchOcrFont = vi.fn(() => ({faceFamily:'Microsoft YaHei UI', weight:600, italic:false}));
+    await controller.start();
+    await controller.runTextExtraction();
+    await controller.applyTextExtraction();
+
+    const options = injectedOcrLayout.fitTextObject.mock.calls[0][2];
+    expect(options.metricText).toBe('微风不燥');
+    expect(options.metricGeometry.top).toBe(216);
+    expect(options.metricGeometry.height).toBeCloseTo(432, 8);
+    controller.destroy();
+  });
+
+  it('leaves persisted legacy OCR text unchanged when a project is reopened', async () => {
+    const injectedOcrLayout = createFakeOcrLayoutRuntime();
+    const {controller, editor, runtime} = createHarness({
+      controllerOptions:{ocrLayout:injectedOcrLayout},
+    });
+    const legacy = new FakeVerticalText('AB', {
+      fontSize:120,
+      lineHeight:1.16,
+      charSpacing:-1000,
+      scaleX:1,
+      scaleY:1,
+      hstarWritingMode:'vertical',
+      hstarOcrBlockId:'legacy-vertical',
+      hstarOcrQuad:[{x:0.1,y:0.2},{x:0.2,y:0.2},{x:0.2,y:0.5},{x:0.1,y:0.5}],
+      hstarOcrVisualProfile:{writingMode:'vertical', rotation:0},
+    });
+    editor.layers.push({
+      layerId:'legacy-text-layer', name:'Legacy OCR', visible:true, opacity:100,
+      blend:'source-over', objects:[legacy],
+    });
+    await controller.start();
+
+    window.dispatchEvent(new CustomEvent('openshop:project-loaded'));
+    await Promise.resolve();
+
+    expect(injectedOcrLayout.fitLineObject).not.toHaveBeenCalled();
+    expect(legacy.charSpacing).toBe(-1000);
+    expect(legacy.hstarOcrLayoutVersion).toBeUndefined();
+    expect(runtime.requestSave).not.toHaveBeenCalledWith({reason:'ocr-layout-migrated'});
     controller.destroy();
   });
 
@@ -1172,10 +1930,12 @@ describe('Hstar OpenShop multilingual text tools', () => {
     const generated = editor.layers[2];
     expect(generated.hstarAiGeneration).toEqual({
       taskId:'task-1', textLayerId:'text-layer-1', requestGeneration:1, outputAssetId:OUTPUT_ASSET_ID,
-      toolId:'art-font-restore', contentBox:{x:10, y:5, width:340, height:110},
+      toolId:'art-font-restore', placementBox:{x:180, y:200, width:360, height:120},
     });
     expect(generated.objects[0].hstarAiGeneration).toEqual(generated.hstarAiGeneration);
-    expect(generated.objects[0].scaleX).toBe(generated.objects[0].scaleY);
+    expect(generated.objects[0]).toMatchObject({
+      left:180, top:200, angle:0, scaleX:1, scaleY:1,
+    });
     expect(carrierLayer.visible).toBe(false);
     expect(carrier.visible).toBe(false);
     expect(editor.saveHistory).toHaveBeenCalledOnce();
@@ -1475,7 +2235,7 @@ describe('Hstar OpenShop multilingual text tools', () => {
     const invalidCarrier = addArtCarrier(invalidHarness);
     invalidHarness.aiClient.pollTask.mockResolvedValue({
       taskId:'task-1', status:'succeeded', result:{
-        ...artResult(), contentBox:{x:10, y:5, width:400, height:110},
+        ...artResult(), placementBox:{x:180, y:200, width:400, height:120},
       },
     });
     await invalidHarness.controller.start();
@@ -1613,6 +2373,50 @@ describe('Hstar OpenShop multilingual text tools', () => {
     await vi.waitFor(() => expect(editor.__hstarAiTaskRecords[0].reconcileState).toBe('applied'));
     expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(1);
     expect(aiClient.cancelTask).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+
+  it('serializes art reconciliation when a hidden POST save overlaps visible-session polling', async () => {
+    const harness = createHarness();
+    const {controller, editor, aiClient, imageLoader, runtime} = harness;
+    addArtCarrier(harness);
+    const createdTask = createDeferred();
+    const creationSave = createDeferred();
+    const decodedImage = createDeferred();
+    let artTaskSaveCount = 0;
+    runtime.requestSave.mockImplementation(({reason}) => {
+      if(reason === 'art-font-task'){
+        artTaskSaveCount += 1;
+        if(artTaskSaveCount === 1) return creationSave.promise;
+      }
+      return Promise.resolve({saved:true});
+    });
+    aiClient.createTask.mockReturnValue(createdTask.promise);
+    aiClient.pollTask.mockResolvedValue({
+      taskId:'task-overlapping-reconcile', status:'succeeded', result:artResult(),
+    });
+    imageLoader.mockReturnValue(decodedImage.promise);
+    await controller.start();
+
+    const creating = controller.restoreArtFont('text-layer-1');
+    await vi.waitFor(() => expect(aiClient.createTask).toHaveBeenCalledOnce());
+    window.dispatchEvent(new CustomEvent('openshop:session-hidden', {detail:{context}}));
+    createdTask.resolve({task_id:'task-overlapping-reconcile', status:'queued'});
+    await vi.waitFor(() => expect(artTaskSaveCount).toBe(1));
+
+    window.dispatchEvent(new CustomEvent('openshop:session-visible', {detail:{context}}));
+    await vi.waitFor(() => expect(imageLoader).toHaveBeenCalledOnce());
+    creationSave.resolve({saved:true});
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(imageLoader).toHaveBeenCalledOnce();
+    decodedImage.resolve({
+      type:'image', width:360, height:120,
+      set(values){ Object.assign(this, values); },
+    });
+    await creating;
+    await vi.waitFor(() => expect(editor.__hstarAiTaskRecords[0].reconcileState).toBe('applied'));
+    expect(editor.layers.filter(layer => layer.hstarAiGeneration)).toHaveLength(1);
     controller.destroy();
   });
 

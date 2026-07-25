@@ -163,16 +163,211 @@ async function prepareDirectEditor(page){
   });
 }
 
-async function dragSelection(page){
+async function dragSelection(page, {
+  startX = 100,
+  startY = 100,
+  endX = 360,
+  endY = 280,
+} = {}){
   const canvas = page.locator('.upper-canvas');
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
-  await page.mouse.move(box.x + 100, box.y + 100);
+  await page.mouse.move(box.x + startX, box.y + startY);
   await page.mouse.down();
-  await page.mouse.move(box.x + 360, box.y + 280, {steps:8});
+  await page.mouse.move(box.x + endX, box.y + endY, {steps:8});
   await page.mouse.up();
   await expect.poll(() => page.evaluate(() => Boolean(OS._selectionBounds))).toBe(true);
 }
+
+for(const tool of [
+  {id:'generative-fill', name:'生成式填充'},
+  {id:'local-redraw', name:'局部重绘'},
+]){
+  test(`${tool.name} starts compact and inserts a blue selection mention`, async ({page}) => {
+    await prepareDirectEditor(page);
+    await page.getByRole('button', {name:tool.name}).click();
+
+    const bar = page.locator('[data-generative-operation-bar]');
+    await expect(bar).toBeVisible();
+    await expect(bar).toHaveClass(/is-collapsed/);
+    await expect.poll(() => page.evaluate(() => Boolean(OS._selectionBounds))).toBe(false);
+
+    await dragSelection(page, {startX:80, startY:80, endX:220, endY:190});
+    await expect(bar).not.toHaveClass(/is-collapsed/);
+    await expect(page.locator('[data-reference-thumbnail]')).toHaveCount(1);
+
+    const prompt = page.locator('[data-generative-prompt]');
+    await expect(prompt).toHaveAttribute('contenteditable', 'true');
+    await prompt.fill('@');
+    await page.locator('[data-reference-mention="@选区1"]').click();
+
+    const token = prompt.locator('[data-generative-mention-token]');
+    await expect(token).toHaveText('@选区1');
+    await expect(token).toHaveAttribute('contenteditable', 'false');
+    await expect(token).toHaveCSS('background-color', 'rgb(37, 99, 235)');
+    await expect(token).toHaveCSS('border-radius', '999px');
+  });
+}
+
+test('keeps empty guidance separated and numbers additive selections', async ({page}) => {
+  await page.setViewportSize({width:1440, height:1000});
+  await prepareDirectEditor(page);
+  await page.getByRole('button', {name:'局部重绘'}).click();
+
+  const bar = page.locator('[data-generative-operation-bar]');
+  const hint = page.locator('[data-generative-selection-hint]');
+  const feedback = page.locator('.hstar-generative-feedback');
+  await expect(bar).toBeVisible();
+  await expect(bar).toHaveClass(/is-collapsed/);
+  await expect(hint).toBeHidden();
+  await expect(feedback).toBeHidden();
+
+  await dragSelection(page, {startX:80, startY:80, endX:220, endY:190});
+  await expect(bar).toBeVisible();
+  await expect(bar).not.toHaveClass(/is-collapsed/);
+  await expect(feedback).toBeVisible();
+  await expect.poll(() => page.evaluate(() => ({
+    status:window.__generativeE2E.controller.getState().status,
+    error:window.__generativeE2E.controller.getState().error,
+  }))).toEqual({status:'ready', error:''});
+  await expect(page.locator('body')).not.toContainText('发生错误，请查看控制台');
+  await expect(page.locator('.hstar-selection-region-marker')).toHaveText(['1']);
+
+  const zoomButton = bar.locator('[data-generative-action="zoom-panel"]');
+  await expect(zoomButton).toHaveAttribute('aria-label', '缩放面板');
+  await zoomButton.click();
+  await expect(bar).toHaveClass(/is-collapsed/);
+  await expect(zoomButton).toHaveAttribute('aria-label', '恢复面板');
+  await expect(bar.locator('[data-generative-workbench-top]')).toBeVisible();
+
+  await page.keyboard.down('Shift');
+  await dragSelection(page, {startX:330, startY:250, endX:470, endY:370});
+  await page.keyboard.up('Shift');
+  await expect.poll(() => page.evaluate(() => OS._selectionRegions.length)).toBe(2);
+  await expect(page.locator('.hstar-selection-region-marker')).toHaveText(['1', '2']);
+  await expect.poll(() => page.locator('[data-reference-thumbnail]').count()).toBe(2);
+  await expect(bar).not.toHaveClass(/is-collapsed/);
+  await expect(zoomButton).toHaveAttribute('aria-label', '缩放面板');
+  await expect(bar).not.toHaveClass(/is-expanded/);
+  const thumbnailFit = await page.locator('[data-primary-reference-thumbnail] img').evaluate(element => ({
+    fit:getComputedStyle(element).objectFit,
+    position:getComputedStyle(element).objectPosition,
+  }));
+  expect(thumbnailFit).toEqual({fit:'cover', position:'50% 50%'});
+  await page.locator('.hstar-primary-reference .hstar-reference-delete').click();
+  await expect.poll(() => page.evaluate(() => OS._selectionRegions.length)).toBe(1);
+  await expect.poll(() => page.locator('[data-reference-thumbnail]').count()).toBe(1);
+});
+
+test('adds a library reference after transient selections with contiguous persisted order', async ({page}) => {
+  await page.route('**/api/asset-library', route => route.fulfill({
+    status:200,
+    contentType:'application/json',
+    body:JSON.stringify({library:{libraries:[{
+      id:'library-e2e',
+      name:'E2E 素材库',
+      categories:[{
+        id:'category-e2e',
+        name:'图片',
+        type:'image',
+        items:[{
+          id:'item-e2e',
+          name:'素材图',
+          kind:'image',
+          url:'/static/images/logo.png',
+        }],
+      }],
+    }]}}),
+  }));
+  await page.route('**/api/openshop/projects/visual-project/asset-imports', route => route.fulfill({
+    status:200,
+    contentType:'application/json',
+    body:JSON.stringify({asset:{
+      assetId:'9'.repeat(64),
+      url:'/static/images/logo.png',
+      width:512,
+      height:512,
+      role:'ai-reference',
+    }}),
+  }));
+  await prepareDirectEditor(page);
+  await page.getByRole('button', {name:'局部重绘'}).click();
+  await dragSelection(page, {startX:80, startY:80, endX:220, endY:190});
+  await page.keyboard.down('Shift');
+  await dragSelection(page, {startX:330, startY:250, endX:470, endY:370});
+  await page.keyboard.up('Shift');
+
+  await page.locator('[data-generative-action="toggle-reference-menu"]').click();
+  await page.locator('[data-reference-add="library"]').click();
+  await page.getByRole('dialog', {name:'选择素材库参考图'}).getByRole('button', {name:/素材图/}).click();
+
+  await expect.poll(() => page.evaluate(() => OS.__hstarAiReferenceRecords)).toEqual([expect.objectContaining({
+    sourceType:'library',
+    alias:'参考图1',
+    order:0,
+  })]);
+  await expect(page.locator('body')).not.toContainText('OpenShop reference order must be contiguous');
+  await expect.poll(() => page.evaluate(() => window.__generativeE2E.controller.getState().error)).toBe('');
+});
+
+test('crops selection thumbnails in document coordinates after zoom and pan', async ({page}) => {
+  await prepareDirectEditor(page);
+  await page.getByRole('button', {name:'局部重绘'}).click();
+  await page.evaluate(() => {
+    const region = {x:400, y:0, w:400, h:300};
+    const block = new fabric.Rect({
+      left:region.x,
+      top:region.y,
+      width:region.w,
+      height:region.h,
+      fill:'#16c784',
+      strokeWidth:0,
+      selectable:false,
+    });
+    OS.canvas.add(block);
+    OS.layers[OS.activeLayerIdx].objects.push(block);
+    OS.canvas.viewportTransform = [0.5, 0, 0, 0.5, 240, 160];
+    OS._selectionBounds = {x:440, y:160, w:200, h:150};
+    OS._selectionDocumentBounds = {...region};
+    OS._selectionRegions = [{...region}];
+    OS.canvas.renderAll();
+    window.dispatchEvent(new CustomEvent('openshop:selection-changed', {
+      detail:{
+        reason:'marquee',
+        hasSelection:true,
+        bounds:{...region},
+        screenBounds:{...OS._selectionBounds},
+        regions:[{...region}],
+        regionCount:1,
+        incomingBounds:{...region},
+      },
+    }));
+  });
+  const thumbnail = page.locator('[data-primary-reference-thumbnail] img');
+  await expect(thumbnail).toBeVisible();
+  const sample = await thumbnail.evaluate(async image => {
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    const pixel = context.getImageData(
+      Math.floor(canvas.width / 2),
+      Math.floor(canvas.height / 2),
+      1,
+      1,
+    ).data;
+    return {width:canvas.width, height:canvas.height, pixel:Array.from(pixel)};
+  });
+
+  expect(sample.width).toBe(400);
+  expect(sample.height).toBe(300);
+  expect(sample.pixel[0]).toBeLessThan(40);
+  expect(sample.pixel[1]).toBeGreaterThan(180);
+  expect(sample.pixel[2]).toBeGreaterThan(100);
+  expect(sample.pixel[3]).toBe(255);
+});
 
 test('runs selection, references, multi-output layers and retry in the inline editor', async ({page}) => {
   test.setTimeout(120000);
@@ -185,15 +380,39 @@ test('runs selection, references, multi-output layers and retry in the inline ed
   expect(await page.evaluate(() => OS.state.tool)).toBe('marquee-rect');
   expect(await page.evaluate(() => window.__generativeE2E.getRequest())).toBeNull();
 
-  await dragSelection(page);
   const bar = page.locator('[data-generative-operation-bar]');
   await expect(bar).toBeVisible();
+  await expect(bar).toHaveClass(/is-collapsed/);
+
+  await dragSelection(page);
+  await expect(bar).toBeVisible();
+  await expect(bar).not.toHaveClass(/is-collapsed/);
+  await expect(bar).not.toHaveClass(/is-expanded/);
   const thumbnail = page.locator('[data-primary-reference-thumbnail] img');
   await expect(thumbnail).toBeVisible();
-  const fullThumbnail = await thumbnail.getAttribute('src');
-  await page.locator('[data-reference-mode="selection"]').click();
-  await expect.poll(() => thumbnail.getAttribute('src')).not.toBe(fullThumbnail);
+  const selectionThumbnail = await thumbnail.getAttribute('src');
+  await expect(page.locator('[data-reference-mode="selection"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => page.evaluate(() => ({
+    mode:window.__generativeE2E.controller.getState().referenceMode,
+    primaryType:window.__generativeE2E.referenceManager.getPrimary()?.sourceType,
+  }))).toMatchObject({mode:'selection', primaryType:'selection'});
   await page.locator('[data-reference-mode="full"]').click();
+  await expect.poll(() => page.evaluate(() => ({
+    mode:window.__generativeE2E.controller.getState().referenceMode,
+    primaryType:window.__generativeE2E.referenceManager.getPrimary()?.sourceType,
+  }))).toMatchObject({mode:'full', primaryType:'primary'});
+  const fullThumbnail = await thumbnail.getAttribute('src');
+  expect(fullThumbnail).not.toBe(selectionThumbnail);
+  await expect.poll(() => page.evaluate(() => {
+    const primary = window.__generativeE2E.referenceManager.getPrimary();
+    return {width:primary?.width, height:primary?.height, canvasWidth:OS.canvasW, canvasHeight:OS.canvasH};
+  })).toEqual({width:800, height:600, canvasWidth:800, canvasHeight:600});
+  await page.locator('[data-reference-mode="selection"]').click();
+  await expect.poll(() => page.evaluate(() => ({
+    mode:window.__generativeE2E.controller.getState().referenceMode,
+    primaryType:window.__generativeE2E.referenceManager.getPrimary()?.sourceType,
+  }))).toMatchObject({mode:'selection', primaryType:'selection'});
+  await expect.poll(() => thumbnail.getAttribute('src')).not.toBe(fullThumbnail);
 
   await page.locator('[data-generative-action="toggle-reference-menu"]').click();
   await page.locator('[data-reference-add="selection"]').click();
@@ -204,10 +423,14 @@ test('runs selection, references, multi-output layers and retry in the inline ed
   const prompt = page.locator('[data-generative-prompt]');
   await prompt.fill('@');
   await page.locator('[data-reference-mention="@参考图1"]').click();
-  await expect(prompt).toHaveValue(/@参考图1/);
+  await expect(prompt).toContainText('@参考图1');
+  const mentionToken = prompt.locator('[data-generative-mention-token]');
+  await expect(mentionToken).toHaveCount(1);
+  await expect(mentionToken).toHaveCSS('background-color', 'rgb(37, 99, 235)');
+  await expect(mentionToken).toHaveCSS('border-radius', '999px');
   await prompt.fill('把选区改成 @参考图1 的材质');
-  await page.locator('[data-generative-count]').fill('5');
-  await page.locator('[data-generative-count]').dispatchEvent('change');
+  await page.locator('[data-generative-menu-trigger="count"]').click();
+  await page.locator('[data-generative-count-option="5"]').click();
   await page.locator('[data-generative-submit]').click();
 
   await expect.poll(() => page.evaluate(() => OS.layers.filter(layer => layer.hstarAiGeneration).length)).toBe(4);
@@ -302,20 +525,27 @@ for(const viewport of [
     test.setTimeout(120000);
     await page.setViewportSize({width:viewport.width, height:viewport.height});
     await prepareDirectEditor(page);
-    await page.evaluate(() => {
-      OS._selectionBounds = {x:80, y:60, w:300, h:220};
-      window.dispatchEvent(new CustomEvent('openshop:selection-changed'));
-    });
     await page.getByRole('button', {name:'局部重绘'}).click();
+    await page.evaluate(() => {
+      const region = {x:80, y:60, w:300, h:220};
+      OS._selectionBounds = {...region};
+      OS._selectionDocumentBounds = {...region};
+      OS._selectionRegions = [{...region}];
+      window.dispatchEvent(new CustomEvent('openshop:selection-changed', {
+        detail:{reason:'marquee', hasSelection:true, regions:[{...region}], regionCount:1},
+      }));
+    });
+    const bar = page.locator('[data-generative-operation-bar]');
     const prompt = page.locator('[data-generative-prompt]');
     await prompt.fill('@');
     await expect(page.locator('[data-reference-mention-picker]')).toBeVisible();
-    const bar = page.locator('[data-generative-operation-bar]');
     const panels = page.locator('#panels');
     const statusbar = page.locator('#statusbar');
+    const toolbar = page.locator('#toolbar');
     await expect(bar).toBeVisible();
     if(await panels.isVisible()) await expectNoOverlap(bar, panels);
     if(await statusbar.isVisible()) await expectNoOverlap(bar, statusbar);
+    if(await toolbar.isVisible()) await expectNoOverlap(bar, toolbar);
     const modelLayout = await page.locator('[data-generative-model]').evaluate(element => {
       const content = element.getBoundingClientRect();
       const button = element.closest('button').getBoundingClientRect();
@@ -336,12 +566,49 @@ for(const viewport of [
     expect(submitBox.x).toBeGreaterThanOrEqual(0);
     expect(submitBox.x + submitBox.width).toBeLessThanOrEqual(viewport.width + 1);
     const barBox = await bar.boundingBox();
+    if(viewport.width >= 900){
+      expect(barBox.width).toBeLessThanOrEqual(940);
+      expect(barBox.height).toBeLessThanOrEqual(420);
+      const typography = await page.locator('[data-generative-prompt]').evaluate(element => ({
+        prompt:Number.parseFloat(getComputedStyle(element).fontSize),
+        mode:Number.parseFloat(getComputedStyle(document.querySelector('.hstar-generative-mode-chip strong')).fontSize),
+      }));
+      expect(typography.prompt).toBeLessThanOrEqual(12);
+      expect(typography.mode).toBeLessThanOrEqual(11);
+    }
     expect(submitBox.y).toBeGreaterThanOrEqual(barBox.y);
     expect(submitBox.y + submitBox.height).toBeLessThanOrEqual(barBox.y + barBox.height + 1);
     const modeBoxes = await page.locator('[data-reference-mode]').evaluateAll(elements => (
       elements.map(element => element.getBoundingClientRect().height)
     ));
     expect(modeBoxes.every(height => height <= 30)).toBe(true);
+
+    await prompt.fill('test prompt');
+    await page.locator('[data-generative-menu-trigger="resolution"]').click();
+    const resolutionMenu = page.locator('[data-generative-popover="resolution"]');
+    await expect(resolutionMenu).toBeVisible();
+    for(const value of ['auto', '1k', '2k', '4k', 'custom']) {
+      await expect(resolutionMenu.locator(`[data-generative-size-resolution="${value}"]`)).toBeVisible();
+    }
+    const resolutionBox = await resolutionMenu.boundingBox();
+    expect(resolutionBox.x).toBeGreaterThanOrEqual(0);
+    expect(resolutionBox.y).toBeGreaterThanOrEqual(0);
+    expect(resolutionBox.x + resolutionBox.width).toBeLessThanOrEqual(viewport.width + 1);
+    expect(resolutionBox.y + resolutionBox.height).toBeLessThanOrEqual(viewport.height + 1);
+    await resolutionMenu.locator('[data-generative-size-resolution="2k"]').click();
+    await expect(page.locator('[data-generative-menu-trigger="resolution"]')).toContainText('2K');
+
+    await page.locator('[data-generative-menu-trigger="ratio"]').click();
+    const ratioMenu = page.locator('[data-generative-popover="ratio"]');
+    await expect(ratioMenu).toBeVisible();
+    for(const value of ['selection', 'square', 'portrait', 'landscape', 'portrait43', 'landscape43', 'story', 'wide', 'ultrawide', 'ultratall', 'source', 'custom']) {
+      await expect(ratioMenu.locator(`[data-generative-size-ratio="${value}"]`)).toBeVisible();
+    }
+    const ratioBox = await ratioMenu.boundingBox();
+    expect(ratioBox.x).toBeGreaterThanOrEqual(0);
+    expect(ratioBox.y).toBeGreaterThanOrEqual(0);
+    expect(ratioBox.x + ratioBox.width).toBeLessThanOrEqual(viewport.width + 1);
+    expect(ratioBox.y + ratioBox.height).toBeLessThanOrEqual(viewport.height + 1);
     await page.screenshot({path:testInfo.outputPath(`openshop-generative-${viewport.name}.png`), fullPage:true});
   });
 }
@@ -445,7 +712,10 @@ test('keeps a node generation running while another OpenShop project is active',
 
   await page.goto(baseUrl, {waitUntil:'domcontentloaded'});
   await page.waitForFunction(() => Boolean(window.HstarOpenShopHost));
-  await page.evaluate(src => { document.getElementById('frame-canvas').src = src; }, `/static/canvas.html?id=${canvas.id}&v=${Date.now()}`);
+  await page.evaluate(src => {
+    window.switchUI?.(null, 'canvas', {skipRemember:true});
+    document.getElementById('frame-canvas').src = src;
+  }, `/static/canvas.html?id=${canvas.id}&v=${Date.now()}`);
   const canvasFrame = await expect.poll(() => page.frames().find(frame => frame.url().includes(`canvas.html?id=${canvas.id}`)) || null).toBeTruthy();
   const frame = page.frames().find(candidate => candidate.url().includes(`canvas.html?id=${canvas.id}`));
   await frame.waitForFunction(() => Boolean(window.HstarClassicOpenShopAdapter));
@@ -466,15 +736,24 @@ test('keeps a node generation running while another OpenShop project is active',
   const editorA = await handleA.contentFrame();
   await editorA.waitForFunction(() => Boolean(window.HstarOpenShopGenerativeToolsController));
   await editorA.evaluate(() => {
-    OS._selectionBounds = {x:80, y:70, w:260, h:180};
-    window.dispatchEvent(new CustomEvent('openshop:selection-changed'));
     document.querySelector('[data-hstar-generative-tool="local-redraw"]').click();
+    const region = {x:80, y:70, w:260, h:180};
+    OS._selectionBounds = {...region};
+    OS._selectionDocumentBounds = {...region};
+    OS._selectionRegions = [{...region}];
+    window.dispatchEvent(new CustomEvent('openshop:selection-changed', {
+      detail:{reason:'marquee', hasSelection:true, regions:[{...region}], regionCount:1},
+    }));
+  });
+  await editorA.waitForFunction(() => (
+    window.HstarOpenShopGenerativeToolsController.getState().status === 'ready'
+  ));
+  await editorA.evaluate(() => {
     const prompt = document.querySelector('[data-generative-prompt]');
-    prompt.value = '后台生成测试';
+    prompt.textContent = '后台生成测试';
     prompt.dispatchEvent(new Event('input', {bubbles:true}));
-    const count = document.querySelector('[data-generative-count]');
-    count.value = '2';
-    count.dispatchEvent(new Event('change', {bubbles:true}));
+    document.querySelector('[data-generative-menu-trigger="count"]').click();
+    document.querySelector('[data-generative-count-option="2"]').click();
     window.__backgroundMarker = 'project-a-frame';
     document.querySelector('[data-generative-submit]').click();
   });

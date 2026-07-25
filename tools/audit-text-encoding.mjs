@@ -1,14 +1,21 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import {encodingIssueKind} from './text-encoding-rules.mjs';
 
 const NULL = String.fromCharCode(0);
 const scanPathspecs = [
-  'main.py',
+  ':(glob)*.py',
+  ':(exclude)get-pip.py',
   ':(glob)static/**/*.html',
   ':(glob)static/**/*.js',
   ':(glob)static/**/*.css',
   ':(glob)static/**/*.json',
   ':(exclude)static/vendor/**',
+  ':(glob)integrations/openshop/**/*.html',
+  ':(glob)integrations/openshop/host/**/*.js',
+  ':(glob)integrations/openshop/host/**/*.css',
+  ':(glob)integrations/openshop/locales/**/*.js',
+  ':(exclude)integrations/openshop/vendor/**',
 ];
 
 const files = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...scanPathspecs], {
@@ -97,9 +104,18 @@ function reportJsonParseFailure(file, text, error) {
   findings.push({file, line: lineNumberAt(text, position), kind: 'invalid-json'});
 }
 
+function reportRuleIssues(file, text) {
+  for(const [lineIndex, line] of text.split(/\r?\n/).entries()) {
+    const kind = encodingIssueKind(line);
+    if(kind && !findings.some(item => item.file === file && item.line === lineIndex + 1 && item.kind === kind)) {
+      findings.push({file, line:lineIndex + 1, kind});
+    }
+  }
+}
+
 for (const file of files) {
   const text = fs.readFileSync(file).toString('utf8').replace(/^\uFEFF/, '');
-  const isJavaScript = file.toLowerCase().endsWith('.js');
+  const isJavaScript = /\.(?:js|mjs)$/i.test(file);
 
   if (file.toLowerCase().endsWith('.json')) {
     try {
@@ -112,6 +128,7 @@ for (const file of files) {
   reportMatches(file, text, /\uFFFD/g, 'replacement-character', isJavaScript);
   reportMatches(file, text, utf8Latin1Pattern, 'utf8-as-latin1-mojibake', isJavaScript);
   reportMatches(file, text, chineseMojibakePattern, 'chinese-mojibake', isJavaScript);
+  reportRuleIssues(file, text);
 }
 
 if (findings.length > 0) {

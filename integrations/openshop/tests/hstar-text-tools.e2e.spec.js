@@ -238,6 +238,58 @@ function artisticOcrBlocks(){
   ];
 }
 
+function upgradeOcrBlockToV5(block){
+  if(Array.isArray(block?.runs)) return block;
+  const font = block?.font && typeof block.font === 'object' ? block.font : {};
+  const text = String(block?.text ?? '');
+  const language = String(block?.language || '').toLowerCase();
+  const blockScript = block?.script
+    || (/^zh-(?:tw|hk|mo)/.test(language) ? 'zh-hant'
+      : language.startsWith('zh') ? 'zh-hans'
+        : language.startsWith('en') ? 'en' : 'mixed');
+  const characters = Array.from(text);
+  const scripts = characters.map(character => (
+    /[\u3400-\u9fff]/u.test(character) ? 'zh-hans'
+      : /[A-Za-z0-9]/u.test(character) ? 'en' : ''
+  ));
+  for(let index = 1; index < scripts.length; index += 1){
+    if(!scripts[index]) scripts[index] = scripts[index - 1];
+  }
+  for(let index = scripts.length - 2; index >= 0; index -= 1){
+    if(!scripts[index]) scripts[index] = scripts[index + 1];
+  }
+  const ranges = blockScript === 'mixed'
+    ? characters.reduce((result, _character, index) => {
+      const script = scripts[index] || 'zh-hans';
+      const previous = result.at(-1);
+      if(previous?.script === script) previous.end = index + 1;
+      else result.push({start:index, end:index + 1, script});
+      return result;
+    }, [])
+    : [{start:0, end:characters.length, script:blockScript}];
+  const run = range => ({
+    ...range,
+    familyCandidates:Array.isArray(font.familyCandidates) ? font.familyCandidates : [],
+    size:Number(font.size || 40),
+    weight:Number(font.weight || 400),
+    style:font.style === 'italic' ? 'italic' : 'normal',
+    artistic:font.artistic === true,
+    styleDescription:String(font.styleDescription || ''),
+    color:block?.color || block?.fill || '#ffffff',
+    letterSpacing:Number(font.letterSpacing || 0),
+    lineHeight:Number(font.lineHeight || 1.16),
+    strokeColor:font.strokeColor || '#00000000',
+    strokeWidth:Number(font.strokeWidth || 0),
+    shadow:font.shadow || {color:'#00000000', blur:0, offsetX:0, offsetY:0},
+  });
+  return {
+    ...block,
+    script:blockScript,
+    writingMode:String(block?.writingMode || '').startsWith('vertical') ? 'vertical' : 'horizontal',
+    runs:ranges.map(run),
+  };
+}
+
 async function installArtisticWorkflowRoutes(page){
   const ocrBlocks = artisticOcrBlocks();
   const tasks = new Map();
@@ -359,7 +411,7 @@ async function installArtisticWorkflowRoutes(page){
         assetId:outputAsset.assetId,
         url:outputAsset.url,
         name:outputAsset.name, mime:'image/png', width:2, height:2,
-        contentBox:{x:0, y:0, width:2, height:2},
+        placementBox:{x:0, y:0, width:2, height:2},
       };
       await route.fulfill({
         status:200, contentType:'application/json',
@@ -374,7 +426,7 @@ async function installArtisticWorkflowRoutes(page){
       status:200, contentType:'application/json',
       body:JSON.stringify({task:{
         taskId, status:'succeeded',
-        result:{schemaVersion:1, width:1920, height:1080, blocks:ocrBlocks},
+        result:{schemaVersion:5, width:150, height:150, blocks:ocrBlocks.map(upgradeOcrBlockToV5)},
       }}),
     });
   });
@@ -484,10 +536,10 @@ async function installAiRoutes(page, options = {}){
     }
     const result = task.body.tool_id === 'text-extract'
       ? {
-          schemaVersion:1,
-          width:Number(options.width || 1920),
-          height:Number(options.height || 1080),
-          blocks:ocrBlocks,
+          schemaVersion:5,
+          width:Number(options.width || 150),
+          height:Number(options.height || 150),
+          blocks:ocrBlocks.map(upgradeOcrBlockToV5),
         }
       : {
           assetId:task.body.source_asset_id,
@@ -759,7 +811,7 @@ test('artistic OCR continues across hide, stays isolated, and follows real undo 
   expect(appliedAudit.layerGeneration).toEqual({
     taskId:ai.artTaskId, textLayerId:artisticLayerId,
     requestGeneration:1, outputAssetId:ai.outputAssetId, toolId:'art-font-restore',
-    contentBox:{x:0, y:0, width:2, height:2},
+    placementBox:{x:0, y:0, width:2, height:2},
   });
 
   await page.locator('[data-openshop-back]').click();
@@ -911,15 +963,23 @@ test('classic canvas keeps OCR, removal, cancellation and API state isolated per
   await expect.poll(() => editor.evaluate(() => OS.canvas.getObjects()
     .filter(object => object.type === 'i-text')
     .map(object => object.text))).toEqual(ai.ocrBlocks.map(block => block.text));
+  await expect(editor.locator('[data-hstar-action="apply-extraction"]')).toBeEnabled();
+  await editor.locator('[data-hstar-action="apply-extraction"]').click();
+  await expect.poll(() => editor.evaluate(() => OS.canvas.getObjects()
+    .filter(object => object.type === 'i-text')
+    .map(object => object.text))).toEqual([
+      ...ai.ocrBlocks.map(block => block.text),
+      ...ai.ocrBlocks.map(block => block.text),
+    ]);
   await saveEditor(editor, 'e2e-ocr');
 
   editor = await openNode(page, canvas, 'classic', nodeB.id, 1);
   await editor.evaluate(() => { OS._selectionBounds = {x:120, y:90, w:640, h:320}; });
   await editor.locator('[data-hstar-text-tool="text-remove"]').click();
-  await editor.locator('[data-hstar-remove-mode="selection"]').click();
+  await expect(editor.locator('[data-hstar-remove-mode]')).toHaveCount(0);
   await editor.locator('[data-hstar-action="run-removal"]').click();
   await editor.waitForFunction(() => OS.layers.some(layer => layer.name === '去除文字'));
-  await saveEditor(editor, 'e2e-selection-removal');
+  await saveEditor(editor, 'e2e-layer-removal');
 
   const layerCountBeforeCancel = await editor.evaluate(() => OS.layers.length);
   ai.holdRemoval();
@@ -938,7 +998,10 @@ test('classic canvas keeps OCR, removal, cancellation and API state isolated per
     texts:OS.canvas.getObjects().filter(object => object.type === 'i-text').map(object => object.text),
     records:OS.__hstarAiTaskRecords,
   }));
-  expect(aSnapshot.texts).toEqual(ai.ocrBlocks.map(block => block.text));
+  expect(aSnapshot.texts).toEqual([
+    ...ai.ocrBlocks.map(block => block.text),
+    ...ai.ocrBlocks.map(block => block.text),
+  ]);
   expect(aSnapshot.layerNames).not.toContain('去除文字');
   expect(aSnapshot.records).toHaveLength(1);
   expect(aSnapshot.records[0]).toMatchObject({toolId:'text-extract', status:'succeeded'});
@@ -1096,7 +1159,7 @@ test('text tool panel stays inside desktop and mobile workspaces', async ({page,
   expect(pageErrors).toEqual([]);
 });
 
-test('4K document handles twenty OCR blocks and selection removal without a blank canvas', async ({page, request}, testInfo) => {
+test('4K document handles twenty OCR blocks and whole-layer removal without a blank canvas', async ({page, request}, testInfo) => {
   test.setTimeout(180000);
   await page.setViewportSize({width:1920, height:1080});
   const pageErrors = [];
@@ -1153,7 +1216,7 @@ test('4K document handles twenty OCR blocks and selection removal without a blan
     OS.updateLayersPanel();
   });
   await editor.locator('[data-hstar-text-tool="text-remove"]').click();
-  await editor.locator('[data-hstar-remove-mode="selection"]').click();
+  await expect(editor.locator('[data-hstar-remove-mode]')).toHaveCount(0);
   await editor.locator('[data-hstar-action="run-removal"]').click();
   await editor.waitForFunction(() => OS.layers.some(layer => layer.name === '去除文字'));
   await saveEditor(editor, 'e2e-4k-text-tools');

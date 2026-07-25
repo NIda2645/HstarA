@@ -100,6 +100,7 @@ assert.equal(node.y, 120);
 const imageOne = {id:'image-1', type:'image', url:'/image-one.png', name:'第一张.png', mediaKind:'image', updated_at:11};
 const imageTwo = {id:'image-2', type:'image', url:'/image-two.png', name:'第二张.png', mediaKind:'image', updated_at:22};
 const prompt = {id:'prompt-1', type:'prompt', text:'not an image'};
+const generator = {id:'generator-1', type:'generator'};
 nodes = [imageOne, imageTwo, prompt, node];
 connections = [
   {id:'edge-first', from:'image-1', to:node.id},
@@ -107,8 +108,10 @@ connections = [
 ];
 
 assert.equal(adapter.canConnect(imageOne, node), true);
+assert.equal(adapter.canConnect(generator, node), true, 'an image generator should connect to OpenShop before its first output exists');
 assert.equal(adapter.canConnect(prompt, node), false);
 assert.equal(adapter.canConnect(node, imageOne), true);
+assert.equal(adapter.canConnect(node, generator), true, 'OpenShop should connect upstream of an API generation node');
 const sources = adapter.sourcesForNode(node);
 assert.deepEqual(Array.from(sources, item => item.sequence), [0, 1]);
 assert.deepEqual(Array.from(sources, item => item.edgeId), ['edge-first', 'edge-second']);
@@ -295,7 +298,8 @@ assert.match(canvasSource, /HstarClassicOpenShopAdapter\?\.captureCloneSource\?\
 assert.match(canvasSource, /type\s*===\s*['"]openshop-layered['"]/);
 assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.disposeNode\??\.\(node\)/);
 assert.match(cssSource, /\.openshop-layered-node/);
-assert.match(cssSource, /aspect-ratio:\s*16\s*\/\s*9/);
+assert.match(cssSource, /\.openshop-layered-card\s*\{[^}]*width:\s*100%[^}]*height:\s*100%[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/s);
+assert.match(cssSource, /\.openshop-layered-preview img\s*\{[^}]*width:\s*100%[^}]*height:\s*100%[^}]*object-fit:\s*contain/s);
 assert.match(i18nSource, /canvas\.openshopLayered/);
 assert.match(i18nSource, /canvas\.openshopOpen/);
 assert.match(i18nSource, /canvas\.openshopSourceUpdates/);

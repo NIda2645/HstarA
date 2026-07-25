@@ -1,8 +1,9 @@
 import os
+import tempfile
 import unittest
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class OpenShopFontCatalogTests(unittest.TestCase):
@@ -320,6 +321,50 @@ class OpenShopFontCatalogTests(unittest.TestCase):
             ],
         )
 
+    def test_groups_alibaba_85_bold_metadata_under_chinese_3_0_family(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        registry_face = "\u963f\u91cc\u5df4\u5df4\u666e\u60e0\u4f53 3 85 Bold"
+        canonical_family = "\u963f\u91cc\u5df4\u5df4\u666e\u60e0\u4f53 3.0"
+        metadata_family = "Alibaba PuHuiTi 3.0"
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [{
+                "family": registry_face,
+                "weight": 400,
+                "italic": False,
+                "path": r"C:\Fonts\AlibabaPuHuiTi-3-85-Bold.otf",
+            }],
+            metadata_reader=lambda _path: [{
+                "groupFamily": metadata_family,
+                "family": metadata_family,
+                "styleLabel": "85 Bold",
+                "weight": 700,
+                "italic": False,
+                "localNames": [
+                    metadata_family,
+                    "Alibaba PuHuiTi 3 85 Bold",
+                    "AlibabaPuHuiTi_3_85_Bold",
+                ],
+            }],
+            platform="win32",
+        )
+
+        fonts = catalog.get_catalog()["fonts"]
+
+        self.assertEqual([font["family"] for font in fonts], [canonical_family])
+        self.assertEqual(len(fonts[0]["styles"]), 1)
+        style = fonts[0]["styles"][0]
+        self.assertEqual(
+            (style["label"], style["weight"], style["family"]),
+            ("85 Bold", 700, metadata_family),
+        )
+        self.assertIn(registry_face, style["localNames"])
+        self.assertIn(
+            "\u963f\u91cc\u5df4\u5df4\u666e\u60e0\u4f53 3.0 85 Bold",
+            style["localNames"],
+        )
+        self.assertIn(canonical_family, style["localNames"])
+
     def test_legacy_only_alibaba_3_keeps_legacy_display_family(self):
         from openshop_fonts import OpenShopFontCatalog
 
@@ -398,6 +443,40 @@ class OpenShopFontCatalogTests(unittest.TestCase):
         families = [font["family"] for font in catalog.get_catalog()["fonts"]]
 
         self.assertEqual(families, ["Example Sans 3", "Example Sans 3.0"])
+
+    def test_strips_nonfree_numeric_aliases_without_touching_free_commercial_fonts(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        base_family = "\u963f\u91cc\u5988\u5988\u5200\u96b6\u4f53"
+        numbered_aliases = [f"{prefix} {base_family}" for prefix in ("01", "02", "03", "04")]
+        protected_free_families = [
+            f"{prefix}\u514d {base_family}" for prefix in ("01", "02", "03")
+        ]
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [
+                *(
+                    {"family": family, "weight": 400, "italic": False}
+                    for family in numbered_aliases
+                ),
+                {"family": base_family, "weight": 400, "italic": False},
+                *(
+                    {"family": family, "weight": 400, "italic": False}
+                    for family in protected_free_families
+                ),
+            ],
+            platform="win32",
+        )
+
+        fonts = {item["family"]: item for item in catalog.get_catalog()["fonts"]}
+
+        self.assertEqual(set(fonts), {base_family, *protected_free_families})
+        self.assertEqual(fonts[base_family]["styles"][0]["family"], base_family)
+        self.assertTrue(
+            set(numbered_aliases).issubset(fonts[base_family]["styles"][0]["localNames"])
+        )
+        for category, family in zip(("01", "02", "03"), protected_free_families):
+            self.assertEqual(fonts[family]["family"], family)
+            self.assertEqual(fonts[family]["freeCommercialCategory"], category)
 
     def test_groups_separate_light_faces_under_the_base_family(self):
         from openshop_fonts import OpenShopFontCatalog
@@ -682,6 +761,115 @@ class OpenShopFontCatalogTests(unittest.TestCase):
         self.assertNotIn(".ttf", serialized)
         self.assertNotIn("path", serialized)
         self.assertNotIn("binary", serialized)
+
+    def test_uses_authoritative_file_metadata_for_variable_font_styles(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        family = "03免 阿里妈妈灵动体VF"
+        reader_calls = []
+
+        def metadata_reader(path):
+            reader_calls.append(path)
+            return [{
+                "groupFamily": family,
+                "family": family,
+                "styleLabel": "Thin",
+                "weight": 100,
+                "italic": False,
+                "variableWeightRange": (100, 900),
+                "localNames": [family, f"{family} Thin"],
+            }]
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [{
+                "family": f"{family} Thin",
+                "weight": 400,
+                "italic": True,
+                "path": r"C:\Fonts\agile-vf.ttf",
+            }],
+            metadata_reader=metadata_reader,
+            platform="win32",
+        )
+
+        fonts = catalog.get_catalog()["fonts"]
+
+        self.assertEqual(reader_calls, [r"C:\Fonts\agile-vf.ttf"])
+        self.assertEqual([font["family"] for font in fonts], [family])
+        self.assertEqual(
+            [style["weight"] for style in fonts[0]["styles"]],
+            list(range(100, 1000, 100)),
+        )
+        self.assertTrue(all(style["italic"] is False for style in fonts[0]["styles"]))
+        self.assertEqual(fonts[0]["freeCommercialCategory"], "03")
+        self.assertNotIn("path", repr(fonts[0]).lower())
+
+    def test_keeps_regular_only_file_metadata_as_one_real_style(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        catalog = OpenShopFontCatalog(
+            enumerator=lambda: [{
+                "family": "Example Regular",
+                "weight": 900,
+                "italic": True,
+                "path": r"C:\Fonts\example.ttf",
+            }],
+            metadata_reader=lambda _path: [{
+                "groupFamily": "Example",
+                "family": "Example",
+                "styleLabel": "Regular",
+                "weight": 400,
+                "italic": False,
+                "localNames": ["Example"],
+            }],
+            platform="win32",
+        )
+
+        styles = catalog.get_catalog()["fonts"][0]["styles"]
+
+        self.assertEqual(len(styles), 1)
+        self.assertEqual(styles[0]["label"], "Regular")
+        self.assertEqual(styles[0]["weight"], 400)
+        self.assertFalse(styles[0]["italic"])
+
+    def test_reuses_disk_catalog_when_installed_font_fingerprint_is_unchanged(self):
+        from openshop_fonts import OpenShopFontCatalog
+
+        with tempfile.TemporaryDirectory() as directory:
+            font_path = os.path.join(directory, "example.ttf")
+            cache_path = os.path.join(directory, "catalog.json")
+            with open(font_path, "wb") as handle:
+                handle.write(b"font-fingerprint")
+            face = {
+                "family": "Example Regular",
+                "weight": 400,
+                "italic": False,
+                "path": font_path,
+            }
+            first_reader = Mock(return_value=[{
+                "groupFamily": "Example",
+                "family": "Example",
+                "styleLabel": "Regular",
+                "weight": 400,
+                "italic": False,
+            }])
+            first = OpenShopFontCatalog(
+                enumerator=lambda: [face],
+                metadata_reader=first_reader,
+                cache_path=cache_path,
+                platform="win32",
+            ).get_catalog()
+            second_reader = Mock(side_effect=AssertionError("cache miss"))
+            second = OpenShopFontCatalog(
+                enumerator=lambda: [face],
+                metadata_reader=second_reader,
+                cache_path=cache_path,
+                platform="win32",
+            ).get_catalog()
+
+        self.assertEqual(first["fonts"], second["fonts"])
+        self.assertTrue(second["cached"])
+        first_reader.assert_called_once_with(font_path)
+        second_reader.assert_not_called()
 
     def test_uses_common_fallbacks_off_windows(self):
         from openshop_fonts import OpenShopFontCatalog

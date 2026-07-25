@@ -1,6 +1,16 @@
 (function bootstrapClassicOpenShopAdapter(root){
     if(root.HstarClassicOpenShopAdapter) return;
     const appliedOutputRequests = new Set();
+    const appliedAiTaskLogs = new Set();
+    const AI_LOG_TOOL_IDS = new Set(['art-font-restore', 'generative-fill', 'local-redraw']);
+    const EMPTY_ASPECT = 3 / 4;
+    const MIN_WIDTH = 240;
+    const EMPTY_WIDTH = 260;
+    const SOURCE_WIDTH = 340;
+    const META_HEIGHT = 22;
+    const OPEN_HEIGHT = 34;
+    const CARD_GAP = 7;
+    const CHROME_HEIGHT = META_HEIGHT + OPEN_HEIGHT + CARD_GAP * 2;
 
     function hooks(){
         return root.HstarClassicOpenShopHooks || {};
@@ -83,6 +93,7 @@
 
     function sourceCanProvideImage(node){
         if(!node || node.type === 'openshop-layered') return false;
+        if(['generator', 'msgen', 'comfy', 'ltxDirector', 'rh'].includes(node.type)) return true;
         if(['image', 'group', 'output'].includes(node.type)) return imageRefs(node).length > 0;
         return imageRefs(node).length > 0;
     }
@@ -90,7 +101,9 @@
     function canConnect(from, to){
         if(!from || !to || from.id === to.id) return false;
         if(to.type === 'openshop-layered') return sourceCanProvideImage(from);
-        if(from.type === 'openshop-layered') return ['image', 'group', 'output'].includes(to.type);
+        if(from.type === 'openshop-layered'){
+            return ['image', 'group', 'output', 'generator', 'msgen', 'comfy', 'ltxDirector', 'video', 'rh'].includes(to.type);
+        }
         return false;
     }
 
@@ -130,6 +143,106 @@
             .map((source, sequence) => ({...source, sequence}));
     }
 
+    function fieldNumber(source, keys){
+        for(const key of keys){
+            const value = Number(source?.[key]);
+            if(Number.isFinite(value) && value > 0) return Math.round(value);
+        }
+        return 0;
+    }
+
+    function imageSize(source){
+        const width = fieldNumber(source, [
+            'natural_w', 'naturalWidth',
+            'original_w', 'originalWidth',
+            'source_w', 'sourceWidth',
+            'asset_w', 'assetWidth',
+            'image_w', 'imageWidth',
+            'intrinsic_w', 'intrinsicWidth',
+        ]) || fieldNumber(source?.metadata, ['width']) || fieldNumber(source?.meta, ['width']);
+        const height = fieldNumber(source, [
+            'natural_h', 'naturalHeight',
+            'original_h', 'originalHeight',
+            'source_h', 'sourceHeight',
+            'asset_h', 'assetHeight',
+            'image_h', 'imageHeight',
+            'intrinsic_h', 'intrinsicHeight',
+        ]) || fieldNumber(source?.metadata, ['height']) || fieldNumber(source?.meta, ['height']);
+        return width > 0 && height > 0 ? {width, height} : null;
+    }
+
+    function primarySourceRef(node){
+        const nodes = nodeList();
+        const connection = connectionList()
+            .map((item, index) => ({item, index}))
+            .filter(entry => entry.item?.to === node?.id)
+            .sort((left, right) => left.index - right.index || clean(left.item?.id).localeCompare(clean(right.item?.id)))[0]?.item;
+        const sourceNode = nodes.find(candidate => candidate.id === connection?.from);
+        return imageRefs(sourceNode)[0] || null;
+    }
+
+    function previewForNode(node){
+        const preview = clean(node.previewUrl);
+        if(preview) return {url:preview, name:node.projectName};
+        const source = sourcesForNode(node)[0];
+        return source?.url ? source : {url:'', name:''};
+    }
+
+    function dimensionsForNode(node){
+        if(!clean(node.previewUrl)){
+            const source = primarySourceRef(node);
+            if(source){
+                const sourceSize = hooks().sourceSizeForNode?.(node);
+                if(sourceSize?.width > 0 && sourceSize?.height > 0) return {
+                    width:Math.max(1, Math.round(Number(sourceSize.width))),
+                    height:Math.max(1, Math.round(Number(sourceSize.height))),
+                };
+                const inputSize = imageSize(source);
+                if(inputSize) return inputSize;
+            }
+        }
+        return {
+            width:Math.max(1, Number(node.documentWidth || 1920)),
+            height:Math.max(1, Number(node.documentHeight || 1080)),
+        };
+    }
+
+    function validAspect(value){
+        const ratio = Number(value);
+        if(!Number.isFinite(ratio) || ratio <= 0) return EMPTY_ASPECT;
+        return ratio;
+    }
+
+    function layoutForNode(node){
+        const source = primarySourceRef(node);
+        const sourceSize = source
+            ? hooks().sourceSizeForNode?.(node) || imageSize(source)
+            : null;
+        const hasContent = Boolean(source)
+            || clean(node?.previewUrl).length > 0
+            || Number(node?.layerCount || 0) > 0;
+        const documentWidth = Number(node?.documentWidth || 0);
+        const documentHeight = Number(node?.documentHeight || 0);
+        const ratio = sourceSize?.width > 0 && sourceSize?.height > 0
+            ? validAspect(sourceSize.width / sourceSize.height)
+            : hasContent && documentWidth > 0 && documentHeight > 0
+                ? validAspect(documentWidth / documentHeight)
+                : EMPTY_ASPECT;
+        const explicitWidth = Number(node?.w);
+        const preferredWidth = hasContent
+            ? (Number.isFinite(explicitWidth) && explicitWidth > 24 ? explicitWidth : SOURCE_WIDTH)
+            : EMPTY_WIDTH;
+        const width = Math.max(MIN_WIDTH, Math.round(preferredWidth));
+        const previewHeight = Math.max(1, Math.round(width / ratio));
+        return {
+            width,
+            height:Math.round(previewHeight + CHROME_HEIGHT),
+            previewWidth:width,
+            previewHeight,
+            aspectRatio:ratio,
+        };
+    }
+
     function saveStateLabel(node){
         if(node.saveState === 'saving') return translate('canvas.openshopSaving', '正在保存');
         if(node.saveState === 'saved') return translate('canvas.openshopSaved', '已保存');
@@ -149,20 +262,22 @@
     function renderNode(node){
         const wrap = document.createElement('div');
         wrap.className = 'openshop-layered-card';
-        const preview = clean(node.previewUrl);
-        const previewMarkup = preview
-            ? `<img loading="lazy" decoding="async" src="${safeAttr(preview)}" alt="${safeAttr(node.projectName)}">`
+        const preview = previewForNode(node);
+        const dimensions = dimensionsForNode(node);
+        const previewMarkup = preview.url
+            ? `<img loading="lazy" decoding="async" src="${safeAttr(preview.url)}" alt="${safeAttr(preview.name || node.projectName)}">`
             : '<div class="openshop-layered-placeholder"><i data-lucide="layers-3"></i></div>';
         const updates = Math.max(0, Number(node.sourceUpdateCount || 0));
         const aiProgress = aiProgressLabel(node);
         wrap.innerHTML = `
             <div class="openshop-layered-preview">${previewMarkup}</div>
             <div class="openshop-layered-meta">
-                <span>${Math.max(1, Number(node.documentWidth || 1920))} x ${Math.max(1, Number(node.documentHeight || 1080))}</span>
-                <span>${Math.max(0, Number(node.layerCount || 0))} ${safeHtml(translate('canvas.openshopLayers', '图层'))}</span>
+                <span class="openshop-layered-meta-left">
+                    <span class="openshop-layered-dimensions">${dimensions.width} x ${dimensions.height}</span>
+                    <span class="openshop-layered-layers">${Math.max(0, Number(node.layerCount || 0))} ${safeHtml(translate('canvas.openshopLayers', '图层'))}</span>
+                    ${aiProgress ? `<span class="openshop-layered-ai" data-state="${safeAttr(node.aiStatus)}">${safeHtml(aiProgress)}</span>` : ''}
+                </span>
                 <span class="openshop-layered-save" data-state="${safeAttr(node.saveState || 'new')}">${safeHtml(saveStateLabel(node))}</span>
-                ${aiProgress ? `<span class="openshop-layered-ai" data-state="${safeAttr(node.aiStatus)}">${safeHtml(aiProgress)}</span>` : ''}
-                <span class="openshop-layered-updates ${updates ? 'has-updates' : ''}">${safeHtml(translate('canvas.openshopSourceUpdates', '来源更新'))} ${updates}</span>
             </div>
             <button class="openshop-layered-open" type="button" data-open-openshop="${safeAttr(node.id)}">
                 <i data-lucide="panel-top-open"></i><span>${safeHtml(translate('canvas.openshopOpen', '打开编辑器'))}</span>
@@ -307,6 +422,18 @@
         return true;
     }
 
+    function applyAiTaskLog(data){
+        const source = nodeList().find(candidate => candidate.id === data?.context?.nodeId && candidate.type === 'openshop-layered');
+        const log = data?.log;
+        if(!source || !matchingContext(data?.context, source) || !AI_LOG_TOOL_IDS.has(clean(log?.toolId)) || !clean(log?.taskId)) return false;
+        const key = `${source.projectId}:${clean(log.taskId)}:${clean(log.status)}`;
+        if(appliedAiTaskLogs.has(key)) return false;
+        if(typeof hooks().recordAiTaskLog !== 'function') return false;
+        if(hooks().recordAiTaskLog(log, source) === false) return false;
+        appliedAiTaskLogs.add(key);
+        return true;
+    }
+
     async function importOutput(data){
         const source = nodeList().find(candidate => candidate.id === data?.context?.nodeId && candidate.type === 'openshop-layered');
         if(!source || !matchingContext(data.context, source)) return null;
@@ -361,6 +488,7 @@
         if(root.parent && root.parent !== root && event.source !== root.parent) return;
         const data = event.data || {};
         if(data.type === 'hstar-openshop-node-meta') applyNodeMeta(data);
+        if(data.type === 'hstar-openshop-ai-task-log') applyAiTaskLog(data);
         if(data.type === 'hstar-openshop-output'){
             void importOutput(data).catch(error => console.error('[HstarClassicOpenShopAdapter] output import failed', error));
         }
@@ -370,6 +498,7 @@
     root.HstarClassicOpenShopAdapter = Object.freeze({
         createNode,
         renderNode,
+        layoutForNode,
         canConnect,
         sourcesForNode,
         openNode,
@@ -377,6 +506,7 @@
         prepareClone,
         disposeNode,
         applyNodeMeta,
+        applyAiTaskLog,
         importOutput,
     });
 })(window);

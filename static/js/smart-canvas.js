@@ -1,4 +1,4 @@
-﻿const params = new URLSearchParams(location.search);
+const params = new URLSearchParams(location.search);
 const canvasId = params.get('id') || '';
 const sourceProjectId = params.get('project') || '';
 const CANVAS_LIST_PROJECT_KEY = 'canvasListCurrentProjectId';
@@ -932,7 +932,7 @@ function updateSmartWorkflowTransferMeta(){
     const nodeCount = payload.nodes.length;
     const connCount = payload.connections.length;
     smartWorkflowExportMeta?.classList.remove('busy', 'success');
-    if(smartWorkflowExportMeta) smartWorkflowExportMeta.textContent = nodeCount ? `已选择 ${nodeCount} 个节点，${connCount} 条连线` : '未选择节点，请先选中要导出的组件';
+    if(smartWorkflowExportMeta) smartWorkflowExportMeta.textContent = nodeCount ? '已选择 ' + nodeCount + ' 个节点，' + connCount + ' 条连线' : '未选择节点，请先选中要导出的组件';
     if(smartWorkflowTransferSub) smartWorkflowTransferSub.textContent = nodeCount ? '导出当前选中内容，或把工作流导入到当前画布' : '请先选中节点再导出；导入会追加到当前画布';
 }
 async function exportSelectedSmartWorkflow(includeResources=false){
@@ -964,7 +964,7 @@ async function exportSelectedSmartWorkflow(includeResources=false){
         if(smartWorkflowExportMeta){
             smartWorkflowExportMeta.classList.remove('busy');
             smartWorkflowExportMeta.classList.add('success');
-            smartWorkflowExportMeta.textContent = `已导出 ${payload.nodes.length} 个节点，包含可找到的本地资源`;
+            smartWorkflowExportMeta.textContent = '已导出 ' + payload.nodes.length + ' 个节点，包含可找到的本地资源';
         }
         toast('已导出包含资源的智能画布工作流包');
         setTimeout(() => {
@@ -1007,7 +1007,7 @@ function insertSmartWorkflowIntoCanvas(imported){
     activeComposerSubject = null;
     render();
     scheduleSave();
-    toast(`已导入 ${newNodes.length} 个节点`);
+    toast('已导入 ' + newNodes.length + ' 个节点');
 }
 async function importSmartWorkflowFile(file){
     if(!canvas || !file) return;
@@ -1031,9 +1031,9 @@ let canvasDefaultSmartSettings = cloneSmartSettings(settings);
 let recentSmartSettingsByMode = {};
 function smartSettingsModeKey(source=settings){
     const engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(source?.engine) ? source.engine : 'api';
-    if(engine === 'api') return `api:${source?.apiKind === 'video' ? 'video' : 'image'}`;
-    if(engine === 'volcengine') return `volcengine:${source?.apiKind === 'video' ? 'video' : 'image'}`;
-    if(engine === 'comfy') return `comfy:${['text','enhance','edit','custom'].includes(source?.comfyMode) ? source.comfyMode : 'text'}`;
+    if(engine === 'api') return 'api:' + (source?.apiKind === 'video' ? 'video' : 'image');
+    if(engine === 'volcengine') return 'volcengine:' + (source?.apiKind === 'video' ? 'video' : 'image');
+    if(engine === 'comfy') return 'comfy:' + (['text','enhance','edit','custom'].includes(source?.comfyMode) ? source.comfyMode : 'text');
     if(engine === 'runninghub') return 'runninghub';
     return 'modelscope';
 }
@@ -1187,7 +1187,7 @@ function withOutpaintDisplaySettings(node, baseSettings){
         ratio:'',
         customWidth:size.width,
         customHeight:size.height,
-        customSize:`${size.width}x${size.height}`,
+        customSize:String(size.width) + 'x' + String(size.height),
         outpaintResolutionLocked:true
     };
     if(isApiLikeEngine(engine)) next.apiKind = 'image';
@@ -1196,7 +1196,7 @@ function withOutpaintDisplaySettings(node, baseSettings){
         next.msRatio = '';
         next.msCustomWidth = size.width;
         next.msCustomHeight = size.height;
-        next.msCustomSize = `${size.width}x${size.height}`;
+        next.msCustomSize = String(size.width) + 'x' + String(size.height);
     }
     if(engine === 'comfy'){
         next.width = size.width;
@@ -1207,7 +1207,7 @@ function withOutpaintDisplaySettings(node, baseSettings){
 function stripOutpaintDisplaySettings(settingsObj, node=null){
     const clean = cloneSmartSettings(settingsObj);
     const size = validOutpaintSize(node);
-    const matchesOutpaintSize = size && clean.resolution === 'custom' && String(clean.customSize || '') === `${size.width}x${size.height}`;
+    const matchesOutpaintSize = size && clean.resolution === 'custom' && String(clean.customSize || '') === String(size.width) + 'x' + String(size.height);
     if(matchesOutpaintSize){
         clean.resolution = '1k';
         clean.ratio = clean.ratio || 'square';
@@ -1215,7 +1215,7 @@ function stripOutpaintDisplaySettings(settingsObj, node=null){
         clean.customHeight = '';
         clean.customSize = '';
     }
-    const matchesMsOutpaintSize = size && clean.msResolution === 'custom' && String(clean.msCustomSize || '') === `${size.width}x${size.height}`;
+    const matchesMsOutpaintSize = size && clean.msResolution === 'custom' && String(clean.msCustomSize || '') === String(size.width) + 'x' + String(size.height);
     if(matchesMsOutpaintSize){
         clean.msResolution = '1k';
         clean.msRatio = clean.msRatio || 'square';
@@ -1414,7 +1414,16 @@ const EMPTY_UPLOAD_NODE_HEIGHT = 194;
 const SMART_GROUP_DEFAULT_WIDTH = 340;
 const SMART_GROUP_DEFAULT_HEIGHT = 286;
 const SMART_GROUP_LEGACY_HEIGHT = 220;
-// 分组可缩小到的最小尺寸（缩小分组时组内图片随之等比缩小，靠这个区间产生缩放系数）。
+const OPENSHOP_LAYERED_EMPTY_ASPECT = 3 / 4;
+const OPENSHOP_LAYERED_MIN_WIDTH = 240;
+const OPENSHOP_LAYERED_EMPTY_WIDTH = 260;
+const OPENSHOP_LAYERED_SOURCE_WIDTH = 340;
+const OPENSHOP_LAYERED_NODE_PADDING = 0;
+const OPENSHOP_LAYERED_META_HEIGHT = 22;
+const OPENSHOP_LAYERED_OPEN_HEIGHT = 34;
+const OPENSHOP_LAYERED_CARD_GAP = 7;
+const OPENSHOP_LAYERED_CHROME_HEIGHT = OPENSHOP_LAYERED_NODE_PADDING * 2 + OPENSHOP_LAYERED_META_HEIGHT + OPENSHOP_LAYERED_OPEN_HEIGHT + OPENSHOP_LAYERED_CARD_GAP * 2;
+// 分组可缩小到的最小尺寸，组内图片随分组等比缩放。
 const SMART_GROUP_MIN_WIDTH = 150;
 const SMART_GROUP_MIN_HEIGHT = 130;
 // 组内成员（提示词/循环）的最大缩放。已移除“放大不超过原始”的限制：向外拉分组时成员随之放大。
@@ -1735,6 +1744,29 @@ function mediaLayoutSize(img){
     const height = Number(img?.natural_h || img?.height || img?.h || img?.layout_h || img?.preview_h || 0);
     return width > 0 && height > 0 ? {width, height} : {width:0, height:0};
 }
+function mediaNaturalSize(img){
+    const width = Number(
+        img?.natural_w || img?.naturalWidth
+        || img?.original_w || img?.originalWidth
+        || img?.source_w || img?.sourceWidth
+        || img?.asset_w || img?.assetWidth
+        || img?.image_w || img?.imageWidth
+        || img?.intrinsic_w || img?.intrinsicWidth
+        || img?.metadata?.width || img?.meta?.width
+        || 0
+    );
+    const height = Number(
+        img?.natural_h || img?.naturalHeight
+        || img?.original_h || img?.originalHeight
+        || img?.source_h || img?.sourceHeight
+        || img?.asset_h || img?.assetHeight
+        || img?.image_h || img?.imageHeight
+        || img?.intrinsic_h || img?.intrinsicHeight
+        || img?.metadata?.height || img?.meta?.height
+        || 0
+    );
+    return width > 0 && height > 0 ? {width, height} : null;
+}
 function copyMediaSizeFields(source, target={}){
     if(!source || typeof source !== 'object') return target;
     ['natural_w','natural_h','width','height','w','h','layout_w','layout_h'].forEach(key => {
@@ -1770,6 +1802,170 @@ function singleImageLayout(image, node, scale){
         };
     }
     return {cols:1, rows:1, width:Math.round(260*scale), height:Math.round(180*scale), thumb:Math.round(96*scale), single:true};
+}
+function clampOpenShopAspect(value){
+    const ratio = Number(value);
+    if(!Number.isFinite(ratio) || ratio <= 0) return OPENSHOP_LAYERED_EMPTY_ASPECT;
+    return Math.max(0.42, Math.min(3.2, ratio));
+}
+function openShopLayeredPrimaryImage(node){
+    if(!node || node.type !== OPENSHOP_LAYERED_NODE_TYPE) return null;
+    try {
+        const refs = typeof inputImagesFor === 'function' ? inputImagesFor(node).filter(img => img?.url) : [];
+        return refs.find(img => mediaKindForItem(img) === 'image') || refs[0] || null;
+    } catch(error) {
+        return null;
+    }
+}
+function openShopLayeredInputNodes(node){
+    if(!node || node.type !== OPENSHOP_LAYERED_NODE_TYPE) return [];
+    try {
+        return (typeof inputNodesFor === 'function' ? inputNodesFor(node) : [])
+            .filter(input => input && input.type !== OPENSHOP_LAYERED_NODE_TYPE);
+    } catch(error) {
+        return [];
+    }
+}
+function openShopLayeredSourceImageForRef(ref){
+    if(!ref?.nodeId) return null;
+    const source = nodes.find(candidate => candidate.id === ref.nodeId);
+    const index = Number(ref.imageIndex);
+    if(!source || !Array.isArray(source.images) || !Number.isFinite(index) || index < 0) return null;
+    return source.images[index] || null;
+}
+function openShopLayeredInputImageRefs(node){
+    const refs = [];
+    const seen = new Set();
+    const add = ref => {
+        if(!ref?.url || mediaKindForItem(ref) !== 'image') return;
+        const key = `${ref.nodeId || ''}|${ref.imageIndex ?? ''}|${ref.url}`;
+        if(seen.has(key)) return;
+        seen.add(key);
+        refs.push(ref);
+    };
+    add(openShopLayeredPrimaryImage(node));
+    const candidates = [];
+    const primary = refs[0];
+    const primarySource = primary?.nodeId ? nodes.find(candidate => candidate.id === primary.nodeId) : null;
+    if(primarySource) candidates.push(primarySource);
+    openShopLayeredInputNodes(node).forEach(input => {
+        if(input && !candidates.some(candidate => candidate.id === input.id)) candidates.push(input);
+    });
+    candidates.forEach(source => {
+        [
+            ...(typeof outputImagesForNode === 'function' ? outputImagesForNode(source).filter(img => img?.url) : []),
+            ...(typeof imagesForNode === 'function' ? imagesForNode(source).filter(img => img?.url) : [])
+        ].forEach(add);
+    });
+    return refs;
+}
+function openShopLayeredInputSize(node){
+    for(const ref of openShopLayeredInputImageRefs(node)){
+        const sourceImage = openShopLayeredSourceImageForRef(ref);
+        const size = mediaNaturalSize(sourceImage) || mediaNaturalSize(ref);
+        if(size?.width > 0 && size?.height > 0) return size;
+    }
+    return null;
+}
+function syncOpenShopLayeredNodeFromInputs(node){
+    if(!node || node.type !== OPENSHOP_LAYERED_NODE_TYPE) return false;
+    const size = openShopLayeredInputSize(node);
+    if(!(size?.width > 0 && size?.height > 0)) return false;
+    let changed = false;
+    const width = Math.max(1, Math.round(Number(size.width)));
+    const height = Math.max(1, Math.round(Number(size.height)));
+    if(Number(node.documentWidth || 0) !== width){
+        node.documentWidth = width;
+        changed = true;
+    }
+    if(Number(node.documentHeight || 0) !== height){
+        node.documentHeight = height;
+        changed = true;
+    }
+    return changed;
+}
+function downstreamOpenShopLayeredNodesForSource(sourceNodeId){
+    if(!sourceNodeId) return [];
+    const ids = new Set();
+    (canvas?.connections || []).forEach(conn => {
+        if(conn.from === sourceNodeId && ['input', 'flow'].includes(conn.kind || 'flow')) ids.add(conn.to);
+    });
+    nodes.forEach(node => {
+        if(node?.type === OPENSHOP_LAYERED_NODE_TYPE && Array.isArray(node.inputNodeIds) && node.inputNodeIds.includes(sourceNodeId)) ids.add(node.id);
+    });
+    return [...ids].map(id => nodes.find(node => node.id === id && node.type === OPENSHOP_LAYERED_NODE_TYPE)).filter(Boolean);
+}
+function syncOpenShopLayeredNodesForSource(sourceNodeId){
+    let changed = false;
+    downstreamOpenShopLayeredNodesForSource(sourceNodeId).forEach(node => {
+        if(syncOpenShopLayeredNodeFromInputs(node)) changed = true;
+    });
+    return changed;
+}
+function ensureOpenShopLayeredInputNaturalSizes(targetNode=null){
+    const targets = (targetNode ? [targetNode] : nodes).filter(node => node?.type === OPENSHOP_LAYERED_NODE_TYPE);
+    let immediateChange = false;
+    targets.forEach(node => {
+        if(syncOpenShopLayeredNodeFromInputs(node)) immediateChange = true;
+        openShopLayeredInputImageRefs(node).forEach(ref => {
+            const sourceImage = openShopLayeredSourceImageForRef(ref);
+            if(!sourceImage?.url || mediaNaturalSize(sourceImage) || sourceImage._openShopNaturalSizeLoading) return;
+            sourceImage._openShopNaturalSizeLoading = true;
+            loadSmartOriginalImageDimensions(sourceImage.url).then(size => {
+                sourceImage._openShopNaturalSizeLoading = false;
+                if(!size || mediaNaturalSize(sourceImage)) return;
+                sourceImage.natural_w = size.w;
+                sourceImage.natural_h = size.h;
+                delete sourceImage.layout_w;
+                delete sourceImage.layout_h;
+                if(syncOpenShopLayeredNodesForSource(ref.nodeId)){
+                    render();
+                } else {
+                    updateNodeElementDuringResize(nodes.find(candidate => candidate.id === ref.nodeId));
+                }
+                scheduleSave();
+            });
+        });
+    });
+    if(immediateChange){
+        requestAnimationFrame(() => {
+            render();
+            scheduleSave();
+        });
+    }
+}
+function openShopLayeredAspect(node){
+    const inputSize = openShopLayeredInputSize(node);
+    if(inputSize?.width > 0 && inputSize?.height > 0) return clampOpenShopAspect(inputSize.width / inputSize.height);
+    const hasPreview = String(node?.previewUrl || '').trim().length > 0 || Number(node?.layerCount || 0) > 0;
+    const documentW = Number(node?.documentWidth || 0);
+    const documentH = Number(node?.documentHeight || 0);
+    if(hasPreview && documentW > 0 && documentH > 0) return clampOpenShopAspect(documentW / documentH);
+    return OPENSHOP_LAYERED_EMPTY_ASPECT;
+}
+function openShopLayeredLayoutSize(node){
+    const ratio = openShopLayeredAspect(node);
+    const inputSize = openShopLayeredInputSize(node);
+    const hasContent = Boolean(inputSize)
+        || Boolean(openShopLayeredPrimaryImage(node))
+        || String(node?.previewUrl || '').trim().length > 0
+        || Number(node?.layerCount || 0) > 0;
+    const explicitW = Number(node?.w);
+    const preferredW = hasContent
+        ? (Number.isFinite(explicitW) && explicitW > 24 ? explicitW : OPENSHOP_LAYERED_SOURCE_WIDTH)
+        : OPENSHOP_LAYERED_EMPTY_WIDTH;
+    const width = Math.max(OPENSHOP_LAYERED_MIN_WIDTH, Math.round(preferredW));
+    const previewW = Math.max(1, width - OPENSHOP_LAYERED_NODE_PADDING * 2);
+    const previewH = Math.max(96, Math.round(previewW / ratio));
+    return {
+        cols:1,
+        rows:1,
+        width,
+        height:Math.round(previewH + OPENSHOP_LAYERED_CHROME_HEIGHT),
+        thumb:96,
+        single:true,
+        aspectRatio:ratio
+    };
 }
 function groupImageGridLayout(count, explicitW, explicitH, maxThumb, pad=32, gap=8, maxVisibleRows=MEDIA_GROUP_MAX_VISIBLE_ROWS){
     let best = null;
@@ -2000,14 +2196,7 @@ function imageLayout(images, scale=1, node=null){
         };
     }
     if(node?.type === OPENSHOP_LAYERED_NODE_TYPE){
-        return {
-            cols:1,
-            rows:1,
-            width:Math.round(Number(node.w) || 340),
-            height:Math.round(Number(node.h) || 260),
-            thumb:96,
-            single:true
-        };
+        return openShopLayeredLayoutSize(node);
     }
     const count = (images || []).length;
     const s = node?.type === 'smart-image' || !node?.type ? mediaNodeDefaultScale(node) : (Number.isFinite(scale) && scale > 0 ? scale : 1);
@@ -3125,9 +3314,9 @@ function renderSizeControls(prefix='', includeSource=false){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     const ratios = [
-        ['square','1:1'], ['portrait','2:3'], ['landscape','3:2'], ['portrait43','3:4'], ['landscape43','4:3'], ['story','9:16'], ['wide','16:9'], ['ultrawide','21:9'], ['ultratall','9:21'],
-        ...(includeSource ? [['source', tr('canvas.adaptiveRatio') || '适配比例']] : []),
-        ['custom', tr('canvas.custom') || '自定义']
+        ['square','1:1','正方形'], ['portrait','2:3','竖图'], ['landscape','3:2','横图'], ['portrait43','3:4','竖图'], ['landscape43','4:3','横图'],
+        ['story','9:16','竖屏'], ['wide','16:9','宽屏'], ['ultrawide','21:9','超宽'], ['ultratall','9:21','超竖'],
+        ...(includeSource ? [['source', sourceImageRatioLabel(prefix) || '原图', '适配输入']] : [])
     ];
     const resolutionOptions = (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k','custom'] : ['1k','2k','4k','custom'];
     return `<select data-param="${resKey}">
@@ -3425,7 +3614,7 @@ function renderCountVisualControl(){
     </div>`;
 }
 function renderCountControl(){
-    return `<select data-param="count">${[1,2,3,4,5,6,7,8].map(n => optionHtml(n, `${n} 张`, Number(settings.count || 1))).join('')}</select>`;
+    return `<select data-param="count">${[1,2,3,4,5,6,7,8].map(n => optionHtml(n, String(n) + ' 张', Number(settings.count || 1))).join('')}</select>`;
 }
 function renderCustomRatioControls(prefix=''){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
@@ -3792,7 +3981,7 @@ async function setCurrentSmartManualVideoUrl(){
     persistActiveSmartSettings();
     scheduleSave();
     render();
-    toast(`已设置 ${urls.length} 个媒体网址`);
+        toast('云端上传完成：' + urls.length + ' 个媒体文件');
     return urls[0] || '';
 }
 async function uploadCurrentSmartVideosToCloud(){
@@ -3812,13 +4001,13 @@ async function uploadCurrentSmartVideosToCloud(){
     }
     const btn = dynamicParams?.querySelector('[data-trusted-source="cloud"]') || inputThumbsRow?.querySelector('[data-temp-sh-upload-video]');
     if(btn) btn.disabled = true;
-    toast(`正在上传 ${localRefs.length} 个媒体文件到云端...`);
+    toast('正在上传 ' + localRefs.length + ' 个媒体文件到云端...');
     try {
         const urls = [];
         for(const ref of localRefs){
             urls.push(await uploadMediaRefToCloud(ref));
         }
-        toast(`云端上传完成：${urls.length} 个媒体文件`);
+        toast('云端上传完成：' + urls.length + ' 个媒体文件');
         return urls;
     } finally {
         if(btn) btn.disabled = false;
@@ -4799,7 +4988,7 @@ async function createBlankPromptTemplate(){
         const data = await fetch('/api/prompt-libraries/items', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({library_id:library.id, name:tr('smart.tplNewTemplateName'), category, positive:'新提示词', scene:'我的提示词预设'})
+            body:JSON.stringify({library_id:library.id, name:defaultPromptPresetName(text), category:promptTemplateCategory === 'all' ? 'custom' : promptTemplateCategory, positive:text, scene:'我的提示词预设'})
         }).then(async r => {
             if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '创建失败');
             return r.json();
@@ -6108,7 +6297,7 @@ const CAMERA_LENS_PRESETS = {
         ['24mm','24mm 广角','24mm wide angle lens'],
         ['35mm','35mm 人文纪实','35mm documentary perspective lens'],
         ['50mm','50mm 标准镜头','50mm natural perspective lens'],
-        ['85mm','85mm 人像镜头','85mm portrait lens with background compression'],
+        ['85mm','85mm 手机超长焦','85mm mobile ultra telephoto, smartphone extreme zoom'],
         ['100mm','100mm 微距','100mm macro lens, fine surface detail'],
         ['135mm','135mm 长焦压缩','135mm telephoto lens compression'],
         ['200mm','200mm 远摄','200mm telephoto lens, strong subject isolation']
@@ -6118,7 +6307,7 @@ const CAMERA_LENS_PRESETS = {
         ['24mm','24mm 电影标准','24mm cinema standard, narrative perspective'],
         ['35mm','35mm 电影经典','35mm cinema classic, timeless cinematic look'],
         ['50mm','50mm 电影标准','50mm cinema standard, natural cinematic perspective'],
-        ['85mm','85mm 电影人像','85mm cinema portrait, intimate character framing'],
+        ['85mm','85mm 手机超长焦','85mm mobile ultra telephoto, smartphone extreme zoom'],
         ['135mm','135mm 电影长焦','135mm cinema telephoto, compressed dramatic depth'],
         ['200mm','200mm 电影远摄','200mm cinema telephoto, extreme subject isolation']
     ].map(([id,label,prompt])=>({id,label,prompt})),
@@ -6127,12 +6316,12 @@ const CAMERA_LENS_PRESETS = {
         ['28mm','28mm 手机标准','28mm mobile standard, natural smartphone framing'],
         ['35mm','35mm 手机人像','35mm mobile portrait, smartphone portrait mode'],
         ['50mm','50mm 手机长焦','50mm mobile telephoto, smartphone zoom'],
-        ['85mm','85mm 手机超长焦','85mm mobile ultra telephoto, smartphone extreme zoom']
+        ['85mm','85mm 手机超长焦','85mm mobile ultra telephoto, smartphone extreme zoom'],
     ].map(([id,label,prompt])=>({id,label,prompt}))
 };
 const CAMERA_LENS_VIBES = [
     {id:'commercial', label:'高级商业感', prompt:'premium commercial aesthetic, luxury product photography, high-end editorial style'},
-    {id:'documentary', label:'冷峻纪实感', prompt:'cold documentary realism, journalistic authenticity, stark observational style'},
+    {id:'documentary', label:'冷感纪实感', prompt:'cold documentary realism, journalistic authenticity, stark observational style'},
     {id:'arri-cinema', label:'ARRI大师级电影感', prompt:'ARRI Alexa cinema master grade, warm golden hour cinematography, film-like color grading'},
     {id:'sony-tech', label:'索尼科技感', prompt:'Sony cinema tech aesthetic, sharp detail, cool color temperature, technical precision'},
     {id:'fuji-film', label:'富士胶片感', prompt:'Fujifilm analog film aesthetic, warm nostalgic tones, organic color palette'},
@@ -6170,7 +6359,7 @@ const ANGLE_SCENE_PRESETS = [
     {id:'front-eye', label:'正面平视', desc:'正面 · 平视 · 中景', rotation:0, tilt:0, zoom:3.2, prompt:'front view, eye-level camera, medium shot'},
     {id:'front-right', label:'右前侧', desc:'右前45° · 平视 · 中景', rotation:45, tilt:0, zoom:3.2, prompt:'front-right 45 degree view, eye-level camera, medium shot'},
     {id:'side', label:'侧面视角', desc:'右侧 · 平视 · 中景', rotation:90, tilt:0, zoom:3.2, prompt:'right side view, eye-level camera, medium shot'},
-    {id:'overhead', label:'俯视视角', desc:'正面偏右 · 明显俯视 · 中远景', rotation:35, tilt:55, zoom:4.0, prompt:'front-right view, strong top-down camera angle, medium-wide shot'},
+    {id:'overhead', label:'俯视角', desc:'正面偏右 · 明显俯视 · 中远景', rotation:35, tilt:55, zoom:4.0, prompt:'front-right view, strong top-down camera angle, medium-wide shot'},
     {id:'low', label:'低机位仰拍', desc:'右前 · 轻微仰视 · 中景', rotation:35, tilt:-18, zoom:3.2, prompt:'front-right view, slight low-angle shot, medium shot'},
     {id:'close', label:'拉近特写', desc:'右前 · 平视 · 近景', rotation:35, tilt:0, zoom:1.8, prompt:'front-right view, eye-level close-up shot'},
     {id:'wide', label:'拉远全景', desc:'右前 · 轻微俯视 · 全景', rotation:35, tilt:18, zoom:5.2, prompt:'front-right view, slight top-down wide shot'},
@@ -11521,6 +11710,7 @@ function render(){
     bindSmartPreviewImageFallbacks(world);
     syncSmartSelectedImageResolution(world);
     measureSmartNodeImages();
+    ensureOpenShopLayeredInputNaturalSizes();
     refreshRunTimerPills();
     return;
     world.innerHTML = '';
@@ -11559,6 +11749,7 @@ function render(){
     renderMinimap();
     if(window.lucide) lucide.createIcons();
     measureSmartNodeImages();
+    ensureOpenShopLayeredInputNaturalSizes();
     refreshRunTimerPills();
 }
 function measureSmartNodeImages(){
@@ -11592,7 +11783,11 @@ function measureSmartNodeImages(){
                 }
                 updateNodeElementDuringResize(node);
                 if(containerNode && containerNode.id !== node.id) updateNodeElementDuringResize(containerNode);
-                if(isNodeSelected(node.id)) updateComposer();
+                if(syncOpenShopLayeredNodesForSource(node.id)){
+                    render();
+                } else if(isNodeSelected(node.id)) {
+                    updateComposer();
+                }
                 scheduleSave();
             });
         }
@@ -11622,7 +11817,11 @@ function measureSmartNodeImages(){
             }
             updateNodeElementDuringResize(node);
             if(containerNode && containerNode.id !== node.id) updateNodeElementDuringResize(containerNode);
-            if(isNodeSelected(node.id)) updateComposer();
+            if(syncOpenShopLayeredNodesForSource(node.id)){
+                render();
+            } else if(isNodeSelected(node.id)) {
+                updateComposer();
+            }
             scheduleSave();
         };
         const isVideo = imgEl.tagName?.toLowerCase() === 'video';
@@ -16733,6 +16932,10 @@ function addConnection(fromId, toId, kind='flow'){
     canvas.connections = canvas.connections || [];
     if(canvas.connections.some(c => c.from === fromId && c.to === toId && (c.kind || 'flow') === kind)) return;
     canvas.connections.push({from:fromId, to:toId, kind});
+    if(to?.type === OPENSHOP_LAYERED_NODE_TYPE){
+        syncOpenShopLayeredNodeFromInputs(to);
+        ensureOpenShopLayeredInputNaturalSizes(to);
+    }
 }
 function connectInputNode(fromId, toId){
     const from = nodes.find(n => n.id === fromId);
@@ -18057,6 +18260,52 @@ window.HstarSmartCanvasDirectorHooks = {
     saveCanvas,
     toast
 };
+function recordSmartOpenShopAiTaskLog(log, sourceNode){
+    if(!canvas || !log?.taskId) return false;
+    canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+    const openshopTaskId = String(log.taskId);
+    if(canvas.logs.some(entry => entry?.request?.openshopTaskId === openshopTaskId)) return false;
+    const toolId = String(log.toolId || '');
+    const toolLabel = ({
+        'art-font-restore':'艺术字体处理',
+        'generative-fill':'生成式填充',
+        'local-redraw':'局部重绘',
+    })[toolId] || 'OpenShop AI';
+    const rawOutputs = [
+        ...(Array.isArray(log.outputs) ? log.outputs : []),
+        ...(log.output ? [log.output] : []),
+    ].filter(output => output?.url);
+    const outputs = [...new Map(rawOutputs.map(output => [String(output.assetId || output.url), {
+        ...output, kind:'image',
+    }])).values()];
+    const error = ['failed', 'partial'].includes(log.status)
+        ? String(log.error || `${toolLabel}${log.status === 'partial' ? '部分生成失败' : '生成失败'}`)
+        : '';
+    canvas.logs = [{
+        id:uid('log'),
+        createdAt:Date.now(),
+        status:log.status === 'partial' ? 'partial' : (error ? 'failed' : 'success'),
+        platform:'OpenShop',
+        nodeId:sourceNode?.id || '',
+        nodeType:'openshop-layered',
+        model:String(log.modelId || toolLabel),
+        request:{
+            openshopTaskId,
+            task_id:openshopTaskId,
+            provider_id:String(log.apiConfigId || ''),
+            tool_id:String(log.toolId || ''),
+            generated_layer_id:String(log.generatedLayerId || ''),
+        },
+        prompt:String(log.prompt || ''),
+        outputs,
+        refs:[],
+        runMs:Math.max(0, Number(log.runMs || 0)),
+        error,
+    }, ...canvas.logs].slice(0, 500);
+    renderSmartCanvasLog();
+    scheduleSave();
+    return true;
+}
 window.HstarSmartCanvasOpenShopHooks = {
     uid,
     getCanvasId:() => canvasId || canvas?.id || '',
@@ -18064,6 +18313,7 @@ window.HstarSmartCanvasOpenShopHooks = {
     getConnections:() => canvas?.connections || [],
     inputImagesForNode:node => inputImagesFor(node).filter(image => image?.url && mediaKindForItem(image) === 'image'),
     imagesForNode:node => imagesForNode(node).filter(image => image?.url && mediaKindForItem(image) === 'image'),
+    sourceSizeForNode:openShopLayeredInputSize,
     displayMediaUrl,
     createImageOutput({sourceNode, output, requestId}){
         const existingCount = nodes.filter(node => node.openshopSourceNodeId === sourceNode.id).length;
@@ -18076,9 +18326,10 @@ window.HstarSmartCanvasOpenShopHooks = {
             ...(naturalWidth && naturalHeight ? {natural_w:naturalWidth, natural_h:naturalHeight} : {}),
             openshopAssetId:output.assetId,
         };
+        const sourceRect = nodeRect(sourceNode);
         const node = createNode(
-            Number(sourceNode.x || 0) + Number(sourceNode.w || 340) + 90,
-            Number(sourceNode.y || 0) + existingCount * 34,
+            Number(sourceRect.x || 0) + Number(sourceRect.width || 340) + 90,
+            Number(sourceRect.y || 0) + existingCount * 34,
             [image],
             {skipUndo:true, select:false}
         );
@@ -18098,6 +18349,7 @@ window.HstarSmartCanvasOpenShopHooks = {
     render,
     scheduleSave,
     saveCanvas,
+    recordAiTaskLog:recordSmartOpenShopAiTaskLog,
     t:tr,
     toast
 };
@@ -20514,14 +20766,15 @@ function openCreateMenu(event, options={}){
     if(!createMenu) return;
     createMenuPoint = screenToWorld(event);
     createMenuGroupId = options.groupId || '';
-    const w = 500;
-    const h = 222;
-    const left = Math.max(14, Math.min(window.innerWidth - w - 14, event.clientX + 8));
-    const top = Math.max(14, Math.min(window.innerHeight - h - 14, event.clientY + 8));
-    createMenu.style.left = `${left}px`;
-    createMenu.style.top = `${top}px`;
     createMenu.classList.add('open');
     refreshIcons();
+    const bounds = createMenu.getBoundingClientRect();
+    const marginX = Math.min(14, Math.max(0, (window.innerWidth - bounds.width) / 2));
+    const marginY = Math.min(14, Math.max(0, (window.innerHeight - bounds.height) / 2));
+    const left = Math.max(marginX, Math.min(window.innerWidth - bounds.width - marginX, event.clientX + 8));
+    const top = Math.max(marginY, Math.min(window.innerHeight - bounds.height - marginY, event.clientY + 8));
+    createMenu.style.left = `${left}px`;
+    createMenu.style.top = `${top}px`;
 }
 function addCreatedNodeToMenuGroup(node){
     const group = createMenuGroupId ? nodes.find(n => n.id === createMenuGroupId) : null;
@@ -20542,7 +20795,10 @@ function createNodeFromMenu(type){
     else if(type === 'loop') created = createLoopNode(p.x - 135, p.y - 95);
     else if(type === 'controller') created = createControllerNode(p.x - 150, p.y - 113);
     else if(type === 'director-3d') created = createDirector3DNode(p.x - 160, p.y - 110);
-    else if(type === 'openshop-layered') created = createOpenShopLayeredNode(p.x - 170, p.y - 130);
+    else if(type === 'openshop-layered') {
+        const layout = openShopLayeredLayoutSize({type:OPENSHOP_LAYERED_NODE_TYPE});
+        created = createOpenShopLayeredNode(p.x - layout.width / 2, p.y - layout.height / 2);
+    }
     else created = createImageNodeAt(p);
     createMenuGroupId = groupId;
     addCreatedNodeToMenuGroup(created);
@@ -21088,7 +21344,7 @@ window.onmouseup = e => {
     }
 };
 shell.addEventListener('wheel', e => {
-    if(e.target.closest('.composer,.smart-back,.image-edit-modal,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.workflow-transfer-panel,.log-modal,.shortcut-modal,.prompt-node-segments,.prompt-node-text,.prompt-node-llm,.smart-group-list,[data-thumb-scroll]')) return;
+    if(e.target.closest('.composer,.smart-back,.image-edit-modal,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.workflow-transfer-panel,.log-modal,.shortcut-modal,.create-menu,.prompt-node-segments,.prompt-node-text,.prompt-node-llm,.smart-group-list,[data-thumb-scroll]')) return;
     e.preventDefault();
     const rect = shell.getBoundingClientRect();
     const sx = e.clientX - rect.left;
@@ -21528,7 +21784,7 @@ if(assetAddCategoryBtn) assetAddCategoryBtn.onclick = async () => {
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({parent:localAssetFolderPath(), name})
         }).then(async r => {
-            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '新建文件夹失败');
+            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '重命名失败');
             return r.json();
         });
         setLocalAssetLibraryFromResponse(data);
@@ -22019,5 +22275,3 @@ window.onload = async () => {
     syncApiKindToggleVisibility();
     render();
 };
-
-

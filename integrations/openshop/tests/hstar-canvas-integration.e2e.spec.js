@@ -145,6 +145,7 @@ async function mountCanvas(page, kind, canvasId){
   const target = canvasPage(kind, canvasId);
   await page.evaluate(src => {
     const frame = document.getElementById('frame-canvas');
+    window.switchUI?.(null, 'canvas', {skipRemember:true});
     frame.src = src;
   }, target);
   await expect.poll(() => {
@@ -305,6 +306,157 @@ async function editorSnapshot(editor){
   }));
 }
 
+test('keeps the classic canvas create menu inside the viewport near the lower-right edge', async ({page, request}) => {
+  await page.setViewportSize({width:900, height:520});
+  const nodeId = `${TEST_ID_PREFIX}classic-menu-node-${Date.now()}`;
+  const canvas = await createCanvas(request, {
+    kind:'classic', title:'Classic create menu viewport',
+    nodes:[{id:nodeId, type:'prompt', x:80, y:100, w:280, text:''}],
+    connections:[],
+  });
+  const frame = await mountCanvas(page, 'classic', canvas.id);
+  await page.evaluate(() => {
+    document.querySelectorAll('iframe').forEach(element => element.classList.remove('active'));
+    document.getElementById('frame-canvas').classList.add('active');
+  });
+  await frame.waitForFunction(id => window.HstarClassicOpenShopHooks.getNodes().some(node => node.id === id), nodeId);
+  const clickWorld = await frame.evaluate(() => screenToWorld(window.innerWidth - 4, window.innerHeight - 4));
+
+  await frame.evaluate(() => {
+    const board = document.getElementById('board');
+    board.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles:true,
+      cancelable:true,
+      button:2,
+      clientX:window.innerWidth - 4,
+      clientY:window.innerHeight - 4,
+    }));
+  });
+
+  const menu = frame.locator('#createMenu');
+  await expect(menu).toBeVisible();
+  const geometry = await menu.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return {
+      top:rect.top,
+      right:rect.right,
+      bottom:rect.bottom,
+      left:rect.left,
+      viewportWidth:window.innerWidth,
+      viewportHeight:window.innerHeight,
+      clientHeight:element.clientHeight,
+      scrollHeight:element.scrollHeight,
+      overflowY:getComputedStyle(element).overflowY,
+    };
+  });
+
+  expect(geometry.left).toBeGreaterThanOrEqual(11.5);
+  expect(geometry.top).toBeGreaterThanOrEqual(11.5);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth - 11.5);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight - 11.5);
+  expect(geometry.overflowY).toBe('auto');
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+
+  const worldTransformBeforeScroll = await frame.locator('#world').evaluate(element => element.style.transform);
+  await menu.hover({position:{x:20, y:20}});
+  await page.mouse.wheel(0, 600);
+  await expect.poll(() => menu.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(await frame.locator('#world').evaluate(element => element.style.transform)).toBe(worldTransformBeforeScroll);
+  const lastItemVisible = await menu.locator('.menu-btn').last().evaluate(element => {
+    const itemRect = element.getBoundingClientRect();
+    const menuRect = element.parentElement.getBoundingClientRect();
+    return itemRect.top >= menuRect.top && itemRect.bottom <= menuRect.bottom;
+  });
+  expect(lastItemVisible).toBe(true);
+
+  await menu.locator('.menu-btn').last().click();
+  await expect.poll(() => frame.evaluate(() => window.HstarClassicOpenShopHooks.getNodes().filter(node => node.type === 'output').length)).toBe(1);
+  const outputNode = await frame.evaluate(() => {
+    const node = window.HstarClassicOpenShopHooks.getNodes().find(candidate => candidate.type === 'output');
+    return {x:node.x, y:node.y};
+  });
+  expect(outputNode.x).toBeCloseTo(clickWorld.x, 5);
+  expect(outputNode.y).toBeCloseTo(clickWorld.y, 5);
+});
+
+test('keeps the smart canvas create menu inside the viewport near the lower-right edge', async ({page, request}) => {
+  await page.setViewportSize({width:900, height:220});
+  const nodeId = `${TEST_ID_PREFIX}smart-menu-node-${Date.now()}`;
+  const canvas = await createCanvas(request, {
+    kind:'smart', title:'Smart create menu viewport',
+    nodes:[{id:nodeId, type:'prompt', x:80, y:100, w:280, text:''}],
+    connections:[],
+  });
+  const frame = await mountCanvas(page, 'smart', canvas.id);
+  await page.evaluate(() => {
+    document.querySelectorAll('iframe').forEach(element => element.classList.remove('active'));
+    document.getElementById('frame-canvas').classList.add('active');
+  });
+  await frame.waitForFunction(id => Boolean(window.HstarSmartCanvasOpenShopHooks.getNode(id)), nodeId);
+  const clickWorld = await frame.evaluate(() => screenToWorld({
+    clientX:window.innerWidth - 4,
+    clientY:window.innerHeight - 4,
+  }));
+
+  await frame.evaluate(() => {
+    const shell = document.getElementById('shell');
+    shell.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles:true,
+      cancelable:true,
+      button:2,
+      clientX:window.innerWidth - 4,
+      clientY:window.innerHeight - 4,
+    }));
+  });
+
+  const menu = frame.locator('#createMenu');
+  await expect(menu).toBeVisible();
+  const geometry = await menu.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return {
+      top:rect.top,
+      right:rect.right,
+      bottom:rect.bottom,
+      left:rect.left,
+      viewportWidth:window.innerWidth,
+      viewportHeight:window.innerHeight,
+      clientHeight:element.clientHeight,
+      scrollHeight:element.scrollHeight,
+      overflowY:getComputedStyle(element).overflowY,
+    };
+  });
+
+  expect(geometry.left).toBeGreaterThanOrEqual(13.5);
+  expect(geometry.top).toBeGreaterThanOrEqual(13.5);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth - 13.5);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight - 13.5);
+  expect(geometry.overflowY).toBe('auto');
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+
+  const worldTransformBeforeScroll = await frame.locator('#world').evaluate(element => element.style.transform);
+  await menu.hover({position:{x:20, y:20}});
+  await page.mouse.wheel(0, 600);
+  await expect.poll(() => menu.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(await frame.locator('#world').evaluate(element => element.style.transform)).toBe(worldTransformBeforeScroll);
+
+  const uploadCard = menu.locator('[data-create-type="image"]');
+  await uploadCard.scrollIntoViewIfNeeded();
+  await uploadCard.click();
+  const readCreatedNodeId = async () => {
+    const ids = await frame.locator('.image-node.empty-node[data-id]').evaluateAll(elements => elements.map(element => element.dataset.id));
+    return ids.find(id => id && id !== nodeId) || '';
+  };
+  await expect.poll(readCreatedNodeId).not.toBe('');
+  const createdNodeId = await readCreatedNodeId();
+  const createdNodeCenter = await frame.evaluate(id => {
+    const node = window.HstarSmartCanvasOpenShopHooks.getNode(id);
+    const rect = nodeRect(node);
+    return {x:rect.x + rect.width / 2, y:rect.y + rect.height / 2};
+  }, createdNodeId);
+  expect(createdNodeCenter.x).toBeCloseTo(clickWorld.x, 5);
+  expect(createdNodeCenter.y).toBeCloseTo(clickWorld.y, 5);
+});
+
 test('keeps OpenShop node actions visible inside classic and smart canvas cards', async ({page, request}) => {
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -344,6 +496,58 @@ test('keeps OpenShop node actions visible inside classic and smart canvas cards'
     expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.body.bottom + 0.5);
     expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.node.bottom + 0.5);
   }
+});
+
+test('classic OpenShop card follows the first image aspect after a live connection', async ({page, request}) => {
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const sourceNode = {
+    id:`${TEST_ID_PREFIX}aspect-source-${runId}`, type:'image', x:80, y:120, w:260, h:336,
+    url:`${imageUrls[0]}?aspect=${runId}`, name:'aspect-source.png', mediaKind:'image',
+    natural_w:1000, natural_h:2500,
+  };
+  const layeredNode = {
+    id:`${TEST_ID_PREFIX}aspect-layered-${runId}`, type:'openshop-layered',
+    projectId:`${TEST_ID_PREFIX}aspect-project-${runId}`, projectName:'OpenShop aspect',
+    x:520, y:100, w:340, h:260, documentWidth:1920, documentHeight:1080,
+    layerCount:0, sourceUpdateCount:0, autosaveVersion:0, saveState:'new', created_at:Date.now(),
+  };
+  const canvas = await createCanvas(request, {
+    kind:'classic', title:'OpenShop live aspect', nodes:[sourceNode, layeredNode], connections:[],
+  });
+  const frame = await mountCanvas(page, 'classic', canvas.id);
+  const card = frame.locator(`.openshop-layered-node[data-id="${layeredNode.id}"]`);
+  const preview = card.locator('.openshop-layered-preview');
+  await expect(card).toBeVisible();
+
+  const emptyGeometry = await preview.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return {width:rect.width, height:rect.height};
+  });
+  expect(emptyGeometry.width / emptyGeometry.height).toBeCloseTo(3 / 4, 2);
+
+  const outputPort = frame.locator(`.image-node[data-id="${sourceNode.id}"] .port.out`);
+  const inputPort = card.locator('.port.in');
+  const outputBox = await outputPort.boundingBox();
+  const inputBox = await inputPort.boundingBox();
+  expect(outputBox).toBeTruthy();
+  expect(inputBox).toBeTruthy();
+  await page.mouse.move(outputBox.x + outputBox.width / 2, outputBox.y + outputBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2, {steps:8});
+  await page.mouse.up();
+
+  await expect.poll(() => frame.evaluate(({from, to}) => window.HstarClassicOpenShopHooks
+    .getConnections().some(connection => connection.from === from && connection.to === to), {
+    from:sourceNode.id,
+    to:layeredNode.id,
+  })).toBe(true);
+  await expect(preview.locator('img')).toBeVisible();
+  await expect(card.locator('.openshop-layered-dimensions')).toHaveText('1000 x 2500');
+  const sourcedGeometry = await preview.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return {width:rect.width, height:rect.height};
+  });
+  expect(sourcedGeometry.width / sourcedGeometry.height).toBeCloseTo(2 / 5, 2);
 });
 
 test('opens empty OpenShop nodes on templates and sourced nodes directly in the workspace', async ({page, request}) => {

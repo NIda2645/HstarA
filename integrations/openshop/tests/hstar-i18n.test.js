@@ -59,8 +59,8 @@ describe('Hstar OpenShop localization runtime', () => {
   });
 
   it('loads localization before the core engine and delegates OS translations', () => {
-    const runtimeScript = indexHtml.indexOf('<script src="./host/openshop-i18n.js"></script>');
-    const localeScript = indexHtml.indexOf('<script src="./locales/zh-CN.js"></script>');
+    const runtimeScript = indexHtml.indexOf('<script src="./host/openshop-i18n.js?v=');
+    const localeScript = indexHtml.indexOf('<script src="./locales/zh-CN.js?v=');
     const coreEngine = indexHtml.indexOf('const OS = {');
 
     expect(runtimeScript).toBeGreaterThan(0);

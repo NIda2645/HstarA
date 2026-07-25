@@ -68,6 +68,7 @@
       destroyed:false,
       listeners:[],
       refreshPromise:Promise.resolve(),
+      selectionSyncVersion:0,
     };
 
     function currentContext(){
@@ -77,7 +78,7 @@
     }
 
     function selectionBounds(){
-      const bounds = editor._selectionBounds;
+      const bounds = editor._selectionDocumentBounds || editor._selectionBounds;
       if(!bounds) throw new Error('当前没有可用选区');
       const width = Math.max(1, Math.round(Number(bounds.w ?? bounds.width ?? 0)));
       const height = Math.max(1, Math.round(Number(bounds.h ?? bounds.height ?? 0)));
@@ -86,6 +87,21 @@
         y:Math.max(0, Math.round(Number(bounds.y || 0))),
         width,
         height,
+      };
+    }
+
+    function normalizeRegion(value={}){
+      const documentWidth = Math.max(1, Math.round(Number(editor.canvasW || 1)));
+      const documentHeight = Math.max(1, Math.round(Number(editor.canvasH || 1)));
+      const x = Math.max(0, Math.min(documentWidth - 1, Math.round(Number(value.x || 0))));
+      const y = Math.max(0, Math.min(documentHeight - 1, Math.round(Number(value.y || 0))));
+      const requestedWidth = Math.max(1, Math.round(Number(value.w ?? value.width ?? 0)));
+      const requestedHeight = Math.max(1, Math.round(Number(value.h ?? value.height ?? 0)));
+      return {
+        x,
+        y,
+        w:Math.min(requestedWidth, documentWidth - x),
+        h:Math.min(requestedHeight, documentHeight - y),
       };
     }
 
@@ -109,8 +125,16 @@
     function recordValue(value={}){
       const sourceType = clean(value.sourceType) || 'local';
       const alias = clean(value.alias) || nextAlias(sourceType);
+      const assetId = clean(value.assetId);
+      const selectionRegion = value.selectionRegion ? normalizeRegion(value.selectionRegion) : null;
+      const referenceKey = clean(value.referenceKey) || (
+        sourceType === 'selection' && selectionRegion
+          ? `selection:${selectionRegion.x}:${selectionRegion.y}:${selectionRegion.w}:${selectionRegion.h}`
+          : assetId || `${sourceType}:${alias}`
+      );
       return {
-        assetId:clean(value.assetId),
+        assetId,
+        referenceKey,
         alias,
         mention:`@${alias}`,
         sourceType,
@@ -121,6 +145,11 @@
         dataUrl:clean(value.dataUrl),
         thumbnailUrl:clean(value.thumbnailUrl || value.dataUrl || value.url),
         thumbnailVersion:Math.max(0, Number(value.thumbnailVersion || 0)),
+        autoSelectionRegion:value.autoSelectionRegion === true,
+        selectionRegionIndex:Number.isInteger(value.selectionRegionIndex)
+          ? value.selectionRegionIndex
+          : -1,
+        selectionRegion,
         invalid:false,
       };
     }
@@ -129,17 +158,24 @@
       if(!item?.assetId) return null;
       return {
         assetId:item.assetId,
+        referenceKey:item.referenceKey,
         alias:item.alias,
         mention:`@${item.alias}`,
         sourceType:item.sourceType,
         order,
         width:Math.max(0, Number(item.width || 0)),
         height:Math.max(0, Number(item.height || 0)),
+        autoSelectionRegion:item.autoSelectionRegion === true,
+        selectionRegionIndex:Number.isInteger(item.selectionRegionIndex)
+          ? item.selectionRegionIndex
+          : -1,
+        selectionRegion:item.selectionRegion ? normalizeRegion(item.selectionRegion) : null,
       };
     }
 
     function persistRecords(){
       editor.__hstarAiReferenceRecords = allRecords()
+        .filter(item => item?.assetId)
         .map((item, index) => persistentRecord(item, index))
         .filter(Boolean);
     }
@@ -152,33 +188,55 @@
     async function defaultCaptureVisibleComposite(){
       const width = Math.max(1, Math.round(Number(editor.canvasW || 1)));
       const height = Math.max(1, Math.round(Number(editor.canvasH || 1)));
-      const dataUrl = editor.canvas?.toDataURL?.({
-        format:'png', quality:1, left:0, top:0, width, height, multiplier:1,
-      });
-      if(!clean(dataUrl)) throw new Error('OpenShop 当前画面导出失败');
-      return {dataUrl, width, height};
+      const canvas = editor.canvas;
+      const capture = () => {
+        const dataUrl = canvas?.toDataURL?.({
+          format:'png', quality:1, left:0, top:0, width, height, multiplier:1,
+        });
+        if(!clean(dataUrl)) throw new Error('OpenShop 当前画面导出失败');
+        return {dataUrl, width, height};
+      };
+      if(typeof editor._withExportCanvas === 'function'){
+        return editor._withExportCanvas({opaque:false}, capture);
+      }
+      const viewport = Array.isArray(canvas?.viewportTransform)
+        ? [...canvas.viewportTransform]
+        : null;
+      try {
+        if(viewport) canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+        canvas?.renderAll?.();
+        return capture();
+      } finally {
+        if(viewport) canvas.viewportTransform = viewport;
+        canvas?.renderAll?.();
+      }
     }
 
     const captureVisibleCompositeImpl = options.captureVisibleComposite || defaultCaptureVisibleComposite;
 
-    async function defaultCaptureSelection(){
-      const bounds = selectionBounds();
-      const composite = await captureVisibleCompositeImpl();
-      const image = await imageLoader(composite.dataUrl);
+    async function defaultCaptureSelectionRegion(region, shared={}){
+      const bounds = normalizeRegion(region);
+      const composite = shared.composite || await captureVisibleCompositeImpl();
+      const image = shared.image || await imageLoader(composite.dataUrl);
       const canvas = documentRef.createElement('canvas');
-      canvas.width = bounds.width;
-      canvas.height = bounds.height;
+      canvas.width = bounds.w;
+      canvas.height = bounds.h;
       const context = canvas.getContext('2d');
       if(!context) throw new Error('OpenShop 选区预览画布不可用');
       context.drawImage(
         image,
-        bounds.x, bounds.y, bounds.width, bounds.height,
-        0, 0, bounds.width, bounds.height,
+        bounds.x, bounds.y, bounds.w, bounds.h,
+        0, 0, bounds.w, bounds.h,
       );
-      return {dataUrl:canvas.toDataURL('image/png'), width:bounds.width, height:bounds.height};
+      return {dataUrl:canvas.toDataURL('image/png'), width:bounds.w, height:bounds.h};
+    }
+
+    async function defaultCaptureSelection(){
+      return defaultCaptureSelectionRegion(selectionBounds());
     }
 
     const captureSelectionImpl = options.captureSelection || defaultCaptureSelection;
+    const captureSelectionRegionImpl = options.captureSelectionRegion || defaultCaptureSelectionRegion;
 
     async function defaultCaptureLayer(layer){
       if(!layer) throw new Error('参考图层不存在');
@@ -221,12 +279,36 @@
         const source = editor._selectionMask;
         const sourceWidth = Math.max(1, Number(source.w || width));
         const sourceHeight = Math.max(1, Number(source.h || height));
+        const explicitSpace = ['document', 'screen'].includes(source.coordinateSpace)
+          ? source.coordinateSpace
+          : '';
+        const coordinateSpace = explicitSpace
+          || (editor._selectionMaskSpace === 'document' ? 'document' : 'screen');
+        const viewport = Array.isArray(editor.canvas?.viewportTransform)
+          && editor.canvas.viewportTransform.length >= 6
+          ? editor.canvas.viewportTransform
+          : [1, 0, 0, 1, 0, 0];
+        const screenWidth = Math.max(1, Number(editor.canvas?.width || sourceWidth));
+        const screenHeight = Math.max(1, Number(editor.canvas?.height || sourceHeight));
         const image = context.createImageData(width, height);
         for(let y = 0; y < height; y += 1){
           for(let x = 0; x < width; x += 1){
-            const sourceX = Math.min(sourceWidth - 1, Math.floor(x * sourceWidth / width));
-            const sourceY = Math.min(sourceHeight - 1, Math.floor(y * sourceHeight / height));
-            const selected = Boolean(source.mask[sourceY * sourceWidth + sourceX]);
+            let sourceX;
+            let sourceY;
+            if(coordinateSpace === 'document'){
+              sourceX = Math.floor((x + 0.5) * sourceWidth / width);
+              sourceY = Math.floor((y + 0.5) * sourceHeight / height);
+            } else {
+              const documentX = x + 0.5;
+              const documentY = y + 0.5;
+              const screenX = viewport[0] * documentX + viewport[2] * documentY + viewport[4];
+              const screenY = viewport[1] * documentX + viewport[3] * documentY + viewport[5];
+              sourceX = Math.floor(screenX * sourceWidth / screenWidth);
+              sourceY = Math.floor(screenY * sourceHeight / screenHeight);
+            }
+            const selected = sourceX >= 0 && sourceY >= 0
+              && sourceX < sourceWidth && sourceY < sourceHeight
+              && Boolean(source.mask[sourceY * sourceWidth + sourceX]);
             const offset = (y * width + x) * 4;
             const value = selected ? 255 : 0;
             image.data[offset] = value;
@@ -244,7 +326,7 @@
       return {dataUrl:canvas.toDataURL('image/png'), width, height};
     }
 
-    async function refreshPrimary(){
+    async function refreshLegacyPrimary(){
       if(state.destroyed) return null;
       const sourceType = state.primaryMode === 'selection' ? 'selection' : 'primary';
       const captured = state.primaryMode === 'selection'
@@ -265,6 +347,68 @@
         thumbnailVersion:state.thumbnailVersion,
       });
       return clone(state.primary);
+    }
+
+    async function syncSelectionRegions(regions=editor._selectionRegions){
+      if(state.destroyed || state.primaryMode !== 'selection') return [];
+      const generation = ++state.selectionSyncVersion;
+      const values = Array.isArray(regions) && regions.length
+        ? regions.map(normalizeRegion)
+        : (editor._selectionBounds || editor._selectionDocumentBounds ? [normalizeRegion(selectionBounds())] : []);
+      let captures = [];
+      if(values.length){
+        if(options.captureSelectionRegion){
+          captures = await Promise.all(values.map(region => captureSelectionRegionImpl(region)));
+        } else {
+          const composite = await captureVisibleCompositeImpl();
+          const image = await imageLoader(composite.dataUrl);
+          captures = await Promise.all(values.map(region => (
+            defaultCaptureSelectionRegion(region, {composite, image})
+          )));
+        }
+      }
+      if(state.destroyed || generation !== state.selectionSyncVersion) return [];
+      const preserved = allRecords().filter(item => (
+        !item.autoSelectionRegion && item.sourceType !== 'primary'
+      ));
+      const usedAliases = new Set(preserved.map(item => item.alias));
+      let aliasIndex = 1;
+      const automatic = values.map((region, index) => {
+        while(usedAliases.has(`选区${aliasIndex}`)) aliasIndex += 1;
+        const alias = `选区${aliasIndex}`;
+        usedAliases.add(alias);
+        aliasIndex += 1;
+        const captured = captures[index];
+        state.thumbnailVersion += 1;
+        return recordValue({
+          alias,
+          sourceType:'selection',
+          name:`选区 ${index + 1}`,
+          dataUrl:captured.dataUrl,
+          thumbnailUrl:captured.dataUrl,
+          width:captured.width,
+          height:captured.height,
+          thumbnailVersion:state.thumbnailVersion,
+          autoSelectionRegion:true,
+          selectionRegionIndex:index,
+          selectionRegion:region,
+        });
+      });
+      const records = [...automatic, ...preserved];
+      state.primary = records.shift() || null;
+      state.references = records;
+      return clone(automatic);
+    }
+
+    async function refreshPrimary(){
+      if(state.destroyed) return null;
+      if(state.primaryMode === 'selection'){
+        await syncSelectionRegions(editor._selectionRegions);
+        return state.primary ? clone(state.primary) : null;
+      }
+      const result = await refreshLegacyPrimary();
+      state.references = allRecords().filter(item => item !== state.primary && !item.autoSelectionRegion);
+      return result;
     }
 
     function schedulePrimaryRefresh(){
@@ -442,9 +586,12 @@
       return allRecords()
         .filter(item => !needle || item.alias.toLowerCase().includes(needle))
         .map(item => ({
+          assetId:item.assetId,
+          referenceKey:item.referenceKey || item.assetId || `${item.sourceType}:${item.alias}`,
           mention:`@${item.alias}`,
           alias:item.alias,
           sourceType:item.sourceType,
+          selectionRegionIndex:item.selectionRegionIndex,
           thumbnailUrl:item.thumbnailUrl || item.dataUrl,
         }));
     }
@@ -461,9 +608,18 @@
 
     function removeReference(alias){
       const normalized = clean(alias).replace(/^@/, '');
-      const index = state.references.findIndex(item => item.alias === normalized);
+      const records = allRecords();
+      const index = records.findIndex(item => item.alias === normalized);
       if(index < 0) return false;
-      state.references.splice(index, 1);
+      const [removed] = records.splice(index, 1);
+      state.primary = records.shift() || null;
+      state.references = records;
+      if(removed.autoSelectionRegion){
+        editor.removeSelectionRegion?.(removed.selectionRegionIndex);
+        state.primaryMode = 'selection';
+      } else if(state.primary){
+        state.primaryMode = state.primary.sourceType === 'selection' ? 'selection' : 'full';
+      }
       markDirty('OpenShop reference removed');
       return true;
     }
@@ -482,11 +638,7 @@
     }
 
     const dirtyHandler = () => { void schedulePrimaryRefresh(); };
-    const selectionHandler = () => {
-      if(state.primaryMode === 'selection') void schedulePrimaryRefresh();
-    };
     addListener('openshop:project-dirty', dirtyHandler);
-    addListener('openshop:selection-changed', selectionHandler);
     restore(editor.__hstarAiReferenceRecords);
 
     function destroy(){
@@ -497,6 +649,7 @@
 
     return Object.freeze({
       setPrimaryMode,
+      syncSelectionRegions,
       addCurrentSelection,
       addLayer,
       addLibraryItem,

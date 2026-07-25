@@ -79,8 +79,8 @@ assert.match(
 
 assert.match(
   source,
-  /async def generate_gemini_provider_image[\s\S]*if is_linapi_provider\(provider\):\s*\n\s*client_kwargs\["trust_env"\] = False/,
-  'LinAPI Gemini requests should bypass system proxy settings that disconnect :generateContent requests'
+  /async def generate_gemini_provider_image[\s\S]*"trust_env": provider_uses_system_proxy\(provider, default=not is_linapi_provider\(provider\)\)/,
+  'LinAPI Gemini requests should default to bypassing system proxies while honoring the saved provider preference'
 );
 
 assert.match(

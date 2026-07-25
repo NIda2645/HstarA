@@ -51,7 +51,11 @@ const trashEntryBtn = document.getElementById('trashEntry');
 const trashBadge = document.getElementById('trashBadge');
 const trashPanel = document.getElementById('trashPanel');
 const trashListEl = document.getElementById('trashList');
+const trashPurgeAllBtn = document.getElementById('trashPurgeAll');
 const trashCloseBtn = document.getElementById('trashClose');
+const trashPurgeAllDialog = document.getElementById('trashPurgeAllDialog');
+const trashPurgeAllConfirmBtn = document.getElementById('trashPurgeAllConfirm');
+const trashPurgeAllCancelBtn = document.getElementById('trashPurgeAllCancel');
 const newProjectBtn = document.getElementById('newProjectBtn');
 const newProjectRow = document.getElementById('newProjectRow');
 const newProjectInput = document.getElementById('newProjectInput');
@@ -68,6 +72,7 @@ const statusEl = document.getElementById('boardStatus');
 let projects = [];
 let canvases = [];          // all canvases across projects
 let deletedCanvases = [];
+let trashPurgeAllBusy = false;
 let currentProjectId = rememberedProjectId();
 let pendingDeleteProjectId = null;
 let statusTimer = null;
@@ -901,6 +906,7 @@ async function openTrashView(){
     await loadTrash();
 }
 function closeTrashView(){
+    closeTrashPurgeAllDialog();
     trashEntryBtn.classList.remove('active');
     trashPanel.classList.remove('active');
 }
@@ -918,6 +924,7 @@ async function loadTrash(){
 }
 function renderTrash(){
     trashListEl.innerHTML = '';
+    syncTrashPurgeAllState();
     if(!deletedCanvases.length){
         const empty = document.createElement('div');
         empty.className = 'ws-trash-empty';
@@ -980,6 +987,48 @@ async function purgeCanvas(id){
     } catch(e){ console.error(e); setStatus(L('删除失败','Delete failed')); }
 }
 
+function syncTrashPurgeAllState(){
+    trashPurgeAllBtn.disabled = trashPurgeAllBusy || deletedCanvases.length === 0;
+    trashPurgeAllConfirmBtn.disabled = trashPurgeAllBusy;
+    trashPurgeAllCancelBtn.disabled = trashPurgeAllBusy;
+    trashCloseBtn.disabled = trashPurgeAllBusy;
+    const label = trashPurgeAllConfirmBtn.querySelector('span');
+    if(label) label.textContent = trashPurgeAllBusy ? L('正在删除...','Deleting...') : L('确认删除','Delete all');
+}
+
+function openTrashPurgeAllDialog(){
+    if(trashPurgeAllBusy || !deletedCanvases.length) return;
+    trashPurgeAllDialog.hidden = false;
+    trashPurgeAllCancelBtn.focus();
+}
+
+function closeTrashPurgeAllDialog(){
+    if(trashPurgeAllBusy) return;
+    trashPurgeAllDialog.hidden = true;
+}
+
+async function purgeAllCanvases(){
+    if(trashPurgeAllBusy || !deletedCanvases.length) return;
+    trashPurgeAllBusy = true;
+    syncTrashPurgeAllState();
+    try {
+        const res = await fetch('/api/canvases/trash/purge-all', { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if(!res.ok) throw new Error(data?.detail || 'purge all failed');
+        trashPurgeAllDialog.hidden = true;
+        await loadAll();
+        await loadTrash();
+        const count = Number(data?.purged || 0);
+        setStatus(langIsEn() ? `Deleted ${count} canvases` : `已彻底删除 ${count} 个画布`);
+    } catch(e){
+        console.error(e);
+        setStatus(L('删除全部失败，请重试','Failed to delete all canvases'));
+    } finally {
+        trashPurgeAllBusy = false;
+        syncTrashPurgeAllState();
+    }
+}
+
 /* ===== Event bindings ===== */
 board.addEventListener('mousedown', onBoardPanStart);
 document.addEventListener('mousemove', onBoardPanMove);
@@ -1013,6 +1062,12 @@ trashEntryBtn.addEventListener('click', () => {
     else openTrashView();
 });
 trashCloseBtn.addEventListener('click', closeTrashView);
+trashPurgeAllBtn.addEventListener('click', openTrashPurgeAllDialog);
+trashPurgeAllConfirmBtn.addEventListener('click', purgeAllCanvases);
+trashPurgeAllCancelBtn.addEventListener('click', closeTrashPurgeAllDialog);
+trashPurgeAllDialog.addEventListener('click', e => {
+    if(e.target === trashPurgeAllDialog) closeTrashPurgeAllDialog();
+});
 
 // close card menu when clicking outside
 document.addEventListener('mousedown', e => {
@@ -1026,6 +1081,10 @@ document.addEventListener('mousedown', e => {
 
 document.addEventListener('keydown', e => {
     if(e.key !== 'Escape') return;
+    if(!trashPurgeAllDialog.hidden){
+        closeTrashPurgeAllDialog();
+        return;
+    }
     closeCardMenu();
     closeCreateCard();
     boardWorld.querySelectorAll('.ws-card.confirming-delete').forEach(el => el.classList.remove('confirming-delete'));

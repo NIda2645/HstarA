@@ -11,6 +11,17 @@ const manifestPath = resolve(integrationRoot, 'vendor', 'runtime-manifest.json')
 const buildScript = readFileSync(resolve(integrationRoot, 'scripts', 'build-hstar.mjs'), 'utf8');
 
 describe('Hstar OpenShop offline runtime', () => {
+  it('uses one cache revision for every mutable local runtime asset', () => {
+    const runtimeRevision = html.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
+    const mutableRefs = [...html.matchAll(/(?:src|href)="(\.\/(?:host|locales)\/[^"?]+)(?:\?v=([^"?]+))?"/g)];
+
+    expect(runtimeRevision).toBeTruthy();
+    expect(mutableRefs.length).toBeGreaterThan(20);
+    mutableRefs.forEach(([, asset, revision]) => {
+      expect(revision, `${asset} should use the OpenShop runtime revision`).toBe(runtimeRevision);
+    });
+  });
+
   it('uses only local browser runtime dependencies', () => {
     const runtimeRevision = html.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
     expect(runtimeRevision).toBeTruthy();
@@ -23,15 +34,15 @@ describe('Hstar OpenShop offline runtime', () => {
     expect(html).toContain("'./vendor/gif/gif.js'");
     expect(html).toContain("workerScript: './vendor/gif/gif.worker.js'");
     expect(html).toContain("import('./vendor/transformers/transformers.web.min.js')");
-    expect(html).toContain('<link rel="stylesheet" href="./host/openshop-text-properties.css">');
-    expect(html).toContain('<script src="./host/openshop-text-properties.js"></script>');
+    expect(html).toContain(`<link rel="stylesheet" href="./host/openshop-text-properties.css?v=${runtimeRevision}">`);
+    expect(html).toContain(`<script src="./host/openshop-text-properties.js?v=${runtimeRevision}"></script>`);
     expect(html).toContain('HstarOpenShopTextProperties.createController');
     expect(html).toContain(`<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=${runtimeRevision}">`);
     expect(html).toContain(`<script src="./host/openshop-writing-mode.js?v=${runtimeRevision}"></script>`);
     expect(html.indexOf('./host/openshop-writing-mode.js'))
       .toBeLessThan(html.indexOf('./host/openshop-text-tools.js'));
-    expect(html).toContain('<script src="./host/openshop-canvas-sampler.js"></script>');
-    expect(html).toContain('<script src="./host/openshop-update-scheduler.js"></script>');
+    expect(html).toContain(`<script src="./host/openshop-canvas-sampler.js?v=${runtimeRevision}"></script>`);
+    expect(html).toContain(`<script src="./host/openshop-update-scheduler.js?v=${runtimeRevision}"></script>`);
     expect(buildScript).toContain("'host/openshop-text-properties.js'");
     expect(buildScript).toContain("'host/openshop-text-properties.css'");
     expect(buildScript).toContain("'host/openshop-writing-mode.js'");
@@ -67,6 +78,7 @@ describe('Hstar OpenShop offline runtime', () => {
 
   it('keeps the checked-in static writing-mode runtime synchronized', () => {
     const files = [
+      'host/openshop-selection-engine.js',
       'host/openshop-writing-mode.js',
       'host/openshop-writing-mode.css',
       'host/openshop-text-tools.js',
@@ -89,5 +101,7 @@ describe('Hstar OpenShop offline runtime', () => {
       expect(readFileSync(resolve(staticRoot, file)))
         .toEqual(readFileSync(resolve(integrationRoot, file)));
     });
+    expect(readFileSync(resolve(staticRoot, 'host/openshop-selection-engine.js'), 'utf8'))
+      .toContain('maskRegions');
   });
 });

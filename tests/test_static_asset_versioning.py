@@ -22,7 +22,7 @@ class StaticAssetVersioningTests(unittest.TestCase):
         ):
             versioned = main.versioned_static_html(html)
 
-        revision = "2026.07.19.1784476800000"
+        revision = main.OPENSHOP_RUNTIME_REVISION
         for url in (
             "/static/css/openshop-host.css",
             "/static/openshop/host/openshop-protocol.js",

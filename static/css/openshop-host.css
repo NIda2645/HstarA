@@ -19,6 +19,10 @@
     display: grid;
 }
 
+.openshop-host[hidden] {
+    display: none !important;
+}
+
 .openshop-host-bar {
     min-width: 0;
     display: flex;
