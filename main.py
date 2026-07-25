@@ -32,6 +32,7 @@ import math
 import shlex
 import functools
 import html
+import contextlib
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -84,6 +85,7 @@ from native_file_picker import (
     choose_open_file_path,
     selected_file_metadata,
 )
+from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
 
 
 def configure_process_stdio():
@@ -131,7 +133,10 @@ logging.getLogger("uvicorn.access").addFilter(QuietAccessLogFilter())
 @asynccontextmanager
 async def app_lifespan(_app):
     await startup_event()
-    yield
+    try:
+        yield
+    finally:
+        await VOICE_ASSISTANT.shutdown()
 
 
 app = FastAPI(lifespan=app_lifespan)
@@ -279,6 +284,8 @@ async def startup_event():
         await asyncio.to_thread(reconcile_saved_openshop_projects)
     except Exception:
         logging.exception("OpenShop startup reconciliation failed")
+
+    VOICE_ASSISTANT.schedule_background_tasks()
 
 @app.websocket("/ws/stats")
 async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
@@ -2927,6 +2934,35 @@ class SaveOutputAsRequest(BaseModel):
 
 class SoftwareStorageRequest(BaseModel):
     storage_root: str = ""
+
+class VoiceSettingsRequest(BaseModel):
+    enabled: bool = True
+    storage_mode: Literal["inherit", "custom"] = "inherit"
+    storage_root: str = ""
+    language: Literal["auto", "zh", "en", "ja"] = "auto"
+    input_device_id: str = "default"
+    shortcut: str = "Shift+Q"
+    prewarm_on_startup: bool = False
+
+class VoiceInstallRequest(BaseModel):
+    profile: Literal["auto", "cuda", "cpu"] = "auto"
+    revision: str = "master"
+
+class VoiceTaskRequest(BaseModel):
+    task_id: str
+
+class VoicePathRequest(BaseModel):
+    path: str = ""
+
+class VoiceMigrateRequest(BaseModel):
+    storage_root: str = ""
+
+class VoiceUninstallRequest(BaseModel):
+    delete_external_model: bool = False
+    confirmation_token: str = ""
+
+class VoiceServiceRequest(BaseModel):
+    device: Literal["auto", "cuda", "cpu"] = "auto"
 
 class NativeFolderRequest(BaseModel):
     initial_dir: str = ""
@@ -12557,6 +12593,15 @@ def normalize_storage_root(value: str) -> str:
         raise HTTPException(status_code=400, detail=f"Storage folder is not writable: {exc}") from exc
     return folder
 
+VOICE_ASSISTANT = VoiceAssistantManager(
+    app_data_root=APP_DATA_ROOT,
+    load_settings=load_software_settings,
+    save_settings=save_software_settings,
+    path_validator=normalize_storage_root,
+    python_executable=sys.executable,
+    test_mode=os.environ.get("HSTAR_VOICE_TEST_MODE") == "1",
+)
+
 def local_lan_ip() -> str:
     try:
         import socket
@@ -12935,6 +12980,187 @@ def save_software_storage(payload: SoftwareStorageRequest):
     settings["storage_root"] = storage_root
     save_software_settings(settings)
     return {"settings": {**settings, "migration": migration, "message": "Storage saved. Restart Hstar to use this folder for canvas, assets, output, and history data."}}
+
+def raise_voice_http_error(error: VoiceManagerError):
+    status_code = 404 if error.code == "VOICE_TASK_NOT_FOUND" else 409 if error.code == "VOICE_MIC_BUSY" else 400
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": error.code, "message": error.message},
+    ) from error
+
+@app.get("/api/voice-assistant/status")
+def voice_assistant_status():
+    return {"ok": True, "status": VOICE_ASSISTANT.status()}
+
+@app.get("/api/voice-assistant/settings")
+def get_voice_assistant_settings():
+    return {"ok": True, "settings": VOICE_ASSISTANT.status()["settings"]}
+
+@app.post("/api/voice-assistant/settings")
+async def save_voice_assistant_settings(payload: VoiceSettingsRequest):
+    try:
+        settings = await VOICE_ASSISTANT.update_settings(payload.model_dump())
+    except VoiceManagerError as error:
+        raise_voice_http_error(error)
+    return {"ok": True, "settings": settings, "status": VOICE_ASSISTANT.status()}
+
+@app.post("/api/voice-assistant/choose-folder")
+def choose_voice_assistant_folder(payload: VoicePathRequest):
+    initial_dir = payload.path or VOICE_ASSISTANT.settings.effective_root
+    return {
+        "ok": True,
+        "path": choose_folder_path("选择语音模型数据储存文件夹", initial_dir),
+    }
+
+@app.post("/api/voice-assistant/detect-model")
+async def detect_voice_assistant_model(payload: VoicePathRequest):
+    detection = await VOICE_ASSISTANT.detect_model(payload.path)
+    return {"ok": bool(detection.get("ready")), "model": detection}
+
+@app.post("/api/voice-assistant/install")
+def install_voice_assistant(payload: VoiceInstallRequest):
+    return {"ok": True, "task": VOICE_ASSISTANT.install(payload.profile)}
+
+@app.get("/api/voice-assistant/install/{task_id}")
+def voice_assistant_install_status(task_id: str):
+    try:
+        task = VOICE_ASSISTANT.task_status(task_id)
+    except VoiceManagerError as error:
+        raise_voice_http_error(error)
+    return {"ok": True, "task": task}
+
+@app.post("/api/voice-assistant/install/cancel")
+def cancel_voice_assistant_install(payload: VoiceTaskRequest):
+    try:
+        task = VOICE_ASSISTANT.cancel_install(payload.task_id)
+    except VoiceManagerError as error:
+        raise_voice_http_error(error)
+    return {"ok": True, "task": task}
+
+@app.post("/api/voice-assistant/repair")
+def repair_voice_assistant(payload: VoiceInstallRequest):
+    return {"ok": True, "task": VOICE_ASSISTANT.install(payload.profile)}
+
+@app.post("/api/voice-assistant/migrate")
+async def migrate_voice_assistant(payload: VoiceMigrateRequest):
+    try:
+        settings = await VOICE_ASSISTANT.migrate(payload.storage_root)
+    except VoiceManagerError as error:
+        raise_voice_http_error(error)
+    return {"ok": True, "settings": settings}
+
+@app.post("/api/voice-assistant/uninstall")
+async def uninstall_voice_assistant(payload: VoiceUninstallRequest):
+    deleted = await VOICE_ASSISTANT.uninstall(
+        delete_external_model=payload.delete_external_model,
+        confirmation_token=payload.confirmation_token,
+    )
+    return {"ok": True, "deleted": list(deleted), "status": VOICE_ASSISTANT.status()}
+
+@app.post("/api/voice-assistant/service/start")
+async def start_voice_assistant_service(payload: VoiceServiceRequest):
+    try:
+        status = await VOICE_ASSISTANT.start_service(payload.device)
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": getattr(error, "code", "VOICE_SERVICE_START_FAILED"), "message": str(error)},
+        ) from error
+    return {"ok": True, "service": status}
+
+@app.post("/api/voice-assistant/service/stop")
+async def stop_voice_assistant_service():
+    return {"ok": True, "service": await VOICE_ASSISTANT.stop_service()}
+
+def validate_voice_start(message: Dict[str, Any]) -> tuple[str, str]:
+    if message.get("type") != "start":
+        raise VoiceManagerError("VOICE_START_INVALID", "First message must start a session")
+    session_id = str(message.get("session_id") or "").strip()
+    if not session_id or len(session_id) > 128:
+        raise VoiceManagerError("VOICE_START_INVALID", "A valid session_id is required")
+    if int(message.get("sample_rate") or 0) != 16000:
+        raise VoiceManagerError("VOICE_START_INVALID", "Only 16000 Hz audio is supported")
+    language = str(message.get("language") or "auto").lower()
+    if language not in {"auto", "zh", "en", "ja"}:
+        raise VoiceManagerError("VOICE_START_INVALID", "Unsupported recognition language")
+    return session_id, language
+
+def voice_websocket_allowed(websocket: WebSocket) -> bool:
+    client_host = str(getattr(getattr(websocket, "client", None), "host", "") or "")
+    if not is_gemini_cli_loopback_hostname(client_host):
+        supplied = str(websocket.query_params.get("collab_key") or "")
+        if not supplied or not hmac.compare_digest(supplied, current_collaboration_key()):
+            return False
+    origin = origin_from_url(websocket.headers.get("origin", ""))
+    host = str(websocket.headers.get("host") or "").lower()
+    if origin and urllib.parse.urlsplit(origin).netloc.lower() != host:
+        return False
+    return True
+
+async def proxy_voice_session(websocket: WebSocket, connection, start: Dict[str, Any]):
+    await connection.send_json(start)
+
+    async def browser_to_child():
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            binary = message.get("bytes")
+            if binary is not None:
+                await connection.send_audio(binary)
+                continue
+            text = message.get("text")
+            if text:
+                control = json.loads(text)
+                if control.get("type") in {"stop", "cancel"}:
+                    await connection.send_json(control)
+
+    async def child_to_browser():
+        while True:
+            event = await connection.receive_event()
+            await websocket.send_json(event)
+            if event.get("type") == "stopped":
+                return
+
+    tasks = [asyncio.create_task(browser_to_child()), asyncio.create_task(child_to_browser())]
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    for task in done:
+        await task
+
+@app.websocket("/ws/voice-assistant/transcribe")
+async def voice_transcribe_socket(websocket: WebSocket):
+    if not voice_websocket_allowed(websocket):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    connection = None
+    try:
+        start = json.loads(await websocket.receive_text())
+        session_id, language = validate_voice_start(start)
+        start["language"] = language
+        connection = await VOICE_ASSISTANT.open_session(session_id)
+        await proxy_voice_session(websocket, connection, start)
+    except WebSocketDisconnect:
+        pass
+    except VoiceManagerError as error:
+        await websocket.send_json(error.as_event())
+    except Exception as error:
+        with contextlib.suppress(Exception):
+            await websocket.send_json({
+                "type": "error",
+                "code": getattr(error, "code", "VOICE_SERVICE_DISCONNECTED"),
+                "message": str(error),
+                "recoverable": True,
+            })
+    finally:
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                await connection.send_json({"type": "cancel", "reason": "browser-disconnected"})
+            await VOICE_ASSISTANT.close_session(connection)
 
 @app.get("/api/collaboration-link")
 def collaboration_link(request: Request):
