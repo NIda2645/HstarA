@@ -103,6 +103,8 @@ class FunAsrRecognizer:
             model=str(self.model_path),
             trust_remote_code=True,
             device=device,
+            disable_update=True,
+            disable_pbar=True,
         )
 
     def transcribe(self, pcm16: bytes, language: str) -> str:
@@ -139,8 +141,10 @@ class FunAsrRecognizer:
     @staticmethod
     def _convert_pcm16(pcm16: bytes):
         import numpy
+        import torch
 
-        return numpy.frombuffer(pcm16, dtype="<i2").astype(numpy.float32) / 32768.0
+        samples = numpy.frombuffer(pcm16, dtype="<i2").astype(numpy.float32) / 32768.0
+        return torch.from_numpy(samples)
 
     def close(self) -> None:
         used_cuda = self.device == "cuda"

@@ -1,7 +1,9 @@
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from voice_assistant.recognizer import (
     FunAsrRecognizer,
@@ -90,6 +92,47 @@ class VoiceRecognizerTests(unittest.TestCase):
         self.assertNotIn("language", options)
         self.assertEqual(options["batch_size"], 1)
         self.assertEqual(len(options["input"][0]), 2)
+
+    def test_default_converter_returns_torch_tensor_for_fun_asr_nano(self):
+        class FakeArray:
+            def astype(self, _dtype):
+                return self
+
+            def __truediv__(self, _value):
+                return self
+
+        samples = FakeArray()
+        tensor = object()
+        numpy_module = types.ModuleType("numpy")
+        numpy_module.float32 = object()
+        numpy_module.frombuffer = lambda *_args, **_kwargs: samples
+        torch_module = types.ModuleType("torch")
+        torch_module.from_numpy = lambda value: tensor if value is samples else None
+
+        with patch.dict(
+            sys.modules,
+            {"numpy": numpy_module, "torch": torch_module},
+        ):
+            converted = FunAsrRecognizer._convert_pcm16(b"\x00\x00")
+
+        self.assertIs(converted, tensor)
+
+    def test_default_factory_disables_update_check_and_progress_ui(self):
+        options = {}
+        funasr_module = types.ModuleType("funasr")
+
+        def create_model(**kwargs):
+            options.update(kwargs)
+            return object()
+
+        funasr_module.AutoModel = create_model
+        recognizer = FunAsrRecognizer(self.model_path)
+
+        with patch.dict(sys.modules, {"funasr": funasr_module}):
+            recognizer._create_model("cpu")
+
+        self.assertTrue(options["disable_update"])
+        self.assertTrue(options["disable_pbar"])
 
     def test_module_import_does_not_load_optional_runtime(self):
         self.assertNotIn("funasr", sys.modules)
