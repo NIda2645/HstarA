@@ -12,4 +12,16 @@ public partial class MainWindow : Window
     }
 
     public AppPaths Paths { get; }
+
+    public BackendSession? BackendSession { get; private set; }
+
+    public void AttachBackendSession(BackendSession session)
+    {
+        BackendSession = session;
+    }
+
+    public void SetStartupStatus(string status)
+    {
+        StartupStatusText.Text = status;
+    }
 }

@@ -21,6 +21,14 @@ class StartupVoiceManager:
 
 
 class StartupEventTests(unittest.IsolatedAsyncioTestCase):
+    def test_packaged_startup_never_rewrites_program_static_files(self):
+        with (
+            patch.object(main, "EDITION", "windows11"),
+            patch.object(main.os, "walk") as walk_static_tree,
+        ):
+            main.sync_static_html_versions()
+        walk_static_tree.assert_not_called()
+
     async def test_voice_prewarm_starts_before_startup_maintenance(self):
         events = []
         voice_manager = StartupVoiceManager(events)

@@ -46,7 +46,7 @@ from io import BytesIO
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from openshop_projects import (
@@ -126,6 +126,15 @@ class QuietAccessLogFilter(logging.Filter):
     def filter(self, record):
         args = record.args if isinstance(record.args, tuple) else ()
         if len(args) >= 3:
+            redacted_path = re.sub(
+                r"(?i)([?&](?:hstar_shell_token|collab_key)=)[^&\s]*",
+                r"\1[redacted]",
+                str(args[2]),
+            )
+            if redacted_path != str(args[2]):
+                mutable_args = list(args)
+                mutable_args[2] = redacted_path
+                record.args = args = tuple(mutable_args)
             path = str(args[2]).split("?", 1)[0]
             status = int(args[4]) if len(args) >= 5 and str(args[4]).isdigit() else 0
             quiet_dynamic = any(path.startswith(prefix) and path.endswith("/meta") for prefix in QUIET_ACCESS_PREFIXES)
@@ -139,6 +148,17 @@ class QuietAccessLogFilter(logging.Filter):
         return True
 
 logging.getLogger("uvicorn.access").addFilter(QuietAccessLogFilter())
+
+SHELL_TOKEN_HEADER = "X-Hstar-Shell-Token"
+SHELL_TOKEN_QUERY = "hstar_shell_token"
+SHELL_SESSION_COOKIE = "hstar_shell_session"
+COLLABORATION_SESSION_COOKIE = "hstar_collaboration_session"
+SHELL_TOKEN = os.environ.get("HSTAR_SHELL_TOKEN", "").strip()
+SHELL_BOOTSTRAP_TOKEN_CONSUMED = False
+SHELL_SESSION_LOCK = Lock()
+ACTIVE_UVICORN_SERVER = None
+SHELL_PUBLIC_PATHS = {"/favicon.ico"}
+SHELL_PUBLIC_PREFIXES = ("/static/", "/assets/", "/output/")
 
 @asynccontextmanager
 async def app_lifespan(_app):
@@ -353,6 +373,123 @@ CREDENTIAL_STORE = create_credential_store(
     edition=EDITION,
     plaintext_path=TRANSITIONAL_API_ENV_FILE,
 )
+
+
+def shell_request_is_loopback(request: Request) -> bool:
+    host = str(request.client.host if request.client else "").strip()
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def shell_session_value(secret: str, purpose: str) -> str:
+    return hmac.new(
+        secret.encode("utf-8"),
+        purpose.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def shell_secret_matches(candidate: str, expected: str) -> bool:
+    return bool(candidate and expected) and hmac.compare_digest(candidate, expected)
+
+
+def consume_shell_bootstrap_token(candidate: str) -> bool:
+    global SHELL_BOOTSTRAP_TOKEN_CONSUMED
+    if not shell_secret_matches(candidate, SHELL_TOKEN):
+        return False
+    with SHELL_SESSION_LOCK:
+        if SHELL_BOOTSTRAP_TOKEN_CONSUMED:
+            return False
+        SHELL_BOOTSTRAP_TOKEN_CONSUMED = True
+        return True
+
+
+def request_without_secret_query(request: Request, secret_name: str) -> str:
+    query = [
+        (key, value)
+        for key, value in request.query_params.multi_items()
+        if key != secret_name
+    ]
+    encoded = urllib.parse.urlencode(query, doseq=True)
+    return f"{request.url.path}?{encoded}" if encoded else request.url.path
+
+
+def set_private_session_cookie(response: Response, name: str, value: str) -> None:
+    response.set_cookie(
+        name,
+        value,
+        max_age=12 * 60 * 60,
+        httponly=True,
+        secure=False,
+        samesite="strict",
+        path="/",
+    )
+
+
+@app.middleware("http")
+async def packaged_shell_session(request: Request, call_next):
+    if not SHELL_TOKEN:
+        return await call_next(request)
+
+    path = request.url.path
+    loopback = shell_request_is_loopback(request)
+    supplied_header = str(request.headers.get(SHELL_TOKEN_HEADER) or "")
+    if loopback and shell_secret_matches(supplied_header, SHELL_TOKEN):
+        return await call_next(request)
+
+    supplied_bootstrap = str(request.query_params.get(SHELL_TOKEN_QUERY) or "")
+    if loopback and supplied_bootstrap:
+        if (
+            path != "/"
+            or request.method not in {"GET", "HEAD"}
+            or not consume_shell_bootstrap_token(supplied_bootstrap)
+        ):
+            return JSONResponse(status_code=401, content={"detail": "Hstar shell token 无效或已使用"})
+        response = RedirectResponse(
+            request_without_secret_query(request, SHELL_TOKEN_QUERY),
+            status_code=303,
+        )
+        set_private_session_cookie(
+            response,
+            SHELL_SESSION_COOKIE,
+            shell_session_value(SHELL_TOKEN, "shell-session"),
+        )
+        return response
+
+    shell_cookie = str(request.cookies.get(SHELL_SESSION_COOKIE) or "")
+    if loopback and shell_secret_matches(
+        shell_cookie,
+        shell_session_value(SHELL_TOKEN, "shell-session"),
+    ):
+        return await call_next(request)
+
+    collaboration_key = str(request.query_params.get("collab_key") or "")
+    if collaboration_key and shell_secret_matches(collaboration_key, current_collaboration_key()):
+        if path != "/" or request.method not in {"GET", "HEAD"}:
+            return JSONResponse(status_code=401, content={"detail": "Hstar 协作会话无效"})
+        response = RedirectResponse(
+            request_without_secret_query(request, "collab_key"),
+            status_code=303,
+        )
+        set_private_session_cookie(
+            response,
+            COLLABORATION_SESSION_COOKIE,
+            shell_session_value(current_collaboration_key(), "collaboration-session"),
+        )
+        return response
+
+    collaboration_cookie = str(request.cookies.get(COLLABORATION_SESSION_COOKIE) or "")
+    if shell_secret_matches(
+        collaboration_cookie,
+        shell_session_value(current_collaboration_key(), "collaboration-session"),
+    ):
+        return await call_next(request)
+
+    if path in SHELL_PUBLIC_PATHS or any(path.startswith(prefix) for prefix in SHELL_PUBLIC_PREFIXES):
+        return await call_next(request)
+    return JSONResponse(status_code=401, content={"detail": "请从 Hstar 桌面程序打开此页面"})
 
 def bootstrap_app_software_settings() -> None:
     if os.path.isfile(SOFTWARE_SETTINGS_FILE):
@@ -1772,6 +1909,8 @@ def versioned_static_html(html: str) -> str:
     return pattern.sub(replace, html)
 
 def sync_static_html_versions():
+    if EDITION != "development":
+        return
     version = current_app_version()
     if not version:
         return
@@ -12174,6 +12313,26 @@ async def build_chat_text_reply(payload, conversation):
 
 # --- 路由接口 ---
 
+@app.get("/api/health")
+def backend_health():
+    return {
+        "ok": True,
+        "edition": EDITION,
+        "version": current_app_version(),
+    }
+
+
+@app.post("/api/shell/shutdown")
+async def shutdown_packaged_backend():
+    if not SHELL_TOKEN:
+        raise HTTPException(status_code=403, detail="开发模式不允许远程关闭后端")
+    server = ACTIVE_UVICORN_SERVER
+    if server is None:
+        return {"ok": True, "scheduled": False}
+    asyncio.get_running_loop().call_soon(setattr, server, "should_exit", True)
+    return {"ok": True, "scheduled": True}
+
+
 @app.get("/")
 async def index():
     return static_html_response("index.html")
@@ -21720,10 +21879,32 @@ def resolve_server_port():
             pass
     return 3000
 
-if __name__ == "__main__":
+
+def resolve_server_host():
+    configured = str(os.getenv("HSTAR_HOST") or "").strip()
+    if configured:
+        return configured
+    return "0.0.0.0" if EDITION == "development" else "127.0.0.1"
+
+
+def run_server():
     import uvicorn
+    global ACTIVE_UVICORN_SERVER
+    config = uvicorn.Config(
+        app,
+        host=resolve_server_host(),
+        port=resolve_server_port(),
+        ws_ping_interval=None,
+        ws_ping_timeout=None,
+    )
+    ACTIVE_UVICORN_SERVER = uvicorn.Server(config)
+    try:
+        ACTIVE_UVICORN_SERVER.run()
+    finally:
+        ACTIVE_UVICORN_SERVER = None
+
+if __name__ == "__main__":
     # 关闭服务端协议级 WebSocket ping：部分客户端（如 PS UXP 面板）不会自动回 pong，
     # 默认 20s ping/20s 超时会把这些连接每隔一会儿就踢掉造成"频繁断连"。
     # 客户端有自己的应用层心跳 + 断线重连兜底，这里禁用协议 ping 更稳。
-    uvicorn.run(app, host="0.0.0.0", port=resolve_server_port(),
-                ws_ping_interval=None, ws_ping_timeout=None)
+    run_server()
