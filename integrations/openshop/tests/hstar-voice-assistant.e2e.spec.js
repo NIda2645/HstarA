@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -83,6 +84,17 @@ function prepareIsolatedData() {
 
   const dataDir = resolve(testRoot, 'data');
   mkdirSync(dataDir, {recursive: true});
+  const runtimeManifest = JSON.parse(readFileSync(
+    resolve(repositoryRoot, 'voice_assistant', 'runtime_manifest.json'),
+    'utf8',
+  ));
+  const runtimeState = resolve(voiceRoot, '.hstar-voice', 'state');
+  mkdirSync(resolve(voiceRoot, '.hstar-voice', 'runtime', 'site-packages'), {recursive: true});
+  mkdirSync(runtimeState, {recursive: true});
+  writeFileSync(resolve(runtimeState, 'runtime-install.json'), JSON.stringify({
+    profile: 'cpu',
+    packages: runtimeManifest.packages,
+  }), 'utf8');
   writeFileSync(resolve(dataDir, 'software_settings.json'), JSON.stringify({
     storage_root: testRoot,
     voice_assistant: {
@@ -477,6 +489,116 @@ test('releases the session when its target is removed or its iframe navigates', 
       hasAudioContext: false,
       hasSocket: false,
     });
+  } finally {
+    await browser.close();
+  }
+});
+
+test('keeps the microphone anchored, preserves iframe focus, and hides it on section switch', async () => {
+  test.setTimeout(30_000);
+  const {browser, context} = await launchVoiceBrowser();
+  try {
+    const page = await openMainPage(context);
+    const gptFrame = await switchSection(page, 'gpt-chat', '#messageInput');
+    const input = gptFrame.locator('#messageInput');
+    await input.evaluate(element => {
+      element.value = '前后';
+      element.focus();
+      element.setSelectionRange(1, 1);
+    });
+    const entry = page.locator('.hstar-voice-entry');
+    const button = page.locator('.hstar-voice-button');
+    await expect(entry).toBeVisible();
+
+    const targetBefore = await input.boundingBox();
+    const entryBefore = await entry.boundingBox();
+    expect(Math.abs(entryBefore.x - (targetBefore.x + targetBefore.width - 34))).toBeLessThanOrEqual(8);
+    expect(Math.abs(entryBefore.y - (targetBefore.y + 6))).toBeLessThanOrEqual(8);
+
+    await page.setViewportSize({width: 1200, height: 820});
+    await expect.poll(async () => {
+      const [targetAfter, entryAfter] = await Promise.all([
+        input.boundingBox(),
+        entry.boundingBox(),
+      ]);
+      if (!targetAfter || !entryAfter) return Number.POSITIVE_INFINITY;
+      return Math.max(
+        Math.abs(entryAfter.x - (targetAfter.x + targetAfter.width - 34)),
+        Math.abs(entryAfter.y - (targetAfter.y + 6)),
+      );
+    }, {timeout: 2_000}).toBeLessThanOrEqual(8);
+
+    await button.click();
+    expect(await input.evaluate(element => ({
+      focused: element.ownerDocument.activeElement === element,
+      start: element.selectionStart,
+      end: element.selectionEnd,
+    }))).toEqual({focused: true, start: 1, end: 1});
+    await waitForActiveVoice(page);
+    await page.evaluate(() => window.HstarVoiceAssistant.stop('test-cleanup'));
+    await waitForReadyVoice(page);
+
+    await page.evaluate(() => window.switchUI(null, 'asset-manager'));
+    await expect(page.frameLocator('#frame-asset-manager').locator('#assetSearch')).toBeVisible();
+    await expect(entry).toBeHidden();
+  } finally {
+    await browser.close();
+  }
+});
+
+test('renders contrasting app themes and a layout-stable rainbow recognition ring', async () => {
+  const {browser, context} = await launchVoiceBrowser();
+  try {
+    const page = await openMainPage(context);
+    await page.evaluate(() => {
+      document.documentElement.classList.remove('theme-dark', 'studio-theme-dark');
+      document.body.classList.remove('theme-dark', 'studio-theme-dark');
+      const target = document.createElement('textarea');
+      target.id = 'voice-theme-target';
+      target.dataset.voiceInput = 'on';
+      target.style.cssText = 'position:fixed;left:220px;top:140px;width:320px;height:96px';
+      document.body.append(target);
+      target.focus();
+    });
+    const button = page.locator('.hstar-voice-button');
+    const entry = page.locator('.hstar-voice-entry');
+    await expect(entry).toBeVisible();
+    const light = await button.evaluate(element => {
+      const style = getComputedStyle(element);
+      return {background: style.backgroundColor, color: style.color};
+    });
+    expect(light).toEqual({background: 'rgb(17, 17, 17)', color: 'rgb(255, 255, 255)'});
+
+    await page.evaluate(() => {
+      document.documentElement.classList.add('theme-dark', 'studio-theme-dark');
+      document.body.classList.add('theme-dark', 'studio-theme-dark');
+    });
+    const dark = await button.evaluate(element => {
+      const style = getComputedStyle(element);
+      return {background: style.backgroundColor, color: style.color};
+    });
+    expect(dark).toEqual({background: 'rgb(245, 245, 247)', color: 'rgb(17, 17, 17)'});
+
+    const before = await button.boundingBox();
+    await page.evaluate(() => window.HstarVoiceAssistant._setState('recognizing'));
+    const after = await button.boundingBox();
+    expect(after).toEqual(before);
+    const visual = await page.evaluate(() => {
+      const ring = getComputedStyle(document.querySelector('.hstar-voice-level'));
+      const status = getComputedStyle(document.querySelector('.hstar-voice-status'));
+      const fallback = getComputedStyle(document.querySelector('.hstar-voice-mic-fallback'));
+      return {
+        ring: ring.backgroundImage,
+        statusBackground: status.backgroundColor,
+        statusColor: status.color,
+        hasSvg: Boolean(document.querySelector('.hstar-voice-button > svg')),
+        fallbackDisplay: fallback.display,
+      };
+    });
+    expect(visual.ring).toContain('conic-gradient');
+    expect(visual.statusBackground).toBe('rgba(24, 24, 27, 0.96)');
+    expect(visual.statusColor).toBe('rgb(250, 250, 250)');
+    expect(visual.hasSvg || visual.fallbackDisplay !== 'none').toBe(true);
   } finally {
     await browser.close();
   }

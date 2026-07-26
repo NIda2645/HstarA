@@ -23,6 +23,7 @@ let serverProcess = null;
 let serverOutput = '';
 let testRoot = '';
 let wavPath = '';
+let noiseWavPath = '';
 let recordingsBefore = [];
 
 test.skip(!realVoiceRoot, 'Set HSTAR_REAL_VOICE_ROOT to run the real Fun-ASR browser test');
@@ -45,6 +46,35 @@ function listRecordings(root) {
   };
   visit(root);
   return found.sort();
+}
+
+function createLowNoiseWav(path) {
+  const sampleRate = 48_000;
+  const totalSeconds = 12;
+  const samples = sampleRate * totalSeconds;
+  const pcm = Buffer.alloc(samples * 2);
+  let seed = 0x5f3759df;
+  for (let index = 0; index < samples; index += 1) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    const value = ((seed >>> 16) % 41) - 20;
+    pcm.writeInt16LE(value, index * 2);
+  }
+  const wav = Buffer.alloc(44 + pcm.length);
+  wav.write('RIFF', 0, 'ascii');
+  wav.writeUInt32LE(36 + pcm.length, 4);
+  wav.write('WAVE', 8, 'ascii');
+  wav.write('fmt ', 12, 'ascii');
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36, 'ascii');
+  wav.writeUInt32LE(pcm.length, 40);
+  pcm.copy(wav, 44);
+  writeFileSync(path, wav);
 }
 
 function prepareIsolatedData() {
@@ -89,6 +119,8 @@ function prepareIsolatedData() {
   if (prepared.status !== 0 || !existsSync(wavPath)) {
     throw new Error(`Failed to prepare real microphone WAV:\n${prepared.stdout}\n${prepared.stderr}`);
   }
+  noiseWavPath = resolve(testRoot, 'low-white-noise.wav');
+  createLowNoiseWav(noiseWavPath);
   recordingsBefore = listRecordings(voiceRoot);
 }
 
@@ -180,13 +212,13 @@ async function stopIsolatedServer() {
   }
 }
 
-async function launchVoiceBrowser() {
+async function launchVoiceBrowser(audioPath = wavPath) {
   const browser = await chromium.launch({
     headless: true,
     args: [
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
-      `--use-file-for-fake-audio-capture=${wavPath}`,
+      `--use-file-for-fake-audio-capture=${audioPath}`,
       '--autoplay-policy=no-user-gesture-required',
     ],
   });
@@ -205,6 +237,9 @@ async function openMainPage(context) {
       window.__hstarVoicePerformanceEvents.push({
         at: performance.now(),
         state: event.detail?.state || '',
+        type: event.detail?.type || '',
+        text: event.detail?.text || '',
+        reason: event.detail?.reason || '',
       });
     });
   });
@@ -299,6 +334,15 @@ test('runs the real model through GPT, smart canvas, and OpenShop without restar
       browserMetrics.coldClickToListeningMs = await warmActivationMilliseconds(page);
       await assertChineseTranscript(input);
       await waitForReadyVoice(page);
+      const transcriptEvents = await page.evaluate(() => (
+        (window.__hstarVoicePerformanceEvents || [])
+          .filter(item => item.type === 'partial' || item.type === 'final')
+          .map(item => ({type: item.type, text: item.text || ''}))
+      ));
+      const finals = transcriptEvents.filter(item => item.type === 'final');
+      expect(finals).toHaveLength(1);
+      expect(finals[0].text).toMatch(/时间早上九点至下午五点/);
+      expect(transcriptEvents.every(item => item.text.trim().length > 0)).toBe(true);
       processId = await serviceProcessId(context);
       expect(processId).toBeGreaterThan(0);
     } finally {
@@ -377,4 +421,38 @@ test('runs the real model through GPT, smart canvas, and OpenShop without restar
     }
   }
   console.log(`HSTAR_REAL_VOICE_METRICS ${JSON.stringify({processId, ...browserMetrics})}`);
+});
+
+test('does not transcribe low-level white noise with the real service', async () => {
+  test.setTimeout(45_000);
+  const {browser, context} = await launchVoiceBrowser(noiseWavPath);
+  try {
+    const page = await openMainPage(context);
+    const gptFrame = await switchSection(page, 'gpt-chat', '#messageInput');
+    const input = gptFrame.locator('#messageInput');
+    await input.fill('');
+    await input.focus();
+    await input.press('Shift+Q');
+    await waitForActiveVoice(page, 10_000);
+    await waitForReadyVoice(page, 15_000);
+
+    const result = await page.evaluate(() => {
+      const events = window.__hstarVoicePerformanceEvents || [];
+      return {
+        transcripts: events.filter(item => item.type === 'partial' || item.type === 'final'),
+        stopped: events.some(item => item.reason === 'silence-timeout'),
+        debug: window.HstarVoiceAssistant.debugState(),
+      };
+    });
+    expect(result.transcripts).toEqual([]);
+    expect(result.stopped).toBe(true);
+    expect(result.debug).toMatchObject({
+      state: 'ready',
+      trackCount: 0,
+      hasAudioContext: false,
+      hasSocket: false,
+    });
+  } finally {
+    await browser.close();
+  }
 });
