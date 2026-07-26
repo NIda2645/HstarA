@@ -4,6 +4,10 @@ cd /d "%~dp0"
 
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
+set "HSTAR_EDITION=development"
+set "HSTAR_DATA_DIR=%~dp0"
+set "HSTAR_PROGRAM_DIR=%~dp0"
+set "HSTAR_PORT=3000"
 
 set "PYEXE=%~dp0python\python.exe"
 if not exist "%PYEXE%" set "PYEXE=python"

@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Literal
 from threading import Lock, RLock, Thread
 import httpx
@@ -86,6 +87,8 @@ from native_file_picker import (
     selected_file_metadata,
 )
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
+from hstar_runtime.bootstrap import BootstrapStore
+from hstar_runtime.paths import RuntimePaths, build_runtime_paths
 
 
 def configure_process_stdio():
@@ -305,93 +308,119 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
 
 CLIENT_ID = str(uuid.uuid4())
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_APP_DATA_ROOT = os.path.join(os.environ.get("APPDATA") or BASE_DIR, "Hstar")
-APP_DATA_ROOT = os.path.abspath(os.environ.get("HSTAR_DATA_DIR") or DEFAULT_APP_DATA_ROOT)
-WORKFLOW_DIR = os.path.join(BASE_DIR, "workflows")
-WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "Z-Image.json")
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+PROGRAM_ROOT = Path(os.environ.get("HSTAR_PROGRAM_DIR") or BASE_DIR).expanduser().resolve()
+EDITION = os.environ.get("HSTAR_EDITION", "development").strip().lower()
+APPDATA_ROOT = Path(
+    os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming"
+).expanduser().resolve()
+BOOTSTRAP = BootstrapStore(APPDATA_ROOT, EDITION, PROGRAM_ROOT)
+EXPLICIT_DATA_ROOT = os.environ.get("HSTAR_DATA_DIR", "").strip()
+if EXPLICIT_DATA_ROOT:
+    DATA_ROOT = Path(os.path.expandvars(EXPLICIT_DATA_ROOT)).expanduser().resolve()
+else:
+    bootstrap_config = BOOTSTRAP.load()
+    if bootstrap_config is not None:
+        DATA_ROOT = bootstrap_config.resolved_data_root()
+    elif EDITION == "development":
+        DATA_ROOT = (APPDATA_ROOT / "Hstar" / "development-data").resolve()
+    else:
+        DATA_ROOT = BOOTSTRAP.require().resolved_data_root()
+
+RUNTIME_PATHS: RuntimePaths = build_runtime_paths(PROGRAM_ROOT, DATA_ROOT, EDITION)
+APP_DATA_ROOT = str(RUNTIME_PATHS.data_root)
+BUILTIN_WORKFLOW_DIR = str(RUNTIME_PATHS.builtin_workflow_dir)
+USER_WORKFLOW_DIR = str(RUNTIME_PATHS.user_workflow_dir)
+WORKFLOW_PATH = os.path.join(BUILTIN_WORKFLOW_DIR, "Z-Image.json")
+STATIC_DIR = str(RUNTIME_PATHS.static_dir)
 STATIC_RUNNINGHUB_DIR = os.path.join(STATIC_DIR, "runninghub")
 STATIC_RUNNINGHUB_THUMBNAIL_DIR = os.path.join(STATIC_RUNNINGHUB_DIR, "thumbnails")
 STATIC_RUNNINGHUB_API_PROVIDERS_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "api_providers.json")
 STATIC_RUNNINGHUB_MODEL_REGISTRY_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "models_registry.json")
-APP_DATA_DIR = os.path.join(APP_DATA_ROOT, "data")
-APP_SOFTWARE_SETTINGS_FILE = os.path.join(APP_DATA_DIR, "software_settings.json")
+SOFTWARE_SETTINGS_FILE = str(RUNTIME_PATHS.config_dir / "software-settings.json")
+LEGACY_API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
+API_ENV_FILE = str(RUNTIME_PATHS.secrets_dir / "api.env")
 
 def bootstrap_app_software_settings() -> None:
-    legacy_file = os.path.join(BASE_DIR, "data", "software_settings.json")
-    if os.path.abspath(legacy_file) == os.path.abspath(APP_SOFTWARE_SETTINGS_FILE):
+    if os.path.isfile(SOFTWARE_SETTINGS_FILE):
         return
-    if os.path.exists(APP_SOFTWARE_SETTINGS_FILE) or not os.path.isfile(legacy_file):
+    candidates = (
+        RUNTIME_PATHS.data_root / "data" / "software_settings.json",
+        APPDATA_ROOT / "Hstar" / "data" / "software_settings.json",
+        PROGRAM_ROOT / "data" / "software_settings.json",
+    )
+    for legacy_file in candidates:
+        if not legacy_file.is_file():
+            continue
+        try:
+            Path(SOFTWARE_SETTINGS_FILE).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_file, SOFTWARE_SETTINGS_FILE)
+            return
+        except OSError:
+            continue
+
+
+def bootstrap_legacy_api_env() -> None:
+    if os.path.isfile(API_ENV_FILE) or not os.path.isfile(LEGACY_API_ENV_FILE):
         return
     try:
-        os.makedirs(os.path.dirname(APP_SOFTWARE_SETTINGS_FILE), exist_ok=True)
-        shutil.copy2(legacy_file, APP_SOFTWARE_SETTINGS_FILE)
-    except Exception:
+        os.makedirs(os.path.dirname(API_ENV_FILE), exist_ok=True)
+        shutil.copy2(LEGACY_API_ENV_FILE, API_ENV_FILE)
+    except OSError:
         pass
 
 bootstrap_app_software_settings()
+bootstrap_legacy_api_env()
 
-def runtime_paths_for_storage_root(storage_root: str, software_settings_file: str) -> Dict[str, str]:
-    storage_root = os.path.abspath(storage_root)
-    data_dir = os.path.join(storage_root, "data")
-    assets_dir = os.path.join(storage_root, "assets")
+def runtime_paths_for_storage_root(
+    storage_root: str,
+    software_settings_file: str = "",
+) -> Dict[str, str]:
+    paths = build_runtime_paths(PROGRAM_ROOT, Path(storage_root), EDITION)
+    data_dir = str(paths.config_dir)
+    assets_dir = str(paths.asset_dir)
     return {
-        "storage_root": storage_root,
+        "storage_root": str(paths.data_root),
         "data_dir": data_dir,
-        "conversation_dir": os.path.join(data_dir, "conversations"),
-        "canvas_dir": os.path.join(data_dir, "canvases"),
-        "openshop_data_dir": os.path.join(data_dir, "openshop"),
-        "media_preview_dir": os.path.join(data_dir, "media_previews"),
-        "asset_library_path": os.path.join(data_dir, "asset_library.json"),
-        "prompt_library_path": os.path.join(data_dir, "prompt_libraries.json"),
-        "api_providers_file": os.path.join(data_dir, "api_providers.json"),
-        "runninghub_workflow_store_file": os.path.join(data_dir, "runninghub_workflows.json"),
-        "shared_folders_file": os.path.join(data_dir, "shared_folders.json"),
-        "software_settings_file": os.path.abspath(software_settings_file),
-        "global_config_file": os.path.join(storage_root, "global_config.json"),
-        "history_file": os.path.join(storage_root, "history.json"),
+        "conversation_dir": str(paths.history_dir / "conversations"),
+        "canvas_dir": str(paths.canvas_dir),
+        "openshop_data_dir": str(paths.openshop_dir),
+        "media_preview_dir": str(paths.cache_dir / "media-previews"),
+        "asset_library_path": str(paths.config_dir / "asset-library.json"),
+        "prompt_library_path": str(paths.config_dir / "prompt-libraries.json"),
+        "api_providers_file": str(paths.config_dir / "api-providers.user.json"),
+        "runninghub_workflow_store_file": str(paths.config_dir / "runninghub-workflows.json"),
+        "shared_folders_file": str(paths.config_dir / "shared-folders.json"),
+        "software_settings_file": str(paths.config_dir / "software-settings.json"),
+        "global_config_file": str(paths.config_dir / "global-config.json"),
+        "history_file": str(paths.history_dir / "generations.json"),
         "assets_dir": assets_dir,
-        "output_dir": os.path.join(storage_root, "output"),
+        "output_dir": str(paths.output_dir),
         "output_input_dir": os.path.join(assets_dir, "input"),
-        "output_output_dir": os.path.join(assets_dir, "output"),
+        "output_output_dir": str(paths.output_dir / "generated"),
         "asset_library_dir": os.path.join(assets_dir, "library"),
         "local_upload_dir": os.path.join(assets_dir, "uploads"),
     }
 
-def resolve_runtime_paths(base_dir: str, software_settings_file: str) -> Dict[str, str]:
-    storage_root = base_dir
-    try:
-        with open(software_settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-        configured_root = settings.get("storage_root") if isinstance(settings, dict) else ""
-        if isinstance(configured_root, str) and configured_root.strip():
-            storage_root = os.path.abspath(os.path.expandvars(os.path.expanduser(configured_root.strip().strip('"'))))
-    except Exception:
-        pass
-    return runtime_paths_for_storage_root(storage_root, software_settings_file)
-
-RUNTIME_PATHS = resolve_runtime_paths(BASE_DIR, APP_SOFTWARE_SETTINGS_FILE)
-STORAGE_ROOT = RUNTIME_PATHS["storage_root"]
-OUTPUT_DIR = RUNTIME_PATHS["output_dir"]
-ASSETS_DIR = RUNTIME_PATHS["assets_dir"]
-OUTPUT_INPUT_DIR = RUNTIME_PATHS["output_input_dir"]
-OUTPUT_OUTPUT_DIR = RUNTIME_PATHS["output_output_dir"]
-ASSET_LIBRARY_DIR = RUNTIME_PATHS["asset_library_dir"]
-LOCAL_UPLOAD_DIR = RUNTIME_PATHS["local_upload_dir"]
-HISTORY_FILE = RUNTIME_PATHS["history_file"]
-API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
-DATA_DIR = RUNTIME_PATHS["data_dir"]
-CONVERSATION_DIR = RUNTIME_PATHS["conversation_dir"]
-CANVAS_DIR = RUNTIME_PATHS["canvas_dir"]
-OPENSHOP_DATA_DIR = RUNTIME_PATHS["openshop_data_dir"]
-MEDIA_PREVIEW_DIR = RUNTIME_PATHS["media_preview_dir"]
-ASSET_LIBRARY_PATH = RUNTIME_PATHS["asset_library_path"]
-PROMPT_LIBRARY_PATH = RUNTIME_PATHS["prompt_library_path"]
-API_PROVIDERS_FILE = RUNTIME_PATHS["api_providers_file"]
-RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_PATHS["runninghub_workflow_store_file"]
-SHARED_FOLDERS_FILE = RUNTIME_PATHS["shared_folders_file"]
-SOFTWARE_SETTINGS_FILE = RUNTIME_PATHS["software_settings_file"]
-GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
+RUNTIME_STORAGE_PATHS = runtime_paths_for_storage_root(str(RUNTIME_PATHS.data_root))
+STORAGE_ROOT = RUNTIME_STORAGE_PATHS["storage_root"]
+OUTPUT_DIR = RUNTIME_STORAGE_PATHS["output_dir"]
+ASSETS_DIR = RUNTIME_STORAGE_PATHS["assets_dir"]
+OUTPUT_INPUT_DIR = RUNTIME_STORAGE_PATHS["output_input_dir"]
+OUTPUT_OUTPUT_DIR = RUNTIME_STORAGE_PATHS["output_output_dir"]
+ASSET_LIBRARY_DIR = RUNTIME_STORAGE_PATHS["asset_library_dir"]
+LOCAL_UPLOAD_DIR = RUNTIME_STORAGE_PATHS["local_upload_dir"]
+HISTORY_FILE = RUNTIME_STORAGE_PATHS["history_file"]
+DATA_DIR = RUNTIME_STORAGE_PATHS["data_dir"]
+CONVERSATION_DIR = RUNTIME_STORAGE_PATHS["conversation_dir"]
+CANVAS_DIR = RUNTIME_STORAGE_PATHS["canvas_dir"]
+OPENSHOP_DATA_DIR = RUNTIME_STORAGE_PATHS["openshop_data_dir"]
+MEDIA_PREVIEW_DIR = RUNTIME_STORAGE_PATHS["media_preview_dir"]
+ASSET_LIBRARY_PATH = RUNTIME_STORAGE_PATHS["asset_library_path"]
+PROMPT_LIBRARY_PATH = RUNTIME_STORAGE_PATHS["prompt_library_path"]
+API_PROVIDERS_FILE = RUNTIME_STORAGE_PATHS["api_providers_file"]
+RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_STORAGE_PATHS["runninghub_workflow_store_file"]
+SHARED_FOLDERS_FILE = RUNTIME_STORAGE_PATHS["shared_folders_file"]
+GLOBAL_CONFIG_FILE = RUNTIME_STORAGE_PATHS["global_config_file"]
 OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR, canvas_dir=CANVAS_DIR)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
 OPENSHOP_PROJECT_LIFECYCLE_LOCK = RLock()
@@ -1599,16 +1628,13 @@ def update_env_values(updates):
 
 BACKEND_LOCAL_LOAD = {addr: 0 for addr in COMFYUI_INSTANCES}
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(ASSETS_DIR, exist_ok=True)
+for writable_path in RUNTIME_PATHS.writable_paths():
+    os.makedirs(writable_path, exist_ok=True)
 os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
 os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
 os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
-os.makedirs(STATIC_DIR, exist_ok=True)
-os.makedirs(WORKFLOW_DIR, exist_ok=True)
 os.makedirs(CONVERSATION_DIR, exist_ok=True)
-os.makedirs(CANVAS_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
@@ -21135,9 +21161,7 @@ def generate(req: GenerateRequest):
                     except Exception as e:
                         print(f"Sync upload failed: {e}")
 
-        workflow_path = os.path.join(WORKFLOW_DIR, req.workflow_json)
-        if not os.path.exists(workflow_path) and req.workflow_json == "Z-Image.json":
-            workflow_path = WORKFLOW_PATH
+        workflow_path = workflow_path_from_name(req.workflow_json)
         if not os.path.exists(workflow_path):
             raise Exception(f"Workflow file not found: {req.workflow_json}")
 
@@ -21341,17 +21365,26 @@ class WorkflowRunRequest(BaseModel):
     config: WorkflowConfig
     client_id: str = ""
 
-def workflow_path_from_name(name: str) -> str:
+def workflow_path_in_root(root: str, name: str) -> str:
     if not WORKFLOW_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid workflow name")
-    path = os.path.abspath(os.path.join(WORKFLOW_DIR, *name.split("/")))
-    workflow_root = os.path.abspath(WORKFLOW_DIR)
+    workflow_root = os.path.abspath(root)
+    path = os.path.abspath(os.path.join(workflow_root, *name.split("/")))
     if os.path.commonpath([workflow_root, path]) != workflow_root:
         raise HTTPException(status_code=400, detail="Invalid workflow name")
     return path
 
-def workflow_config_path(name: str) -> str:
-    return workflow_path_from_name(name).replace(".json", ".config.json")
+def workflow_path_from_name(name: str, *, for_write: bool = False) -> str:
+    user_path = workflow_path_in_root(USER_WORKFLOW_DIR, name)
+    if for_write or os.path.exists(user_path):
+        return user_path
+    return workflow_path_in_root(BUILTIN_WORKFLOW_DIR, name)
+
+def workflow_config_path(name: str, *, for_write: bool = False) -> str:
+    user_config = workflow_path_in_root(USER_WORKFLOW_DIR, name).replace(".json", ".config.json")
+    if for_write or os.path.exists(user_config):
+        return user_config
+    return workflow_path_in_root(BUILTIN_WORKFLOW_DIR, name).replace(".json", ".config.json")
 
 def is_builtin_workflow(name: str) -> bool:
     return "/" not in name and os.path.basename(name) in BUILTIN_WORKFLOWS
@@ -21789,32 +21822,36 @@ def save_comfyui_instances(payload: ComfyInstancesPayload):
 
 @app.get("/api/workflows")
 def list_workflows():
-    if not os.path.isdir(WORKFLOW_DIR):
-        return {"workflows": []}
-    items = []
-    for root, dirs, files in os.walk(WORKFLOW_DIR):
-        if os.path.abspath(root) == os.path.abspath(WORKFLOW_DIR):
-            dirs[:] = [d for d in dirs if d in {CUSTOM_WORKFLOW_FOLDER, LEGACY_CUSTOM_WORKFLOW_FOLDER}]
-        for fn in sorted(files):
-            if not fn.endswith(".json") or fn.endswith(".config.json"):
-                continue
-            rel = os.path.relpath(os.path.join(root, fn), WORKFLOW_DIR).replace("\\", "/")
-            if is_builtin_workflow(rel):
-                continue
-            cfg = {}
-            cfg_path = workflow_config_path(rel)
-            if os.path.exists(cfg_path):
-                try:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        cfg = json.load(f) or {}
-                except Exception:
-                    cfg = {}
-            items.append({
-                "name": rel,
-                "title": cfg.get("title") or fn.replace(".json", ""),
-                "builtin": False,
-                "field_count": len(cfg.get("fields") or []),
-            })
+    by_name = {}
+    for workflow_root, builtin in (
+        (BUILTIN_WORKFLOW_DIR, True),
+        (USER_WORKFLOW_DIR, False),
+    ):
+        if not os.path.isdir(workflow_root):
+            continue
+        for root, dirs, files in os.walk(workflow_root):
+            dirs[:] = [directory for directory in dirs if directory not in {"__pycache__", ".git"}]
+            for filename in sorted(files):
+                if not filename.endswith(".json") or filename.endswith(".config.json"):
+                    continue
+                rel = os.path.relpath(os.path.join(root, filename), workflow_root).replace("\\", "/")
+                if not WORKFLOW_NAME_RE.match(rel):
+                    continue
+                config = {}
+                config_path = workflow_config_path(rel)
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, "r", encoding="utf-8") as stream:
+                            config = json.load(stream) or {}
+                    except (OSError, json.JSONDecodeError):
+                        config = {}
+                by_name[rel] = {
+                    "name": rel,
+                    "title": config.get("title") or filename.replace(".json", ""),
+                    "builtin": builtin,
+                    "field_count": len(config.get("fields") or []),
+                }
+    items = list(by_name.values())
     items.sort(key=lambda item: (0 if item["name"].startswith(f"{CUSTOM_WORKFLOW_FOLDER}/") else 1, item["title"]))
     return {"workflows": items}
 
@@ -21850,10 +21887,10 @@ def upload_workflow(payload: WorkflowUploadRequest):
     sample = next(iter(payload.workflow.values()), None)
     if not isinstance(sample, dict) or "class_type" not in sample:
         raise HTTPException(status_code=400, detail="不是有效的 ComfyUI API 工作流 JSON（需包含 class_type）")
-    custom_dir = os.path.join(WORKFLOW_DIR, CUSTOM_WORKFLOW_FOLDER)
+    custom_dir = os.path.join(USER_WORKFLOW_DIR, CUSTOM_WORKFLOW_FOLDER)
     os.makedirs(custom_dir, exist_ok=True)
     stored_name = f"{CUSTOM_WORKFLOW_FOLDER}/{name}"
-    path = workflow_path_from_name(stored_name)
+    path = workflow_path_from_name(stored_name, for_write=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload.workflow, f, ensure_ascii=False, indent=2)
     return {"name": stored_name}
@@ -21865,7 +21902,8 @@ def save_workflow_config(name: str, payload: WorkflowConfig):
     workflow_path = workflow_path_from_name(name)
     if not os.path.exists(workflow_path):
         raise HTTPException(status_code=404, detail="Workflow not found")
-    cfg_path = workflow_config_path(name)
+    cfg_path = workflow_config_path(name, for_write=True)
+    os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
     with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(payload.dict(), f, ensure_ascii=False, indent=2)
     return {"config": payload.dict()}
@@ -21874,10 +21912,11 @@ def save_workflow_config(name: str, payload: WorkflowConfig):
 def delete_workflow(name: str):
     if not WORKFLOW_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid workflow name")
-    if is_builtin_workflow(name):
+    user_workflow_path = workflow_path_in_root(USER_WORKFLOW_DIR, name)
+    if is_builtin_workflow(name) and not os.path.exists(user_workflow_path):
         raise HTTPException(status_code=400, detail="内置工作流不可删除")
-    workflow_path = workflow_path_from_name(name)
-    cfg_path = workflow_config_path(name)
+    workflow_path = user_workflow_path
+    cfg_path = workflow_config_path(name, for_write=True)
     if not os.path.exists(workflow_path):
         raise HTTPException(status_code=404, detail="Workflow not found")
     os.remove(workflow_path)
