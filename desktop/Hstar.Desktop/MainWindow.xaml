@@ -29,7 +29,8 @@
                            Foreground="#181A1F"
                            FontSize="28"
                            FontWeight="SemiBold" />
-                <TextBlock Text="正在准备本地工作区"
+                <TextBlock x:Name="StartupStatusText"
+                           Text="正在准备本地工作区"
                            Margin="0,12,0,0"
                            HorizontalAlignment="Center"
                            Foreground="#5F6670"
