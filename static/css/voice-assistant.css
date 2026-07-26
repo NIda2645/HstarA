@@ -60,43 +60,53 @@
 }
 
 .hstar-voice-button svg {
+  grid-area: 1 / 1;
   width: 15px;
   height: 15px;
   stroke-width: 2.2;
 }
 
+.hstar-voice-button > i[data-lucide="mic"] {
+  display: none;
+}
+
 .hstar-voice-mic-fallback {
   position: relative;
-  width: 7px;
-  height: 11px;
+  grid-area: 1 / 1;
+  width: 15px;
+  height: 15px;
+  box-sizing: border-box;
   color: inherit;
-  border: 1.7px solid currentColor;
-  border-radius: 5px;
+  line-height: 0;
+  background:
+    linear-gradient(currentColor, currentColor) 50% 11px / 1.7px 3px no-repeat,
+    linear-gradient(currentColor, currentColor) 50% 13px / 7px 1.7px no-repeat;
 }
 
 .hstar-voice-mic-fallback::before {
   position: absolute;
-  top: 6px;
+  top: 0;
   left: 50%;
-  width: 11px;
-  height: 7px;
+  width: 7px;
+  height: 10px;
+  box-sizing: border-box;
   content: "";
   border: 1.7px solid currentColor;
-  border-top: 0;
-  border-radius: 0 0 7px 7px;
+  border-radius: 5px;
   transform: translateX(-50%);
 }
 
 .hstar-voice-mic-fallback::after {
   position: absolute;
-  top: 13px;
+  top: 5px;
   left: 50%;
-  width: 7px;
-  height: 1.7px;
+  width: 11px;
+  height: 7px;
+  box-sizing: border-box;
   content: "";
-  background: currentColor;
-  border-radius: 1px;
-  box-shadow: 0 -2px 0 -0.2px currentColor;
+  border: 1.7px solid currentColor;
+  border-top: 0;
+  border-radius: 0 0 7px 7px;
   transform: translateX(-50%);
 }
 

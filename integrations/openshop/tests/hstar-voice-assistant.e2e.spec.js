@@ -584,14 +584,23 @@ test('renders contrasting app themes and a layout-stable rainbow recognition rin
     const after = await button.boundingBox();
     expect(after).toEqual(before);
     const visual = await page.evaluate(() => {
+      const buttonElement = document.querySelector('.hstar-voice-button');
+      const fallbackElement = document.querySelector('.hstar-voice-mic-fallback');
+      const iconElement = buttonElement.querySelector('svg') || fallbackElement;
+      const buttonRect = buttonElement.getBoundingClientRect();
+      const iconRect = iconElement.getBoundingClientRect();
       const ring = getComputedStyle(document.querySelector('.hstar-voice-level'));
       const status = getComputedStyle(document.querySelector('.hstar-voice-status'));
-      const fallback = getComputedStyle(document.querySelector('.hstar-voice-mic-fallback'));
+      const fallback = getComputedStyle(fallbackElement);
       return {
         ring: ring.backgroundImage,
         statusBackground: status.backgroundColor,
         statusColor: status.color,
         statusOpacity: status.opacity,
+        iconCenterOffset: {
+          x: (iconRect.left + (iconRect.width / 2)) - (buttonRect.left + (buttonRect.width / 2)),
+          y: (iconRect.top + (iconRect.height / 2)) - (buttonRect.top + (buttonRect.height / 2)),
+        },
         hasSvg: Boolean(document.querySelector('.hstar-voice-button > svg')),
         fallbackDisplay: fallback.display,
       };
@@ -601,6 +610,8 @@ test('renders contrasting app themes and a layout-stable rainbow recognition rin
     expect(visual.statusColor).toBe('rgb(250, 250, 250)');
     expect(visual.statusOpacity).toBe('1');
     expect(visual.hasSvg || visual.fallbackDisplay !== 'none').toBe(true);
+    expect(Math.abs(visual.iconCenterOffset.x)).toBeLessThanOrEqual(0.75);
+    expect(Math.abs(visual.iconCenterOffset.y)).toBeLessThanOrEqual(0.75);
   } finally {
     await browser.close();
   }
