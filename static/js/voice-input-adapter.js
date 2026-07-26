@@ -11,8 +11,13 @@
   let targetSequence = 0;
   let childFrameSequence = 0;
   let activeTarget = null;
+  let activeGeneration = 0;
+  let geometryFrame = 0;
   let imeComposing = false;
   let shortcut = 'Shift+Q';
+  const targetObserver = typeof global.ResizeObserver === 'function'
+    ? new global.ResizeObserver(() => scheduleGeometry())
+    : null;
 
   function inputEvent(type, options) {
     try {
@@ -227,6 +232,45 @@
     throw new Error('No voice transaction adapter is registered for this target');
   }
 
+  function captureSelection(target) {
+    if (!target || !isEligible(target)) return null;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      return {
+        kind: 'text',
+        start: target.selectionStart ?? target.value.length,
+        end: target.selectionEnd ?? target.value.length,
+      };
+    }
+    if (target.isContentEditable) {
+      const selection = global.getSelection?.();
+      if (selection?.rangeCount) {
+        const range = selection.getRangeAt(0);
+        if (target.contains(range.commonAncestorContainer)) {
+          return {kind: 'range', range: range.cloneRange()};
+        }
+      }
+    }
+    const custom = customAdapters.get(target);
+    return custom?.getSelection ? {kind: 'custom', value: custom.getSelection()} : {kind: 'focus'};
+  }
+
+  function restoreSelection(target, snapshot) {
+    if (!target || !isEligible(target)) return false;
+    target.focus?.({preventScroll: true});
+    if (snapshot?.kind === 'text') {
+      target.setSelectionRange(snapshot.start, snapshot.end);
+    } else if (snapshot?.kind === 'range' && snapshot.range) {
+      const selection = global.getSelection?.();
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(snapshot.range);
+      }
+    } else if (snapshot?.kind === 'custom') {
+      customAdapters.get(target)?.restoreSelection?.(snapshot.value);
+    }
+    return true;
+  }
+
   function undo(target) {
     const stack = undoStacks.get(target);
     const record = stack?.[stack.length - 1];
@@ -274,14 +318,33 @@
     );
   }
 
-  function postToCoordinator(type, target) {
+  function postToCoordinator(type, target, generation = activeGeneration) {
     if (global.parent === global) return;
     global.parent.postMessage({
       type,
       targetId: target ? targetId(target) : '',
       label: target ? labelFor(target) : '',
+      generation,
       framePath: [],
     }, global.location.origin);
+  }
+
+  function scheduleGeometry() {
+    if (!activeTarget || geometryFrame) return;
+    const send = () => {
+      geometryFrame = 0;
+      if (activeTarget) postToCoordinator('hstar-voice-target-geometry', activeTarget);
+    };
+    if (typeof global.requestAnimationFrame === 'function') {
+      geometryFrame = global.requestAnimationFrame(send);
+    } else {
+      send();
+    }
+  }
+
+  function observeTarget(target) {
+    targetObserver?.disconnect();
+    if (target) targetObserver?.observe(target);
   }
 
   function childFrameFor(source) {
@@ -306,6 +369,7 @@
     const data = event.data;
     if (!data || ![
       'hstar-voice-target-active',
+      'hstar-voice-target-geometry',
       'hstar-voice-target-lost',
       'hstar-voice-target-command',
     ].includes(data.type)) return;
@@ -315,6 +379,7 @@
       type: data.type,
       targetId: String(data.targetId || ''),
       label: String(data.label || ''),
+      generation: Number.isFinite(Number(data.generation)) ? Number(data.generation) : 0,
       framePath: [childFrameId(frame), ...(Array.isArray(data.framePath) ? data.framePath : [])],
     }, global.location.origin);
   }
@@ -328,15 +393,22 @@
   function onFocusIn(event) {
     const target = eligibleAncestor(event.target) || (isEligible(event.target) ? event.target : null);
     if (!target) return;
+    activeGeneration += 1;
     activeTarget = target;
+    observeTarget(target);
     postToCoordinator('hstar-voice-target-active', target);
+    scheduleGeometry();
   }
 
   function onFocusOut() {
+    const lostTarget = activeTarget;
+    const lostGeneration = activeGeneration;
     global.setTimeout(() => {
-      if (activeTarget && document.activeElement !== activeTarget && !activeTarget.contains?.(document.activeElement)) {
-        postToCoordinator('hstar-voice-target-lost', activeTarget);
-      }
+      if (!lostTarget || activeTarget !== lostTarget || activeGeneration !== lostGeneration) return;
+      if (document.activeElement === lostTarget || lostTarget.contains?.(document.activeElement)) return;
+      postToCoordinator('hstar-voice-target-lost', lostTarget, lostGeneration);
+      activeTarget = null;
+      observeTarget(null);
     }, 0);
   }
 
@@ -377,6 +449,12 @@
   function onPageHide() {
     if (activeTarget) postToCoordinator('hstar-voice-target-lost', activeTarget);
     activeTarget = null;
+    activeGeneration += 1;
+    observeTarget(null);
+    if (geometryFrame && typeof global.cancelAnimationFrame === 'function') {
+      global.cancelAnimationFrame(geometryFrame);
+      geometryFrame = 0;
+    }
   }
 
   document.addEventListener('focusin', onFocusIn, true);
@@ -385,12 +463,18 @@
   document.addEventListener('compositionend', () => { imeComposing = false; }, true);
   document.addEventListener('keydown', onKeyDown, true);
   global.addEventListener('pagehide', onPageHide);
+  global.addEventListener('resize', scheduleGeometry);
+  global.addEventListener('scroll', scheduleGeometry, true);
+  global.visualViewport?.addEventListener?.('resize', scheduleGeometry);
+  global.visualViewport?.addEventListener?.('scroll', scheduleGeometry);
   global.addEventListener('message', onChildTargetMessage);
 
   global.HstarVoiceInputAdapter = Object.freeze({
     begin,
+    captureSelection,
     isEligible,
     register,
+    restoreSelection,
     undo,
     getActiveTarget: () => activeTarget,
     getTargetById: id => targetsById.get(id) || null,

@@ -371,6 +371,95 @@ describe('Hstar global voice coordinator', () => {
     expect(childTransaction.update).toHaveBeenCalledWith('子页面听写');
   });
 
+  it('clears a matching iframe target when it reports focus lost', async () => {
+    const harness = makeHarness();
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const childTarget = frame.contentDocument.createElement('textarea');
+    frame.contentDocument.body.append(childTarget);
+    frame.contentWindow.HstarVoiceInputAdapter = {
+      getTargetById: vi.fn(id => id === 'child-prompt' ? childTarget : null),
+      isEligible: vi.fn(target => target === childTarget),
+      begin: vi.fn(() => makeTransaction()),
+    };
+    harness.coordinator.attachFrame(frame);
+
+    for (const type of ['hstar-voice-target-active', 'hstar-voice-target-lost']) {
+      window.dispatchEvent(new MessageEvent('message', {
+        origin: window.location.origin,
+        source: frame.contentWindow,
+        data: {type, targetId: 'child-prompt', label: '子页面提示词', framePath: []},
+      }));
+    }
+
+    await expect(harness.coordinator.start()).resolves.toBe(false);
+    expect(harness.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    expect(harness.coordinator.state).toBe('error');
+  });
+
+  it('repositions an iframe target after a child geometry signal', async () => {
+    const harness = makeHarness({renderUi: true});
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    Object.defineProperties(frame, {
+      clientWidth: {value: 500, configurable: true},
+      clientHeight: {value: 400, configurable: true},
+    });
+    frame.getBoundingClientRect = () => ({
+      left: 100, top: 50, right: 600, bottom: 450, width: 500, height: 400,
+    });
+    const childTarget = frame.contentDocument.createElement('textarea');
+    frame.contentDocument.body.append(childTarget);
+    let targetRight = 220;
+    childTarget.getBoundingClientRect = () => ({
+      left: 20, top: 30, right: targetRight, bottom: 90,
+      width: targetRight - 20, height: 60,
+    });
+    frame.contentWindow.HstarVoiceInputAdapter = {
+      getTargetById: vi.fn(id => id === 'child-prompt' ? childTarget : null),
+      isEligible: vi.fn(target => target === childTarget),
+      begin: vi.fn(() => makeTransaction()),
+    };
+    harness.coordinator.attachFrame(frame);
+    const dispatch = type => window.dispatchEvent(new MessageEvent('message', {
+      origin: window.location.origin,
+      source: frame.contentWindow,
+      data: {type, targetId: 'child-prompt', label: '子页面提示词', framePath: []},
+    }));
+
+    dispatch('hstar-voice-target-active');
+    await vi.waitFor(() => {
+      expect(document.querySelector('.hstar-voice-entry').style.left).toBe('286px');
+    });
+    targetRight = 300;
+    dispatch('hstar-voice-target-geometry');
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.hstar-voice-entry').style.left).toBe('366px');
+    });
+  });
+
+  it('restores the target focus and selection when the microphone is pressed', async () => {
+    const harness = makeHarness({renderUi: true});
+    const target = document.createElement('textarea');
+    target.value = '前后';
+    target.getBoundingClientRect = () => ({
+      left: 100, top: 100, right: 340, bottom: 180, width: 240, height: 80,
+    });
+    document.body.append(target);
+    harness.adapter.isEligible.mockImplementation(value => value === target);
+    target.focus();
+    target.setSelectionRange(1, 1);
+    harness.coordinator.activateTarget(target);
+    const button = document.querySelector('.hstar-voice-button');
+    button.focus();
+
+    button.dispatchEvent(new MouseEvent('pointerdown', {bubbles: true, cancelable: true}));
+
+    expect(document.activeElement).toBe(target);
+    expect([target.selectionStart, target.selectionEnd]).toEqual([1, 1]);
+  });
+
   it('lets first use choose a folder and activate an existing model', async () => {
     const status = readyStatus();
     status.status.model = {ready: false, missing: ['model.pt']};

@@ -70,6 +70,7 @@
 
       this._state = STATES.READY;
       this._activeTarget = null;
+      this._activeSelection = null;
       this._lockedTarget = null;
       this._transaction = null;
       this._hasPendingPartial = false;
@@ -88,12 +89,26 @@
       this._socket = null;
       this._sessionId = '';
       this._positionFrame = 0;
+      this._ignoreTargetLossUntil = 0;
       this._ui = null;
       this._attachedFrames = new Set();
       this._frameLoadHandlers = new WeakMap();
 
       this._onFocusIn = event => {
         if (this.adapter?.isEligible?.(event.target)) this.activateTarget(event.target);
+      };
+      this._onFocusOut = event => {
+        const target = this._activeTarget;
+        if (!target || this._isFrameHandle(target) || event.target !== target) return;
+        global.setTimeout(() => {
+          if (!this._sameTarget(this._activeTarget, target)) return;
+          if (global.document.activeElement === target || target.contains?.(global.document.activeElement)) return;
+          if (Date.now() < this._ignoreTargetLossUntil) {
+            this._restoreTargetFocus(target);
+            return;
+          }
+          this._clearActiveTarget(target, 'target-lost');
+        }, 0);
       };
       this._onTargetCommand = event => {
         const target = event.detail?.target || this.adapter?.getActiveTarget?.();
@@ -105,6 +120,7 @@
       this._onFrameMessage = event => this._handleFrameMessage(event);
 
       global.document?.addEventListener('focusin', this._onFocusIn, true);
+      global.document?.addEventListener('focusout', this._onFocusOut, true);
       global.addEventListener?.('hstar-voice-target-command', this._onTargetCommand);
       global.addEventListener?.('resize', this._onViewportChange);
       global.addEventListener?.('scroll', this._onViewportChange, true);
@@ -133,6 +149,7 @@
     activateTarget(target) {
       if (!target || !this._targetEligible(target)) return false;
       this._activeTarget = target;
+      this._activeSelection = this._captureTargetSelection(target);
       this._schedulePosition();
       return true;
     }
@@ -143,6 +160,9 @@
       const onLoad = () => {
         if (this._isFrameHandle(this._lockedTarget) && this._lockedTarget.frame === frame) {
           void this.stop('target-removed');
+        }
+        if (this._isFrameHandle(this._activeTarget) && this._activeTarget.frame === frame) {
+          this._clearActiveTarget(this._activeTarget, 'target-removed');
         }
         this._schedulePosition();
       };
@@ -188,6 +208,7 @@
     async destroy() {
       await this.stop('page-unload');
       global.document?.removeEventListener('focusin', this._onFocusIn, true);
+      global.document?.removeEventListener('focusout', this._onFocusOut, true);
       global.removeEventListener?.('hstar-voice-target-command', this._onTargetCommand);
       global.removeEventListener?.('resize', this._onViewportChange);
       global.removeEventListener?.('scroll', this._onViewportChange, true);
@@ -433,6 +454,56 @@
       return Boolean(target?.hstarVoiceFrameTarget === true);
     }
 
+    _sameTarget(left, right) {
+      if (left === right) return true;
+      if (!this._isFrameHandle(left) || !this._isFrameHandle(right)) return false;
+      return left.frame === right.frame
+        && left.targetId === right.targetId
+        && JSON.stringify(left.framePath || []) === JSON.stringify(right.framePath || []);
+    }
+
+    _captureTargetSelection(target) {
+      const resolved = this._isFrameHandle(target) ? this._resolveFrameTarget(target) : null;
+      const adapter = resolved?.adapter || this.adapter;
+      const element = resolved?.target || target;
+      if (!element) return null;
+      if (typeof adapter?.captureSelection === 'function') {
+        return adapter.captureSelection(element);
+      }
+      if (element instanceof global.HTMLInputElement || element instanceof global.HTMLTextAreaElement) {
+        return {
+          kind: 'text',
+          start: element.selectionStart ?? element.value.length,
+          end: element.selectionEnd ?? element.value.length,
+        };
+      }
+      return {kind: 'focus'};
+    }
+
+    _restoreTargetFocus(target) {
+      const resolved = this._isFrameHandle(target) ? this._resolveFrameTarget(target) : null;
+      const adapter = resolved?.adapter || this.adapter;
+      const element = resolved?.target || target;
+      if (!element || !this._targetEligible(target)) return false;
+      if (typeof adapter?.restoreSelection === 'function') {
+        return adapter.restoreSelection(element, this._activeSelection) !== false;
+      }
+      element.focus?.({preventScroll: true});
+      if (this._activeSelection?.kind === 'text') {
+        element.setSelectionRange?.(this._activeSelection.start, this._activeSelection.end);
+      }
+      return true;
+    }
+
+    _clearActiveTarget(target, reason = 'target-lost') {
+      if (!this._sameTarget(this._activeTarget, target)) return false;
+      this._activeTarget = null;
+      this._activeSelection = null;
+      if (this._ui) this._ui.root.hidden = true;
+      if (this._sameTarget(this._lockedTarget, target)) void this.stop(reason);
+      return true;
+    }
+
     _targetEligible(target) {
       if (this._isFrameHandle(target)) {
         const resolved = this._resolveFrameTarget(target);
@@ -469,6 +540,7 @@
       const data = event.data;
       if (!data || ![
         'hstar-voice-target-active',
+        'hstar-voice-target-geometry',
         'hstar-voice-target-lost',
         'hstar-voice-target-command',
       ].includes(data.type)) return;
@@ -482,17 +554,28 @@
         framePath,
         targetId: String(data.targetId || ''),
         label: String(data.label || ''),
+        generation: Number.isFinite(Number(data.generation)) ? Number(data.generation) : 0,
       };
       if (!handle.targetId) return;
       if (data.type === 'hstar-voice-target-active') {
         this.activateTarget(handle);
+      } else if (data.type === 'hstar-voice-target-geometry') {
+        if (this._sameTarget(this._activeTarget, handle)
+          && Number(this._activeTarget?.generation || 0) === handle.generation) {
+          this._schedulePosition();
+        }
       } else if (data.type === 'hstar-voice-target-command') {
         if (!this.activateTarget(handle)) return;
         if (ACTIVE_STATES.has(this.state)) void this.stop('user');
         else void this.start();
-      } else if (!this._targetEligible(handle)) {
-        if (this._activeTarget?.targetId === handle.targetId) this._activeTarget = null;
-        if (this._lockedTarget?.targetId === handle.targetId) void this.stop('target-removed');
+      } else if (this._sameTarget(this._activeTarget, handle)
+        && Number(this._activeTarget?.generation || 0) === handle.generation) {
+        if (Date.now() < this._ignoreTargetLossUntil) {
+          this._restoreTargetFocus(this._activeTarget);
+          this._schedulePosition();
+        } else {
+          this._clearActiveTarget(this._activeTarget, 'target-lost');
+        }
       }
     }
 
@@ -678,6 +761,13 @@
       `;
       global.document.body.append(root, dialog);
       const button = root.querySelector('.hstar-voice-button');
+      button.addEventListener('pointerdown', event => {
+        if (!this._activeTarget) return;
+        this._activeSelection = this._captureTargetSelection(this._activeTarget);
+        this._ignoreTargetLossUntil = Date.now() + 250;
+        event.preventDefault();
+        this._restoreTargetFocus(this._activeTarget);
+      });
       button.addEventListener('click', () => {
         if (ACTIVE_STATES.has(this.state)) void this.stop('user');
         else void this.start();
