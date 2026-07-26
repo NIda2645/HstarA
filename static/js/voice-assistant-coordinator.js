@@ -245,10 +245,21 @@
           this._showFirstUse();
           return false;
         }
+        if (status.runtime?.ready === false) {
+          this._lockedTarget = null;
+          this._setState(STATES.MISSING, {code: 'VOICE_RUNTIME_MISSING'});
+          this._showFirstUse();
+          return false;
+        }
 
-        await this._startService();
+        const [mediaResult, serviceResult] = await Promise.allSettled([
+          this._acquireMicrophone(generation),
+          this._startService(),
+        ]);
+        if (mediaResult.status === 'rejected') throw mediaResult.reason;
+        if (serviceResult.status === 'rejected') throw serviceResult.reason;
         if (generation !== this._startGeneration) return false;
-        await this._openBrowserSession(generation);
+        await this._connectBrowserSession(generation);
         if (generation !== this._startGeneration) return false;
         this._setState(STATES.LISTENING);
         return true;
@@ -284,7 +295,7 @@
       }
     }
 
-    async _openBrowserSession(generation) {
+    async _acquireMicrophone(generation) {
       if (!this.mediaDevices?.getUserMedia) {
         throw new VoiceCoordinatorError('VOICE_MIC_UNAVAILABLE');
       }
@@ -304,7 +315,9 @@
           throw new VoiceCoordinatorError('VOICE_START_CANCELLED');
         }
         this._stream = stream;
+        return stream;
       } catch (error) {
+        if (error?.code === 'VOICE_START_CANCELLED') throw error;
         const code = error?.name === 'NotAllowedError'
           ? 'VOICE_MIC_PERMISSION_DENIED'
           : error?.name === 'NotReadableError'
@@ -312,7 +325,10 @@
             : 'VOICE_MIC_UNAVAILABLE';
         throw new VoiceCoordinatorError(code, error?.message);
       }
+    }
 
+    async _connectBrowserSession(generation) {
+      if (!this._stream) throw new VoiceCoordinatorError('VOICE_START_CANCELLED');
       this._audioContext = this.createAudioContext();
       await this._audioContext.audioWorklet.addModule(this.workletUrl);
       if (generation !== this._startGeneration) {

@@ -82,6 +82,7 @@ function readyStatus() {
         input_device_id: 'default',
         shortcut: 'Shift+Q',
       },
+      runtime: {ready: true, profile: 'cuda'},
       model: {ready: true},
       service: {process_state: 'stopped', model_state: 'unloaded'},
       task: null,
@@ -249,13 +250,9 @@ describe('Hstar global voice coordinator', () => {
 
   it('never requests microphone permission while the runtime is missing', async () => {
     const status = readyStatus();
+    status.status.runtime = {ready: false, profile: ''};
     const fetchOverride = vi.fn(async (url) => {
       if (String(url).endsWith('/status')) return response(status);
-      if (String(url).endsWith('/service/start')) {
-        return response({
-          detail: {code: 'VOICE_RUNTIME_MISSING', message: 'Runtime is not installed'},
-        }, false);
-      }
       throw new Error(`Unexpected request: ${url}`);
     });
     const harness = makeHarness({status, fetchOverride});
@@ -265,6 +262,7 @@ describe('Hstar global voice coordinator', () => {
 
     expect(harness.coordinator.state).toBe('missing');
     expect(harness.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    expect(fetchOverride).toHaveBeenCalledTimes(1);
   });
 
   it('makes stop idempotent and cancels uncommitted partial text', async () => {
@@ -284,7 +282,7 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.coordinator.state).toBe('ready');
   });
 
-  it('does not request the microphone when stopped during model loading', async () => {
+  it('requests microphone permission while the model service is cold-starting', async () => {
     const status = readyStatus();
     const service = deferred();
     const fetchOverride = vi.fn(async (url) => {
@@ -297,11 +295,33 @@ describe('Hstar global voice coordinator', () => {
 
     const start = harness.coordinator.start();
     await vi.waitFor(() => expect(fetchOverride).toHaveBeenCalledTimes(2));
-    await harness.coordinator.stop('user');
+    await vi.waitFor(() => expect(harness.mediaDevices.getUserMedia).toHaveBeenCalledOnce());
+    expect(harness.coordinator.state).toBe('loading');
     service.resolve(response({ok: true, service: {process_state: 'running'}}));
-    await start;
+    await expect(start).resolves.toBe(true);
 
-    expect(harness.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    expect(harness.coordinator.state).toBe('listening');
+  });
+
+  it('releases an acquired microphone when stopped during model loading', async () => {
+    const status = readyStatus();
+    const service = deferred();
+    const fetchOverride = vi.fn(async (url) => {
+      if (String(url).endsWith('/status')) return response(status);
+      if (String(url).endsWith('/service/start')) return service.promise;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const harness = makeHarness({status, fetchOverride});
+    harness.coordinator.activateTarget(document.createElement('textarea'));
+
+    const start = harness.coordinator.start();
+    await vi.waitFor(() => expect(harness.mediaDevices.getUserMedia).toHaveBeenCalledOnce());
+    await harness.coordinator.stop('user');
+    expect(harness.track.stop).toHaveBeenCalledOnce();
+    service.resolve(response({ok: true, service: {process_state: 'running'}}));
+    await expect(start).resolves.toBe(false);
+
+    expect(harness.track.stop).toHaveBeenCalledOnce();
     expect(harness.coordinator.state).toBe('ready');
   });
 
