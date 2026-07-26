@@ -43,7 +43,8 @@ public partial class App : Application
                 pendingMigrationTarget = setup.PendingMigrationTarget;
             }
 
-            var window = new MainWindow(paths);
+            _startupCoordinator = new StartupCoordinator();
+            var window = new MainWindow(paths, _startupCoordinator);
             MainWindow = window;
             ShutdownMode = ShutdownMode.OnMainWindowClose;
             window.Show();
@@ -53,12 +54,11 @@ public partial class App : Application
                     ? "正在启动本地服务"
                     : "正在安全复制已有数据");
             _startupCancellation = new CancellationTokenSource();
-            _startupCoordinator = new StartupCoordinator();
             var session = await _startupCoordinator.StartAsync(
                 paths,
                 pendingMigrationTarget,
                 _startupCancellation.Token);
-            window.AttachBackendSession(session);
+            await window.AttachBackendSessionAsync(session, _startupCancellation.Token);
             window.SetStartupStatus("本地服务已就绪");
         }
         catch (OperationCanceledException) when (_startupCancellation?.IsCancellationRequested == true)
