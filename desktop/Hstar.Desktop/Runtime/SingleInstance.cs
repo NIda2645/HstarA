@@ -7,11 +7,13 @@ public sealed class SingleInstance : IDisposable
     public const string MutexName = @"Local\Hstar.Windows11";
 
     private readonly Mutex _mutex;
+    private readonly EventWaitHandle _shutdownEvent;
     private bool _disposed;
 
-    private SingleInstance(Mutex mutex, bool isPrimary)
+    private SingleInstance(Mutex mutex, EventWaitHandle shutdownEvent, bool isPrimary)
     {
         _mutex = mutex;
+        _shutdownEvent = shutdownEvent;
         IsPrimary = isPrimary;
     }
 
@@ -20,7 +22,32 @@ public sealed class SingleInstance : IDisposable
     public static SingleInstance Acquire()
     {
         var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
-        return new SingleInstance(mutex, createdNew);
+        var shutdownEvent = MaintenanceMode.CreateShutdownListener();
+        return new SingleInstance(mutex, shutdownEvent, createdNew);
+    }
+
+    public async Task WaitForShutdownAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var completion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        RegisteredWaitHandle? registeredWait = null;
+        using var cancellation = cancellationToken.Register(
+            () => completion.TrySetCanceled(cancellationToken));
+        try
+        {
+            registeredWait = ThreadPool.RegisterWaitForSingleObject(
+                _shutdownEvent,
+                (_, _) => completion.TrySetResult(),
+                null,
+                Timeout.Infinite,
+                executeOnlyOnce: true);
+            await completion.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            registeredWait?.Unregister(null);
+        }
     }
 
     public void Dispose()
@@ -41,6 +68,7 @@ public sealed class SingleInstance : IDisposable
             }
         }
 
+        _shutdownEvent.Dispose();
         _mutex.Dispose();
         _disposed = true;
     }

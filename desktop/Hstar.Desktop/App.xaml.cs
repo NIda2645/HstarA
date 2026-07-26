@@ -9,10 +9,20 @@ public partial class App : Application
     private SingleInstance? _singleInstance;
     private StartupCoordinator? _startupCoordinator;
     private CancellationTokenSource? _startupCancellation;
+    private CancellationTokenSource? _maintenanceShutdownCancellation;
+    private Task? _maintenanceShutdownTask;
+    private volatile bool _maintenanceShutdownRequested;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        var maintenanceExitCode = await MaintenanceMode.TryRunAsync(e.Args);
+        if (maintenanceExitCode.HasValue)
+        {
+            Shutdown(maintenanceExitCode.Value);
+            return;
+        }
+
         _singleInstance = SingleInstance.Acquire();
         if (!_singleInstance.IsPrimary)
         {
@@ -24,6 +34,10 @@ public partial class App : Application
             Shutdown();
             return;
         }
+        _maintenanceShutdownCancellation = new CancellationTokenSource();
+        _maintenanceShutdownTask = WatchForMaintenanceShutdownAsync(
+            _singleInstance,
+            _maintenanceShutdownCancellation.Token);
 
         try
         {
@@ -76,8 +90,34 @@ public partial class App : Application
         }
     }
 
+    private async Task WatchForMaintenanceShutdownAsync(
+        SingleInstance instance,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await instance.WaitForShutdownAsync(cancellationToken).ConfigureAwait(false);
+            _maintenanceShutdownRequested = true;
+            await Dispatcher.InvokeAsync(Shutdown);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        _maintenanceShutdownCancellation?.Cancel();
+        if (!_maintenanceShutdownRequested && _maintenanceShutdownTask is not null)
+        {
+            try
+            {
+                _maintenanceShutdownTask.GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
         _startupCancellation?.Cancel();
         if (_startupCoordinator is not null)
         {
@@ -90,6 +130,7 @@ public partial class App : Application
             }
         }
         _startupCancellation?.Dispose();
+        _maintenanceShutdownCancellation?.Dispose();
         _singleInstance?.Dispose();
         base.OnExit(e);
     }
