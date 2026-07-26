@@ -1,0 +1,193 @@
+<Window x:Class="Hstar.Desktop.Views.StorageSetupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="设置 Hstar 数据目录"
+        Width="700"
+        Height="530"
+        MinWidth="620"
+        MinHeight="500"
+        ResizeMode="CanResize"
+        WindowStartupLocation="CenterScreen"
+        Background="#F7F8FA">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="36" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="MinHeight" Value="36" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="74" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="68" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#111317">
+            <Grid Margin="24,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="Hstar"
+                               Foreground="White"
+                               FontSize="20"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="首次启动设置"
+                               Margin="0,4,0,0"
+                               Foreground="#B8BEC8"
+                               FontSize="12" />
+                </StackPanel>
+                <TextBlock Grid.Column="1"
+                           Text="Windows 11"
+                           Foreground="#D6DAE1"
+                           FontSize="12"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="28,24,28,20">
+                <TextBlock Text="选择数据目录"
+                           Foreground="#17191D"
+                           FontSize="22"
+                           FontWeight="SemiBold" />
+                <TextBlock Margin="0,8,0,0"
+                           Foreground="#5D646E"
+                           FontSize="13"
+                           TextWrapping="Wrap"
+                           Text="画布、项目、素材、输出、设置、日志与可选模型将保存在此目录。更新或重新安装 Hstar 时不会覆盖这里的数据。" />
+
+                <Grid Margin="0,22,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="DataPathTextBox"
+                             Grid.Column="0"
+                             TextChanged="DataPathTextBox_OnTextChanged" />
+                    <Button Grid.Column="2"
+                            Content="浏览..."
+                            Click="BrowseButton_OnClick" />
+                </Grid>
+
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="PathStatusText"
+                               Foreground="#69717C"
+                               FontSize="12" />
+                    <TextBlock x:Name="FreeSpaceText"
+                               Grid.Column="1"
+                               Foreground="#3E4650"
+                               FontSize="12"
+                               FontWeight="SemiBold" />
+                </Grid>
+
+                <Border Margin="0,22,0,0"
+                        BorderBrush="#D9DDE3"
+                        BorderThickness="0,1,0,0"
+                        Padding="0,18,0,0">
+                    <StackPanel>
+                        <TextBlock Text="目录规则"
+                                   Foreground="#282C32"
+                                   FontSize="13"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Margin="0,8,0,0"
+                                   Foreground="#626A75"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Text="数据目录必须位于 Hstar 程序目录之外，并保留至少 2 GB 可用空间。可以使用中文、空格和自定义磁盘路径。" />
+                    </StackPanel>
+                </Border>
+
+                <Border x:Name="ExistingDataPanel"
+                        Margin="0,18,0,0"
+                        Padding="14"
+                        Background="#EEF5FF"
+                        BorderBrush="#A9C8F5"
+                        BorderThickness="1"
+                        Visibility="Collapsed">
+                    <StackPanel>
+                        <TextBlock Text="检测到已有 Hstar 数据"
+                                   Foreground="#174A89"
+                                   FontSize="13"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Margin="0,5,0,0"
+                                   Foreground="#355D8C"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Text="选择直接继续使用，或通过可恢复的数据迁移流程复制到新的空目录。" />
+                        <RadioButton x:Name="ContinueExistingRadio"
+                                     Margin="0,12,0,0"
+                                     Content="继续使用此位置"
+                                     IsChecked="True"
+                                     Checked="ExistingDataChoice_OnChanged" />
+                        <RadioButton x:Name="CopyExistingRadio"
+                                     Margin="0,8,0,0"
+                                     Content="复制到新位置"
+                                     Checked="ExistingDataChoice_OnChanged" />
+                        <Grid x:Name="CopyTargetPanel"
+                              Margin="0,10,0,0"
+                              Visibility="Collapsed">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="CopyTargetTextBox"
+                                     Grid.Column="0" />
+                            <Button Grid.Column="2"
+                                    Content="选择新位置..."
+                                    Click="BrowseCopyTargetButton_OnClick" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock x:Name="ValidationText"
+                           Margin="0,14,0,0"
+                           Foreground="#B42318"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Visibility="Collapsed" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="2"
+                Background="White"
+                BorderBrush="#DDE1E6"
+                BorderThickness="0,1,0,0">
+            <Grid Margin="28,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="10" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="1"
+                        Content="取消"
+                        IsCancel="True"
+                        Click="CancelButton_OnClick" />
+                <Button Grid.Column="3"
+                        Content="确认并继续"
+                        IsDefault="True"
+                        Foreground="White"
+                        Background="#1D4ED8"
+                        BorderBrush="#1D4ED8"
+                        Click="ConfirmButton_OnClick" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

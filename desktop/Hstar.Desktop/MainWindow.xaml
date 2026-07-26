@@ -1,0 +1,46 @@
+<Window x:Class="Hstar.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Hstar"
+        Width="1280"
+        Height="820"
+        MinWidth="960"
+        MinHeight="640"
+        WindowStartupLocation="CenterScreen"
+        Background="#F4F5F7">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="52" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Border Grid.Row="0" Background="#111317">
+            <Grid Margin="20,0">
+                <TextBlock Text="Hstar"
+                           Foreground="White"
+                           FontSize="18"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+        <Grid Grid.Row="1">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="Hstar"
+                           HorizontalAlignment="Center"
+                           Foreground="#181A1F"
+                           FontSize="28"
+                           FontWeight="SemiBold" />
+                <TextBlock Text="正在准备本地工作区"
+                           Margin="0,12,0,0"
+                           HorizontalAlignment="Center"
+                           Foreground="#5F6670"
+                           FontSize="14" />
+                <ProgressBar Width="220"
+                             Height="3"
+                             Margin="0,20,0,0"
+                             IsIndeterminate="True"
+                             Foreground="#2563EB"
+                             Background="#D8DCE2" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
