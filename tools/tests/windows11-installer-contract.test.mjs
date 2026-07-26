@@ -50,7 +50,20 @@ assert.match(installer, /Filename:\s*"\{app\}\\\{#MyAppExeName\}";\s*Description
 assert.match(installer, /CheckForMutexes\(MyAppMutex\)[\s\S]*--maintenance=shutdown/i, 'upgrade shutdown uses the edition maintenance contract');
 
 assert.doesNotMatch(installer, /(?:powershell(?:\.exe)?|\{cmd\}|cmd\.exe|taskkill|run\.bat)/i);
-assert.doesNotMatch(installer, /\[(?:InstallDelete|UninstallDelete)\]/i, 'installer never declares destructive data cleanup');
+const installDeleteSection = installer.match(/\[InstallDelete\]([\s\S]*?)(?=\r?\n\[|$)/i)?.[1] ?? '';
+const installDeleteEntries = [...installDeleteSection.matchAll(/^Type:\s*filesandordirs;\s*Name:\s*"([^"]+)"\s*$/gmi)]
+    .map((match) => match[1]);
+assert.deepEqual(
+    installDeleteEntries,
+    ['{app}\\app', '{app}\\runtime'],
+    'upgrade cleanup is limited to the two program-owned payload roots that the stage fully replaces',
+);
+assert.doesNotMatch(
+    installDeleteSection,
+    /(?:appdata|localappdata|userappdata|commonappdata|dataRoot|Hstar缓存|\{code:|\{reg:)/i,
+    'upgrade cleanup cannot resolve to AppData, the selected data root, or another dynamic location',
+);
+assert.doesNotMatch(installer, /\[UninstallDelete\]/i, 'uninstall never declares destructive cleanup');
 assert.doesNotMatch(installer, /(?:Fun-ASR-Nano|safetensors|model\.pt|voice-assistant-data)/i);
 assert.match(retiredInstaller, /retired/i, 'legacy combined installer is explicitly retired');
 assert.doesNotMatch(retiredInstaller, /^\[Setup\]/mi, 'retired installer cannot produce a package');

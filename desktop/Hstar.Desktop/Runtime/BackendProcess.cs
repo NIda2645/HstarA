@@ -68,6 +68,7 @@ public sealed class BackendProcess : IAsyncDisposable
         startInfo.ArgumentList.Add(Path.Combine("app", "main.py"));
         startInfo.Environment["HSTAR_PROGRAM_DIR"] = paths.ProgramRoot;
         startInfo.Environment["HSTAR_DATA_DIR"] = paths.DataRoot;
+        startInfo.Environment["APPDATA"] = paths.AppDataRoot;
         startInfo.Environment["HSTAR_EDITION"] = AppPaths.Windows11Edition;
         startInfo.Environment["HSTAR_HOST"] = "127.0.0.1";
         startInfo.Environment["HSTAR_PORT"] = port.ToString(CultureInfo.InvariantCulture);
@@ -75,6 +76,7 @@ public sealed class BackendProcess : IAsyncDisposable
         startInfo.Environment["PYTHONUTF8"] = "1";
         startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
         startInfo.Environment["PYTHONUNBUFFERED"] = "1";
+        startInfo.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
         return startInfo;
     }
 

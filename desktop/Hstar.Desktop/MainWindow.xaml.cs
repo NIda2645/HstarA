@@ -11,6 +11,8 @@ public partial class MainWindow : Window
     private readonly StartupCoordinator _startupCoordinator;
     private readonly CancellationTokenSource _windowCancellation = new();
     private WebView2? _browser;
+    private string? _preparedBrowserExecutableFolder;
+    private string? _preparedUserDataFolder;
     private WebViewConfiguration? _configuration;
     private WebViewMessageRouter? _messageRouter;
     private int _restartInProgress;
@@ -33,7 +35,24 @@ public partial class MainWindow : Window
     {
         BackendSession = session;
         Paths = session.Paths;
-        await InitializeBrowserAsync(session, cancellationToken);
+        await PrepareBrowserAsync(cancellationToken);
+
+        var browser = _browser
+            ?? throw new InvalidOperationException("Hstar WebView 尚未完成初始化。");
+        var core = browser.CoreWebView2
+            ?? throw new InvalidOperationException("Hstar WebView 核心尚未完成初始化。");
+        var configuration = WebViewConfiguration.Create(
+            session.Paths,
+            session.BaseUri,
+            session.ShellToken);
+        _configuration = configuration;
+        _messageRouter = new WebViewMessageRouter(configuration, RestartWithDataRootAsync);
+
+        core.NavigationStarting += OnNavigationStarting;
+        core.NewWindowRequested += OnNewWindowRequested;
+        core.WebMessageReceived += OnWebMessageReceived;
+        await NavigateAsync(core, configuration.StartUri, cancellationToken);
+        StartupOverlay.Visibility = Visibility.Collapsed;
     }
 
     public void SetStartupStatus(string status)
@@ -41,42 +60,59 @@ public partial class MainWindow : Window
         StartupStatusText.Text = status;
     }
 
-    private async Task InitializeBrowserAsync(
-        BackendSession session,
-        CancellationToken cancellationToken)
+    public async Task PrepareBrowserAsync(CancellationToken cancellationToken = default)
     {
         SetStartupStatus("正在准备 Hstar 界面");
         StartupOverlay.Visibility = Visibility.Visible;
-        var configuration = WebViewConfiguration.Create(
-            session.Paths,
-            session.BaseUri,
-            session.ShellToken);
-        if (!Directory.Exists(configuration.BrowserExecutableFolder))
+        var browserExecutableFolder = Path.Combine(
+            Paths.ProgramRoot,
+            "runtime",
+            "browser",
+            "WebView2");
+        var userDataFolder = Paths.WebViewCacheRoot;
+        if (_browser?.CoreWebView2 is not null
+            && string.Equals(
+                _preparedBrowserExecutableFolder,
+                browserExecutableFolder,
+                StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                _preparedUserDataFolder,
+                userDataFolder,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (!Directory.Exists(browserExecutableFolder))
         {
             throw new DirectoryNotFoundException(
-                $"Hstar 固定 WebView2 运行时不存在：{configuration.BrowserExecutableFolder}");
+                $"Hstar 固定 WebView2 运行时不存在：{browserExecutableFolder}");
         }
-        Directory.CreateDirectory(configuration.UserDataFolder);
+        Directory.CreateDirectory(userDataFolder);
 
         DisposeBrowser();
         var browser = new WebView2();
         BrowserHost.Children.Add(browser);
         _browser = browser;
-        _configuration = configuration;
-        _messageRouter = new WebViewMessageRouter(configuration, RestartWithDataRootAsync);
 
-        var environment = await CoreWebView2Environment.CreateAsync(
-            browserExecutableFolder: configuration.BrowserExecutableFolder,
-            userDataFolder: configuration.UserDataFolder);
-        await browser.EnsureCoreWebView2Async(environment);
-        cancellationToken.ThrowIfCancellationRequested();
-        _windowCancellation.Token.ThrowIfCancellationRequested();
-
-        browser.CoreWebView2.NavigationStarting += OnNavigationStarting;
-        browser.CoreWebView2.NewWindowRequested += OnNewWindowRequested;
-        browser.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
-        await NavigateAsync(browser.CoreWebView2, configuration.StartUri, cancellationToken);
-        StartupOverlay.Visibility = Visibility.Collapsed;
+        try
+        {
+            var environment = await CoreWebView2Environment.CreateAsync(
+                browserExecutableFolder: browserExecutableFolder,
+                userDataFolder: userDataFolder);
+            await browser.EnsureCoreWebView2Async(environment);
+            cancellationToken.ThrowIfCancellationRequested();
+            _windowCancellation.Token.ThrowIfCancellationRequested();
+            _preparedBrowserExecutableFolder = browserExecutableFolder;
+            _preparedUserDataFolder = userDataFolder;
+        }
+        catch
+        {
+            if (ReferenceEquals(_browser, browser))
+            {
+                DisposeBrowser();
+            }
+            throw;
+        }
     }
 
     private async Task RestartWithDataRootAsync(
@@ -96,7 +132,7 @@ public partial class MainWindow : Window
             linkedCancellation.Token);
         BackendSession = session;
         Paths = session.Paths;
-        await InitializeBrowserAsync(session, linkedCancellation.Token);
+        await AttachBackendSessionAsync(session, linkedCancellation.Token);
     }
 
     private async Task ReleaseBrowserSessionsAsync()
@@ -236,6 +272,8 @@ public partial class MainWindow : Window
         BrowserHost.Children.Remove(browser);
         browser.Dispose();
         _browser = null;
+        _preparedBrowserExecutableFolder = null;
+        _preparedUserDataFolder = null;
         _configuration = null;
         _messageRouter = null;
     }

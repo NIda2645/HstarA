@@ -16,10 +16,22 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        Task browserPreparation = Task.CompletedTask;
         var maintenanceExitCode = await MaintenanceMode.TryRunAsync(e.Args);
         if (maintenanceExitCode.HasValue)
         {
             Shutdown(maintenanceExitCode.Value);
+            return;
+        }
+        ShellValidationOptions validationOptions;
+        try
+        {
+            validationOptions = ShellValidationOptions.Parse(e.Args);
+        }
+        catch (ArgumentException error)
+        {
+            MessageBox.Show(error.Message, "Hstar", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(-1);
             return;
         }
 
@@ -42,7 +54,7 @@ public partial class App : Application
         try
         {
             var programRoot = AppPaths.ResolveProgramRoot();
-            var appDataRoot = AppPaths.ResolveAppDataRoot();
+            var appDataRoot = validationOptions.AppDataRoot ?? AppPaths.ResolveAppDataRoot();
             var paths = AppPaths.TryLoad(programRoot, appDataRoot);
             var pendingMigrationTarget = string.Empty;
             if (paths is null)
@@ -57,36 +69,57 @@ public partial class App : Application
                 pendingMigrationTarget = setup.PendingMigrationTarget;
             }
 
-            _startupCoordinator = new StartupCoordinator();
+            _startupCoordinator = new StartupCoordinator(validationOptions.RequiredPort);
             var window = new MainWindow(paths, _startupCoordinator);
             MainWindow = window;
             ShutdownMode = ShutdownMode.OnMainWindowClose;
             window.Show();
 
+            _startupCancellation = new CancellationTokenSource();
+            if (string.IsNullOrWhiteSpace(pendingMigrationTarget))
+            {
+                browserPreparation = window.PrepareBrowserAsync(_startupCancellation.Token);
+            }
             window.SetStartupStatus(
                 string.IsNullOrWhiteSpace(pendingMigrationTarget)
                     ? "正在启动本地服务"
                     : "正在安全复制已有数据");
-            _startupCancellation = new CancellationTokenSource();
             var session = await _startupCoordinator.StartAsync(
                 paths,
                 pendingMigrationTarget,
                 _startupCancellation.Token);
+            validationOptions.WriteBackendHealthyMarker(session.Paths.DataRoot, session.Backend.Port);
+            await browserPreparation;
             await window.AttachBackendSessionAsync(session, _startupCancellation.Token);
             window.SetStartupStatus("本地服务已就绪");
+            validationOptions.WriteReadyMarker(session.Paths.DataRoot, session.Backend.Port);
         }
         catch (OperationCanceledException) when (_startupCancellation?.IsCancellationRequested == true)
         {
+            await ObservePreparationAsync(browserPreparation);
             Shutdown();
         }
         catch (Exception error)
         {
+            _startupCancellation?.Cancel();
+            await ObservePreparationAsync(browserPreparation);
             MessageBox.Show(
                 $"Hstar 启动失败。\n\n{error.Message}",
                 "Hstar",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
             Shutdown(-1);
+        }
+    }
+
+    private static async Task ObservePreparationAsync(Task preparation)
+    {
+        try
+        {
+            await preparation;
+        }
+        catch
+        {
         }
     }
 

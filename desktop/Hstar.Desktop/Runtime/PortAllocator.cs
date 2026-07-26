@@ -18,9 +18,16 @@ public sealed class PortAllocator : IDisposable
 
     public int SelectedPort { get; }
 
-    public static PortAllocator Reserve()
+    public static PortAllocator Reserve(int? requiredPort = null)
     {
-        for (var port = PreferredPort; port <= LastFallbackPort; port++)
+        if (requiredPort is < 1 or > 65535)
+        {
+            throw new ArgumentOutOfRangeException(nameof(requiredPort));
+        }
+
+        var firstPort = requiredPort ?? PreferredPort;
+        var lastPort = requiredPort ?? LastFallbackPort;
+        for (var port = firstPort; port <= lastPort; port++)
         {
             var listener = new TcpListener(IPAddress.Loopback, port);
             listener.Server.ExclusiveAddressUse = true;
@@ -35,7 +42,9 @@ public sealed class PortAllocator : IDisposable
             }
         }
 
-        throw new InvalidOperationException("Hstar 无法在 5000-5099 范围内找到可用端口。");
+        throw new InvalidOperationException(requiredPort.HasValue
+            ? $"Hstar 验证端口 {requiredPort.Value} 不可用。"
+            : "Hstar 无法在 5000-5099 范围内找到可用端口。");
     }
 
     public void Release()
