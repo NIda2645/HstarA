@@ -87,6 +87,8 @@ from native_file_picker import (
     selected_file_metadata,
 )
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
+from hstar_runtime.api_merge import merge_api_defaults
+from hstar_runtime.atomic import atomic_write_bytes
 from hstar_runtime.bootstrap import BootstrapConfig, BootstrapStore
 from hstar_runtime.credentials import (
     create_credential_store,
@@ -341,6 +343,7 @@ STATIC_RUNNINGHUB_DIR = os.path.join(STATIC_DIR, "runninghub")
 STATIC_RUNNINGHUB_THUMBNAIL_DIR = os.path.join(STATIC_RUNNINGHUB_DIR, "thumbnails")
 STATIC_RUNNINGHUB_API_PROVIDERS_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "api_providers.json")
 STATIC_RUNNINGHUB_MODEL_REGISTRY_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "models_registry.json")
+PACKAGED_API_DEFAULTS_FILE = RUNTIME_PATHS.api_defaults_dir / "api-providers.json"
 SOFTWARE_SETTINGS_FILE = str(RUNTIME_PATHS.config_dir / "software-settings.json")
 LEGACY_API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
 TRANSITIONAL_API_ENV_FILE = RUNTIME_PATHS.secrets_dir / "api.env"
@@ -975,6 +978,17 @@ def default_api_providers():
         },
     ]
 
+
+def load_packaged_api_defaults():
+    if not PACKAGED_API_DEFAULTS_FILE.is_file():
+        return None
+    try:
+        document = json.loads(PACKAGED_API_DEFAULTS_FILE.read_text(encoding="utf-8-sig"))
+        return merge_api_defaults([], document)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        logging.error("加载内置 API 默认配置失败: %s", error)
+        return None
+
 def merge_default_api_providers(providers, inject_missing=True):
     merged = [dict(item) for item in providers]
     # 强制保留独立入口平台（不再强制 comfly）
@@ -1475,9 +1489,11 @@ def normalize_provider(item):
     }
 
 def load_api_providers():
-    defaults = default_api_providers()
+    defaults = load_packaged_api_defaults() or default_api_providers()
     if not os.path.exists(API_PROVIDERS_FILE):
-        return merge_default_api_providers(defaults)
+        providers = merge_default_api_providers(defaults)
+        save_api_providers(providers)
+        return providers
     try:
         with open(API_PROVIDERS_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -1489,9 +1505,10 @@ def load_api_providers():
 
 def save_api_providers(providers):
     os.makedirs(DATA_DIR, exist_ok=True)
+    safe_providers = merge_api_defaults(providers, [])
+    payload = (json.dumps(safe_providers, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     with GLOBAL_CONFIG_LOCK:
-        with open(API_PROVIDERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(providers, f, ensure_ascii=False, indent=2)
+        atomic_write_bytes(Path(API_PROVIDERS_FILE), payload)
 
 def public_provider(provider):
     if provider.get("id") == "runninghub":

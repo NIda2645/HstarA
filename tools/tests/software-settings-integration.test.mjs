@@ -10,6 +10,8 @@ const canvasI18n = readFileSync(resolve(root, 'static/js/i18n/canvas.js'), 'utf8
 
 assert.match(main, /from hstar_runtime\.bootstrap import [^\n]*BootstrapStore/, 'backend must use the shared bootstrap store');
 assert.match(main, /from hstar_runtime\.credentials import [\s\S]*create_credential_store/, 'backend must use the shared credential store');
+assert.match(main, /from hstar_runtime\.api_merge import [^\n]*merge_api_defaults/, 'backend must understand packaged API defaults');
+assert.match(main, /from hstar_runtime\.atomic import [^\n]*atomic_write_bytes/, 'backend configuration writes must be atomic');
 assert.match(main, /from hstar_runtime\.paths import [^\n]*build_runtime_paths/, 'backend must use the typed runtime path builder');
 assert.match(main, /os\.environ\.get\("HSTAR_PROGRAM_DIR"\)/, 'backend must accept the packaged program root');
 assert.match(main, /os\.environ\.get\("HSTAR_DATA_DIR"[^)]*\)/, 'backend must accept the selected data root');
@@ -21,6 +23,10 @@ assert.match(main, /CREDENTIAL_STORE\s*=\s*create_credential_store\(/, 'backend 
 assert.match(main, /CREDENTIAL_STORE\.update\(normalized_updates\)/, 'credential updates must use encrypted storage');
 assert.doesNotMatch(main, /API_ENV_FILE\s*=\s*str\(/, 'backend must not define a writable plaintext API environment file');
 assert.doesNotMatch(main, /with open\(API_ENV_FILE/, 'backend must not read or write a plaintext credential file directly');
+assert.match(main, /PACKAGED_API_DEFAULTS_FILE\s*=\s*RUNTIME_PATHS\.api_defaults_dir\s*\/\s*"api-providers\.json"/, 'packaged API defaults must remain program-owned and read-only');
+assert.match(main, /def load_packaged_api_defaults\(\):[\s\S]*merge_api_defaults\(\[\], document\)/, 'first-run defaults must be validated without user credential fields');
+assert.match(main, /def save_api_providers\(providers\):[\s\S]*safe_providers\s*=\s*merge_api_defaults\(providers,\s*\[\]\)/, 'runtime provider saves must strip misplaced credential fields');
+assert.match(main, /atomic_write_bytes\(Path\(API_PROVIDERS_FILE\), payload\)/, 'user API provider saves must use atomic replacement');
 assert.doesNotMatch(apiSettings, /API\/\.env/, 'API settings must not tell users that credentials are stored in plaintext');
 assert.doesNotMatch(canvasI18n, /API\/\.env/, 'canvas API help must describe encrypted credential storage');
 assert.match(main, /USER_WORKFLOW_DIR\s*=\s*str\(RUNTIME_PATHS\.user_workflow_dir\)/, 'user workflows must have a writable data-root directory');
