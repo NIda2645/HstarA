@@ -79,6 +79,7 @@ class VoiceAssistantManager:
         active = self.installer.active_task()
         return {
             "settings": asdict(self.settings),
+            "runtime": self.installer.runtime_status(),
             "model": asdict(detection),
             "service": asdict(self.supervisor.status()),
             "task": asdict(active) if active else None,

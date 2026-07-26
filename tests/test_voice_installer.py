@@ -96,6 +96,34 @@ class VoiceInstallerTests(unittest.TestCase):
         installer.cancel(task.task_id)
         installer.wait(task.task_id, timeout=2)
 
+    def test_runtime_status_requires_matching_marker_and_site_packages(self):
+        self.assertEqual(
+            self.installer.runtime_status(),
+            {"ready": False, "profile": ""},
+        )
+        self.paths["runtime_site"].mkdir(parents=True)
+        self.paths["state"].mkdir(parents=True, exist_ok=True)
+        manifest = self.installer._load_runtime_manifest()
+        marker = self.paths["state"] / "runtime-install.json"
+        marker.write_text(
+            json.dumps({"profile": "cpu", "packages": manifest["packages"]}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            self.installer.runtime_status(),
+            {"ready": True, "profile": "cpu"},
+        )
+
+        marker.write_text(
+            json.dumps({"profile": "cpu", "packages": ["wrong==1"]}),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.installer.runtime_status(),
+            {"ready": False, "profile": ""},
+        )
+
     def test_cancelled_partial_download_is_resumable_not_ready(self):
         task = self.installer.start_install(profile="cpu")
         self.assertTrue(self.runner.started.wait(1))

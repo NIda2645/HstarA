@@ -284,6 +284,22 @@ class VoiceInstaller:
             record = self._tasks.get(self._active_task_id)
             return replace(record.state) if record else None
 
+    def runtime_status(self) -> dict[str, object]:
+        manifest = self._load_runtime_manifest()
+        marker = self.paths["state"] / "runtime-install.json"
+        if not marker.is_file() or not self.paths["runtime_site"].is_dir():
+            return {"ready": False, "profile": ""}
+        try:
+            installed = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {"ready": False, "profile": ""}
+        profile = str(installed.get("profile") or "")
+        ready = (
+            profile in manifest.get("profiles", {})
+            and installed.get("packages") == manifest.get("packages")
+        )
+        return {"ready": ready, "profile": profile if ready else ""}
+
     def status(self, task_id: str) -> InstallTaskState:
         with self._lock:
             record = self._tasks.get(task_id)

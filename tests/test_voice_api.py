@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -68,6 +69,20 @@ class VoiceApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response["ok"])
         self.assertEqual(response["status"]["service"]["process_state"], "stopped")
         self.assertEqual(self.fake_manager.start_count, 0)
+
+    async def test_manager_status_reports_runtime_without_starting_service(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = VoiceAssistantManager(
+                app_data_root=root,
+                load_settings=lambda: {},
+                save_settings=lambda value: None,
+                test_mode=True,
+            )
+
+            status = manager.status()
+
+        self.assertEqual(status["runtime"], {"ready": False, "profile": ""})
+        self.assertEqual(status["service"]["process_state"], "stopped")
 
     async def test_repeated_install_is_idempotent(self):
         request = main.VoiceInstallRequest(profile="cpu")
