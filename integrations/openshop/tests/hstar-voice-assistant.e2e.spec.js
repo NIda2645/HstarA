@@ -591,6 +591,7 @@ test('renders contrasting app themes and a layout-stable rainbow recognition rin
         ring: ring.backgroundImage,
         statusBackground: status.backgroundColor,
         statusColor: status.color,
+        statusOpacity: status.opacity,
         hasSvg: Boolean(document.querySelector('.hstar-voice-button > svg')),
         fallbackDisplay: fallback.display,
       };
@@ -598,6 +599,7 @@ test('renders contrasting app themes and a layout-stable rainbow recognition rin
     expect(visual.ring).toContain('conic-gradient');
     expect(visual.statusBackground).toBe('rgba(24, 24, 27, 0.96)');
     expect(visual.statusColor).toBe('rgb(250, 250, 250)');
+    expect(visual.statusOpacity).toBe('1');
     expect(visual.hasSvg || visual.fallbackDisplay !== 'none').toBe(true);
   } finally {
     await browser.close();

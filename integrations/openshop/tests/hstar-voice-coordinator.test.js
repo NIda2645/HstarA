@@ -556,6 +556,7 @@ describe('Hstar global voice coordinator', () => {
     expect(stylesheet).toContain('conic-gradient');
     expect(stylesheet).toContain('[data-state="recognizing"] .hstar-voice-level');
     expect(stylesheet).toMatch(/\.hstar-voice-status\s*\{[^}]*background:/si);
+    expect(stylesheet).toMatch(/^\.hstar-voice-status\s*\{[^}]*opacity:\s*1\s*;/sim);
   });
 });
 

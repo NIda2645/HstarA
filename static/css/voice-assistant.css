@@ -145,8 +145,8 @@
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0;
-  transform: translateX(-4px);
+  opacity: 1;
+  transform: translateX(0);
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
