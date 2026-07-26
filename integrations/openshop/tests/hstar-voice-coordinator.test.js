@@ -417,6 +417,38 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.coordinator.state).toBe('error');
   });
 
+  it('clears an iframe target when the application switches to another page frame', async () => {
+    const harness = makeHarness({renderUi: true});
+    const activeFrame = document.createElement('iframe');
+    const nextFrame = document.createElement('iframe');
+    document.body.append(activeFrame, nextFrame);
+    const childTarget = activeFrame.contentDocument.createElement('textarea');
+    activeFrame.contentDocument.body.append(childTarget);
+    activeFrame.contentWindow.HstarVoiceInputAdapter = {
+      getTargetById: vi.fn(id => id === 'child-prompt' ? childTarget : null),
+      isEligible: vi.fn(target => target === childTarget),
+      begin: vi.fn(() => makeTransaction()),
+    };
+    harness.coordinator.attachFrame(activeFrame);
+    harness.coordinator.attachFrame(nextFrame);
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: window.location.origin,
+      source: activeFrame.contentWindow,
+      data: {
+        type: 'hstar-voice-target-active',
+        targetId: 'child-prompt',
+        label: '子页面提示词',
+        framePath: [],
+      },
+    }));
+
+    harness.coordinator.onPageSwitch(nextFrame);
+
+    await expect(harness.coordinator.start()).resolves.toBe(false);
+    expect(document.querySelector('.hstar-voice-entry').hidden).toBe(true);
+    expect(harness.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+  });
+
   it('repositions an iframe target after a child geometry signal', async () => {
     const harness = makeHarness({renderUi: true});
     const frame = document.createElement('iframe');

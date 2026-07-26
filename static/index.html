@@ -788,7 +788,7 @@
             max-width: 0;
         }
     </style>
-    <link rel="stylesheet" href="/static/css/voice-assistant.css?v=2026.07.26.2100000001">
+    <link rel="stylesheet" href="/static/css/voice-assistant.css?v=2026.07.26.2200000001">
 </head>
 
 <body>
@@ -1144,6 +1144,7 @@ function setSidebarPinned(pinned, options = {}) {
             document.querySelectorAll('iframe').forEach(f => f.classList.remove('active'));
             const target = document.getElementById('frame-' + id);
             target.classList.add('active');
+            window.HstarVoiceAssistant?.onPageSwitch?.(target);
             if (!target.src) target.src = target.dataset.src;
             if(!options.skipRemember) localStorage.setItem(ACTIVE_PAGE_KEY, id);
             // sync theme to newly activated iframe
@@ -1368,8 +1369,8 @@ function setSidebarPinned(pinned, options = {}) {
     <script src="/static/js/director-host.js?v=2026.07.20.1784096541"></script>
     <script src="/static/openshop/host/openshop-protocol.js?v=2026.07.25.1245000000003"></script>
     <script src="/static/js/openshop-host.js?v=2026.07.25.1245000000003"></script>
-    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.2100000001"></script>
-    <script src="/static/js/voice-assistant-coordinator.js?v=2026.07.26.2100000001"></script>
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.2200000001"></script>
+    <script src="/static/js/voice-assistant-coordinator.js?v=2026.07.26.2200000001"></script>
     <script>
         window.HstarVoiceAssistant = window.HstarVoiceAssistantCoordinator.create();
         document.querySelectorAll('iframe').forEach(f => window.HstarVoiceAssistant?.attachFrame(f));

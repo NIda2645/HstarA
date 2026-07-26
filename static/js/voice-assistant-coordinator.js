@@ -171,6 +171,19 @@
       return true;
     }
 
+    onPageSwitch(frame) {
+      const target = this._activeTarget;
+      if (!target) {
+        this._schedulePosition();
+        return;
+      }
+      if (!this._isFrameHandle(target) || target.frame !== frame) {
+        this._clearActiveTarget(target, 'page-switch');
+        return;
+      }
+      this._schedulePosition();
+    }
+
     async start() {
       if (this._startPromise) return this._startPromise;
       if (this.state === STATES.LISTENING || this.state === STATES.RECOGNIZING) return true;
