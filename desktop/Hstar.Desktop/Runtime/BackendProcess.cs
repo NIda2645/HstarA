@@ -147,7 +147,7 @@ public sealed class BackendProcess : IAsyncDisposable
             try
             {
                 using var request = CreateAuthorizedRequest(HttpMethod.Get, "api/health");
-                using var response = await _client.SendAsync(request, cancellationToken);
+                using var response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {
                     return;
@@ -159,7 +159,7 @@ public sealed class BackendProcess : IAsyncDisposable
                 lastError = error;
             }
 
-            await Task.Delay(150, cancellationToken);
+            await Task.Delay(150, cancellationToken).ConfigureAwait(false);
         }
 
         throw new TimeoutException(
@@ -173,7 +173,7 @@ public sealed class BackendProcess : IAsyncDisposable
     {
         request.Headers.Remove(ShellTokenHeader);
         request.Headers.TryAddWithoutValidation(ShellTokenHeader, ShellToken);
-        return await _client.SendAsync(request, cancellationToken);
+        return await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
@@ -190,7 +190,7 @@ public sealed class BackendProcess : IAsyncDisposable
             try
             {
                 using var request = CreateAuthorizedRequest(HttpMethod.Post, "api/shell/shutdown");
-                using var response = await _client.SendAsync(request, cancellationToken);
+                using var response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception error) when (error is HttpRequestException
                 or TaskCanceledException
@@ -202,14 +202,14 @@ public sealed class BackendProcess : IAsyncDisposable
             gracefulTimeout.CancelAfter(TimeSpan.FromSeconds(5));
             try
             {
-                await process.WaitForExitAsync(gracefulTimeout.Token);
+                await process.WaitForExitAsync(gracefulTimeout.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 if (!process.HasExited)
                 {
                     process.Kill(entireProcessTree: true);
-                    await process.WaitForExitAsync(CancellationToken.None);
+                    await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
                 }
             }
         }
@@ -249,7 +249,7 @@ public sealed class BackendProcess : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await StopAsync(CancellationToken.None);
+        await StopAsync(CancellationToken.None).ConfigureAwait(false);
         _client.Dispose();
     }
 

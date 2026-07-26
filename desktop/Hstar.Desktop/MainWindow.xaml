@@ -9,20 +9,8 @@
         WindowStartupLocation="CenterScreen"
         Background="#F4F5F7">
     <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="52" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-        <Border Grid.Row="0" Background="#111317">
-            <Grid Margin="20,0">
-                <TextBlock Text="Hstar"
-                           Foreground="White"
-                           FontSize="18"
-                           FontWeight="SemiBold"
-                           VerticalAlignment="Center" />
-            </Grid>
-        </Border>
-        <Grid Grid.Row="1">
+        <Grid x:Name="BrowserHost" Background="#F4F5F7" />
+        <Border x:Name="StartupOverlay" Background="#F4F5F7">
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                 <TextBlock Text="Hstar"
                            HorizontalAlignment="Center"
@@ -42,6 +30,6 @@
                              Foreground="#2563EB"
                              Background="#D8DCE2" />
             </StackPanel>
-        </Grid>
+        </Border>
     </Grid>
 </Window>
