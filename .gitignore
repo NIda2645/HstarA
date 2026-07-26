@@ -44,6 +44,7 @@ python/share/
 
 # Installer staging output
 build/installer/stage/
+build/generated/
 build/runtime-cache/
 build/release/
 

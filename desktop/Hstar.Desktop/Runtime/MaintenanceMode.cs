@@ -108,6 +108,7 @@ public static class MaintenanceMode
         }
         startInfo.Environment["HSTAR_PROGRAM_DIR"] = paths.ProgramRoot;
         startInfo.Environment["HSTAR_DATA_DIR"] = paths.DataRoot;
+        startInfo.Environment["APPDATA"] = paths.AppDataRoot;
         startInfo.Environment["HSTAR_EDITION"] = AppPaths.Windows11Edition;
         startInfo.Environment["PYTHONUTF8"] = "1";
         startInfo.Environment["PYTHONIOENCODING"] = "utf-8";

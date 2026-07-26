@@ -14,7 +14,13 @@ public sealed record BackendSession(
 public sealed class StartupCoordinator : IAsyncDisposable
 {
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private readonly int? _requiredPort;
     private bool _disposed;
+
+    public StartupCoordinator(int? requiredPort = null)
+    {
+        _requiredPort = requiredPort;
+    }
 
     public BackendSession? Current { get; private set; }
 
@@ -32,7 +38,7 @@ public sealed class StartupCoordinator : IAsyncDisposable
                 throw new InvalidOperationException("Hstar 后端已经由当前外壳启动。");
             }
 
-            var session = await StartBackendAsync(paths, cancellationToken).ConfigureAwait(false);
+            var session = await StartBackendAsync(paths, _requiredPort, cancellationToken).ConfigureAwait(false);
             try
             {
                 if (!string.IsNullOrWhiteSpace(pendingMigrationTarget))
@@ -40,7 +46,7 @@ public sealed class StartupCoordinator : IAsyncDisposable
                     await MigrateDataAsync(session.Backend, pendingMigrationTarget, cancellationToken).ConfigureAwait(false);
                     await session.Backend.DisposeAsync().ConfigureAwait(false);
                     var migratedPaths = LoadRestartPaths(paths, pendingMigrationTarget);
-                    session = await StartBackendAsync(migratedPaths, cancellationToken).ConfigureAwait(false);
+                    session = await StartBackendAsync(migratedPaths, _requiredPort, cancellationToken).ConfigureAwait(false);
                 }
 
                 Current = session;
@@ -71,7 +77,7 @@ public sealed class StartupCoordinator : IAsyncDisposable
             var migratedPaths = LoadRestartPaths(previous.Paths, expectedDataRoot);
             Current = null;
             await previous.Backend.DisposeAsync().ConfigureAwait(false);
-            var replacement = await StartBackendAsync(migratedPaths, cancellationToken).ConfigureAwait(false);
+            var replacement = await StartBackendAsync(migratedPaths, _requiredPort, cancellationToken).ConfigureAwait(false);
             Current = replacement;
             return replacement;
         }
@@ -129,9 +135,10 @@ public sealed class StartupCoordinator : IAsyncDisposable
 
     private static async Task<BackendSession> StartBackendAsync(
         AppPaths paths,
+        int? requiredPort,
         CancellationToken cancellationToken)
     {
-        using var reservation = PortAllocator.Reserve();
+        using var reservation = PortAllocator.Reserve(requiredPort);
         var backend = new BackendProcess(paths, reservation.SelectedPort);
         reservation.Release();
         try

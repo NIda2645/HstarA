@@ -15,9 +15,16 @@ import { fileURLToPath } from 'node:url';
 const baseUrl = 'http://127.0.0.1:3011';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(testDir, '..', '..', '..');
-const pythonExecutable = resolve(repositoryRoot, 'python', 'python.exe');
+const pythonOverride = String(process.env.HSTAR_REAL_VOICE_PYTHON || '').trim();
+const pythonExecutable = pythonOverride
+  ? resolve(pythonOverride)
+  : resolve(repositoryRoot, 'python', 'python.exe');
 const realVoiceRoot = String(process.env.HSTAR_REAL_VOICE_ROOT || '').trim();
 const recordingExtensions = new Set(['.wav', '.pcm', '.raw', '.webm', '.ogg', '.m4a']);
+
+if (realVoiceRoot && !existsSync(pythonExecutable)) {
+  throw new Error(`Real voice Python executable is missing: ${pythonExecutable}`);
+}
 
 let serverProcess = null;
 let serverOutput = '';

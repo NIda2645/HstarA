@@ -53,6 +53,7 @@ public sealed class MaintenanceModeTests
             startInfo.ArgumentList);
         Assert.Equal(paths.ProgramRoot, startInfo.Environment["HSTAR_PROGRAM_DIR"]);
         Assert.Equal(paths.DataRoot, startInfo.Environment["HSTAR_DATA_DIR"]);
+        Assert.Equal(paths.AppDataRoot, startInfo.Environment["APPDATA"]);
         Assert.Equal(AppPaths.Windows11Edition, startInfo.Environment["HSTAR_EDITION"]);
         Assert.Equal("1", startInfo.Environment["PYTHONUTF8"]);
         Assert.Equal("utf-8", startInfo.Environment["PYTHONIOENCODING"]);
