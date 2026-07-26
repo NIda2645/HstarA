@@ -18,6 +18,10 @@ python/pyvenv.cfg
 node_modules/
 integrations/storyai-3d-director-desk/node_modules/.vite/
 
+# .NET desktop build caches
+desktop/**/bin/
+desktop/**/obj/
+
 # Local runtime output/cache
 output/
 outputs/
