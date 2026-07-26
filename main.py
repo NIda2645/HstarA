@@ -88,6 +88,10 @@ from native_file_picker import (
 )
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
 from hstar_runtime.bootstrap import BootstrapConfig, BootstrapStore
+from hstar_runtime.credentials import (
+    create_credential_store,
+    migrate_legacy_env_sources,
+)
 from hstar_runtime.migration import MigrationError, MigrationManager, MigrationState
 from hstar_runtime.paths import RuntimePaths, build_runtime_paths
 
@@ -339,7 +343,13 @@ STATIC_RUNNINGHUB_API_PROVIDERS_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "api_
 STATIC_RUNNINGHUB_MODEL_REGISTRY_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "models_registry.json")
 SOFTWARE_SETTINGS_FILE = str(RUNTIME_PATHS.config_dir / "software-settings.json")
 LEGACY_API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
-API_ENV_FILE = str(RUNTIME_PATHS.secrets_dir / "api.env")
+TRANSITIONAL_API_ENV_FILE = RUNTIME_PATHS.secrets_dir / "api.env"
+CREDENTIAL_FILE = RUNTIME_PATHS.secrets_dir / "credentials.dpapi"
+CREDENTIAL_STORE = create_credential_store(
+    CREDENTIAL_FILE,
+    edition=EDITION,
+    plaintext_path=TRANSITIONAL_API_ENV_FILE,
+)
 
 def bootstrap_app_software_settings() -> None:
     if os.path.isfile(SOFTWARE_SETTINGS_FILE):
@@ -361,13 +371,16 @@ def bootstrap_app_software_settings() -> None:
 
 
 def bootstrap_legacy_api_env() -> None:
-    if os.path.isfile(API_ENV_FILE) or not os.path.isfile(LEGACY_API_ENV_FILE):
+    if EDITION.startswith("test"):
         return
     try:
-        os.makedirs(os.path.dirname(API_ENV_FILE), exist_ok=True)
-        shutil.copy2(LEGACY_API_ENV_FILE, API_ENV_FILE)
-    except OSError:
-        pass
+        migrate_legacy_env_sources(
+            [Path(LEGACY_API_ENV_FILE), TRANSITIONAL_API_ENV_FILE],
+            CREDENTIAL_STORE,
+            RUNTIME_PATHS.backup_dir / "api",
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        logging.exception("API 凭据迁移失败，原明文配置已保留")
 
 bootstrap_app_software_settings()
 bootstrap_legacy_api_env()
@@ -650,33 +663,26 @@ RUNNINGHUB_DEFAULT_WORKFLOWS = [
 ]
 
 def ensure_runtime_config_files():
-    """首次运行时提前创建配置目录，避免第一次保存 API Key 时才创建目录/文件。"""
+    """Create writable configuration directories before the first save."""
     try:
-        os.makedirs(os.path.dirname(API_ENV_FILE), exist_ok=True)
+        os.makedirs(RUNTIME_PATHS.secrets_dir, exist_ok=True)
         os.makedirs(DATA_DIR, exist_ok=True)
-        if not os.path.exists(API_ENV_FILE):
-            with open(API_ENV_FILE, "a", encoding="utf-8"):
-                pass
     except Exception as e:
-        print(f"初始化 API 配置目录失败: {e}")
+        logging.error("初始化 API 配置目录失败: %s", e)
 
-def load_env_file():
-    if not os.path.exists(API_ENV_FILE):
-        return
+CREDENTIAL_VALUES: Dict[str, str] = {}
+
+
+def load_credential_values():
     try:
-        with open(API_ENV_FILE, 'r', encoding='utf-8-sig') as f:
-            for raw_line in f.read().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                os.environ.setdefault(key, value)
+        CREDENTIAL_VALUES.clear()
+        CREDENTIAL_VALUES.update(CREDENTIAL_STORE.load())
+        for key, value in CREDENTIAL_VALUES.items():
+            os.environ.setdefault(key, value)
     except Exception as e:
-        print(f"加载 API/.env 失败: {e}")
+        logging.error("加载 API 凭据失败: %s", e)
 ensure_runtime_config_files()
-load_env_file()
+load_credential_values()
 
 COMFYUI_INSTANCES = [s.strip() for s in os.getenv("COMFYUI_INSTANCES", "127.0.0.1:8188").split(",") if s.strip()]
 COMFYUI_ADDRESS = COMFYUI_INSTANCES[0]
@@ -861,27 +867,16 @@ def volcengine_access_key_env():
 def volcengine_secret_key_env():
     return "VOLCENGINE_SECRET_ACCESS_KEY"
 
-def read_api_env_value(key: str) -> str:
+def read_api_credential_value(key: str) -> str:
     key = str(key or "").strip()
-    if not key or not os.path.exists(API_ENV_FILE):
+    if not key:
         return ""
-    try:
-        with open(API_ENV_FILE, "r", encoding="utf-8-sig") as f:
-            for raw_line in f.read().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                env_key, value = line.split("=", 1)
-                if env_key.strip() == key:
-                    return value.strip().strip('"').strip("'")
-    except Exception:
-        return ""
-    return ""
+    return CREDENTIAL_VALUES.get(key, "")
 
 def provider_env_key_value(provider_id: str) -> str:
     provider_id = str(provider_id or "").strip().lower()
     env_key = provider_key_env(provider_id)
-    key = os.getenv(env_key, "") or read_api_env_value(env_key)
+    key = os.getenv(env_key, "") or read_api_credential_value(env_key)
     if key:
         return key
     if provider_id == "modelscope":
@@ -890,15 +885,15 @@ def provider_env_key_value(provider_id: str) -> str:
 
 def runninghub_wallet_key_value() -> str:
     env_key = runninghub_wallet_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_access_key_value() -> str:
     env_key = volcengine_access_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_secret_key_value() -> str:
     env_key = volcengine_secret_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_provider_api_key(explicit_key: str = "") -> str:
     explicit_key = str(explicit_key or "").strip()
@@ -1595,38 +1590,16 @@ def modelscope_api_root(provider=None):
 def modelscope_image_api_root():
     return MODELSCOPE_CHAT_BASE_URL.rstrip("/")
 
-def env_quote(value):
-    text = str(value or "")
-    if not text or re.search(r"\s|#|['\"]", text):
-        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
-    return text
-
 def update_env_values(updates):
-    os.makedirs(os.path.dirname(API_ENV_FILE), exist_ok=True)
-    lines = []
-    if os.path.exists(API_ENV_FILE):
-        with open(API_ENV_FILE, "r", encoding="utf-8-sig") as f:
-            lines = f.read().splitlines()
-    seen = set()
-    next_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in line:
-            next_lines.append(line)
-            continue
-        key = line.split("=", 1)[0].strip()
-        if key in updates:
-            next_lines.append(f"{key}={env_quote(updates[key])}")
-            os.environ[key] = str(updates[key] or "")
-            seen.add(key)
-        else:
-            next_lines.append(line)
-    for key, value in updates.items():
-        if key not in seen:
-            next_lines.append(f"{key}={env_quote(value)}")
-            os.environ[key] = str(value or "")
-    with open(API_ENV_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(next_lines).rstrip() + "\n")
+    normalized_updates = {
+        str(key): str(value or "")
+        for key, value in updates.items()
+    }
+    merged = CREDENTIAL_STORE.update(normalized_updates)
+    CREDENTIAL_VALUES.clear()
+    CREDENTIAL_VALUES.update(merged)
+    for key, value in normalized_updates.items():
+        os.environ[key] = value
 
 BACKEND_LOCAL_LOAD = {addr: 0 for addr in COMFYUI_INSTANCES}
 
@@ -4095,7 +4068,7 @@ def api_headers(json_body=True, provider=None, model=""):
     else:
         api_key = AI_API_KEY
         if not api_key:
-            raise HTTPException(status_code=400, detail="未配置 COMFLY_API_KEY，请在 API/.env 中填写。")
+            raise HTTPException(status_code=400, detail="未配置 COMFLY_API_KEY，请在 API 设置中填写。")
     if provider and effective_protocol(provider, model) == "gemini" and not is_linapi_provider(provider):
         headers = {"Accept": "application/json", "x-goog-api-key": api_key}
     else:
@@ -4949,7 +4922,7 @@ def is_gemini_cli_provider(provider):
     return provider_protocol(provider) == "gemini-cli"
 
 def codex_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 def codex_cli_executable():
     configured = str(codex_env_value("CODEX_BIN") or "").strip()
@@ -5495,7 +5468,7 @@ async def codex_chat_text(payload, history_messages=None):
                 pass
 
 def gemini_cli_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 GEMINI_CLI_MODELS_TIMEOUT = 20
 GEMINI_CLI_STRING_CONTROL_ESCAPES = {"]", "P", "X", "^", "_"}
@@ -6087,7 +6060,7 @@ def provider_supports_avatar(provider) -> bool:
     return avatar_platform_for_provider(provider) in AVATAR_SUPPORTED_PLATFORMS
 
 def jimeng_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 def jimeng_use_wsl():
     value = str(jimeng_env_value("JIMENG_USE_WSL") or "").strip().lower()
@@ -8729,13 +8702,12 @@ def apply_trusted_asset_prompt_index(prompt: str, image_count: int, video_count:
     return f"{text}\n{hint}" if text else hint
 
 def public_base_url() -> str:
-    # 实时读 API/.env 且文件优先：公网隧道重启后地址会变，隧道脚本只改 .env；
-    # 启动时 load_env_file 会把旧值复制进 os.environ，若 env 优先会永远读到过期地址
+    # Credential cache wins because process environment values may be stale.
     value = (
-        read_api_env_value("PUBLIC_MEDIA_BASE_URL") or
+        read_api_credential_value("PUBLIC_MEDIA_BASE_URL") or
         os.getenv("PUBLIC_MEDIA_BASE_URL") or
         PUBLIC_MEDIA_BASE_URL or
-        read_api_env_value("PUBLIC_BASE_URL") or
+        read_api_credential_value("PUBLIC_BASE_URL") or
         os.getenv("PUBLIC_BASE_URL") or
         PUBLIC_BASE_URL or
         ""
@@ -8810,7 +8782,7 @@ def apimart_video_reference_error(value: str) -> str:
             return "这是本地画布文件路径，但后端没有找到对应文件，请重新上传视频后再试。"
         return (
             "这是本地画布文件，APIMart 无法访问 127.0.0.1/局域网路径；"
-            "请在 API/.env 配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），"
+            "请在 API 设置中配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），"
             "或改用公网 http/https 视频 URL、审核后的 asset:// 地址。"
         )
     if text.startswith("data:") or text.startswith("blob:") or text.startswith("file:"):
