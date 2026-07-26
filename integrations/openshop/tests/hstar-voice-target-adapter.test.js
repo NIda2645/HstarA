@@ -51,6 +51,47 @@ describe('Hstar global voice target adapter', () => {
     expect(prompt.value).toBe('前 后');
   });
 
+  it('keeps the caret after partial and final text across consecutive phrases', () => {
+    document.body.innerHTML = '<textarea id="prompt">前后</textarea>';
+    const prompt = document.querySelector('#prompt');
+    prompt.focus();
+    prompt.setSelectionRange(1, 1);
+
+    const first = adapter.begin(prompt);
+    first.update('第一');
+    expect([prompt.selectionStart, prompt.selectionEnd]).toEqual([3, 3]);
+    first.commit('第一句');
+    expect([prompt.selectionStart, prompt.selectionEnd]).toEqual([4, 4]);
+
+    const second = adapter.begin(prompt);
+    second.update('第二');
+    second.commit('第二句');
+
+    expect(prompt.value).toBe('前第一句第二句后');
+    expect([prompt.selectionStart, prompt.selectionEnd]).toEqual([7, 7]);
+  });
+
+  it('moves a contenteditable selection after committed dictation', () => {
+    document.body.innerHTML = '<div id="editor" contenteditable="true">前后</div>';
+    const editor = document.querySelector('#editor');
+    Object.defineProperty(editor, 'isContentEditable', {value: true});
+    const range = document.createRange();
+    range.setStart(editor.firstChild, 1);
+    range.collapse(true);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+
+    const transaction = adapter.begin(editor);
+    transaction.update('中');
+    transaction.commit('中间');
+
+    expect(editor.textContent).toBe('前中间后');
+    const committed = getSelection().getRangeAt(0);
+    expect(committed.collapsed).toBe(true);
+    expect(committed.startContainer).toBe(editor);
+    expect(committed.startOffset).toBe(2);
+  });
+
   it('routes Ctrl+Z through the voice transaction undo stack', () => {
     document.body.innerHTML = '<textarea id="prompt"></textarea>';
     const prompt = document.querySelector('#prompt');

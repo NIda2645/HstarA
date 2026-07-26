@@ -49,6 +49,21 @@
     }));
   }
 
+  function placeTextControlCaret(target, offset) {
+    target.focus?.({preventScroll: true});
+    target.setSelectionRange(offset, offset);
+  }
+
+  function placeCaretAfter(node) {
+    const selection = global.getSelection?.();
+    if (!selection || !node?.isConnected) return;
+    const range = global.document.createRange();
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
   function isHidden(target) {
     if (!target || target.hidden || target.closest?.('[hidden],[aria-hidden="true"]')) return true;
     const style = global.getComputedStyle?.(target);
@@ -78,6 +93,7 @@
   function replaceTextRange(target, start, end, text, inputType, isComposing) {
     if (!dispatchBeforeInput(target, inputType, text, isComposing)) return false;
     target.setRangeText(text, start, end, 'end');
+    placeTextControlCaret(target, start + text.length);
     dispatchAfterInput(target, inputType, text, isComposing);
     return true;
   }
@@ -156,6 +172,7 @@
         range.insertNode(marker);
       }
       marker.textContent = value;
+      placeCaretAfter(marker);
       dispatchAfterInput(target, inputType, value, composing);
       return true;
     }
@@ -168,6 +185,7 @@
         if (!write(text, 'insertFromDictation', false)) return false;
         const node = document.createTextNode(marker.textContent || '');
         marker.replaceWith(node);
+        placeCaretAfter(node);
         marker = null;
         closed = true;
         pushUndo(target, {kind: 'html', before: beforeHTML, after: target.innerHTML});
