@@ -5,7 +5,7 @@ import {relative, resolve, sep} from 'node:path';
 
 const root = resolve(process.cwd());
 const ignore = readFileSync(resolve(root, '.gitignore'), 'utf8');
-const installer = readFileSync(resolve(root, 'build/installer/Hstar.iss'), 'utf8');
+const installer = readFileSync(resolve(root, 'build/installer/Hstar.Windows11.iss'), 'utf8');
 const stageRoot = resolve(root, 'build/installer/stage/windows11');
 const largeBinaryThreshold = 100 * 1024 * 1024;
 
@@ -18,16 +18,11 @@ assert.match(
 assert.match(ignore, /\/voice-assistant-data\//, 'voice data staging roots are ignored');
 assert.match(ignore, /\*\*\/\.cache\/modelscope\//, 'repository-local ModelScope caches are ignored');
 
-assert.match(installer, /\.hstar-voice\\\*/, 'installer excludes the optional voice runtime');
-assert.match(
-  installer,
-  /FunAudioLLM\\Fun-ASR-Nano-2512\\\*/,
-  'installer excludes Fun-ASR model weights',
-);
-assert.match(installer, /voice-assistant-data\\\*/, 'installer excludes voice data staging roots');
-assert.match(installer, /\.cache\\modelscope\\\*/, 'installer excludes ModelScope caches');
-assert.match(installer, /real-smoke-\*\.json/, 'installer excludes real voice diagnostic reports');
-assert.match(installer, /fake-microphone\.wav/, 'installer excludes generated microphone fixtures');
+assert.match(installer, /#define\s+SourceRoot\s+"stage\\windows11"/i, 'installer reads only the validated Windows 11 stage');
+const filesSection = installer.match(/\[Files\]([\s\S]*?)(?=\r?\n\[|$)/i)?.[1] ?? '';
+assert.equal([...filesSection.matchAll(/^Source:/gmi)].length, 1, 'installer has one closed payload source');
+assert.match(filesSection, /Source:\s*"\{#SourceRoot\}\\\*"/i);
+assert.doesNotMatch(installer, /Fun-ASR-Nano|safetensors|model\.pt|voice-assistant-data/i);
 
 const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
   cwd: root,
