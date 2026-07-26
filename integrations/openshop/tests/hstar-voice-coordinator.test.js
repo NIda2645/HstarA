@@ -495,6 +495,16 @@ describe('Hstar global voice coordinator', () => {
       expect(stylesheet).toContain(`[data-state="${state}"]`);
     }
   });
+
+  it('uses app themes for a contrasting microphone and rainbow recognition ring', () => {
+    const stylesheet = readFileSync(stylesheetPath, 'utf8');
+
+    expect(stylesheet).toMatch(/--hstar-voice-button-bg:\s*#111111/i);
+    expect(stylesheet).toMatch(/(?:html|body)\.theme-dark[^{]*\{/i);
+    expect(stylesheet).toContain('conic-gradient');
+    expect(stylesheet).toContain('[data-state="recognizing"] .hstar-voice-level');
+    expect(stylesheet).toMatch(/\.hstar-voice-status\s*\{[^}]*background:/si);
+  });
 });
 
 describe('Hstar voice audio worklet', () => {

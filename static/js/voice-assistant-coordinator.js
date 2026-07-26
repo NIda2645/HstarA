@@ -728,6 +728,7 @@
       root.innerHTML = `
         <button class="hstar-voice-button" type="button" aria-label="开始语音输入" aria-pressed="false">
           <i data-lucide="mic" aria-hidden="true"></i>
+          <span class="hstar-voice-mic-fallback" aria-hidden="true"></span>
           <span class="hstar-voice-level" aria-hidden="true"></span>
           <span class="hstar-voice-countdown" aria-hidden="true"></span>
         </button>
