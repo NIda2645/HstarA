@@ -2166,7 +2166,7 @@ def github_bytes(url: str) -> bytes:
 def download_github_update_files(files: List[str], staging_root: str) -> None:
     staging_root_abs = os.path.abspath(staging_root)
     for rel in files:
-        safe_update_target(rel)
+        validate_update_file(rel)
         raw_url = f"{GITHUB_RAW_ROOT}/{urllib.parse.quote(rel, safe='/')}"
         data = github_bytes(raw_url)
         stage_path = os.path.abspath(os.path.join(staging_root_abs, *rel.split("/")))
@@ -2209,7 +2209,7 @@ def download_modelscope_update_files(staging_root: str) -> List[str]:
         raise RuntimeError("ModelScope 未返回 static 文件，已取消更新")
     staging_root_abs = os.path.abspath(staging_root)
     for rel in files:
-        safe_update_target(rel)
+        validate_update_file(rel)
         data = modelscope_file_bytes(rel)
         stage_path = os.path.abspath(os.path.join(staging_root_abs, *rel.split("/")))
         if os.path.commonpath([staging_root_abs, stage_path]) != staging_root_abs:
@@ -2219,97 +2219,11 @@ def download_modelscope_update_files(staging_root: str) -> List[str]:
             f.write(data)
     return files
 
-def safe_update_target(path: str) -> str:
+def validate_update_file(path: str) -> str:
     rel = str(path or "").replace("\\", "/").lstrip("/")
     if not update_allowed_file(rel):
         raise ValueError(f"更新文件不在允许范围：{rel}")
-    target = os.path.abspath(os.path.join(BASE_DIR, *rel.split("/")))
-    base = os.path.abspath(BASE_DIR)
-    if os.path.commonpath([base, target]) != base:
-        raise ValueError(f"更新路径不安全：{rel}")
-    return target
-
-def safe_static_dir() -> str:
-    target = os.path.abspath(STATIC_DIR)
-    expected = os.path.abspath(os.path.join(BASE_DIR, "static"))
-    base = os.path.abspath(BASE_DIR)
-    if target != expected or os.path.commonpath([base, target]) != base:
-        raise RuntimeError(f"static 路径不安全：{target}")
-    return target
-
-def schedule_self_restart(delay_seconds: int = 3) -> bool:
-    """派生脱离父进程的小脚本，等几秒后启动启动服务脚本，并干掉当前 PID。"""
-    delay = max(1, int(delay_seconds or 3))
-    pid = os.getpid()
-    try:
-        if os.name == "nt":
-            launcher = os.path.join(BASE_DIR, "启动服务.bat")
-            if not os.path.exists(launcher):
-                launcher = os.path.join(BASE_DIR, "start.bat")
-            bat_path = os.path.join(BASE_DIR, "_self_restart.bat")
-            log_path = os.path.join(BASE_DIR, "_self_restart.log")
-            script = (
-                "@echo off\r\n"
-                "chcp 65001 >nul\r\n"
-                "setlocal\r\n"
-                f"set \"APP_DIR={BASE_DIR}\"\r\n"
-                f"set \"LAUNCHER={launcher}\"\r\n"
-                f"set \"LOG_FILE={log_path}\"\r\n"
-                "echo [%date% %time%] restart scheduled >> \"%LOG_FILE%\"\r\n"
-                f"timeout /t {delay} /nobreak >nul\r\n"
-                "echo [%date% %time%] stopping old process >> \"%LOG_FILE%\"\r\n"
-                f"taskkill /F /PID {pid} >nul 2>&1\r\n"
-                "timeout /t 2 /nobreak >nul\r\n"
-                "cd /d \"%APP_DIR%\"\r\n"
-                "if exist \"%LAUNCHER%\" (\r\n"
-                "  echo [%date% %time%] starting launcher: %LAUNCHER% >> \"%LOG_FILE%\"\r\n"
-                "  start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k call \"%LAUNCHER%\"\r\n"
-                ") else (\r\n"
-                "  echo [%date% %time%] launcher missing, fallback to python main.py >> \"%LOG_FILE%\"\r\n"
-                "  if exist \"%APP_DIR%\\python\\python.exe\" (\r\n"
-                "    start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k \"\"%APP_DIR%\\python\\python.exe\" main.py\"\r\n"
-                "  ) else (\r\n"
-                "    start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k python main.py\r\n"
-                "  )\r\n"
-                ")\r\n"
-                "del \"%~f0\"\r\n"
-            )
-            with open(bat_path, "w", encoding="utf-8") as f:
-                f.write(script)
-            subprocess.Popen(
-                ["cmd", "/c", bat_path],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
-            )
-        else:
-            launcher = os.path.join(BASE_DIR, "mac-启动服务.command")
-            if not os.path.exists(launcher):
-                launcher = os.path.join(BASE_DIR, "start.sh")
-            sh_path = os.path.join(BASE_DIR, "_self_restart.sh")
-            script = (
-                "#!/bin/sh\n"
-                f"sleep {delay}\n"
-                f"kill -9 {pid} 2>/dev/null\n"
-                f"cd \"{BASE_DIR}\"\n"
-                f"if [ -x \"{launcher}\" ]; then nohup \"{launcher}\" >/dev/null 2>&1 &\n"
-                f"elif [ -f \"{launcher}\" ]; then nohup /bin/sh \"{launcher}\" >/dev/null 2>&1 &\n"
-                "fi\n"
-                "rm -- \"$0\"\n"
-            )
-            with open(sh_path, "w", encoding="utf-8") as f:
-                f.write(script)
-            os.chmod(sh_path, 0o755)
-            subprocess.Popen(
-                ["/bin/sh", sh_path],
-                start_new_session=True,
-                close_fds=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        return True
-    except Exception as exc:
-        logging.exception("schedule_self_restart failed: %s", exc)
-        return False
+    return rel
 
 class UpdateRequest(BaseModel):
     auto_restart: bool = False
@@ -2382,143 +2296,10 @@ def stage_update_from_source(source: str, staging_root: str) -> Tuple[List[str],
 
 @app.post("/api/update-from-github")
 def update_from_github(req: UpdateRequest = UpdateRequest()):
-    if not UPDATE_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="正在更新中，请稍后再试")
-    staging_root = ""
-    requested_source = normalize_update_source(req.source)
-    # 冗余设计：先用用户选择的源，失败后自动切换到另一个源兜底，全部失败才报错
-    source_order = [requested_source]
-    if req.fallback:
-        other = "modelscope" if requested_source == "github" else "github"
-        source_order.append(other)
-    try:
-        backup_root = os.path.join(DATA_DIR, "update_backups", time.strftime("%Y%m%d-%H%M%S"))
-
-        # 下载阶段（带兜底切换），任意源成功即停止
-        source = requested_source
-        root_files = static_files = files = None
-        download_errors: List[str] = []
-        fallback_used = False
-        for idx, candidate in enumerate(source_order):
-            attempt_staging = os.path.join(
-                DATA_DIR, "update_staging",
-                f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{candidate}",
-            )
-            if os.path.isdir(attempt_staging):
-                shutil.rmtree(attempt_staging, ignore_errors=True)
-            label = UPDATE_SOURCE_LABELS.get(candidate, candidate)
-            print(f"[update] 尝试下载源 [{idx + 1}/{len(source_order)}] {label}（{candidate}）→ {attempt_staging}")
-            try:
-                root_files, static_files, files = stage_update_from_source(candidate, attempt_staging)
-                source = candidate
-                staging_root = attempt_staging
-                fallback_used = idx > 0
-                print(f"[update] 下载源 {label} 成功，共 {len(files or [])} 个文件")
-                break
-            except Exception as exc:  # noqa: BLE001 — 记录后尝试下一个源
-                if os.path.isdir(attempt_staging):
-                    shutil.rmtree(attempt_staging, ignore_errors=True)
-                print(f"[update] 下载源 {label} 失败：{exc}")
-                traceback.print_exc()
-                download_errors.append(f"{label}：{exc}")
-        if not staging_root:
-            detail = "；".join(download_errors) or "未知错误"
-            print(f"[update] 所有下载源均失败 → {detail}")
-            raise HTTPException(status_code=502, detail=f"所有下载源均失败 → {detail}")
-
-        updated = []
-        for rel in root_files:
-            target = safe_update_target(rel)
-            if os.path.exists(target):
-                backup_path = os.path.join(backup_root, *rel.split("/"))
-                os.makedirs(os.path.dirname(backup_path), exist_ok=True)
-                shutil.copy2(target, backup_path)
-
-        staged_static_dir = os.path.join(staging_root, "static")
-        if not os.path.isdir(staged_static_dir):
-            raise RuntimeError("GitHub static 暂存目录不存在，已取消更新")
-        static_dir = safe_static_dir()
-        backup_static_dir = os.path.join(backup_root, "static")
-        if os.path.isdir(static_dir):
-            os.makedirs(os.path.dirname(backup_static_dir), exist_ok=True)
-            shutil.copytree(static_dir, backup_static_dir)
-            shutil.rmtree(static_dir)
-        try:
-            shutil.copytree(staged_static_dir, static_dir)
-        except Exception:
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir, ignore_errors=True)
-            if os.path.isdir(backup_static_dir):
-                shutil.copytree(backup_static_dir, static_dir)
-            raise
-        updated.extend(static_files)
-
-        replaced_root_files = []
-        try:
-            for rel in root_files:
-                target = safe_update_target(rel)
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                temp_path = f"{target}.update_tmp"
-                shutil.copy2(os.path.join(staging_root, *rel.split("/")), temp_path)
-                os.replace(temp_path, target)
-                replaced_root_files.append(rel)
-                updated.append(rel)
-        except Exception:
-            for rel in reversed(replaced_root_files):
-                backup_path = os.path.join(backup_root, *rel.split("/"))
-                target = safe_update_target(rel)
-                if os.path.exists(backup_path):
-                    temp_path = f"{target}.rollback_tmp"
-                    shutil.copy2(backup_path, temp_path)
-                    os.replace(temp_path, target)
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir, ignore_errors=True)
-            if os.path.isdir(backup_static_dir):
-                shutil.copytree(backup_static_dir, static_dir)
-            raise
-
-        restart_scheduled = False
-        if req.auto_restart and updated:
-            restart_scheduled = schedule_self_restart(req.restart_delay)
-        new_version = ""
-        try:
-            staged_version = os.path.join(staging_root, "VERSION")
-            if os.path.exists(staged_version):
-                with open(staged_version, "r", encoding="utf-8") as f:
-                    new_version = (f.read().strip().splitlines() or [""])[0].strip()
-        except Exception:
-            new_version = ""
-        notes_file = os.path.join(staging_root, "static", "update-notes.json")
-        update_notes = {}
-        try:
-            if os.path.exists(notes_file):
-                with open(notes_file, "r", encoding="utf-8") as f:
-                    update_notes = safe_update_notes(json.load(f), new_version)
-        except Exception:
-            update_notes = {}
-        return {
-            "ok": True,
-            "source": source,
-            "source_label": UPDATE_SOURCE_LABELS.get(source, source),
-            "requested_source": requested_source,
-            "fallback_used": fallback_used,
-            "download_errors": download_errors,
-            "updated": updated,
-            "count": len(updated),
-            "version": new_version,
-            "update_notes": update_notes,
-            "backup_dir": backup_root if os.path.exists(backup_root) else "",
-            "restart_required": True,
-            "restart_scheduled": restart_scheduled,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"更新失败：{exc}") from exc
-    finally:
-        if staging_root and os.path.isdir(staging_root):
-            shutil.rmtree(staging_root, ignore_errors=True)
-        UPDATE_LOCK.release()
+    raise HTTPException(
+        status_code=409,
+        detail="应用内覆盖更新已停用，请下载并运行新版 Hstar 安装包完成升级。",
+    )
 
 def list_update_backups() -> List[Dict[str, Any]]:
     root = os.path.join(DATA_DIR, "update_backups")
@@ -2554,71 +2335,10 @@ class RollbackRequest(BaseModel):
 
 @app.post("/api/update-rollback")
 def rollback_update(req: RollbackRequest):
-    if not req.name:
-        raise HTTPException(status_code=400, detail="缺少备份名称")
-    if not UPDATE_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="正在更新中，请稍后再试")
-    try:
-        backup_root_abs = os.path.abspath(os.path.join(DATA_DIR, "update_backups"))
-        backup_dir = os.path.abspath(os.path.join(backup_root_abs, req.name))
-        if os.path.commonpath([backup_root_abs, backup_dir]) != backup_root_abs:
-            raise HTTPException(status_code=400, detail="备份路径不安全")
-        if not os.path.isdir(backup_dir):
-            raise HTTPException(status_code=404, detail="备份不存在")
-        restored = []
-        skipped = []
-        backup_static_dir = os.path.join(backup_dir, "static")
-        if os.path.isdir(backup_static_dir):
-            static_dir = safe_static_dir()
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir)
-            try:
-                shutil.copytree(backup_static_dir, static_dir)
-            except Exception:
-                if os.path.isdir(static_dir):
-                    shutil.rmtree(static_dir, ignore_errors=True)
-                raise
-            for dirpath, _, filenames in os.walk(backup_static_dir):
-                for fn in filenames:
-                    src = os.path.join(dirpath, fn)
-                    restored.append(os.path.relpath(src, backup_dir).replace("\\", "/"))
-        for dirpath, _, filenames in os.walk(backup_dir):
-            for fn in filenames:
-                src = os.path.join(dirpath, fn)
-                rel = os.path.relpath(src, backup_dir).replace("\\", "/")
-                if rel.startswith("static/"):
-                    continue
-                if not update_allowed_file(rel):
-                    skipped.append(rel)
-                    continue
-                try:
-                    target = safe_update_target(rel)
-                except ValueError:
-                    skipped.append(rel)
-                    continue
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                temp_path = f"{target}.rollback_tmp"
-                with open(src, "rb") as fin, open(temp_path, "wb") as fout:
-                    shutil.copyfileobj(fin, fout)
-                os.replace(temp_path, target)
-                restored.append(rel)
-        restart_scheduled = False
-        if req.auto_restart and restored:
-            restart_scheduled = schedule_self_restart(req.restart_delay)
-        return {
-            "ok": True,
-            "restored": restored,
-            "skipped": skipped,
-            "count": len(restored),
-            "restart_required": True,
-            "restart_scheduled": restart_scheduled,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"回滚失败：{exc}") from exc
-    finally:
-        UPDATE_LOCK.release()
+    raise HTTPException(
+        status_code=410,
+        detail="应用内程序回滚已停用，请重新运行对应版本的 Hstar 安装包。",
+    )
 
 class GenerateRequest(BaseModel):
     prompt: str = ""
