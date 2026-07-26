@@ -44,6 +44,7 @@ python/share/
 
 # Installer staging output
 build/installer/stage/
+build/runtime-cache/
 
 # Optional local voice assistant runtime and model data
 **/.hstar-voice/
