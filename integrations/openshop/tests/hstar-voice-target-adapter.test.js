@@ -35,6 +35,26 @@ describe('Hstar global voice target adapter', () => {
     expect(adapter.isEligible(document.querySelector('#readonly'))).toBe(false);
   });
 
+  it('rejects a target hidden by an ancestor panel state', () => {
+    document.body.innerHTML = `
+      <section id="composer" style="opacity: 0; pointer-events: none">
+        <textarea id="prompt"></textarea>
+      </section>
+    `;
+
+    expect(adapter.isEligible(document.querySelector('#prompt'))).toBe(false);
+  });
+
+  it('accepts an explicitly enabled transparent input proxy in a visible panel', () => {
+    document.body.innerHTML = `
+      <section>
+        <textarea id="fabric-proxy" data-voice-input="on" style="opacity: 0"></textarea>
+      </section>
+    `;
+
+    expect(adapter.isEligible(document.querySelector('#fabric-proxy'))).toBe(true);
+  });
+
   it('replaces one partial composition and commits one undo transaction', () => {
     document.body.innerHTML = '<textarea id="prompt"></textarea>';
     const prompt = document.querySelector('#prompt');

@@ -16,12 +16,13 @@
             } catch(e) {}
         })();
     </script>
-    <script src="/static/vendor/js/lucide.js?v=2026.07.20.1784096542"></script>
-    <script src="/static/js/theme.js?v=2026.07.20.1784096541"></script>
-    <script src="/static/js/touch-mouse.js?v=2026.07.20.1784096541"></script>
-    <script src="/static/js/i18n.js?v=2026.07.20.1784096541"></script>
-    <link rel="stylesheet" href="/static/css/smart-canvas.css?v=2026.07.20.1784962415">
-    <link rel="stylesheet" href="/static/css/director-canvas.css?v=2026.07.20.1784096541">
+    <script src="/static/vendor/js/lucide.js?v=2026.07.26.1630000001.1784096542"></script>
+    <script src="/static/js/theme.js?v=2026.07.26.1630000001.1784096541"></script>
+    <script src="/static/js/touch-mouse.js?v=2026.07.26.1630000001.1784096541"></script>
+    <script src="/static/js/i18n.js?v=2026.07.26.1630000001.1784096541"></script>
+    <link rel="stylesheet" href="/static/css/smart-canvas.css?v=2026.07.26.1630000001.1784962415">
+    <link rel="stylesheet" href="/static/css/director-canvas.css?v=2026.07.26.1630000001.1784096541">
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.1630000001.1785052407"></script>
 </head>
 <body>
     <div id="shell" class="shell">
@@ -46,7 +47,7 @@
                     <div id="inputThumbsRow" class="input-thumbs-row"></div>
                     <div id="inputPromptPreview" class="input-prompt-preview"></div>
                     <div class="prompt-row">
-                        <div id="promptInput" class="prompt-input" contenteditable="true" data-i18n-placeholder="smart.promptPlaceholder" data-placeholder="描述你想生成或编辑的图片..."></div>
+                        <div id="promptInput" class="prompt-input" contenteditable="true" data-voice-input="on" data-voice-label="生成提示词" data-voice-offset-y="42" data-i18n-placeholder="smart.promptPlaceholder" data-placeholder="描述你想生成或编辑的图片..."></div>
                         <button id="composerTemplateBtn" class="composer-template-btn" type="button" title="模板库" aria-label="模板库" data-i18n-title="smart.promptTemplateLibrary">
                             <i data-lucide="library"></i><span data-i18n="smart.promptTemplateLibrary">模板库</span>
                         </button>
@@ -81,6 +82,13 @@
                         <div class="create-card-sub">把提示词、图片、循环收进同一组</div>
                     </span>
                 </button>
+                <button class="create-card" type="button" data-create-type="prompt">
+                    <span class="create-card-icon"><i data-lucide="text-cursor-input"></i></span>
+                    <span>
+                        <div class="create-card-title">提示词</div>
+                        <div class="create-card-sub">手写或用 LLM 生成文本</div>
+                    </span>
+                </button>
                 <button class="create-card" type="button" data-create-type="director-3d">
                     <span class="create-card-icon"><i data-lucide="box"></i></span>
                     <span>
@@ -93,13 +101,6 @@
                     <span>
                         <div class="create-card-title" data-i18n="smart.openshopLayered">图文分层</div>
                         <div class="create-card-sub" data-i18n="smart.openshopCreateHint">多张图片按连接顺序转为独立图层</div>
-                    </span>
-                </button>
-                <button class="create-card" type="button" data-create-type="prompt">
-                    <span class="create-card-icon"><i data-lucide="text-cursor-input"></i></span>
-                    <span>
-                        <div class="create-card-title">提示词</div>
-                        <div class="create-card-sub">手写或用 LLM 生成文本</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="loop">
@@ -470,10 +471,9 @@
         <div id="toast" class="toast"></div>
         <div id="mentionPreview" class="mention-preview"><img alt="preview"></div>
     </div>
-<script src="/static/js/director-protocol.js?v=2026.07.20.1784096541"></script>
-    <script src="/static/js/smart-canvas-director.js?v=2026.07.20.1784096541"></script>
-    <script src="/static/js/smart-canvas-openshop.js?v=2026.07.26.1030000001"></script>
-    <script src="/static/js/smart-canvas.js?v=2026.07.20.1785007154"></script>
-    <script src="/static/js/voice-input-adapter.js?v=2026.07.20.1785027495"></script>
+<script src="/static/js/director-protocol.js?v=2026.07.26.1630000001.1784096541"></script>
+    <script src="/static/js/smart-canvas-director.js?v=2026.07.26.1630000001.1784096541"></script>
+    <script src="/static/js/smart-canvas-openshop.js?v=2026.07.26.1630000001"></script>
+    <script src="/static/js/smart-canvas.js?v=2026.07.26.1630000001.1785044825"></script>
 </body>
 </html>

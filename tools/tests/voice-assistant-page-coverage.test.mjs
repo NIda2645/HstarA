@@ -22,6 +22,10 @@ for (const relative of entryPages) {
     /\/static\/js\/voice-input-adapter\.js\?v=[^"']+/,
     `${relative} loads the shared voice target adapter`,
   );
+  assert.ok(
+    html.indexOf('voice-input-adapter.js') < html.indexOf('</head>'),
+    `${relative} installs the voice shortcut listener before visible inputs can receive focus`,
+  );
   adapterVersions.add(html.match(/\/static\/js\/voice-input-adapter\.js\?v=([^"']+)/)?.[1]);
   assert.doesNotMatch(
     html,
@@ -64,6 +68,17 @@ for (const relative of entryPages.filter(page => !page.startsWith('openshop/') &
 
 const canvasJs = read('static/js/canvas.js');
 const smartCanvasJs = read('static/js/smart-canvas.js');
+const smartCanvasHtml = read('static/smart-canvas.html');
+assert.match(
+  smartCanvasHtml,
+  /id="promptInput"[^>]*data-voice-offset-y="42"/,
+  'Smart Canvas composer keeps the microphone below its template button',
+);
+assert.match(
+  smartCanvasJs,
+  /prompt-node-text[^>]*data-voice-offset-y="42"/,
+  'Smart Canvas prompt nodes keep the microphone below their delete button',
+);
 for (const [name, source] of [['canvas.js', canvasJs], ['smart-canvas.js', smartCanvasJs]]) {
   assert.match(source, /data-voice-input=["']on["'][^>]*data-voice-label=/, `${name} labels generated natural-language inputs`);
   assert.match(source, /data-voice-input=["']off["']/, `${name} excludes generated machine controls`);
@@ -74,6 +89,14 @@ const openshopBuilt = read('static/openshop/index.html');
 for (const [name, html] of [['OpenShop source', openshopSource], ['OpenShop build', openshopBuilt]]) {
   assert.match(html, /\/static\/js\/voice-input-adapter\.js\?v=/, `${name} loads the adapter`);
 }
+const openshopBuildVersion = openshopBuilt.match(
+  /\/static\/js\/voice-input-adapter\.js\?v=([^"']+)/,
+)?.[1];
+assert.equal(
+  openshopBuildVersion,
+  [...adapterVersions][0],
+  'OpenShop runtime uses the current adapter cache version',
+);
 const generativeSource = read('integrations/openshop/host/openshop-generative-tools.js');
 assert.match(generativeSource, /HstarVoiceInputAdapter\?\.register/, 'OpenShop registers its mention editor');
 assert.match(generativeSource, /beginVoiceComposition/, 'OpenShop creates a voice composition span');

@@ -279,6 +279,13 @@ test('dictates into the focused smart-canvas prompt without duplicate partials a
 
     const smartFrame = page.frameLocator('#frame-canvas');
     const prompt = smartFrame.locator('#promptInput');
+    await expect(smartFrame.locator('#smartTitle')).toHaveText('Voice E2E', {
+      timeout: 15_000,
+    });
+    await smartFrame.locator('body').evaluate(() => window.createNodeFromMenu('image'));
+    await expect.poll(() => smartFrame.locator('.composer').evaluate(element => (
+      getComputedStyle(element).opacity
+    ))).toBe('1');
     await expect(prompt).toBeVisible({timeout: 15_000});
     await prompt.fill('');
     await prompt.focus();
@@ -313,6 +320,43 @@ test('dictates into the focused smart-canvas prompt without duplicate partials a
       hasAudioContext: false,
       hasSocket: false,
     });
+  } finally {
+    await browser.close();
+  }
+});
+
+test('hides the microphone when the smart-canvas composer closes', async () => {
+  const {browser, context} = await launchVoiceBrowser();
+  try {
+    const page = await openMainPage(context);
+    const created = await context.request.post(`${baseUrl}/api/canvases`, {
+      data: {title: 'Voice target lifecycle', kind: 'smart', icon: 'sparkles'},
+    });
+    expect(created.ok()).toBe(true);
+    const canvas = (await created.json()).canvas;
+    await page.evaluate(url => {
+      window.switchUI(null, 'canvas');
+      document.getElementById('frame-canvas').src = url;
+    }, `/static/smart-canvas.html?id=${encodeURIComponent(canvas.id)}`);
+
+    const smartFrame = page.frameLocator('#frame-canvas');
+    const prompt = smartFrame.locator('#promptInput');
+    const composer = smartFrame.locator('.composer');
+    const entry = page.locator('.hstar-voice-entry');
+    await expect(smartFrame.locator('#smartTitle')).toHaveText('Voice target lifecycle', {
+      timeout: 15_000,
+    });
+    await smartFrame.locator('body').evaluate(() => window.createNodeFromMenu('image'));
+    await expect(composer).toHaveClass(/\bopen\b/);
+    await expect.poll(() => composer.evaluate(element => getComputedStyle(element).opacity)).toBe('1');
+    await expect(prompt).toBeVisible({timeout: 15_000});
+    await prompt.focus();
+    await expect(entry).toBeVisible();
+
+    await smartFrame.locator('#shell').evaluate(element => element.click());
+
+    await expect(composer).not.toHaveClass(/\bopen\b/);
+    await expect(entry).toBeHidden({timeout: 2_000});
   } finally {
     await browser.close();
   }
@@ -354,6 +398,9 @@ test('replaces selected GPT text, supports Ctrl+Z, and rejects a competing micro
     });
 
     await expect(input).toHaveValue('前缀测试语音完成。后缀', {timeout: 10_000});
+    await expect.poll(() => firstPage.evaluate(() => (
+      window.__hstarVoiceEvents.some(item => item.detail?.type === 'final')
+    )), {timeout: 10_000}).toBe(true);
     await input.press('Control+Z');
     await expect(input).toHaveValue('前缀旧内容后缀');
     await input.press('Shift+Q');
@@ -434,6 +481,9 @@ test('preserves OpenShop mention capsules while replacing selected rich text', a
     });
     await waitForActiveVoice(page);
     await expect(editor).toHaveText('@选区1测试语音完成。', {timeout: 10_000});
+    await expect.poll(() => editor.evaluate(element => (
+      element.querySelectorAll('[data-voice-composition]').length
+    )), {timeout: 10_000}).toBe(0);
     const richText = await editor.evaluate(element => ({
       mentionCount: element.querySelectorAll('[data-generative-mention-token]').length,
       mention: element.querySelector('[data-generative-mention-token]')?.textContent,
@@ -446,6 +496,131 @@ test('preserves OpenShop mention capsules while replacing selected rich text', a
     });
     await editor.press('Shift+Q');
     await waitForReadyVoice(page);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('shows voice input in generative tools opened through a dynamic OpenShop session', async () => {
+  test.setTimeout(30_000);
+  const {browser, context} = await launchVoiceBrowser();
+  try {
+    const page = await openMainPage(context);
+    const projectId = `voice-openshop-${Date.now()}`;
+    await page.evaluate(id => {
+      window.switchUI(null, 'canvas');
+      window.HstarOpenShopHost.openNodeSession({
+        canvasType: 'smart',
+        canvasId: 'voice-smart-canvas',
+        nodeId: 'voice-openshop-node',
+        projectId: id,
+        projectName: 'Voice OpenShop',
+        frameId: 'frame-canvas',
+        documentWidth: 640,
+        documentHeight: 480,
+      }, []);
+    }, projectId);
+
+    const frameElement = page.locator(`iframe.openshop-session-frame[data-project-id="${projectId}"]`);
+    await frameElement.waitFor({state: 'attached', timeout: 20_000});
+    await frameElement.evaluate(element => { element.hidden = false; });
+    await expect(frameElement).toBeVisible({timeout: 20_000});
+    const frameHandle = await frameElement.elementHandle();
+    const openshopFrame = await frameHandle.contentFrame();
+    await openshopFrame.waitForFunction(() => Boolean(
+      typeof OS !== 'undefined'
+      && OS.canvas
+      && window.HstarOpenShopGenerativeToolsController
+      && window.HstarVoiceInputAdapter
+    ));
+    expect(await page.evaluate(id => {
+      const frame = document.querySelector(`iframe.openshop-session-frame[data-project-id="${id}"]`);
+      return window.HstarVoiceAssistant._attachedFrames.has(frame);
+    }, projectId)).toBe(true);
+
+    for (const tool of ['generative-fill', 'local-redraw']) {
+      await openshopFrame.evaluate(activeTool => {
+        OS.dismissWelcome();
+        if (!OS.canvas.getWidth()) OS.createNewDocument(640, 480);
+        window.HstarOpenShopGenerativeToolsController.openTool(activeTool);
+        document.querySelector('[data-generative-action="zoom-panel"]')?.click();
+      }, tool);
+      await expect(openshopFrame.locator('[data-generative-prompt]')).toBeVisible();
+      expect(await openshopFrame.evaluate(() => {
+        const editor = document.querySelector('[data-generative-prompt]');
+        const state = window.HstarOpenShopGenerativeToolsController.getState();
+        return {
+          activeTool: state.activeTool,
+          collapsed: state.collapsed,
+          autoHidden: state.autoHidden,
+          barHidden: document.querySelector('[data-generative-operation-bar]').hidden,
+          eligible: window.HstarVoiceInputAdapter.isEligible(editor),
+        };
+      })).toEqual({
+        activeTool: tool,
+        collapsed: false,
+        autoHidden: false,
+        barHidden: false,
+        eligible: true,
+      });
+      await openshopFrame.locator('[data-generative-prompt]').focus();
+      expect(await openshopFrame.evaluate(() => (
+        window.HstarVoiceInputAdapter.getActiveTarget()
+        === document.querySelector('[data-generative-prompt]')
+      ))).toBe(true);
+      expect(await page.evaluate(() => {
+        const target = window.HstarVoiceAssistant._activeTarget;
+        const resolved = target && window.HstarVoiceAssistant._resolveFrameTarget(target);
+        return {
+          active: Boolean(target),
+          frameTarget: Boolean(target?.hstarVoiceFrameTarget),
+          resolved: Boolean(resolved?.target),
+          eligible: Boolean(target && window.HstarVoiceAssistant._targetEligible(target)),
+        };
+      })).toEqual({active: true, frameTarget: true, resolved: true, eligible: true});
+      await expect(page.locator('.hstar-voice-entry')).toBeVisible({timeout: 2_000});
+      expect(await openshopFrame.evaluate(() => {
+        const editor = document.querySelector('[data-generative-prompt]');
+        editor.textContent = '开头';
+        editor.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText'}));
+        editor.focus();
+        const initialRange = document.createRange();
+        initialRange.selectNodeContents(editor);
+        initialRange.collapse(false);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(initialRange);
+        const caretAfter = node => {
+          const range = selection.rangeCount ? selection.getRangeAt(0) : null;
+          return Boolean(
+            range?.collapsed
+            && range.startContainer === node?.parentNode
+            && range.startOffset === Array.from(node.parentNode.childNodes).indexOf(node) + 1
+          );
+        };
+
+        const first = window.HstarVoiceInputAdapter.begin(editor);
+        first.update('第一');
+        const firstMarker = editor.querySelector('[data-voice-composition]');
+        const firstPartialCaret = caretAfter(firstMarker);
+        first.commit('第一句。');
+        const second = window.HstarVoiceInputAdapter.begin(editor);
+        second.update('第二');
+        const secondPartialCaret = caretAfter(editor.querySelector('[data-voice-composition]'));
+        second.commit('第二句。');
+        return {
+          firstPartialCaret,
+          secondPartialCaret,
+          text: editor.textContent,
+          compositionCount: editor.querySelectorAll('[data-voice-composition]').length,
+        };
+      })).toEqual({
+        firstPartialCaret: true,
+        secondPartialCaret: true,
+        text: '开头第一句。第二句。',
+        compositionCount: 0,
+      });
+    }
   } finally {
     await browser.close();
   }
@@ -606,10 +781,17 @@ test('keeps the microphone anchored, preserves iframe focus, and hides it on sec
     const button = page.locator('.hstar-voice-button');
     await expect(entry).toBeVisible();
 
-    const targetBefore = await input.boundingBox();
-    const entryBefore = await entry.boundingBox();
-    expect(Math.abs(entryBefore.x - (targetBefore.x + targetBefore.width - 34))).toBeLessThanOrEqual(8);
-    expect(Math.abs(entryBefore.y - (targetBefore.y + 6))).toBeLessThanOrEqual(8);
+    await expect.poll(async () => {
+      const [targetBefore, entryBefore] = await Promise.all([
+        input.boundingBox(),
+        entry.boundingBox(),
+      ]);
+      if (!targetBefore || !entryBefore) return Number.POSITIVE_INFINITY;
+      return Math.max(
+        Math.abs(entryBefore.x - (targetBefore.x + targetBefore.width - 34)),
+        Math.abs(entryBefore.y - (targetBefore.y + 6)),
+      );
+    }, {timeout: 2_000}).toBeLessThanOrEqual(8);
 
     await page.setViewportSize({width: 1200, height: 820});
     await expect.poll(async () => {

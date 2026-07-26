@@ -21,7 +21,7 @@
     STATES.STOPPING,
   ]);
   const SEQUENCED_EVENTS = new Set(['partial', 'final', 'stopped', 'error']);
-  const MAX_PENDING_AUDIO_BYTES = 16000 * 2 * 120;
+  const MAX_PENDING_AUDIO_BYTES = 16000 * 2 * 30;
 
   class VoiceCoordinatorError extends Error {
     constructor(code, message) {
@@ -839,6 +839,10 @@
         this._restoreTargetFocus(this._activeTarget);
       });
       button.addEventListener('click', () => {
+        if (this._activeTarget) {
+          this._ignoreTargetLossUntil = Date.now() + 250;
+          this._restoreTargetFocus(this._activeTarget);
+        }
         if (ACTIVE_STATES.has(this.state)) void this.stop('user');
         else void this.start();
       });
@@ -998,6 +1002,10 @@
 
     _positionEntry() {
       const target = this._activeTarget;
+      if (target && !this._targetEligible(target)) {
+        this._clearActiveTarget(target, 'target-unavailable');
+        return;
+      }
       const rect = this._targetRect(target);
       if (!this._ui || !rect) {
         if (this._ui) this._ui.root.hidden = true;
@@ -1008,8 +1016,9 @@
         return;
       }
       this._ui.root.hidden = false;
-      const left = `${Math.max(8, rect.right - 34)}px`;
-      const top = `${Math.max(8, rect.top + 6)}px`;
+      const offset = this._targetPositionOffset(target);
+      const left = `${Math.max(8, rect.right - 34 + offset.x)}px`;
+      const top = `${Math.max(8, rect.top + 6 + offset.y)}px`;
       if (this._ui.root.style.left !== left) this._ui.root.style.left = left;
       if (this._ui.root.style.top !== top) this._ui.root.style.top = top;
     }
@@ -1041,6 +1050,19 @@
         bottom: top + (inner.bottom * scaleY),
         width: inner.width * scaleX,
         height: inner.height * scaleY,
+      };
+    }
+
+    _targetPositionOffset(target) {
+      const resolved = this._isFrameHandle(target) ? this._resolveFrameTarget(target) : null;
+      const element = resolved?.target || target;
+      const bounded = value => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? Math.max(-160, Math.min(160, numeric)) : 0;
+      };
+      return {
+        x: bounded(element?.dataset?.voiceOffsetX),
+        y: bounded(element?.dataset?.voiceOffsetY),
       };
     }
   }

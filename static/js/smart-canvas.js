@@ -7896,7 +7896,7 @@ function promptNodeBodyHtml(node){
             ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}" data-voice-input="on" data-voice-label="LLM 系统提示词">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
         </div>` : '';
     return `<div class="prompt-node-card">
-        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}" data-voice-input="on" data-voice-label="提示词">${escapeHtml(node.text || '')}</textarea>
+        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}" data-voice-input="on" data-voice-label="提示词" data-voice-offset-y="42">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
             <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>模板库</span></button>
             <button class="prompt-node-pill prompt-llm-toggle ${node.llmEnabled ? 'active' : ''}" type="button"><i data-lucide="sparkles"></i><span>LLM</span></button>
@@ -10598,7 +10598,7 @@ function promptNodeBodyHtml(node){
             ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}" data-voice-input="on" data-voice-label="LLM 系统提示词">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
         </div>` : '';
     return `<div class="prompt-node-card">
-        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}" data-voice-input="on" data-voice-label="提示词">${escapeHtml(node.text || '')}</textarea>
+        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}" data-voice-input="on" data-voice-label="提示词" data-voice-offset-y="42">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
             <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>模板库</span></button>
             <button class="prompt-node-pill prompt-node-control prompt-split-toggle ${node.promptSplitEnabled ? 'active' : ''}" type="button"><i data-lucide="split"></i><span>分隔符</span></button>

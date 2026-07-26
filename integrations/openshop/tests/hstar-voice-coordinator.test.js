@@ -332,6 +332,29 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.socket.sent[1]).toBe(earlyAudio);
   });
 
+  it('keeps one full utterance of cold-start audio', async () => {
+    const status = readyStatus();
+    const service = deferred();
+    const fetchOverride = vi.fn(async (url) => {
+      if (String(url).endsWith('/status')) return response(status);
+      if (String(url).endsWith('/service/start')) return service.promise;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const harness = makeHarness({status, fetchOverride});
+    harness.coordinator.activateTarget(document.createElement('textarea'));
+
+    const start = harness.coordinator.start();
+    await vi.waitFor(() => expect(harness.source.connect).toHaveBeenCalledOnce());
+    const chunks = Array.from({length: 1505}, () => new ArrayBuffer(640));
+    chunks.forEach(chunk => harness.worklet.port.onmessage({data: chunk}));
+    service.resolve(response({ok: true, service: {process_state: 'running'}}));
+    await expect(start).resolves.toBe(true);
+
+    expect(harness.socket.sent).toHaveLength(1501);
+    expect(harness.socket.sent[1]).toBe(chunks[5]);
+    expect(harness.socket.sent.at(-1)).toBe(chunks.at(-1));
+  });
+
   it('releases an acquired microphone when stopped during model loading', async () => {
     const status = readyStatus();
     const service = deferred();
@@ -514,6 +537,27 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.mediaDevices.getUserMedia).not.toHaveBeenCalled();
   });
 
+  it('clears the microphone entry when an active target becomes unavailable', async () => {
+    const harness = makeHarness({renderUi: true});
+    const target = document.createElement('textarea');
+    document.body.append(target);
+    target.getBoundingClientRect = () => ({
+      left: 120, top: 80, right: 420, bottom: 180, width: 300, height: 100,
+    });
+    let available = true;
+    harness.adapter.isEligible.mockImplementation(candidate => candidate === target && available);
+    harness.coordinator.activateTarget(target);
+    harness.coordinator._positionEntry();
+    expect(document.querySelector('.hstar-voice-entry').hidden).toBe(false);
+
+    available = false;
+    harness.coordinator._positionEntry();
+
+    expect(document.querySelector('.hstar-voice-entry').hidden).toBe(true);
+    await expect(harness.coordinator.start()).resolves.toBe(false);
+    expect(harness.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+  });
+
   it('repositions an iframe target after a child geometry signal', async () => {
     const harness = makeHarness({renderUi: true});
     const frame = document.createElement('iframe');
@@ -556,6 +600,46 @@ describe('Hstar global voice coordinator', () => {
     });
   });
 
+  it('places an iframe microphone below native top-right controls when requested', async () => {
+    const harness = makeHarness({renderUi: true});
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    Object.defineProperties(frame, {
+      clientWidth: {value: 500, configurable: true},
+      clientHeight: {value: 400, configurable: true},
+    });
+    frame.getBoundingClientRect = () => ({
+      left: 100, top: 50, right: 600, bottom: 450, width: 500, height: 400,
+    });
+    const childTarget = frame.contentDocument.createElement('textarea');
+    childTarget.dataset.voiceOffsetY = '42';
+    frame.contentDocument.body.append(childTarget);
+    childTarget.getBoundingClientRect = () => ({
+      left: 20, top: 30, right: 220, bottom: 180, width: 200, height: 150,
+    });
+    frame.contentWindow.HstarVoiceInputAdapter = {
+      getTargetById: vi.fn(id => id === 'child-prompt' ? childTarget : null),
+      isEligible: vi.fn(target => target === childTarget),
+      begin: vi.fn(() => makeTransaction()),
+    };
+    harness.coordinator.attachFrame(frame);
+
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: window.location.origin,
+      source: frame.contentWindow,
+      data: {
+        type: 'hstar-voice-target-active',
+        targetId: 'child-prompt',
+        label: '提示词',
+        framePath: [],
+      },
+    }));
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.hstar-voice-entry').style.top).toBe('128px');
+    });
+  });
+
   it('tracks transform-driven target movement without geometry events', async () => {
     const harness = makeHarness({renderUi: true});
     const target = document.createElement('textarea');
@@ -577,7 +661,7 @@ describe('Hstar global voice coordinator', () => {
     });
   });
 
-  it('restores the target focus and selection when the microphone is pressed', async () => {
+  it('restores the target focus and selection throughout a microphone click', async () => {
     const harness = makeHarness({renderUi: true});
     const target = document.createElement('textarea');
     target.value = '前后';
@@ -593,6 +677,13 @@ describe('Hstar global voice coordinator', () => {
     button.focus();
 
     button.dispatchEvent(new MouseEvent('pointerdown', {bubbles: true, cancelable: true}));
+
+    expect(document.activeElement).toBe(target);
+    expect([target.selectionStart, target.selectionEnd]).toEqual([1, 1]);
+
+    button.focus();
+    harness.coordinator.start = vi.fn(async () => true);
+    button.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
 
     expect(document.activeElement).toBe(target);
     expect([target.selectionStart, target.selectionEnd]).toEqual([1, 1]);

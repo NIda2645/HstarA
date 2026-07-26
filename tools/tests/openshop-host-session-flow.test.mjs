@@ -87,6 +87,7 @@ const listeners = new Map();
 const fetchCalls = [];
 const switchUICalls = [];
 const deletedProjects = [];
+const attachedVoiceFrames = [];
 const overlay = createElement('section', 'openshop-host');
 overlay.setAttribute('aria-hidden', 'true');
 const title = createElement('strong', 'openshop-title');
@@ -194,6 +195,7 @@ const windowRef = {
   },
   removeEventListener() {},
   lucide:{createIcons() {}},
+  HstarVoiceAssistant:{attachFrame(frame) { attachedVoiceFrames.push(frame); }},
   switchUI(trigger, pageId) { switchUICalls.push({trigger, pageId}); },
 };
 
@@ -270,6 +272,7 @@ function readyFrame(frame, context, requestId) {
 host.openNodeSession(contextA, sourcesA);
 const frameA = frameFor(contextA);
 assert.ok(frameA, 'project A should create a dedicated iframe');
+assert.deepEqual(attachedVoiceFrames, [frameA], 'dynamic editor iframe should register with voice input');
 assert.equal(frameA.hidden, true, 'sourced editor should stay hidden until source synchronization finishes');
 assert.equal(overlay.classList.contains('is-open'), true);
 assert.deepEqual(editorMessages(frameA), [], 'the host must not message an iframe before its first load');

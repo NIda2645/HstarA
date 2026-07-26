@@ -171,7 +171,7 @@ class VoiceConnection:
                 pcm,
                 self.language,
             )
-            if text and self.vad_session is not None and self.pending_partial is None:
+            if text and self.vad_session is not None:
                 await self.send({"type": "partial", "text": text})
 
     async def submit_final(self, pcm):

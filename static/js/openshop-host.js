@@ -5,7 +5,7 @@
 
     const HIDDEN_SESSION_IDLE_MS = 15 * 60 * 1000;
     const MAX_IDLE_SESSIONS = 3;
-    const OPENSHOP_RUNTIME_REVISION = '2026.07.26.1030000001';
+    const OPENSHOP_RUNTIME_REVISION = '2026.07.26.1630000001';
     const AI_LOG_TOOL_IDS = new Set(['art-font-restore', 'generative-fill', 'local-redraw']);
     const state = {
         sessions:new Map(),
@@ -449,6 +449,7 @@
         });
         state.sessions.set(scope, session);
         getOverlay().appendChild(frame);
+        window.HstarVoiceAssistant?.attachFrame?.(frame);
         frame.src = `/static/openshop/index.html?v=${OPENSHOP_RUNTIME_REVISION}`;
         return session;
     }

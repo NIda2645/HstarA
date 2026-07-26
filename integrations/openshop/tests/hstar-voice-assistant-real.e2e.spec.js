@@ -233,6 +233,7 @@ async function openMainPage(context) {
   const page = await context.newPage();
   await page.addInitScript(() => {
     window.__hstarVoicePerformanceEvents = [];
+    window.__hstarVoiceFrameMessages = [];
     window.addEventListener('hstar-voice-state-change', event => {
       window.__hstarVoicePerformanceEvents.push({
         at: performance.now(),
@@ -240,6 +241,16 @@ async function openMainPage(context) {
         type: event.detail?.type || '',
         text: event.detail?.text || '',
         reason: event.detail?.reason || '',
+        code: event.detail?.code || '',
+        message: event.detail?.message || '',
+      });
+    });
+    window.addEventListener('message', event => {
+      if (!String(event.data?.type || '').startsWith('hstar-voice-')) return;
+      window.__hstarVoiceFrameMessages.push({
+        type: event.data.type,
+        targetId: event.data.targetId || '',
+        framePath: event.data.framePath || [],
       });
     });
   });
@@ -256,10 +267,49 @@ async function switchSection(page, id, selector) {
 }
 
 async function waitForActiveVoice(page, timeout) {
-  await expect.poll(
-    () => page.evaluate(() => window.HstarVoiceAssistant?.state),
-    {timeout},
+  const terminalStates = ['listening', 'recognizing', 'error', 'missing', 'disabled'];
+  try {
+    await page.waitForFunction(states => (
+      states.includes(window.HstarVoiceAssistant?.state || '')
+    ), terminalStates, {timeout});
+  } catch (error) {
+    const snapshot = await voiceActivationSnapshot(page);
+    throw new Error(`Timed out waiting for voice activation: ${JSON.stringify(snapshot)}`, {
+      cause: error,
+    });
+  }
+  const snapshot = await voiceActivationSnapshot(page);
+  expect(
+    snapshot.state,
+    `Voice activation failed: ${JSON.stringify(snapshot)}`,
   ).toMatch(/^(listening|recognizing)$/);
+}
+
+async function voiceActivationSnapshot(page) {
+  return page.evaluate(async () => {
+    const status = await fetch('/api/voice-assistant/status')
+      .then(response => response.json())
+      .catch(() => ({}));
+    return {
+      state: window.HstarVoiceAssistant?.state || '',
+      events: (window.__hstarVoicePerformanceEvents || []).slice(-12),
+      frameMessages: (window.__hstarVoiceFrameMessages || []).slice(-12),
+      frames: [...document.querySelectorAll('iframe')].map(frame => {
+        let activeTarget = null;
+        let hasAdapter = false;
+        try {
+          const adapter = frame.contentWindow?.HstarVoiceInputAdapter;
+          hasAdapter = Boolean(adapter);
+          const target = adapter?.getActiveTarget?.();
+          activeTarget = target ? {id: target.id || '', tag: target.tagName || ''} : null;
+        } catch {
+          // Cross-origin frames are reported without child details.
+        }
+        return {id: frame.id || '', src: frame.getAttribute('src') || '', hasAdapter, activeTarget};
+      }),
+      service: status?.status?.service || {},
+    };
+  });
 }
 
 async function waitForReadyVoice(page, timeout = 20_000) {
@@ -291,13 +341,20 @@ async function warmActivationMilliseconds(page) {
   });
 }
 
-async function assertChineseTranscript(locator) {
-  await expect.poll(
-    () => locator.evaluate(element => (
-      'value' in element ? element.value : element.textContent
-    )),
-    {timeout: 25_000},
-  ).toMatch(/时间早上九点至下午五点/);
+async function assertChineseTranscript(page, locator) {
+  try {
+    await expect.poll(
+      () => locator.evaluate(element => (
+        'value' in element ? element.value : element.textContent
+      )),
+      {timeout: 25_000},
+    ).toMatch(/时间早上九点至下午五点/);
+  } catch (error) {
+    const snapshot = await voiceActivationSnapshot(page);
+    throw new Error(`Timed out waiting for a real transcript: ${JSON.stringify(snapshot)}`, {
+      cause: error,
+    });
+  }
 }
 
 test.beforeAll(async () => {
@@ -332,7 +389,7 @@ test('runs the real model through GPT, smart canvas, and OpenShop without restar
 
       await waitForActiveVoice(page, 75_000);
       browserMetrics.coldClickToListeningMs = await warmActivationMilliseconds(page);
-      await assertChineseTranscript(input);
+      await assertChineseTranscript(page, input);
       await waitForReadyVoice(page);
       const transcriptEvents = await page.evaluate(() => (
         (window.__hstarVoicePerformanceEvents || [])
@@ -364,7 +421,15 @@ test('runs the real model through GPT, smart canvas, and OpenShop without restar
         window.switchUI(null, 'canvas');
         document.getElementById('frame-canvas').src = url;
       }, smartUrl);
-      const prompt = page.frameLocator('#frame-canvas').locator('#promptInput');
+      const smartFrame = page.frameLocator('#frame-canvas');
+      await expect(smartFrame.locator('#smartTitle')).toHaveText('Real Voice E2E', {
+        timeout: 15_000,
+      });
+      await smartFrame.locator('body').evaluate(() => window.createNodeFromMenu('image'));
+      await expect.poll(() => smartFrame.locator('.composer').evaluate(element => (
+        getComputedStyle(element).opacity
+      ))).toBe('1');
+      const prompt = smartFrame.locator('#promptInput');
       await expect(prompt).toBeVisible({timeout: 15_000});
       await prompt.fill('');
       await prompt.focus();
@@ -373,7 +438,7 @@ test('runs the real model through GPT, smart canvas, and OpenShop without restar
       await waitForActiveVoice(page, 5_000);
       browserMetrics.smartCanvasWarmClickToListeningMs = await warmActivationMilliseconds(page);
       expect(browserMetrics.smartCanvasWarmClickToListeningMs).toBeLessThanOrEqual(500);
-      await assertChineseTranscript(prompt);
+      await assertChineseTranscript(page, prompt);
       await waitForReadyVoice(page);
       expect(await serviceProcessId(context)).toBe(processId);
     } finally {
@@ -413,7 +478,7 @@ test('runs the real model through GPT, smart canvas, and OpenShop without restar
       await waitForActiveVoice(page, 5_000);
       browserMetrics.openShopWarmClickToListeningMs = await warmActivationMilliseconds(page);
       expect(browserMetrics.openShopWarmClickToListeningMs).toBeLessThanOrEqual(500);
-      await assertChineseTranscript(editor);
+      await assertChineseTranscript(page, editor);
       await waitForReadyVoice(page);
       expect(await serviceProcessId(context)).toBe(processId);
     } finally {

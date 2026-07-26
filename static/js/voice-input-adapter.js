@@ -70,9 +70,18 @@
   }
 
   function isHidden(target) {
-    if (!target || target.hidden || target.closest?.('[hidden],[aria-hidden="true"]')) return true;
-    const style = global.getComputedStyle?.(target);
-    return style?.display === 'none' || style?.visibility === 'hidden';
+    if (!target) return true;
+    for (let node = target; node instanceof Element; node = node.parentElement) {
+      if (node.hidden || node.getAttribute?.('aria-hidden') === 'true') return true;
+      const style = global.getComputedStyle?.(node);
+      if (
+        style?.display === 'none'
+        || ['hidden', 'collapse'].includes(style?.visibility)
+        || style?.contentVisibility === 'hidden'
+        || (node !== target && Number.parseFloat(style?.opacity || '1') === 0)
+      ) return true;
+    }
+    return false;
   }
 
   function isEligible(target) {

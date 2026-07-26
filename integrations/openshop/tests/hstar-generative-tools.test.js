@@ -211,6 +211,15 @@ function placeCaretAtEnd(element){
   window.getSelection().addRange(range);
 }
 
+function expectCaretAfter(node){
+  const selection = window.getSelection();
+  expect(selection.rangeCount).toBe(1);
+  const range = selection.getRangeAt(0);
+  expect(range.collapsed).toBe(true);
+  expect(range.startContainer).toBe(node.parentNode);
+  expect(range.startOffset).toBe(Array.from(node.parentNode.childNodes).indexOf(node) + 1);
+}
+
 function selectRegion(editor, bounds={x:10, y:20, w:300, h:200}){
   editor._selectionBounds = {...bounds};
   editor._selectionRegions = [{...bounds}];
@@ -398,6 +407,44 @@ describe('Hstar OpenShop inline generative tools', () => {
     expect(prompt.querySelectorAll('[data-generative-mention-token]')).toHaveLength(1);
     controller.destroy();
   });
+
+  it.each(['generative-fill', 'local-redraw'])(
+    'keeps the live voice caret after partial text and appends consecutive phrases for %s',
+    async toolId => {
+      let registration = null;
+      window.HstarVoiceInputAdapter = {
+        register: vi.fn((target, adapter) => {
+          registration = {target, adapter};
+          return vi.fn();
+        }),
+      };
+      const {controller, editor} = createHarness();
+      await controller.start();
+      openToolWithSelection(controller, editor, toolId);
+      const prompt = document.querySelector('[data-generative-prompt]');
+      setPrompt(prompt, '开头');
+      prompt.focus();
+      placeCaretAtEnd(prompt);
+
+      const first = registration.adapter.beginComposition(registration.adapter.getSelection());
+      first.updateComposition('第一');
+      const marker = prompt.querySelector('[data-voice-composition]');
+      expect(marker.textContent).toBe('第一');
+      expectCaretAfter(marker);
+      first.updateComposition('第一句');
+      expectCaretAfter(marker);
+      first.commitComposition('第一句。');
+
+      const second = registration.adapter.beginComposition(registration.adapter.getSelection());
+      second.updateComposition('第二');
+      expectCaretAfter(prompt.querySelector('[data-voice-composition]'));
+      second.commitComposition('第二句。');
+
+      expect(prompt.textContent).toBe('开头第一句。第二句。');
+      expect(prompt.querySelector('[data-voice-composition]')).toBeNull();
+      controller.destroy();
+    },
+  );
 
   it('hides while a canvas selection is being drawn and restores the normal panel when it completes', async () => {
     const {controller, editor} = createHarness();

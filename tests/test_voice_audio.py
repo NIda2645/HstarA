@@ -12,6 +12,12 @@ def pcm_frame(amplitude):
     return sample * (FRAME_BYTES // 2)
 
 
+def alternating_pcm_frame(amplitude):
+    positive = int(amplitude).to_bytes(2, "little", signed=True)
+    negative = int(-amplitude).to_bytes(2, "little", signed=True)
+    return (positive + negative) * (FRAME_BYTES // 4)
+
+
 class FakeClock:
     def __init__(self):
         self.value = 100.0
@@ -58,6 +64,20 @@ class VoiceAudioTests(unittest.TestCase):
         self.assertEqual(event.stop_reason, "silence-timeout")
         self.assertEqual(event.silence_remaining_ms, 0)
 
+    def test_buffered_frames_advance_silence_when_wall_clock_stalls(self):
+        session = VadSession(
+            vad=FakeVad(False),
+            clock=self.clock,
+            silence_seconds=0.1,
+        )
+
+        event = None
+        for _ in range(6):
+            event = session.accept_pcm(SILENT_20MS_FRAME)
+
+        self.assertEqual(event.stop_reason, "silence-timeout")
+        self.assertEqual(event.silence_remaining_ms, 0)
+
     def test_noise_does_not_reset_timer_when_vad_rejects_it(self):
         session = VadSession(
             vad=FakeVad(False),
@@ -72,7 +92,7 @@ class VoiceAudioTests(unittest.TestCase):
         self.assertEqual(session.last_speech_at, started_at)
 
     def test_valid_speech_resets_timer_and_emits_utterance_after_hangover(self):
-        sequence = [True] * 6 + [False] * 70
+        sequence = [True] * 9 + [False] * 70
         session = VadSession(vad=SequenceVad(sequence), clock=self.clock)
 
         events = []
@@ -81,7 +101,7 @@ class VoiceAudioTests(unittest.TestCase):
             self.clock.advance(0.02)
 
         self.assertFalse(events[0].speech_active)
-        self.assertTrue(events[5].speech_active)
+        self.assertTrue(events[8].speech_active)
         final = next(event.final_utterance_pcm for event in events if event.final_utterance_pcm)
         self.assertGreater(len(final), 2 * FRAME_BYTES)
 
@@ -99,7 +119,7 @@ class VoiceAudioTests(unittest.TestCase):
     def test_speech_requires_confirmation_but_keeps_pre_roll(self):
         session = VadSession(vad=FakeVad(True), clock=self.clock)
 
-        for _ in range(5):
+        for _ in range(8):
             event = session.accept_pcm(pcm_frame(3000))
             self.clock.advance(0.02)
         self.assertFalse(event.speech_active)
@@ -107,6 +127,35 @@ class VoiceAudioTests(unittest.TestCase):
         event = session.accept_pcm(pcm_frame(3000))
 
         self.assertTrue(event.speech_active)
+
+    def test_short_high_energy_transient_does_not_start_speech(self):
+        sequence = [True] * 8 + [False]
+        session = VadSession(vad=SequenceVad(sequence), clock=self.clock)
+
+        for active in sequence:
+            event = session.accept_pcm(pcm_frame(3000 if active else 0))
+            self.clock.advance(0.02)
+
+        self.assertFalse(event.speech_active)
+        self.assertEqual(session.last_speech_at, session.started_at)
+
+    def test_vad_positive_high_frequency_background_noise_does_not_start_speech(self):
+        session = VadSession(vad=FakeVad(True), clock=self.clock)
+
+        for _ in range(50):
+            event = session.accept_pcm(alternating_pcm_frame(1200))
+            self.clock.advance(0.02)
+
+        self.assertFalse(event.speech_active)
+        self.assertIsNone(event.partial_pcm)
+        self.assertEqual(session.last_speech_at, session.started_at)
+
+    def test_device_partial_intervals_keep_live_text_below_one_second(self):
+        cpu = VadSession.for_device("cpu", vad=FakeVad(True), clock=self.clock)
+        cuda = VadSession.for_device("cuda", vad=FakeVad(True), clock=self.clock)
+
+        self.assertLessEqual(cpu.partial_interval_seconds, 0.9)
+        self.assertLessEqual(cuda.partial_interval_seconds, 0.5)
 
     def test_short_pause_does_not_finalize_utterance(self):
         sequence = [True] * 10 + [False] * 40 + [True] * 10
@@ -126,11 +175,9 @@ class VoiceAudioTests(unittest.TestCase):
             vad=FakeVad(True),
             clock=self.clock,
             partial_interval_seconds=0.8,
+            speech_confirmation_seconds=0.02,
         )
 
-        for _ in range(5):
-            session.accept_pcm(pcm_frame(3000))
-            self.clock.advance(0.02)
         first = session.accept_pcm(pcm_frame(3000))
         self.clock.advance(0.79)
         early = session.accept_pcm(pcm_frame(3000))
@@ -146,6 +193,7 @@ class VoiceAudioTests(unittest.TestCase):
             vad=FakeVad(True),
             clock=self.clock,
             max_utterance_seconds=0.06,
+            speech_confirmation_seconds=0.02,
         )
 
         event = None

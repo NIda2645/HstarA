@@ -10,15 +10,17 @@ from typing import Callable, Protocol
 SAMPLE_RATE = 16_000
 SAMPLE_WIDTH_BYTES = 2
 FRAME_MILLISECONDS = 20
+FRAME_SECONDS = FRAME_MILLISECONDS / 1000
 SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MILLISECONDS // 1000
 FRAME_BYTES = SAMPLES_PER_FRAME * SAMPLE_WIDTH_BYTES
 DEFAULT_PRE_ROLL_SECONDS = 0.3
 DEFAULT_HANGOVER_SECONDS = 1.3
 DEFAULT_MAX_UTTERANCE_SECONDS = 30.0
-DEFAULT_SPEECH_CONFIRMATION_SECONDS = 0.12
+DEFAULT_SPEECH_CONFIRMATION_SECONDS = 0.18
 DEFAULT_MIN_RMS = 0.003
 DEFAULT_MIN_SNR_DB = 6.0
 DEFAULT_NOISE_FLOOR = 0.001
+DEFAULT_MAX_ONSET_ZERO_CROSSING_RATE = 0.45
 
 
 class VoiceAudioError(ValueError):
@@ -64,6 +66,21 @@ def pcm_rms(frame: bytes) -> float:
     return math.sqrt(square_sum / len(samples)) / 32768.0
 
 
+def pcm_zero_crossing_rate(frame: bytes) -> float:
+    samples = array("h")
+    samples.frombytes(frame)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if len(samples) < 2:
+        return 0.0
+    crossings = sum(
+        1
+        for previous, current in zip(samples, samples[1:])
+        if (previous < 0 <= current) or (previous >= 0 > current)
+    )
+    return crossings / (len(samples) - 1)
+
+
 class VadSession:
     def __init__(
         self,
@@ -79,6 +96,7 @@ class VadSession:
         min_rms: float = DEFAULT_MIN_RMS,
         min_snr_db: float = DEFAULT_MIN_SNR_DB,
         noise_floor: float = DEFAULT_NOISE_FLOOR,
+        max_onset_zero_crossing_rate: float = DEFAULT_MAX_ONSET_ZERO_CROSSING_RATE,
     ):
         for name, value in (
             ("silence_seconds", silence_seconds),
@@ -100,6 +118,9 @@ class VadSession:
         self.min_rms = float(min_rms)
         self.min_snr_ratio = 10 ** (float(min_snr_db) / 20.0)
         self.noise_floor = float(noise_floor)
+        self.max_onset_zero_crossing_rate = float(max_onset_zero_crossing_rate)
+        if not 0 < self.max_onset_zero_crossing_rate <= 1:
+            raise ValueError("max_onset_zero_crossing_rate must be between 0 and 1")
         self.confirmation_frames = max(
             1,
             math.ceil(speech_confirmation_seconds * 1000 / FRAME_MILLISECONDS),
@@ -117,6 +138,7 @@ class VadSession:
         self._candidate_frames = 0
         self._ended = False
         self.started_at = float(clock())
+        self._next_frame_at = self.started_at
         self.last_speech_at = self.started_at
         self._last_partial_at = self.started_at
 
@@ -129,7 +151,7 @@ class VadSession:
         clock: Callable[[], float] = time.monotonic,
         silence_seconds: float = 10.0,
     ) -> "VadSession":
-        interval = 0.8 if device == "cuda" else 2.0
+        interval = 0.5 if device == "cuda" else 0.9
         return cls(
             vad=vad,
             clock=clock,
@@ -143,14 +165,19 @@ class VadSession:
                 "VOICE_PCM_FRAME_SIZE",
                 f"Expected {FRAME_BYTES} bytes",
             )
-        now = float(self.clock())
+        now = max(float(self.clock()), self._next_frame_at)
+        self._next_frame_at = now + FRAME_SECONDS
         if self._ended:
             return self._event(now, stop_reason="silence-timeout")
 
         vad_speech = bool(self.vad.is_speech(frame))
         rms = pcm_rms(frame)
         energy_threshold = max(self.min_rms, self.noise_floor * self.min_snr_ratio)
-        is_speech = vad_speech and rms >= energy_threshold
+        energy_speech = vad_speech and rms >= energy_threshold
+        is_speech = energy_speech and (
+            self._speech_active
+            or pcm_zero_crossing_rate(frame) <= self.max_onset_zero_crossing_rate
+        )
         if not is_speech:
             alpha = 0.08 if rms < self.noise_floor else 0.02
             self.noise_floor = max(

@@ -770,6 +770,18 @@
       return editorNode.dispatchEvent(event);
     }
 
+    function placeVoiceCaretAfter(editorNode, node){
+      const selection = root.getSelection?.();
+      if(!selection || !node?.isConnected || !editorNode.contains(node)) return false;
+      const range = documentRef.createRange();
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      state.promptRange = range.cloneRange();
+      return true;
+    }
+
     function updateVoiceComposition(editorNode, transaction, text){
       if(transaction.closed || !editorNode.isConnected) return false;
       const value = String(text || '');
@@ -781,6 +793,7 @@
         transaction.range.insertNode(transaction.marker);
       }
       transaction.marker.textContent = value;
+      placeVoiceCaretAfter(editorNode, transaction.marker);
       dispatchVoiceInput(editorNode, 'input', 'insertCompositionText', value, true);
       return true;
     }
@@ -795,15 +808,7 @@
       state.mentionOpen = false;
       syncPromptFromDom();
       renderMentionPicker();
-      const selection = root.getSelection?.();
-      if(selection && textNode.isConnected){
-        const range = documentRef.createRange();
-        range.setStartAfter(textNode);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        state.promptRange = range.cloneRange();
-      }
+      placeVoiceCaretAfter(editorNode, textNode);
       return true;
     }
 
