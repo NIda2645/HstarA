@@ -21,6 +21,7 @@
     STATES.STOPPING,
   ]);
   const SEQUENCED_EVENTS = new Set(['partial', 'final', 'stopped', 'error']);
+  const MAX_PENDING_AUDIO_BYTES = 16000 * 2 * 120;
 
   class VoiceCoordinatorError extends Error {
     constructor(code, message) {
@@ -78,6 +79,7 @@
       this._settings = {};
       this._status = null;
       this._startPromise = null;
+      this._startController = null;
       this._startGeneration = 0;
       this._stopPromise = null;
       this._closing = false;
@@ -87,6 +89,8 @@
       this._workletNode = null;
       this._muteNode = null;
       this._socket = null;
+      this._pendingAudio = [];
+      this._pendingAudioBytes = 0;
       this._sessionId = '';
       this._positionFrame = 0;
       this._ignoreTargetLossUntil = 0;
@@ -197,16 +201,23 @@
 
       this._lockedTarget = target;
       const generation = ++this._startGeneration;
-      const operation = this._startSession(generation);
-      this._startPromise = operation.finally(() => {
-        this._startPromise = null;
+      const controller = new AbortController();
+      this._startController = controller;
+      const operation = this._startSession(generation, controller.signal);
+      const tracked = operation.finally(() => {
+        if (this._startPromise === tracked) this._startPromise = null;
+        if (this._startController === controller) this._startController = null;
       });
-      return this._startPromise;
+      this._startPromise = tracked;
+      return tracked;
     }
 
     stop(reason = 'user') {
       if (this._stopPromise) return this._stopPromise;
       this._startGeneration += 1;
+      this._startController?.abort();
+      this._startController = null;
+      this._startPromise = null;
       const operation = this._stopSession(reason, STATES.READY, true);
       this._stopPromise = operation.finally(() => {
         this._stopPromise = null;
@@ -236,11 +247,11 @@
       this._ui = null;
     }
 
-    async _startSession(generation) {
+    async _startSession(generation, signal) {
       this._lastSequence = -1;
       this._setState(STATES.LOADING);
       try {
-        const payload = await this._requestJson('/api/voice-assistant/status');
+        const payload = await this._requestJson('/api/voice-assistant/status', {signal});
         const status = payload?.status || {};
         if (generation !== this._startGeneration) return false;
         this._status = status;
@@ -265,18 +276,18 @@
           return false;
         }
 
-        const [mediaResult, serviceResult] = await Promise.allSettled([
-          this._acquireMicrophone(generation),
-          this._startService(),
-        ]);
-        if (mediaResult.status === 'rejected') throw mediaResult.reason;
-        if (serviceResult.status === 'rejected') throw serviceResult.reason;
+        await this._acquireMicrophone(generation);
+        await this._prepareAudioCapture(generation);
+        await this._startService(signal);
         if (generation !== this._startGeneration) return false;
         await this._connectBrowserSession(generation);
         if (generation !== this._startGeneration) return false;
         this._setState(STATES.LISTENING);
         return true;
       } catch (error) {
+        if (signal?.aborted || generation !== this._startGeneration || error?.name === 'AbortError') {
+          return false;
+        }
         const code = String(error?.code || 'VOICE_START_FAILED');
         if (code === 'VOICE_START_CANCELLED') {
           await this._releaseResources();
@@ -295,11 +306,12 @@
       }
     }
 
-    async _startService() {
+    async _startService(signal) {
       const response = await this.fetch('/api/voice-assistant/service/start', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({device: 'auto'}),
+        signal,
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload?.ok === false) {
@@ -340,8 +352,9 @@
       }
     }
 
-    async _connectBrowserSession(generation) {
+    async _prepareAudioCapture(generation) {
       if (!this._stream) throw new VoiceCoordinatorError('VOICE_START_CANCELLED');
+      if (this._audioContext) return;
       this._audioContext = this.createAudioContext();
       await this._audioContext.audioWorklet.addModule(this.workletUrl);
       if (generation !== this._startGeneration) {
@@ -357,14 +370,18 @@
       this._muteNode = this._audioContext.createGain();
       this._muteNode.gain.value = 0;
       this._workletNode.port.onmessage = event => this._sendAudio(event.data);
+      this._sourceNode.connect(this._workletNode);
+      this._workletNode.connect(this._muteNode);
+      this._muteNode.connect(this._audioContext.destination);
+    }
 
+    async _connectBrowserSession(generation) {
+      if (!this._audioContext) throw new VoiceCoordinatorError('VOICE_START_CANCELLED');
       await this._openSocket();
       if (generation !== this._startGeneration) {
         throw new VoiceCoordinatorError('VOICE_START_CANCELLED');
       }
-      this._sourceNode.connect(this._workletNode);
-      this._workletNode.connect(this._muteNode);
-      this._muteNode.connect(this._audioContext.destination);
+      this._flushPendingAudio();
     }
 
     _openSocket() {
@@ -418,12 +435,33 @@
         void this.stop('target-removed');
         return;
       }
-      if (!this._socket || this._socket.readyState !== 1) return;
       let buffer = value;
       if (ArrayBuffer.isView(buffer)) {
         buffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
       }
-      if (buffer instanceof ArrayBuffer) this._socket.send(buffer);
+      if (!(buffer instanceof ArrayBuffer)) return;
+      if (this._socket?.readyState === 1) {
+        this._socket.send(buffer);
+        return;
+      }
+      if (this.state !== STATES.LOADING || !this._audioContext) return;
+      this._pendingAudio.push(buffer);
+      this._pendingAudioBytes += buffer.byteLength;
+      while (
+        this._pendingAudioBytes > MAX_PENDING_AUDIO_BYTES
+        && this._pendingAudio.length > 1
+      ) {
+        this._pendingAudioBytes -= this._pendingAudio.shift().byteLength;
+      }
+    }
+
+    _flushPendingAudio() {
+      const socket = this._socket;
+      if (!socket || socket.readyState !== 1) return;
+      const pending = this._pendingAudio;
+      this._pendingAudio = [];
+      this._pendingAudioBytes = 0;
+      for (const buffer of pending) socket.send(buffer);
     }
 
     _handleSocketMessage(event) {
@@ -656,6 +694,8 @@
 
     async _releaseResources() {
       this._closing = true;
+      this._pendingAudio = [];
+      this._pendingAudioBytes = 0;
       const socket = this._socket;
       this._socket = null;
       if (socket) {
@@ -950,6 +990,7 @@
       const run = () => {
         this._positionFrame = 0;
         this._positionEntry();
+        if (this._activeTarget) this._schedulePosition();
       };
       if (global.requestAnimationFrame) this._positionFrame = global.requestAnimationFrame(run);
       else run();
@@ -967,8 +1008,10 @@
         return;
       }
       this._ui.root.hidden = false;
-      this._ui.root.style.left = `${Math.max(8, rect.right - 34)}px`;
-      this._ui.root.style.top = `${Math.max(8, rect.top + 6)}px`;
+      const left = `${Math.max(8, rect.right - 34)}px`;
+      const top = `${Math.max(8, rect.top + 6)}px`;
+      if (this._ui.root.style.left !== left) this._ui.root.style.left = left;
+      if (this._ui.root.style.top !== top) this._ui.root.style.top = top;
     }
 
     _targetRect(target) {

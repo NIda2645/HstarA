@@ -225,7 +225,13 @@ class VoiceAssistantManager:
             await self.supervisor.session_finished()
 
     async def start_service(self, device: str = "auto") -> dict[str, Any]:
-        await self.supervisor.prewarm(device)
+        status = self.supervisor.status()
+        if status.model_state != "loaded":
+            task = self._prewarm_task
+            if task is None or task.done():
+                task = asyncio.create_task(self.supervisor.prewarm(device))
+                self._prewarm_task = task
+            await asyncio.shield(task)
         return asdict(self.supervisor.status())
 
     async def stop_service(self) -> dict[str, Any]:

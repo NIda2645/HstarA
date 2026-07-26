@@ -1712,6 +1712,7 @@ const OS = {
         this._initToolRuntimeCache();
         this.canvas.on('object:added', () => this._markToolObjectsDirty());
         this.canvas.on('object:removed', () => this._markToolObjectsDirty());
+        this.canvas.on('text:editing:entered', event => this._markVoiceTextEditor(event?.target));
         this.createNewDocument(this.canvasW, this.canvasH);
         this.canvas.on('mouse:move', e => this.onMouseMove(e));
         this.canvas.on('mouse:down', e => this.onMouseDown(e));
@@ -2655,7 +2656,10 @@ self.onmessage = function(e) {
             if (canvasIndex >= 0) this.canvas.moveTo?.(converted, canvasIndex);
         }
         this.canvas.setActiveObject(converted);
-        if (wasEditing) converted.enterEditing?.();
+        if (wasEditing) {
+            converted.enterEditing?.();
+            this._markVoiceTextEditor(converted);
+        }
         this.canvas.requestRenderAll?.();
         this._markToolObjectsDirty();
         this._syncTextToolFace(writingMode);
@@ -3727,11 +3731,21 @@ self.onmessage = function(e) {
     },
 
     // ====================== MOUSE ======================
+    _markVoiceTextEditor(target) {
+        const input = target?.hiddenTextarea;
+        if (!input?.isConnected) return false;
+        input.dataset.voiceInput = 'on';
+        input.dataset.voiceLabel = '画布文字编辑';
+        input.setAttribute('aria-label', '画布文字编辑');
+        return true;
+    },
+
     onMouseDoubleClick(opt) {
         const target = opt?.target;
         if (!this._isEditableTextObject(target)) return false;
         this.canvas.setActiveObject(target);
         if (!target.isEditing) target.enterEditing?.(opt?.e);
+        this._markVoiceTextEditor(target);
         this.canvas.requestRenderAll?.();
         return true;
     },
@@ -3794,6 +3808,7 @@ self.onmessage = function(e) {
             if (this._isEditableTextObject(opt.target)) {
                 this.canvas.setActiveObject(opt.target);
                 if (!opt.target.isEditing) opt.target.enterEditing?.(opt.e);
+                this._markVoiceTextEditor(opt.target);
                 this.canvas.requestRenderAll?.();
                 return;
             }
@@ -3805,7 +3820,7 @@ self.onmessage = function(e) {
                 hstarWritingMode:this.state.textWritingMode,
             });
             this.canvas.add(text); this._createObjectLayer(text, text.text);
-            this.canvas.setActiveObject(text); text.enterEditing(opt.e); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
+            this.canvas.setActiveObject(text); text.enterEditing(opt.e); this._markVoiceTextEditor(text); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
         }
         if (tool==='fill') {
             const t=opt.target;
@@ -11256,6 +11271,6 @@ window.addEventListener('DOMContentLoaded', () => {
     });
 });
 </script>
-    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.2200000001"></script>
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.20.1785027495"></script>
 </body>
 </html>

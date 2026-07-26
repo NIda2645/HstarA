@@ -1,5 +1,7 @@
 import sys
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -8,6 +10,8 @@ from unittest.mock import patch
 from voice_assistant.recognizer import (
     FunAsrRecognizer,
     RecognitionState,
+    _FUNASR_NANO_MODULES,
+    _import_funasr_nano_modules,
     funasr_language,
 )
 
@@ -133,6 +137,23 @@ class VoiceRecognizerTests(unittest.TestCase):
 
         self.assertTrue(options["disable_update"])
         self.assertTrue(options["disable_pbar"])
+        self.assertFalse(options["trust_remote_code"])
+
+    def test_required_nano_modules_import_in_parallel(self):
+        imported = []
+        worker_threads = set()
+
+        def import_module(name):
+            imported.append(name)
+            worker_threads.add(threading.get_ident())
+            time.sleep(0.02)
+            return object()
+
+        with patch("voice_assistant.recognizer.importlib.import_module", import_module):
+            _import_funasr_nano_modules()
+
+        self.assertCountEqual(imported, _FUNASR_NANO_MODULES)
+        self.assertGreater(len(worker_threads), 1)
 
     def test_module_import_does_not_load_optional_runtime(self):
         self.assertNotIn("funasr", sys.modules)

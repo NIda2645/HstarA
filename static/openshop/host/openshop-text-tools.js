@@ -1987,7 +1987,7 @@
         return `<span class="hstar-ocr-box ${block.lowConfidence ? 'low' : ''}" style="left:${bounds.left * 100}%;top:${bounds.top * 100}%;width:${bounds.width * 100}%;height:${bounds.height * 100}%"></span>`;
       }).join('');
       const rows = state.reviewBlocks.map((block, index) => `<div class="hstar-ocr-row">
-        <textarea rows="2" wrap="off" spellcheck="false" data-hstar-ocr-index="${index}" aria-label="识别文字 ${index + 1}">${escapeHtml(block.text)}</textarea>
+        <textarea rows="2" wrap="off" spellcheck="false" data-hstar-ocr-index="${index}" data-voice-input="on" data-voice-label="识别文字 ${index + 1}" aria-label="识别文字 ${index + 1}">${escapeHtml(block.text)}</textarea>
         <span class="hstar-ocr-confidence ${block.lowConfidence ? 'low' : ''}">${block.lowConfidence ? '低置信度 ' : ''}${Math.round(Number(block.confidence || 0) * 100)}%</span>
       </div>`).join('');
       return `<section class="hstar-text-section"><div class="hstar-text-label">识别校对</div>
@@ -2018,7 +2018,7 @@
             <div class="hstar-text-field"><label for="hstar-remove-resolution">画质</label><select id="hstar-remove-resolution"><option value="auto">自动</option><option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option></select></div>
             <div class="hstar-text-field"><label for="hstar-remove-ratio">图片比例</label><select id="hstar-remove-ratio" ${state.lastRemovalOptions.resolution === 'auto' ? 'disabled' : ''}><option value="source">适配原图</option><option value="square">1:1</option><option value="portrait">2:3</option><option value="landscape">3:2</option><option value="portrait43">3:4</option><option value="landscape43">4:3</option><option value="story">9:16</option><option value="wide">16:9</option><option value="ultrawide">21:9</option><option value="ultratall">9:21</option></select></div>
             <div class="hstar-text-field"><label for="hstar-remove-quality">生成质量</label><select id="hstar-remove-quality"><option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></div>
-            <div class="hstar-text-field"><label for="hstar-remove-prompt">补充要求</label><textarea id="hstar-remove-prompt" maxlength="2000" placeholder="例如：保留纸张纹理">${escapeHtml(state.lastRemovalOptions.prompt)}</textarea></div>
+            <div class="hstar-text-field"><label for="hstar-remove-prompt">补充要求</label><textarea id="hstar-remove-prompt" maxlength="2000" data-voice-input="on" data-voice-label="去除文字补充要求" placeholder="例如：保留纸张纹理">${escapeHtml(state.lastRemovalOptions.prompt)}</textarea></div>
             <div class="hstar-text-actions"><button type="button" class="btn btn-primary" data-hstar-action="run-removal" ${disabled ? 'disabled' : ''}>执行去除文字</button><button type="button" class="btn" data-hstar-action="cancel" ${running ? '' : 'disabled'}>取消</button></div>
           </section>`;
       panel.innerHTML = `<div class="hstar-text-head"><strong>${title}</strong><button class="btn" type="button" data-hstar-action="close">关闭</button></div><div class="hstar-text-body">${body}<section class="hstar-text-section"><div class="hstar-text-status ${state.error ? 'error' : ''}">${escapeHtml(statusText())}</div></section></div>`;

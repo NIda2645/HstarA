@@ -45,6 +45,7 @@ class VoiceSettingsTests(unittest.TestCase):
         )
         self.assertEqual(value.silence_stop_seconds, 10)
         self.assertEqual(value.shortcut, "Shift+Q")
+        self.assertTrue(value.prewarm_on_startup)
 
     def test_voice_paths_keep_runtime_and_model_under_effective_root(self):
         value = normalize_voice_settings(

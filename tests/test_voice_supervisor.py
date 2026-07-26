@@ -8,6 +8,7 @@ from pathlib import Path
 from voice_assistant.supervisor import (
     VoiceServiceSupervisor,
     sanitized_child_env,
+    service_command,
 )
 
 
@@ -100,6 +101,18 @@ class VoiceSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("HSTAR_API_KEY", env)
         self.assertNotIn("OPENAI_API_KEY", env)
         self.assertEqual(env["PYTHONUTF8"], "1")
+
+    def test_service_command_binds_child_lifetime_to_parent(self):
+        command = service_command(
+            sys.executable,
+            self.runtime_site,
+            self.model_path,
+            "test-token",
+            parent_pid=12345,
+        )
+
+        parent_index = command.index("--parent-pid")
+        self.assertEqual(command[parent_index + 1], "12345")
 
 
 if __name__ == "__main__":

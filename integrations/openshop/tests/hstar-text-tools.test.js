@@ -928,6 +928,8 @@ describe('Hstar OpenShop multilingual text tools', () => {
 
     const editor = document.querySelector('textarea[data-hstar-ocr-index="0"]');
     expect(editor).not.toBeNull();
+    expect(editor.dataset.voiceInput).toBe('on');
+    expect(editor.dataset.voiceLabel).toBe('识别文字 1');
     expect(editor.value).toBe('甲乙\n丙');
 
     editor.value = '甲乙\n丙丁';
@@ -1422,6 +1424,8 @@ describe('Hstar OpenShop multilingual text tools', () => {
     quality.value = 'high';
     quality.dispatchEvent(new Event('change', {bubbles:true}));
     const prompt = document.getElementById('hstar-remove-prompt');
+    expect(prompt.dataset.voiceInput).toBe('on');
+    expect(prompt.dataset.voiceLabel).toBe('去除文字补充要求');
     prompt.value = '保留纸张纹理';
     prompt.dispatchEvent(new Event('input', {bubbles:true}));
     document.querySelector('[data-hstar-action="run-removal"]').click();

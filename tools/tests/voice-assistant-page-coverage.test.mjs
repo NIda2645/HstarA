@@ -9,6 +9,7 @@ const entryPages = [
   'smart-canvas.html', 'api-settings.html', 'comfyui-settings.html',
   'software-settings.html', 'openshop/index.html', '3d-director/index.html',
 ];
+const adapterVersions = new Set();
 
 function read(relative) {
   return readFileSync(resolve(root, relative), 'utf8');
@@ -21,12 +22,14 @@ for (const relative of entryPages) {
     /\/static\/js\/voice-input-adapter\.js\?v=[^"']+/,
     `${relative} loads the shared voice target adapter`,
   );
+  adapterVersions.add(html.match(/\/static\/js\/voice-input-adapter\.js\?v=([^"']+)/)?.[1]);
   assert.doesNotMatch(
     html,
     /voice-assistant-coordinator\.js/,
     `${relative} does not create a second coordinator`,
   );
 }
+assert.equal(adapterVersions.size, 1, 'every page uses one cache version of the voice target adapter');
 
 const shell = read('static/index.html');
 assert.match(shell, /\/static\/css\/voice-assistant\.css\?v=/, 'main shell owns global voice styles');

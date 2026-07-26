@@ -69,6 +69,7 @@ def service_command(
     model_path: Path,
     token: str,
     *,
+    parent_pid: int | None = None,
     test_mode: bool = False,
 ) -> list[str]:
     command = [
@@ -84,6 +85,8 @@ def service_command(
         "--token",
         token,
     ]
+    if parent_pid:
+        command.extend(["--parent-pid", str(parent_pid)])
     if test_mode:
         command.append("--test-mode")
     return command
@@ -197,6 +200,7 @@ class VoiceServiceSupervisor:
             self.runtime_site,
             self.model_path,
             token,
+            parent_pid=os.getpid(),
             test_mode=self.test_mode,
         )
         env = sanitized_child_env(os.environ)

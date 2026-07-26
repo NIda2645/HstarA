@@ -682,6 +682,8 @@
     }
     editorElement.classList.add('hstar-vertical-text-editor');
     editorElement.setAttribute('data-hstar-vertical-editor', '');
+    editorElement.setAttribute('data-voice-input', 'on');
+    editorElement.setAttribute('data-voice-label', '竖排文字编辑');
     editorElement.setAttribute('aria-label', '竖排文字编辑');
     editorElement.setAttribute('spellcheck', 'false');
     editorElement.autocomplete = 'off';

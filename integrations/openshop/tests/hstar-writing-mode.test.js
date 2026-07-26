@@ -312,6 +312,8 @@ describe('Hstar OpenShop writing mode runtime', () => {
     const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
     expect(editor).not.toBeNull();
     expect(editor.classList.contains('hstar-vertical-text-editor')).toBe(true);
+    expect(editor.dataset.voiceInput).toBe('on');
+    expect(editor.dataset.voiceLabel).toBe('竖排文字编辑');
     expect(editor.value).toBe('first\nsecond');
     expect(editor.style.display).toBe('block');
     expect(editor.style.position).toBe('fixed');

@@ -57,6 +57,20 @@ describe('OpenShop writing-mode integration', () => {
     expect(OS.layers).toHaveLength(1);
   });
 
+  it('marks the Fabric text input as a voice-enabled canvas editor', () => {
+    const OS = createEditor(loadOpenShop());
+    const hiddenTextarea = document.createElement('textarea');
+    document.body.append(hiddenTextarea);
+    const horizontal = new fabric.IText('Canvas text');
+    horizontal.hiddenTextarea = hiddenTextarea;
+    horizontal.isEditing = true;
+
+    expect(OS._markVoiceTextEditor(horizontal)).toBe(true);
+    expect(hiddenTextarea.dataset.voiceInput).toBe('on');
+    expect(hiddenTextarea.dataset.voiceLabel).toBe('画布文字编辑');
+    expect(hiddenTextarea.getAttribute('aria-label')).toBe('画布文字编辑');
+  });
+
   it('syncs selected vertical text without leaving select', () => {
     mountOpenShopToolbar();
     const vertical = {type:'hstar-vertical-text', hstarWritingMode:'vertical'};

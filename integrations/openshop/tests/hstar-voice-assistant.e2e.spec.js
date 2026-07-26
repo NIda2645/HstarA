@@ -451,6 +451,102 @@ test('preserves OpenShop mention capsules while replacing selected rich text', a
   }
 });
 
+test('dictates into OpenShop horizontal and vertical text editors', async () => {
+  test.setTimeout(30_000);
+  const {browser, context} = await launchVoiceBrowser();
+  try {
+    const page = await openMainPage(context);
+    await page.evaluate(url => {
+      window.switchUI(null, 'canvas');
+      document.getElementById('frame-canvas').src = url;
+    }, '/static/openshop/index.html');
+    const openshop = page.frameLocator('#frame-canvas');
+    await openshop.locator('body').waitFor();
+    await expect.poll(() => page.frames().some(frame => (
+      frame.url().includes('/static/openshop/index.html')
+      && frame.url() !== page.url()
+    )), {timeout: 15_000}).toBe(true);
+    const openshopFrame = page.frames().find(frame => frame.url().includes('/static/openshop/index.html'));
+    await openshopFrame.waitForFunction(() => Boolean(
+      typeof OS !== 'undefined'
+      && OS.canvas
+      && window.HstarOpenShopWritingMode
+    ));
+    await openshopFrame.evaluate(() => {
+      OS.dismissWelcome();
+      OS.createNewDocument(640, 480);
+      const text = new fabric.IText('', {
+        left: 80,
+        top: 80,
+        fontSize: 42,
+        fill: '#111111',
+        editable: true,
+      });
+      OS.canvas.add(text);
+      OS.layers[OS.activeLayerIdx].objects.push(text);
+      OS.canvas.setActiveObject(text);
+      text.enterEditing();
+      text.selectionStart = text.selectionEnd = 0;
+      text._updateTextarea();
+      text.hiddenTextarea.dataset.voiceTest = 'horizontal';
+      text.hiddenTextarea.focus();
+      window.__hstarVoiceHorizontalText = text;
+    });
+    await expect.poll(() => page.evaluate(() => (
+      window.HstarVoiceAssistant?._activeTarget?.hstarVoiceFrameTarget === true
+    )), {timeout: 5_000}).toBe(true);
+    await page.keyboard.press('Shift+Q');
+    await waitForActiveVoice(page);
+    await page.evaluate(() => window.HstarVoiceAssistant._handleSocketMessage({
+      data: JSON.stringify({type: 'final', text: '\u6a2a\u6392\u8bed\u97f3', sequence: 9999}),
+    }));
+    await expect.poll(() => openshopFrame.evaluate(() => (
+      window.__hstarVoiceHorizontalText.text
+    ))).toBe('\u6a2a\u6392\u8bed\u97f3');
+    await page.evaluate(() => window.HstarVoiceAssistant.stop('test-cleanup'));
+    await waitForReadyVoice(page);
+
+    await openshopFrame.evaluate(() => {
+      const horizontal = window.__hstarVoiceHorizontalText;
+      horizontal.exitEditing();
+      const text = window.HstarOpenShopWritingMode.createTextObject(
+        fabric,
+        '',
+        {
+          left: 180,
+          top: 80,
+          fontSize: 42,
+          fill: '#111111',
+          hstarWritingMode: 'vertical',
+        },
+      );
+      OS.canvas.add(text);
+      OS.layers[OS.activeLayerIdx].objects.push(text);
+      OS.canvas.setActiveObject(text);
+      text.enterEditing();
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.dataset.voiceTest = 'vertical';
+      editor.focus();
+      window.__hstarVoiceVerticalText = text;
+    });
+    await expect.poll(() => page.evaluate(() => (
+      window.HstarVoiceAssistant?._activeTarget?.hstarVoiceFrameTarget === true
+    )), {timeout: 5_000}).toBe(true);
+    await page.keyboard.press('Shift+Q');
+    await waitForActiveVoice(page);
+    await page.evaluate(() => window.HstarVoiceAssistant._handleSocketMessage({
+      data: JSON.stringify({type: 'final', text: '\u7ad6\u6392\u8bed\u97f3', sequence: 9999}),
+    }));
+    await expect.poll(() => openshopFrame.evaluate(() => (
+      window.__hstarVoiceVerticalText.text
+    ))).toBe('\u7ad6\u6392\u8bed\u97f3');
+    await page.evaluate(() => window.HstarVoiceAssistant.stop('test-cleanup'));
+    await waitForReadyVoice(page);
+  } finally {
+    await browser.close();
+  }
+});
+
 test('releases the session when its target is removed or its iframe navigates', async () => {
   test.setTimeout(25_000);
   const {browser, context} = await launchVoiceBrowser();

@@ -1,5 +1,8 @@
 import gc
+import contextlib
+import importlib
 import os
+import pkgutil
 import sys
 import threading
 from dataclasses import dataclass
@@ -8,6 +11,15 @@ from typing import Callable
 
 
 _DLL_HANDLES = []
+_FUNASR_IMPORT_LOCK = threading.Lock()
+_FUNASR_NANO_MODULES = (
+    "funasr.frontends.wav_frontend",
+    "funasr.models.llm_asr.adaptor",
+    "funasr.models.sense_voice.model",
+    "funasr.tokenizer.hf_tokenizer",
+    "funasr.tokenizer.whisper_tokenizer",
+    "funasr.models.fun_asr_nano.model",
+)
 
 
 class VoiceRecognitionError(RuntimeError):
@@ -27,6 +39,32 @@ def prepend_runtime_site(runtime_site: str) -> None:
         ):
             if dll_dir.is_dir():
                 _DLL_HANDLES.append(os.add_dll_directory(str(dll_dir)))
+
+
+def _import_funasr_nano_modules() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(4, len(_FUNASR_NANO_MODULES))) as executor:
+        list(executor.map(importlib.import_module, _FUNASR_NANO_MODULES))
+
+
+def _funasr_auto_model():
+    loaded_package = sys.modules.get("funasr")
+    if loaded_package is not None and "AutoModel" in vars(loaded_package):
+        return loaded_package.AutoModel
+
+    with _FUNASR_IMPORT_LOCK:
+        loaded_package = sys.modules.get("funasr")
+        if loaded_package is None:
+            original_walk_packages = pkgutil.walk_packages
+            pkgutil.walk_packages = lambda *_args, **_kwargs: []
+            try:
+                importlib.import_module("funasr")
+            finally:
+                pkgutil.walk_packages = original_walk_packages
+
+        _import_funasr_nano_modules()
+        return importlib.import_module("funasr.auto.auto_model").AutoModel
 
 
 def funasr_language(language: str) -> str | None:
@@ -97,15 +135,20 @@ class FunAsrRecognizer:
     def _create_model(self, device: str):
         if self.model_factory is not None:
             return self.model_factory(model_path=self.model_path, device=device)
-        from funasr import AutoModel
+        AutoModel = _funasr_auto_model()
+        try:
+            from transformers.modeling_utils import no_init_weights
+        except (ImportError, AttributeError):
+            no_init_weights = contextlib.nullcontext
 
-        return AutoModel(
-            model=str(self.model_path),
-            trust_remote_code=True,
-            device=device,
-            disable_update=True,
-            disable_pbar=True,
-        )
+        with no_init_weights():
+            return AutoModel(
+                model=str(self.model_path),
+                trust_remote_code=False,
+                device=device,
+                disable_update=True,
+                disable_pbar=True,
+            )
 
     def transcribe(self, pcm16: bytes, language: str) -> str:
         if self.model is None:

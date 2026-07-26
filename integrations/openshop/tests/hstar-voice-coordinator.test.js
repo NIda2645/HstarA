@@ -303,6 +303,35 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.coordinator.state).toBe('listening');
   });
 
+  it('captures and flushes microphone audio while the model service is cold-starting', async () => {
+    const status = readyStatus();
+    const service = deferred();
+    const fetchOverride = vi.fn(async (url) => {
+      if (String(url).endsWith('/status')) return response(status);
+      if (String(url).endsWith('/service/start')) return service.promise;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const harness = makeHarness({status, fetchOverride});
+    harness.coordinator.activateTarget(document.createElement('textarea'));
+
+    const start = harness.coordinator.start();
+    await vi.waitFor(() => expect(harness.source.connect).toHaveBeenCalledOnce());
+    const earlyAudio = new ArrayBuffer(640);
+    harness.worklet.port.onmessage({data: earlyAudio});
+    expect(harness.socket.sent).toEqual([]);
+
+    service.resolve(response({ok: true, service: {process_state: 'running'}}));
+    await expect(start).resolves.toBe(true);
+
+    expect(harness.socket.sent[0]).toBe(JSON.stringify({
+      type: 'start',
+      session_id: 'session-test',
+      language: 'auto',
+      sample_rate: 16000,
+    }));
+    expect(harness.socket.sent[1]).toBe(earlyAudio);
+  });
+
   it('releases an acquired microphone when stopped during model loading', async () => {
     const status = readyStatus();
     const service = deferred();
@@ -323,6 +352,42 @@ describe('Hstar global voice coordinator', () => {
 
     expect(harness.track.stop).toHaveBeenCalledOnce();
     expect(harness.coordinator.state).toBe('ready');
+  });
+
+  it('cancels a cold start so the next click creates a fresh session', async () => {
+    const status = readyStatus();
+    const firstService = deferred();
+    let firstServiceSignal = null;
+    let serviceStarts = 0;
+    const fetchOverride = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith('/status')) return response(status);
+      if (String(url).endsWith('/service/start')) {
+        serviceStarts += 1;
+        if (serviceStarts === 1) {
+          firstServiceSignal = options.signal || null;
+          return firstService.promise;
+        }
+        return response({ok: true, service: {process_state: 'running'}});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const harness = makeHarness({status, fetchOverride});
+    harness.coordinator.activateTarget(document.createElement('textarea'));
+
+    const firstStart = harness.coordinator.start();
+    await vi.waitFor(() => expect(serviceStarts).toBe(1));
+    await harness.coordinator.stop('user');
+    const secondStart = harness.coordinator.start();
+
+    try {
+      await vi.waitFor(() => expect(serviceStarts).toBe(2));
+      expect(firstServiceSignal?.aborted).toBe(true);
+    } finally {
+      firstService.resolve(response({ok: true, service: {process_state: 'running'}}));
+    }
+    await expect(firstStart).resolves.toBe(false);
+    await expect(secondStart).resolves.toBe(true);
+    expect(harness.coordinator.state).toBe('listening');
   });
 
   it('keeps the original target locked until the listening session ends', async () => {
@@ -488,6 +553,27 @@ describe('Hstar global voice coordinator', () => {
 
     await vi.waitFor(() => {
       expect(document.querySelector('.hstar-voice-entry').style.left).toBe('366px');
+    });
+  });
+
+  it('tracks transform-driven target movement without geometry events', async () => {
+    const harness = makeHarness({renderUi: true});
+    const target = document.createElement('textarea');
+    document.body.append(target);
+    let right = 340;
+    target.getBoundingClientRect = () => ({
+      left: 100, top: 100, right, bottom: 180, width: right - 100, height: 80,
+    });
+    harness.adapter.isEligible.mockImplementation(value => value === target);
+
+    harness.coordinator.activateTarget(target);
+    await vi.waitFor(() => {
+      expect(document.querySelector('.hstar-voice-entry').style.left).toBe('306px');
+    });
+    right = 520;
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.hstar-voice-entry').style.left).toBe('486px');
     });
   });
 

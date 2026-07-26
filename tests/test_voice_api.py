@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from fastapi import HTTPException
 
 import main
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
+from voice_assistant.supervisor import VoiceSupervisorStatus
 
 
 class FakeManager:
@@ -56,6 +58,30 @@ class FakeSupervisor:
 
     async def session_finished(self):
         self.finished += 1
+
+
+class DeferredPrewarmSupervisor:
+    def __init__(self):
+        self.calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.loaded = False
+
+    async def prewarm(self, device="auto"):
+        self.calls += 1
+        self.started.set()
+        await self.release.wait()
+        self.loaded = True
+
+    def status(self):
+        return VoiceSupervisorStatus(
+            process_state="running",
+            model_state="loaded" if self.loaded else "unloaded",
+            process_id=1,
+            port=1234,
+            active_sessions=0,
+            last_error="",
+        )
 
 
 class VoiceApiTests(unittest.IsolatedAsyncioTestCase):
@@ -116,6 +142,26 @@ class VoiceApiTests(unittest.IsolatedAsyncioTestCase):
         second = await manager.open_session("second")
 
         self.assertIs(second, manager.supervisor.connection)
+
+    async def test_cancelled_client_does_not_duplicate_shared_model_prewarm(self):
+        manager = object.__new__(VoiceAssistantManager)
+        manager.supervisor = DeferredPrewarmSupervisor()
+        manager._prewarm_task = None
+
+        first = asyncio.create_task(manager.start_service("auto"))
+        await manager.supervisor.started.wait()
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+
+        second = asyncio.create_task(manager.start_service("auto"))
+        await asyncio.sleep(0)
+        self.assertEqual(manager.supervisor.calls, 1)
+        manager.supervisor.release.set()
+
+        status = await second
+        self.assertEqual(status["model_state"], "loaded")
+        self.assertEqual(manager.supervisor.calls, 1)
 
 
 if __name__ == "__main__":

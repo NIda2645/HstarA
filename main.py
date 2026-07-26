@@ -238,7 +238,7 @@ GLOBAL_LOOP = None
 COLLABORATION_KEY = secrets.token_urlsafe(24)
 COLLABORATION_LOCK = Lock()
 APP_VERSION = "2026.06.03"
-OPENSHOP_RUNTIME_REVISION = "2026.07.25.1245000000003"
+OPENSHOP_RUNTIME_REVISION = "2026.07.26.1030000001"
 OPENSHOP_ENTRY_ASSET_URLS = frozenset({
     "/static/css/openshop-host.css",
     "/static/openshop/host/openshop-protocol.js",
@@ -263,7 +263,9 @@ MODELSCOPE_TREE_URL = "https://www.modelscope.ai/api/v1/studio/daniel8152/Infini
 async def startup_event():
     global GLOBAL_LOOP
     GLOBAL_LOOP = asyncio.get_running_loop()
-    sync_static_html_versions()
+    VOICE_ASSISTANT.schedule_background_tasks()
+    await asyncio.sleep(0)
+    await asyncio.to_thread(sync_static_html_versions)
     # 启动时整理资产库：给所有图片分组（含默认角色/场景）建好文件夹，并把根目录里的旧素材归整进去。
     try:
         await asyncio.to_thread(migrate_asset_library_into_dirs)
@@ -284,8 +286,6 @@ async def startup_event():
         await asyncio.to_thread(reconcile_saved_openshop_projects)
     except Exception:
         logging.exception("OpenShop startup reconciliation failed")
-
-    VOICE_ASSISTANT.schedule_background_tasks()
 
 @app.websocket("/ws/stats")
 async def websocket_endpoint(websocket: WebSocket, client_id: str = None):

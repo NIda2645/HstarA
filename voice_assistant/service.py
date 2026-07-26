@@ -4,6 +4,8 @@ import contextlib
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 from .audio import VadSession, WebRtcVad
@@ -17,6 +19,55 @@ from .protocol import (
     write_json,
 )
 from .recognizer import FunAsrRecognizer, VoiceRecognitionError, prepend_runtime_site
+
+
+def parent_process_is_alive(process_id: int) -> bool:
+    if process_id <= 0:
+        return True
+    if os.name != "nt":
+        try:
+            os.kill(process_id, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    wait_timeout = 0x00000102
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(synchronize, False, process_id)
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def start_parent_watchdog(process_id: int) -> threading.Thread | None:
+    if process_id <= 0:
+        return None
+
+    def watch_parent():
+        while parent_process_is_alive(process_id):
+            time.sleep(0.5)
+        os._exit(0)
+
+    thread = threading.Thread(
+        target=watch_parent,
+        name="hstar-voice-parent-watchdog",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 class VoiceConnection:
@@ -216,6 +267,7 @@ class VoiceService:
 
 async def serve(args) -> int:
     prepend_runtime_site(args.runtime_site)
+    start_parent_watchdog(int(getattr(args, "parent_pid", 0) or 0))
     test_mode = bool(args.test_mode)
     if test_mode:
         if os.environ.get("HSTAR_VOICE_TEST_MODE") != "1":
@@ -246,6 +298,7 @@ def parse_args(argv=None):
     parser.add_argument("--runtime-site", required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--token", required=True)
+    parser.add_argument("--parent-pid", type=int, default=0)
     parser.add_argument("--test-mode", action="store_true")
     return parser.parse_args(argv)
 

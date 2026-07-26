@@ -68,7 +68,7 @@ def normalize_voice_settings(
         language=language,
         input_device_id=str(raw.get("input_device_id") or "default"),
         shortcut=str(raw.get("shortcut") or DEFAULT_SHORTCUT),
-        prewarm_on_startup=bool(raw.get("prewarm_on_startup", False)),
+        prewarm_on_startup=bool(raw.get("prewarm_on_startup", True)),
         warm_idle_seconds=WARM_IDLE_SECONDS,
         silence_stop_seconds=SILENCE_STOP_SECONDS,
     )
