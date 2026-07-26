@@ -87,7 +87,8 @@ from native_file_picker import (
     selected_file_metadata,
 )
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
-from hstar_runtime.bootstrap import BootstrapStore
+from hstar_runtime.bootstrap import BootstrapConfig, BootstrapStore
+from hstar_runtime.migration import MigrationError, MigrationManager, MigrationState
 from hstar_runtime.paths import RuntimePaths, build_runtime_paths
 
 
@@ -421,6 +422,7 @@ API_PROVIDERS_FILE = RUNTIME_STORAGE_PATHS["api_providers_file"]
 RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_STORAGE_PATHS["runninghub_workflow_store_file"]
 SHARED_FOLDERS_FILE = RUNTIME_STORAGE_PATHS["shared_folders_file"]
 GLOBAL_CONFIG_FILE = RUNTIME_STORAGE_PATHS["global_config_file"]
+STORAGE_MIGRATIONS = MigrationManager(BOOTSTRAP, PROGRAM_ROOT)
 OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR, canvas_dir=CANVAS_DIR)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
 OPENSHOP_PROJECT_LIFECYCLE_LOCK = RLock()
@@ -2964,6 +2966,9 @@ class SaveOutputAsRequest(BaseModel):
 
 class SoftwareStorageRequest(BaseModel):
     storage_root: str = ""
+
+class StorageMigrationRequest(BaseModel):
+    storage_root: str = Field(min_length=1, max_length=1024)
 
 class VoiceSettingsRequest(BaseModel):
     enabled: bool = True
@@ -12560,42 +12565,6 @@ def save_software_settings(settings: Dict[str, Any]) -> None:
     with open(SOFTWARE_SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(safe, f, ensure_ascii=False, indent=2)
 
-def copy_runtime_file_if_missing(source: str, target: str) -> bool:
-    if not os.path.isfile(source) or os.path.exists(target):
-        return False
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    shutil.copy2(source, target)
-    return True
-
-def copy_runtime_dir_if_missing(source: str, target: str) -> int:
-    if not os.path.isdir(source):
-        return 0
-    copied = 0
-    for root, _, files in os.walk(source):
-        rel_root = os.path.relpath(root, source)
-        dest_root = target if rel_root == "." else os.path.join(target, rel_root)
-        os.makedirs(dest_root, exist_ok=True)
-        for name in files:
-            src_file = os.path.join(root, name)
-            dest_file = os.path.join(dest_root, name)
-            if not os.path.exists(dest_file):
-                shutil.copy2(src_file, dest_file)
-                copied += 1
-    return copied
-
-def migrate_runtime_data_to_storage(storage_root: str) -> Dict[str, Any]:
-    target_paths = runtime_paths_for_storage_root(storage_root, SOFTWARE_SETTINGS_FILE)
-    source_paths = runtime_paths_for_storage_root(STORAGE_ROOT, SOFTWARE_SETTINGS_FILE)
-    copied_files = 0
-    for key in ("canvas_dir", "conversation_dir", "assets_dir", "output_dir"):
-        copied_files += copy_runtime_dir_if_missing(source_paths[key], target_paths[key])
-    for key in ("asset_library_path", "prompt_library_path", "api_providers_file", "runninghub_workflow_store_file", "shared_folders_file", "global_config_file", "history_file"):
-        if copy_runtime_file_if_missing(source_paths[key], target_paths[key]):
-            copied_files += 1
-    for key in ("data_dir", "canvas_dir", "conversation_dir", "assets_dir", "output_dir", "output_input_dir", "output_output_dir", "asset_library_dir", "local_upload_dir"):
-        os.makedirs(target_paths[key], exist_ok=True)
-    return {"copied_files": copied_files, "data_dir": target_paths["data_dir"], "assets_dir": target_paths["assets_dir"], "output_dir": target_paths["output_dir"]}
-
 def normalize_storage_root(value: str) -> str:
     raw = os.path.expandvars(os.path.expanduser(str(value or "").strip().strip('"')))
     if not raw:
@@ -13002,14 +12971,75 @@ def get_software_settings():
     settings = load_software_settings()
     return {"settings": {**settings, "active_storage_root": STORAGE_ROOT, "active_data_dir": DATA_DIR, "active_assets_dir": ASSETS_DIR, "active_output_dir": OUTPUT_DIR}}
 
+def validate_storage_migration_target(source: Path, target: Path) -> None:
+    resolved_source = source.expanduser().resolve()
+    resolved_target = target.expanduser().resolve()
+    if (
+        resolved_source == resolved_target
+        or resolved_source in resolved_target.parents
+        or resolved_target in resolved_source.parents
+    ):
+        raise HTTPException(status_code=400, detail="源目录与目标目录不能互相包含")
+    if resolved_target == PROGRAM_ROOT or PROGRAM_ROOT in resolved_target.parents:
+        raise HTTPException(status_code=400, detail="目标目录不能位于 Hstar 程序目录内")
+    if resolved_target.exists() and any(resolved_target.iterdir()):
+        raise HTTPException(status_code=400, detail="目标目录必须为空，现有数据不会被覆盖")
+
+def is_loopback_request(request: Request) -> bool:
+    host = request.client.host if request.client else ""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+def storage_migration_payload(state: MigrationState, request: Request) -> Dict[str, Any]:
+    payload = state.as_dict()
+    payload["restart_required"] = state.status == "completed"
+    if not is_loopback_request(request):
+        payload.pop("source", None)
+    return payload
+
+@app.post("/api/storage-migrations", status_code=202)
+def start_storage_migration(payload: StorageMigrationRequest, request: Request):
+    target = Path(normalize_storage_root(payload.storage_root))
+    source = Path(STORAGE_ROOT).expanduser().resolve()
+    validate_storage_migration_target(source, target)
+    migration_bootstrap = STORAGE_MIGRATIONS.bootstrap
+    if migration_bootstrap.load() is None:
+        migration_bootstrap.save(
+            BootstrapConfig(1, migration_bootstrap.edition, str(source))
+        )
+    try:
+        task = STORAGE_MIGRATIONS.start(source, target)
+    except MigrationError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
+@app.get("/api/storage-migrations/{task_id}")
+def storage_migration_status(task_id: str, request: Request):
+    try:
+        task = STORAGE_MIGRATIONS.status(task_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="未找到数据迁移任务") from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
+@app.delete("/api/storage-migrations/{task_id}")
+def cancel_storage_migration(task_id: str, request: Request):
+    try:
+        task = STORAGE_MIGRATIONS.cancel(task_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="未找到数据迁移任务") from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
 @app.post("/api/software-settings/storage")
 def save_software_storage(payload: SoftwareStorageRequest):
-    settings = load_software_settings()
-    storage_root = normalize_storage_root(payload.storage_root)
-    migration = migrate_runtime_data_to_storage(storage_root)
-    settings["storage_root"] = storage_root
-    save_software_settings(settings)
-    return {"settings": {**settings, "migration": migration, "message": "Storage saved. Restart Hstar to use this folder for canvas, assets, output, and history data."}}
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "message": "同步存储迁移接口已停用，请使用后台迁移任务。",
+            "endpoint": "/api/storage-migrations",
+        },
+    )
 
 def raise_voice_http_error(error: VoiceManagerError):
     status_code = 404 if error.code == "VOICE_TASK_NOT_FOUND" else 409 if error.code == "VOICE_MIC_BUSY" else 400
