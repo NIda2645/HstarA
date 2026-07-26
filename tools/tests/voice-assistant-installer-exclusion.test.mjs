@@ -6,7 +6,7 @@ import {relative, resolve, sep} from 'node:path';
 const root = resolve(process.cwd());
 const ignore = readFileSync(resolve(root, '.gitignore'), 'utf8');
 const installer = readFileSync(resolve(root, 'build/installer/Hstar.iss'), 'utf8');
-const stageRoot = resolve(root, 'build/installer/stage');
+const stageRoot = resolve(root, 'build/installer/stage/windows11');
 const largeBinaryThreshold = 100 * 1024 * 1024;
 
 assert.match(ignore, /\*\*\/\.hstar-voice\//, 'voice runtime directories are ignored');
@@ -74,7 +74,7 @@ if (existsSync(stageRoot)) walk(stageRoot);
 assert.deepEqual(
   forbiddenStageFiles,
   [],
-  'installer stage must not contain voice model, runtime, cache, report, or recording data',
+  'Windows 11 installer stage must not contain voice model, runtime, cache, report, or recording data',
 );
 
 console.log('voice assistant installer exclusion checks passed');

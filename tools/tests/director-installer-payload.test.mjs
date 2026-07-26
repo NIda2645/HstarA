@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 
 const root = process.cwd();
 const directorRoot = path.join(root, 'static', '3d-director');
+const windows11StageRoot = path.join(root, 'build', 'installer', 'stage', 'windows11');
 const indexPath = path.join(directorRoot, 'index.html');
 const approvedSharedAssets = new Map([
   ['/static/js/voice-input-adapter.js', path.join(root, 'static', 'js', 'voice-input-adapter.js')],
@@ -32,12 +33,16 @@ for(const ref of assetRefs){
 
 assert.ok(fs.existsSync(path.join(directorRoot, 'assets')), 'director assets directory exists');
 assert.ok(fs.existsSync(path.join(directorRoot, 'models')), 'director models directory exists');
+if(fs.existsSync(windows11StageRoot)){
+  assert.ok(fs.existsSync(path.join(windows11StageRoot, 'static', '3d-director', 'index.html')), 'Windows 11 stage contains the director entry point');
+  assert.ok(fs.existsSync(path.join(windows11StageRoot, 'static', '3d-director', 'models', 'ue-mannequin-retopology.glb')), 'Windows 11 stage contains the director model payload');
+}
 
 const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {encoding: 'utf8'});
 assert.ok(!staged.split(/\r?\n/).some(line => line.startsWith('build/installer/stage/')), 'installer stage is not staged');
 
 try {
-  execFileSync('git', ['check-ignore', '-q', 'build/installer/stage/'], {stdio: 'pipe'});
+  execFileSync('git', ['check-ignore', '-q', 'build/installer/stage/windows11/'], {stdio: 'pipe'});
 } catch(error) {
-  assert.fail('build/installer/stage/ should be ignored');
+  assert.fail('build/installer/stage/windows11/ should be ignored');
 }
