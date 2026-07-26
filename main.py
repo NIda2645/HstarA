@@ -6685,11 +6685,13 @@ async def wait_for_image_task(client, task_id, provider=None):
     raise HTTPException(status_code=504, detail=f"生图任务超时（已等待 {int(timeout)} 秒），task_id={task_id}{extra}")
 
 def output_storage(category="output"):
-    return (OUTPUT_INPUT_DIR, "input") if category == "input" else (OUTPUT_OUTPUT_DIR, "output")
+    if category == "input":
+        return OUTPUT_INPUT_DIR, "/assets/input"
+    return OUTPUT_OUTPUT_DIR, "/output/generated"
 
 def output_url_for(filename, category="output"):
-    _, subdir = output_storage(category)
-    return f"/assets/{subdir}/{filename}"
+    _, url_prefix = output_storage(category)
+    return f"{url_prefix}/{filename}"
 
 def output_path_for(filename, category="output"):
     folder, _ = output_storage(category)
