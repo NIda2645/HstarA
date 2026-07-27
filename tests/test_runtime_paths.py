@@ -58,7 +58,7 @@ class RuntimePathTests(unittest.TestCase):
             self.assertFalse((data_root / "config").exists())
             self.assertFalse((data_root / "projects").exists())
 
-    def test_modern_canvas_records_take_precedence_when_both_layouts_exist(self):
+    def test_legacy_layout_remains_available_after_modern_canvases_are_created(self):
         with tempfile.TemporaryDirectory() as program, tempfile.TemporaryDirectory() as data:
             data_root = Path(data)
             legacy_canvases = data_root / "data" / "canvases"
@@ -69,15 +69,38 @@ class RuntimePathTests(unittest.TestCase):
             (modern_canvases / "modern.json").write_text("{}", encoding="utf-8")
             paths = build_runtime_paths(Path(program), data_root, "development")
 
-            self.assertFalse(uses_existing_legacy_storage_layout(paths))
-            storage = build_storage_path_map(paths, prefer_existing_legacy=True)
+            self.assertTrue(uses_existing_legacy_storage_layout(paths))
+            storage = build_storage_path_map(paths)
+            legacy_storage = build_storage_path_map(paths, prefer_existing_legacy=True)
 
             self.assertEqual(storage["canvas_dir"], modern_canvases)
             self.assertEqual(storage["data_dir"], data_root / "config")
+            self.assertEqual(legacy_storage["canvas_dir"], legacy_canvases)
+            self.assertEqual(legacy_storage["data_dir"], data_root / "data")
             self.assertEqual(
                 paths.user_workflow_dir,
                 Path(data).resolve() / "config" / "workflows",
             )
+
+    def test_legacy_singletons_and_conversations_enable_compatibility_without_canvases(self):
+        with tempfile.TemporaryDirectory() as program, tempfile.TemporaryDirectory() as data:
+            data_root = Path(data)
+            conversation_dir = data_root / "data" / "conversations" / "legacy-user"
+            conversation_dir.mkdir(parents=True)
+            (conversation_dir / "conversation.json").write_text("{}", encoding="utf-8")
+            (data_root / "history.json").write_text("[]", encoding="utf-8")
+            paths = build_runtime_paths(Path(program), data_root, "development")
+
+            self.assertTrue(uses_existing_legacy_storage_layout(paths))
+            legacy_storage = build_storage_path_map(
+                paths,
+                prefer_existing_legacy=True,
+            )
+            self.assertEqual(
+                legacy_storage["conversation_dir"],
+                data_root / "data" / "conversations",
+            )
+            self.assertEqual(legacy_storage["history_file"], data_root / "history.json")
 
 
 if __name__ == "__main__":

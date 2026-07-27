@@ -53,6 +53,7 @@ from openshop_projects import (
     OpenShopNotFound,
     OpenShopOwnershipError,
     OpenShopProjectStore,
+    OpenShopStorageRouter,
     OpenShopReconciliationError,
     OpenShopStoreError,
     OpenShopValidationError,
@@ -293,7 +294,7 @@ MODELSCOPE_TREE_URL = "https://www.modelscope.ai/api/v1/studio/daniel8152/Infini
 async def startup_event():
     global GLOBAL_LOOP
     GLOBAL_LOOP = asyncio.get_running_loop()
-    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+    if MODERN_STORAGE_ACTIVE_ON_STARTUP:
         VOICE_ASSISTANT.schedule_background_tasks()
     await asyncio.sleep(0)
     await asyncio.to_thread(sync_static_html_versions)
@@ -311,6 +312,7 @@ async def startup_event():
             await asyncio.to_thread(migrate_mislabeled_image_extensions)
         except Exception as exc:
             print(f"纠正图片扩展名失败: {exc}")
+    if os.path.isdir(CANVAS_DIR):
         try:
             await asyncio.to_thread(reconcile_saved_openshop_projects)
         except Exception:
@@ -353,10 +355,21 @@ else:
         DATA_ROOT = BOOTSTRAP.require().resolved_data_root()
 
 RUNTIME_PATHS: RuntimePaths = build_runtime_paths(PROGRAM_ROOT, DATA_ROOT, EDITION)
-PRESERVE_EXISTING_DATA_ON_STARTUP = EDITION == "development" and uses_existing_legacy_storage_layout(RUNTIME_PATHS)
-INITIAL_STORAGE_PATHS = build_storage_path_map(
-    RUNTIME_PATHS,
-    prefer_existing_legacy=PRESERVE_EXISTING_DATA_ON_STARTUP,
+PRESERVE_EXISTING_DATA_ON_STARTUP = uses_existing_legacy_storage_layout(RUNTIME_PATHS)
+MODERN_STORAGE_ACTIVE_ON_STARTUP = not PRESERVE_EXISTING_DATA_ON_STARTUP or any(
+    path.is_dir()
+    for path in (
+        RUNTIME_PATHS.config_dir,
+        RUNTIME_PATHS.project_dir,
+        RUNTIME_PATHS.history_dir,
+        RUNTIME_PATHS.output_dir,
+    )
+)
+INITIAL_STORAGE_PATHS = build_storage_path_map(RUNTIME_PATHS)
+LEGACY_STORAGE_PATHS = (
+    build_storage_path_map(RUNTIME_PATHS, prefer_existing_legacy=True)
+    if PRESERVE_EXISTING_DATA_ON_STARTUP
+    else {}
 )
 APP_DATA_ROOT = str(RUNTIME_PATHS.data_root)
 BUILTIN_WORKFLOW_DIR = str(RUNTIME_PATHS.builtin_workflow_dir)
@@ -536,10 +549,7 @@ def runtime_paths_for_storage_root(
     software_settings_file: str = "",
 ) -> Dict[str, str]:
     paths = build_runtime_paths(PROGRAM_ROOT, Path(storage_root), EDITION)
-    resolved = build_storage_path_map(
-        paths,
-        prefer_existing_legacy=EDITION == "development",
-    )
+    resolved = build_storage_path_map(paths)
     return {key: str(value) for key, value in resolved.items()}
 
 RUNTIME_STORAGE_PATHS = runtime_paths_for_storage_root(str(RUNTIME_PATHS.data_root))
@@ -562,11 +572,49 @@ API_PROVIDERS_FILE = RUNTIME_STORAGE_PATHS["api_providers_file"]
 RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_STORAGE_PATHS["runninghub_workflow_store_file"]
 SHARED_FOLDERS_FILE = RUNTIME_STORAGE_PATHS["shared_folders_file"]
 GLOBAL_CONFIG_FILE = RUNTIME_STORAGE_PATHS["global_config_file"]
+LEGACY_DATA_DIR = str(LEGACY_STORAGE_PATHS.get("data_dir") or "")
+LEGACY_CONVERSATION_DIR = str(LEGACY_STORAGE_PATHS.get("conversation_dir") or "")
+LEGACY_CANVAS_DIR = str(LEGACY_STORAGE_PATHS.get("canvas_dir") or "")
+LEGACY_OPENSHOP_DATA_DIR = str(LEGACY_STORAGE_PATHS.get("openshop_data_dir") or "")
+LEGACY_MEDIA_PREVIEW_DIR = str(LEGACY_STORAGE_PATHS.get("media_preview_dir") or "")
+LEGACY_ASSET_LIBRARY_PATH = str(LEGACY_STORAGE_PATHS.get("asset_library_path") or "")
+LEGACY_PROMPT_LIBRARY_PATH = str(LEGACY_STORAGE_PATHS.get("prompt_library_path") or "")
+LEGACY_API_PROVIDERS_FILE = str(LEGACY_STORAGE_PATHS.get("api_providers_file") or "")
+LEGACY_RUNNINGHUB_WORKFLOW_STORE_FILE = str(LEGACY_STORAGE_PATHS.get("runninghub_workflow_store_file") or "")
+LEGACY_SHARED_FOLDERS_FILE = str(LEGACY_STORAGE_PATHS.get("shared_folders_file") or "")
+LEGACY_SOFTWARE_SETTINGS_FILE = str(LEGACY_STORAGE_PATHS.get("software_settings_file") or "")
+LEGACY_GLOBAL_CONFIG_FILE = str(LEGACY_STORAGE_PATHS.get("global_config_file") or "")
+LEGACY_HISTORY_FILE = str(LEGACY_STORAGE_PATHS.get("history_file") or "")
+LEGACY_OUTPUT_DIR = str(LEGACY_STORAGE_PATHS.get("output_dir") or "")
+
+def storage_read_path(primary_path: str, legacy_path: str = "") -> str:
+    if primary_path and os.path.exists(primary_path):
+        return primary_path
+    if legacy_path and os.path.exists(legacy_path):
+        return legacy_path
+    return primary_path
+
 STORAGE_MIGRATIONS = MigrationManager(BOOTSTRAP, PROGRAM_ROOT)
-OPENSHOP_STORE = OpenShopProjectStore(
+PRIMARY_OPENSHOP_STORE = OpenShopProjectStore(
     OPENSHOP_DATA_DIR,
     canvas_dir=CANVAS_DIR,
-    create_directories=not PRESERVE_EXISTING_DATA_ON_STARTUP,
+    create_directories=MODERN_STORAGE_ACTIVE_ON_STARTUP,
+)
+LEGACY_OPENSHOP_STORE = (
+    OpenShopProjectStore(
+        LEGACY_OPENSHOP_DATA_DIR,
+        canvas_dir=LEGACY_CANVAS_DIR,
+        create_directories=False,
+        migrate_legacy_projects=False,
+    )
+    if LEGACY_OPENSHOP_DATA_DIR and LEGACY_CANVAS_DIR
+    else None
+)
+OPENSHOP_STORE = OpenShopStorageRouter(
+    PRIMARY_OPENSHOP_STORE,
+    LEGACY_OPENSHOP_STORE,
+    primary_canvas_dir=CANVAS_DIR,
+    legacy_canvas_dir=LEGACY_CANVAS_DIR,
 )
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
 OPENSHOP_PROJECT_LIFECYCLE_LOCK = RLock()
@@ -795,7 +843,7 @@ RUNNINGHUB_DEFAULT_WORKFLOWS = [
 
 def ensure_runtime_config_files():
     """Create writable configuration directories before the first save."""
-    if PRESERVE_EXISTING_DATA_ON_STARTUP:
+    if not MODERN_STORAGE_ACTIVE_ON_STARTUP:
         return
     try:
         os.makedirs(RUNTIME_PATHS.secrets_dir, exist_ok=True)
@@ -1620,12 +1668,13 @@ def normalize_provider(item):
 
 def load_api_providers():
     defaults = load_packaged_api_defaults() or default_api_providers()
-    if not os.path.exists(API_PROVIDERS_FILE):
+    path = storage_read_path(API_PROVIDERS_FILE, LEGACY_API_PROVIDERS_FILE)
+    if not os.path.exists(path):
         providers = merge_default_api_providers(defaults)
         save_api_providers(providers)
         return providers
     try:
-        with open(API_PROVIDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         providers = [normalize_provider(item) for item in raw if isinstance(item, dict)]
         return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
@@ -1750,7 +1799,7 @@ def update_env_values(updates):
 
 BACKEND_LOCAL_LOAD = {addr: 0 for addr in COMFYUI_INSTANCES}
 
-if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+if MODERN_STORAGE_ACTIVE_ON_STARTUP:
     for writable_path in RUNTIME_PATHS.writable_paths():
         os.makedirs(writable_path, exist_ok=True)
     os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
@@ -1759,15 +1808,21 @@ if not PRESERVE_EXISTING_DATA_ON_STARTUP:
     os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
     os.makedirs(CONVERSATION_DIR, exist_ok=True)
 
+class StorageOverlayStaticFiles(StaticFiles):
+    def __init__(self, directories):
+        super().__init__(directory=None, check_dir=False)
+        self.all_directories = [str(path) for path in directories if path]
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount(
     "/output",
-    StaticFiles(directory=OUTPUT_DIR, check_dir=not PRESERVE_EXISTING_DATA_ON_STARTUP),
+    StorageOverlayStaticFiles([OUTPUT_DIR, LEGACY_OUTPUT_DIR]),
     name="output",
 )
 app.mount(
     "/assets",
-    StaticFiles(directory=ASSETS_DIR, check_dir=not PRESERVE_EXISTING_DATA_ON_STARTUP),
+    StorageOverlayStaticFiles([ASSETS_DIR]),
     name="assets",
 )
 
@@ -3264,14 +3319,16 @@ def comfy_class_is_debug_text(class_type):
 def save_to_history(record):
     with HISTORY_LOCK:
         history = []
-        if os.path.exists(HISTORY_FILE):
+        read_path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+        if os.path.exists(read_path):
             try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                with open(read_path, 'r', encoding='utf-8') as f:
                     history = json.load(f)
             except: pass
         if "timestamp" not in record:
             record["timestamp"] = time.time()
         history.insert(0, record)
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
         with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
             json.dump(history[:5000], f, ensure_ascii=False, indent=4)
 
@@ -3291,16 +3348,51 @@ def safe_user_id(user_id, request: Request):
     candidate = re.sub(r"[^a-zA-Z0-9_.-]", "-", candidate)[:80].strip(".-")
     return candidate or "anonymous"
 
-def user_dir(user_id):
-    path = os.path.join(CONVERSATION_DIR, user_id)
-    os.makedirs(path, exist_ok=True)
-    return path
+def conversation_user_dir(root_dir, user_id):
+    return os.path.join(root_dir, user_id) if root_dir else ""
 
-def conversation_path(user_id, conversation_id):
+def primary_conversation_path(user_id, conversation_id):
+    return os.path.join(
+        conversation_user_dir(CONVERSATION_DIR, user_id),
+        f"{cleaned_conversation_id(conversation_id)}.json",
+    )
+
+def legacy_conversation_path(user_id, conversation_id):
+    if not LEGACY_CONVERSATION_DIR:
+        return ""
+    return os.path.join(
+        conversation_user_dir(LEGACY_CONVERSATION_DIR, user_id),
+        f"{cleaned_conversation_id(conversation_id)}.json",
+    )
+
+def cleaned_conversation_id(conversation_id):
     cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", conversation_id or "")
     if not cleaned:
         raise HTTPException(status_code=400, detail="无效的对话 ID")
-    return os.path.join(user_dir(user_id), f"{cleaned}.json")
+    return cleaned
+
+def conversation_path(user_id, conversation_id):
+    primary = primary_conversation_path(user_id, conversation_id)
+    if os.path.isfile(primary):
+        return primary
+    legacy = legacy_conversation_path(user_id, conversation_id)
+    if legacy and os.path.isfile(legacy):
+        return legacy
+    return primary
+
+def conversation_storage_files(user_id):
+    by_name = {}
+    directories = [
+        conversation_user_dir(LEGACY_CONVERSATION_DIR, user_id),
+        conversation_user_dir(CONVERSATION_DIR, user_id),
+    ]
+    for directory in directories:
+        if not directory or not os.path.isdir(directory):
+            continue
+        for filename in os.listdir(directory):
+            if filename.endswith(".json"):
+                by_name[filename] = os.path.join(directory, filename)
+    return [by_name[name] for name in sorted(by_name)]
 
 def now_ms():
     return int(time.time() * 1000)
@@ -3308,6 +3400,7 @@ def now_ms():
 def save_conversation(user_id, conversation):
     with CONVERSATION_LOCK:
         path = conversation_path(user_id, conversation["id"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(conversation, f, ensure_ascii=False, indent=2)
 
@@ -3332,10 +3425,7 @@ def load_conversation(user_id, conversation_id):
 
 def list_conversations(user_id):
     records = []
-    for filename in os.listdir(user_dir(user_id)):
-        if not filename.endswith(".json"):
-            continue
-        path = os.path.join(user_dir(user_id), filename)
+    for path in conversation_storage_files(user_id):
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -3352,11 +3442,42 @@ def list_conversations(user_id):
         })
     return sorted(records, key=lambda item: item["updated_at"], reverse=True)
 
-def canvas_path(canvas_id):
+def cleaned_canvas_id(canvas_id):
     cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", canvas_id or "")
     if not cleaned:
         raise HTTPException(status_code=400, detail="无效的画布 ID")
-    return os.path.join(CANVAS_DIR, f"{cleaned}.json")
+    return cleaned
+
+def primary_canvas_path(canvas_id):
+    return os.path.join(CANVAS_DIR, f"{cleaned_canvas_id(canvas_id)}.json")
+
+def legacy_canvas_path(canvas_id):
+    if not LEGACY_CANVAS_DIR:
+        return ""
+    return os.path.join(LEGACY_CANVAS_DIR, f"{cleaned_canvas_id(canvas_id)}.json")
+
+def canvas_path(canvas_id):
+    primary = primary_canvas_path(canvas_id)
+    if os.path.isfile(primary):
+        return primary
+    legacy = legacy_canvas_path(canvas_id)
+    if legacy and os.path.isfile(legacy):
+        return legacy
+    return primary
+
+def canvas_storage_files(*, include_legacy=True):
+    by_name = {}
+    directories = []
+    if include_legacy and LEGACY_CANVAS_DIR:
+        directories.append(LEGACY_CANVAS_DIR)
+    directories.append(CANVAS_DIR)
+    for directory in directories:
+        if not os.path.isdir(directory):
+            continue
+        for filename in os.listdir(directory):
+            if filename.endswith(".json"):
+                by_name[filename] = os.path.join(directory, filename)
+    return [by_name[name] for name in sorted(by_name)]
 
 def save_canvas(canvas):
     previous_updated_at = int(canvas.get("updated_at") or 0)
@@ -3387,11 +3508,9 @@ def openshop_asset_refs_from_value(value):
 def openshop_canvas_asset_refs():
     refs = set()
     with CANVAS_LOCK:
-        for filename in os.listdir(CANVAS_DIR):
-            if not filename.endswith(".json"):
-                continue
+        for path in canvas_storage_files():
             try:
-                with open(os.path.join(CANVAS_DIR, filename), "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     refs.update(openshop_asset_refs_from_value(json.load(f)))
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
@@ -3497,11 +3616,13 @@ def remove_openshop_projects(project_owners, canvas_type, canvas_id):
 
 # ===== 项目（按项目分类管理画布）=====
 PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
+LEGACY_PROJECTS_PATH = os.path.join(LEGACY_DATA_DIR, "projects.json") if LEGACY_DATA_DIR else ""
 DEFAULT_PROJECT_ID = "default"
 
 def load_projects():
+    path = storage_read_path(PROJECTS_PATH, LEGACY_PROJECTS_PATH)
     try:
-        with open(PROJECTS_PATH, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         projects = data.get("projects") if isinstance(data, dict) else data
         if isinstance(projects, list):
@@ -3512,6 +3633,7 @@ def load_projects():
 
 def save_projects(projects):
     with CANVAS_LOCK:
+        os.makedirs(os.path.dirname(PROJECTS_PATH), exist_ok=True)
         with open(PROJECTS_PATH, 'w', encoding='utf-8') as f:
             json.dump({"projects": projects}, f, ensure_ascii=False, indent=2)
 
@@ -3560,7 +3682,9 @@ def list_projects():
     return out
 
 def create_canvas_file(canvas):
-    path = canvas_path(canvas["id"])
+    if os.path.isfile(canvas_path(canvas["id"])):
+        raise FileExistsError(canvas["id"])
+    path = primary_canvas_path(canvas["id"])
     os.makedirs(CANVAS_DIR, exist_ok=True)
     file_descriptor = os.open(
         path,
@@ -3663,6 +3787,8 @@ def canvas_record(data):
     }
 
 def cleanup_expired_canvas_trash():
+    if not os.path.isdir(CANVAS_DIR):
+        return
     cutoff = now_ms() - CANVAS_TRASH_RETENTION_MS
     removed_projects = False
     with CANVAS_LOCK:
@@ -3694,14 +3820,11 @@ def cleanup_expired_canvas_trash():
         collect_openshop_garbage()
 
 def iter_canvas_records(include_deleted=False):
-    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
-        cleanup_expired_canvas_trash()
+    cleanup_expired_canvas_trash()
     records = []
-    for filename in os.listdir(CANVAS_DIR):
-        if not filename.endswith(".json"):
-            continue
+    for path in canvas_storage_files():
         try:
-            with open(os.path.join(CANVAS_DIR, filename), 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception:
             continue
@@ -3856,13 +3979,10 @@ def canvas_assets_index():
     items = []
     canvas_counts = {"all": 0, "smart": 0, "classic": 0}
     item_counts = {"all": 0, "smart": 0, "classic": 0}
-    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
-        cleanup_expired_canvas_trash()
-    for filename in os.listdir(CANVAS_DIR):
-        if not filename.endswith(".json"):
-            continue
+    cleanup_expired_canvas_trash()
+    for path in canvas_storage_files():
         try:
-            with open(os.path.join(CANVAS_DIR, filename), "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 canvas = json.load(f)
         except Exception:
             continue
@@ -6871,19 +6991,22 @@ def output_file_from_url(url):
         return None
     clean = urllib.parse.unquote(url.split("?", 1)[0]).replace("\\", "/")
     if clean.startswith("/assets/"):
-        root = ASSETS_DIR
+        roots = [ASSETS_DIR]
         rel = clean[len("/assets/"):]
     else:
-        root = OUTPUT_DIR
+        roots = [OUTPUT_DIR, LEGACY_OUTPUT_DIR]
         rel = clean[len("/output/"):]
     rel = rel.lstrip("/")
     if not rel:
         return None
-    path = os.path.abspath(os.path.join(root, rel))
-    output_root = os.path.abspath(root)
-    if os.path.commonpath([output_root, path]) != output_root or not os.path.exists(path):
-        return None
-    return path
+    for root in roots:
+        if not root:
+            continue
+        path = os.path.abspath(os.path.join(root, rel))
+        output_root = os.path.abspath(root)
+        if os.path.commonpath([output_root, path]) == output_root and os.path.exists(path):
+            return path
+    return None
 
 def image_has_alpha(img: Image.Image) -> bool:
     if img.mode in ("RGBA", "LA"):
@@ -6892,20 +7015,38 @@ def image_has_alpha(img: Image.Image) -> bool:
         return "transparency" in img.info
     return False
 
-def media_preview_cache_paths(path: str, width: int):
+def media_preview_cache_key(path: str, width: int, suffix: str = ""):
     stat = os.stat(path)
-    key = hashlib.sha1(
-        f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}".encode("utf-8", "ignore")
+    return hashlib.sha1(
+        f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}{suffix}".encode(
+            "utf-8", "ignore"
+        )
     ).hexdigest()
+
+def media_preview_cache_paths(path: str, width: int, root_dir: str = ""):
+    key = media_preview_cache_key(path, width)
+    cache_root = root_dir or MEDIA_PREVIEW_DIR
     return (
-        os.path.join(MEDIA_PREVIEW_DIR, f"{key}.webp"),
-        os.path.join(MEDIA_PREVIEW_DIR, f"{key}.png"),
+        os.path.join(cache_root, f"{key}.webp"),
+        os.path.join(cache_root, f"{key}.png"),
     )
+
+def media_preview_read_paths(path: str, width: int):
+    paths = [media_preview_cache_paths(path, width)]
+    if LEGACY_MEDIA_PREVIEW_DIR:
+        paths.append(
+            media_preview_cache_paths(path, width, LEGACY_MEDIA_PREVIEW_DIR)
+        )
+    return paths
 
 def remove_media_preview_cache(path: str, widths=(480,)):
     for width in widths:
         try:
-            cache_paths = media_preview_cache_paths(path, int(width))
+            cache_paths = [
+                candidate
+                for pair in media_preview_read_paths(path, int(width))
+                for candidate in pair
+            ]
         except OSError:
             continue
         for cache_path in cache_paths:
@@ -6954,12 +7095,13 @@ async def media_preview(url: str, w: int = 512):
         raise HTTPException(status_code=404, detail="媒体文件不存在")
 
     width = max(64, min(2048, int(w or 512)))
-    webp_path, png_path = media_preview_cache_paths(path, width)
+    for cached_webp_path, cached_png_path in media_preview_read_paths(path, width):
+        if os.path.exists(cached_webp_path):
+            return FileResponse(cached_webp_path, media_type="image/webp")
+        if os.path.exists(cached_png_path):
+            return FileResponse(cached_png_path, media_type="image/png")
 
-    if os.path.exists(webp_path):
-        return FileResponse(webp_path, media_type="image/webp")
-    if os.path.exists(png_path):
-        return FileResponse(png_path, media_type="image/png")
+    webp_path, png_path = media_preview_cache_paths(path, width)
 
     def _build_preview():
         # 同步 PIL 处理 + 落盘，放到线程里执行，避免阻塞事件循环（几十张首次生成会卡死整个 loop → 缩略图全空白）
@@ -6992,11 +7134,14 @@ async def image_jpeg(url: str, w: int = 0):
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="媒体文件不存在")
     width = max(0, min(4096, int(w or 0)))
-    stat = os.stat(path)
-    key = hashlib.sha1(f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}|jpg".encode("utf-8", "ignore")).hexdigest()
+    key = media_preview_cache_key(path, width, "|jpg")
     cache_path = os.path.join(MEDIA_PREVIEW_DIR, f"{key}.jpg")
-    if os.path.exists(cache_path):
-        return FileResponse(cache_path, media_type="image/jpeg")
+    read_paths = [cache_path]
+    if LEGACY_MEDIA_PREVIEW_DIR:
+        read_paths.append(os.path.join(LEGACY_MEDIA_PREVIEW_DIR, f"{key}.jpg"))
+    for read_path in read_paths:
+        if os.path.exists(read_path):
+            return FileResponse(read_path, media_type="image/jpeg")
 
     def _build():
         os.makedirs(MEDIA_PREVIEW_DIR, exist_ok=True)
@@ -7026,12 +7171,15 @@ def local_media_file_by_basename(name: str):
         return None
     roots = [
         OUTPUT_OUTPUT_DIR,
+        LEGACY_OUTPUT_DIR,
         OUTPUT_INPUT_DIR,
         os.path.join(ASSETS_DIR, "output"),
         os.path.join(ASSETS_DIR, "input"),
         os.path.join(ASSETS_DIR, "library"),
     ]
     for root in roots:
+        if not root:
+            continue
         path = os.path.abspath(os.path.join(root, safe))
         root_abs = os.path.abspath(root)
         if os.path.commonpath([root_abs, path]) == root_abs and os.path.isfile(path):
@@ -7261,12 +7409,13 @@ def migrate_asset_item_registrations(item):
         item.pop(key, None)
 
 def load_asset_library():
-    if not os.path.exists(ASSET_LIBRARY_PATH):
+    path = storage_read_path(ASSET_LIBRARY_PATH, LEGACY_ASSET_LIBRARY_PATH)
+    if not os.path.exists(path):
         lib = default_asset_library()
         save_asset_library(lib)
         return lib
     try:
-        with open(ASSET_LIBRARY_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             lib = json.load(f)
     except Exception:
         lib = default_asset_library()
@@ -7671,8 +7820,9 @@ SHARED_SCAN_MAX_ENTRIES = 8000
 SHARED_FOLDERS_LOCK = Lock()
 
 def shared_folders_load():
+    path = storage_read_path(SHARED_FOLDERS_FILE, LEGACY_SHARED_FOLDERS_FILE)
     try:
-        with open(SHARED_FOLDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         data = {}
@@ -7936,18 +8086,25 @@ def normalize_prompt_libraries(data):
     return {"active_library_id": active, "libraries": libraries, "updated_at": int(data.get("updated_at") or now_ms())}
 
 def load_prompt_libraries():
-    if not os.path.exists(PROMPT_LIBRARY_PATH):
+    path = storage_read_path(PROMPT_LIBRARY_PATH, LEGACY_PROMPT_LIBRARY_PATH)
+    if not os.path.exists(path):
         data = default_prompt_libraries()
         return save_prompt_libraries(data)
     try:
-        with open(PROMPT_LIBRARY_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         data = default_prompt_libraries()
     if not isinstance(data, dict):
         data = default_prompt_libraries()
     normalized = normalize_prompt_libraries(data)
-    if normalized.get("active_library_id") != data.get("active_library_id") or normalized.get("libraries") != data.get("libraries"):
+    if (
+        path == PROMPT_LIBRARY_PATH
+        and (
+            normalized.get("active_library_id") != data.get("active_library_id")
+            or normalized.get("libraries") != data.get("libraries")
+        )
+    ):
         return save_prompt_libraries(normalized)
     return normalized
 
@@ -8062,6 +8219,24 @@ def convert_output_to_jpg(url, quality=88):
     if ext.lower() in [".jpg", ".jpeg"]:
         return url
     jpg_path = f"{root}.jpg"
+    if LEGACY_OUTPUT_DIR:
+        legacy_root = os.path.abspath(LEGACY_OUTPUT_DIR)
+        source_path = os.path.abspath(path)
+        try:
+            is_legacy_output = (
+                os.path.commonpath([legacy_root, source_path]) == legacy_root
+            )
+        except ValueError:
+            is_legacy_output = False
+        if is_legacy_output:
+            os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
+            stem = sanitize_export_filename(os.path.basename(root), "converted")
+            source_key = hashlib.sha1(
+                source_path.encode("utf-8", "ignore")
+            ).hexdigest()[:12]
+            jpg_path = os.path.join(
+                OUTPUT_OUTPUT_DIR, f"{stem}-{source_key}.jpg"
+            )
     try:
         with Image.open(path) as img:
             if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
@@ -10745,7 +10920,7 @@ def runninghub_local_asset_path(url):
     elif text.startswith("/assets/output/"):
         clean = urllib.parse.unquote(text.split("?", 1)[0]).replace("\\", "/")
         rel = clean[len("/assets/output/"):]
-        root = OUTPUT_OUTPUT_DIR
+        root = os.path.join(ASSETS_DIR, "output")
     elif text.startswith("/output/") or text.startswith("/assets/"):
         return output_file_from_url(text)
     else:
@@ -12440,10 +12615,11 @@ def normalize_external_app_id(app: str) -> str:
     return value if value in EXTERNAL_APP_IDS else "custom"
 
 def load_software_settings() -> Dict[str, Any]:
-    if not os.path.exists(SOFTWARE_SETTINGS_FILE):
+    path = storage_read_path(SOFTWARE_SETTINGS_FILE, LEGACY_SOFTWARE_SETTINGS_FILE)
+    if not os.path.exists(path):
         return {"external_apps": {}}
     try:
-        with open(SOFTWARE_SETTINGS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {"external_apps": {}}
     except Exception:
@@ -12466,7 +12642,15 @@ def normalize_storage_root(value: str) -> str:
         raise HTTPException(status_code=400, detail=f"Storage folder cannot be created or opened: {exc}") from exc
     if not os.path.isdir(folder):
         raise HTTPException(status_code=400, detail="Storage path must be a folder")
-    for protected in (DATA_DIR, ASSETS_DIR, OUTPUT_DIR):
+    for protected in (
+        DATA_DIR,
+        ASSETS_DIR,
+        OUTPUT_DIR,
+        LEGACY_DATA_DIR,
+        LEGACY_OUTPUT_DIR,
+    ):
+        if not protected:
+            continue
         protected_abs = os.path.abspath(protected)
         try:
             if folder != protected_abs and os.path.commonpath([protected_abs, folder]) == protected_abs:
@@ -14885,9 +15069,10 @@ async def get_global_token():
     saved_token = modelscope_api_key()
     if saved_token:
         return {"token": saved_token}
-    if os.path.exists(GLOBAL_CONFIG_FILE):
+    path = storage_read_path(GLOBAL_CONFIG_FILE, LEGACY_GLOBAL_CONFIG_FILE)
+    if os.path.exists(path):
         try:
-            with open(GLOBAL_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 return {"token": config.get("modelscope_token", "")}
         except:
@@ -17420,7 +17605,11 @@ def _decode_openshop_art_font_base64(value: Any) -> bytes:
 
 def _bounded_openshop_art_font_file(path: str) -> bytes:
     resolved = os.path.realpath(path)
-    allowed_roots = (os.path.realpath(ASSETS_DIR), os.path.realpath(OUTPUT_DIR))
+    allowed_roots = tuple(
+        os.path.realpath(root)
+        for root in (ASSETS_DIR, OUTPUT_DIR, LEGACY_OUTPUT_DIR)
+        if root
+    )
     try:
         contained = any(
             os.path.commonpath([resolved, root]) == root for root in allowed_roots
@@ -18641,7 +18830,11 @@ def openshop_library_asset_path(item: Dict[str, Any]) -> str:
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="素材库图片文件不存在")
     resolved = os.path.realpath(path)
-    allowed_roots = [os.path.realpath(ASSETS_DIR), os.path.realpath(OUTPUT_DIR)]
+    allowed_roots = [
+        os.path.realpath(root)
+        for root in (ASSETS_DIR, OUTPUT_DIR, LEGACY_OUTPUT_DIR)
+        if root
+    ]
     if not any(
         os.path.commonpath([resolved, root]) == root
         for root in allowed_roots
@@ -18926,10 +19119,7 @@ async def delete_project(project_id: str):
     # 把该项目下的画布迁回默认项目
     moved = 0
     with CANVAS_LOCK:
-        for filename in os.listdir(CANVAS_DIR):
-            if not filename.endswith(".json"):
-                continue
-            path = os.path.join(CANVAS_DIR, filename)
+        for path in canvas_storage_files():
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -20585,8 +20775,9 @@ async def get_history_api(type: str = None, paged: bool = False, offset: int = 0
     data = []
     try:
         with HISTORY_LOCK:
-            if os.path.exists(HISTORY_FILE):
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
         if type:
             data = [item for item in data if item.get("type", "zimage") == type]
@@ -20628,11 +20819,12 @@ async def get_queue_status(client_id: str):
 
 @app.post("/api/history/delete")
 async def delete_history(req: DeleteHistoryRequest):
-    if not os.path.exists(HISTORY_FILE):
+    read_path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+    if not os.path.exists(read_path):
         return {"success": False, "message": "History file not found"}
     try:
         with HISTORY_LOCK:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            with open(read_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
             target_record = None
             new_history = []
@@ -20649,6 +20841,7 @@ async def delete_history(req: DeleteHistoryRequest):
                 else:
                     new_history.append(item)
             if target_record:
+                os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
                 with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
                     json.dump(new_history, f, ensure_ascii=False, indent=4)
 
@@ -21313,10 +21506,14 @@ def runninghub_workflow_store_path() -> str:
     return RUNNINGHUB_WORKFLOW_STORE_FILE
 
 def load_runninghub_workflow_store():
-    if not os.path.exists(RUNNINGHUB_WORKFLOW_STORE_FILE):
+    path = storage_read_path(
+        RUNNINGHUB_WORKFLOW_STORE_FILE,
+        LEGACY_RUNNINGHUB_WORKFLOW_STORE_FILE,
+    )
+    if not os.path.exists(path):
         return {}
     try:
-        with open(RUNNINGHUB_WORKFLOW_STORE_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -21383,10 +21580,11 @@ def runninghub_workflow_entry_from_config(cfg, fallback=None):
     }, "workflow")
 
 def runninghub_saved_hidden_workflow_ids():
-    if not os.path.exists(API_PROVIDERS_FILE):
+    path = storage_read_path(API_PROVIDERS_FILE, LEGACY_API_PROVIDERS_FILE)
+    if not os.path.exists(path):
         return set()
     try:
-        with open(API_PROVIDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except Exception:
         return set()

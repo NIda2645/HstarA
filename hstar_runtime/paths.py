@@ -61,12 +61,36 @@ def _has_canvas_records(directory: Path) -> bool:
         return False
 
 
+def _has_files(directory: Path, pattern: str = "*") -> bool:
+    try:
+        return directory.is_dir() and any(
+            path.is_file() for path in directory.rglob(pattern)
+        )
+    except OSError:
+        return False
+
+
 def uses_existing_legacy_storage_layout(paths: RuntimePaths) -> bool:
     legacy_data_dir = paths.data_root / "data"
     legacy_canvas_dir = legacy_data_dir / "canvases"
-    legacy_settings_file = legacy_data_dir / "software_settings.json"
-    has_legacy_data = _has_canvas_records(legacy_canvas_dir) or legacy_settings_file.is_file()
-    return has_legacy_data and not _has_canvas_records(paths.canvas_dir)
+    legacy_files = (
+        legacy_data_dir / "software_settings.json",
+        legacy_data_dir / "projects.json",
+        legacy_data_dir / "asset_library.json",
+        legacy_data_dir / "prompt_libraries.json",
+        legacy_data_dir / "api_providers.json",
+        legacy_data_dir / "runninghub_workflows.json",
+        legacy_data_dir / "shared_folders.json",
+        paths.data_root / "global_config.json",
+        paths.data_root / "history.json",
+    )
+    return (
+        _has_canvas_records(legacy_canvas_dir)
+        or any(path.is_file() for path in legacy_files)
+        or _has_files(legacy_data_dir / "conversations", "*.json")
+        or _has_files(legacy_data_dir / "openshop")
+        or _has_files(paths.data_root / "output")
+    )
 
 
 def build_storage_path_map(

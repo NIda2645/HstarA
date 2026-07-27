@@ -77,12 +77,14 @@ class OpenShopProjectStore:
         canvas_dir: str | None = None,
         *,
         create_directories: bool = True,
+        migrate_legacy_projects: bool = True,
     ):
         root = Path(data_dir).expanduser().resolve()
         self.root = root
         self.legacy_projects_dir = root / "projects"
         self.assets_dir = root / "assets"
         self.canvas_dir = Path(canvas_dir or (root / "canvases")).expanduser().resolve()
+        self.migrate_legacy_projects = bool(migrate_legacy_projects)
         if create_directories:
             self.legacy_projects_dir.mkdir(parents=True, exist_ok=True)
             self.assets_dir.mkdir(parents=True, exist_ok=True)
@@ -178,7 +180,9 @@ class OpenShopProjectStore:
             if len(retained) == len(pending):
                 return False
             project["pendingAssetRefs"] = retained
-            self._atomic_write_json(self._project_path(normalized_owner), project)
+            self._atomic_write_json(
+                self._project_storage_path(project_id, normalized_owner), project
+            )
             return True
 
     def save(
@@ -209,7 +213,9 @@ class OpenShopProjectStore:
             )
             candidate["autosaveVersion"] = base_version + 1
             candidate["updatedAt"] = self._now()
-            self._atomic_write_json(self._project_path(normalized_owner), candidate)
+            self._atomic_write_json(
+                self._project_storage_path(project_id, normalized_owner), candidate
+            )
             return copy.deepcopy(candidate)
 
     def clone(
@@ -287,6 +293,8 @@ class OpenShopProjectStore:
         canvas_type: str,
         canvas_id: str,
         project_owners,
+        *,
+        delete_project=None,
     ) -> list[dict]:
         normalized_canvas_type = str(canvas_type or "").strip()
         if normalized_canvas_type not in {"classic", "smart"}:
@@ -301,6 +309,7 @@ class OpenShopProjectStore:
                 self._validate_id(record[1], "projectId"),
             ))
         canvas_sidecar = self.canvas_dir / f"{normalized_canvas_id}.openshop"
+        delete_project = delete_project or self.delete
 
         with self._lock:
             canvas_projects = {}
@@ -348,7 +357,7 @@ class OpenShopProjectStore:
                     continue
                 record = canvas_projects[key]
                 try:
-                    if self.delete(record["projectId"], record["owner"]):
+                    if delete_project(record["projectId"], record["owner"]):
                         removed_records.append(record)
                 except Exception as exc:
                     raise OpenShopReconciliationError(removed_records) from exc
@@ -538,7 +547,9 @@ class OpenShopProjectStore:
                     item for item in pending_asset_refs
                     if item["assetId"] != asset_id
                 ]
-            self._atomic_write_json(self._project_path(normalized_owner), project)
+            self._atomic_write_json(
+                self._project_storage_path(project_id, normalized_owner), project
+            )
 
             result = copy.deepcopy(metadata)
             result["name"] = result_name
@@ -622,6 +633,8 @@ class OpenShopProjectStore:
                 referenced.add(self._validate_asset_id(asset_id))
 
             stored = set()
+            if not self.assets_dir.is_dir():
+                return []
             for path in self.assets_dir.iterdir():
                 if path.is_file() and self._ASSET_ID_PATTERN.fullmatch(path.stem):
                     stored.add(path.stem)
@@ -1118,7 +1131,7 @@ class OpenShopProjectStore:
     def _read_project(self, project_id: str, owner: dict) -> dict:
         normalized_project_id = self._validate_id(project_id, "projectId")
         normalized_owner = self._normalize_owner(owner)
-        path = self._migrate_legacy_project(normalized_project_id, normalized_owner)
+        path = self._project_storage_path(normalized_project_id, normalized_owner)
         if not path.is_file():
             raise OpenShopNotFound(
                 f"OpenShop project not found: {normalized_project_id}"
@@ -1129,6 +1142,17 @@ class OpenShopProjectStore:
             normalized_project_id,
             normalized_owner,
         )
+
+    def _project_storage_path(self, project_id: str, owner: dict) -> Path:
+        target_path = self._project_path(owner)
+        if target_path.is_file():
+            return target_path
+        legacy_path = self._legacy_project_path(project_id)
+        if not legacy_path.is_file():
+            return target_path
+        if self.migrate_legacy_projects:
+            return self._migrate_legacy_project(project_id, owner)
+        return legacy_path
 
     def _iter_project_paths(self):
         yield from sorted(self.canvas_dir.glob("*.openshop/*/project.json"))
@@ -1221,3 +1245,210 @@ class OpenShopProjectStore:
     @staticmethod
     def _now() -> int:
         return int(time.time() * 1000)
+
+
+class OpenShopStorageRouter:
+    """Route OpenShop records by the storage source of their owning canvas."""
+
+    ALLOWED_IMAGE_MIME = OpenShopProjectStore.ALLOWED_IMAGE_MIME
+    MAX_IMAGE_BYTES = OpenShopProjectStore.MAX_IMAGE_BYTES
+
+    def __init__(
+        self,
+        primary_store: OpenShopProjectStore,
+        legacy_store: OpenShopProjectStore | None,
+        *,
+        primary_canvas_dir: str,
+        legacy_canvas_dir: str = "",
+    ):
+        self.primary_store = primary_store
+        self.legacy_store = legacy_store
+        self.primary_canvas_dir = Path(primary_canvas_dir).expanduser().resolve()
+        self.legacy_canvas_dir = (
+            Path(legacy_canvas_dir).expanduser().resolve()
+            if legacy_canvas_dir
+            else None
+        )
+
+    def _store_for_owner(self, owner: dict) -> OpenShopProjectStore:
+        normalized_owner = self.primary_store._normalize_owner(owner)
+        canvas_name = f"{normalized_owner['canvasId']}.json"
+        if (self.primary_canvas_dir / canvas_name).is_file():
+            return self.primary_store
+        if (
+            self.legacy_store is not None
+            and self.legacy_canvas_dir is not None
+            and (self.legacy_canvas_dir / canvas_name).is_file()
+        ):
+            return self.legacy_store
+        return self.primary_store
+
+    def initialize(self, project_id: str, owner: dict, document: dict) -> dict:
+        return self._store_for_owner(owner).initialize(project_id, owner, document)
+
+    def load(self, project_id: str, owner: dict) -> dict:
+        return self._store_for_owner(owner).load(project_id, owner)
+
+    def save(
+        self,
+        project_id: str,
+        owner: dict,
+        project: dict,
+        base_version: int,
+    ) -> dict:
+        return self._store_for_owner(owner).save(
+            project_id, owner, project, base_version
+        )
+
+    def project_references_asset(
+        self,
+        project_id: str,
+        owner: dict,
+        asset_id: str,
+    ) -> bool:
+        return self._store_for_owner(owner).project_references_asset(
+            project_id, owner, asset_id
+        )
+
+    def release_pending_asset(
+        self,
+        project_id: str,
+        owner: dict,
+        asset_id: str,
+    ) -> bool:
+        return self._store_for_owner(owner).release_pending_asset(
+            project_id, owner, asset_id
+        )
+
+    def store_image(
+        self,
+        project_id: str,
+        owner: dict,
+        data: bytes,
+        mime: str,
+        name: str,
+        role: str,
+        track_pending_ownership: bool = False,
+    ) -> dict:
+        return self._store_for_owner(owner).store_image(
+            project_id,
+            owner,
+            data,
+            mime,
+            name,
+            role,
+            track_pending_ownership,
+        )
+
+    def asset_path(self, asset_id: str) -> tuple[str, dict]:
+        try:
+            return self.primary_store.asset_path(asset_id)
+        except OpenShopNotFound:
+            if self.legacy_store is None:
+                raise
+            return self.legacy_store.asset_path(asset_id)
+
+    def clone(
+        self,
+        source_project_id: str,
+        source_owner: dict,
+        target_project_id: str,
+        target_owner: dict,
+    ) -> dict:
+        source_store = self._store_for_owner(source_owner)
+        target_store = self._store_for_owner(target_owner)
+        if source_store is target_store:
+            return source_store.clone(
+                source_project_id,
+                source_owner,
+                target_project_id,
+                target_owner,
+            )
+
+        try:
+            return target_store.load(target_project_id, target_owner)
+        except OpenShopNotFound:
+            pass
+
+        source = source_store.load(source_project_id, source_owner)
+        target = target_store.initialize(
+            target_project_id,
+            target_owner,
+            source.get("document") or {},
+        )
+        try:
+            asset_ids = set(source.get("assetRefs") or [])
+            if source.get("previewAssetId"):
+                asset_ids.add(source["previewAssetId"])
+            for asset_id in sorted(asset_ids):
+                source_path, metadata = source_store.asset_path(asset_id)
+                with open(source_path, "rb") as handle:
+                    content = handle.read()
+                target_store.store_image(
+                    target_project_id,
+                    target_owner,
+                    content,
+                    metadata["mime"],
+                    "OpenShop cloned asset",
+                    "asset",
+                )
+
+            clone = copy.deepcopy(source)
+            timestamp = int(time.time() * 1000)
+            clone["projectId"] = target_project_id
+            clone["owner"] = target_owner
+            clone["createdAt"] = timestamp
+            clone["updatedAt"] = timestamp
+            clone["aiTaskRecords"] = []
+            clone["aiReferenceRecords"] = []
+            clone["aiPendingResults"] = []
+            clone["pendingAssetRefs"] = []
+            return target_store.save(
+                target_project_id,
+                target_owner,
+                clone,
+                target["autosaveVersion"],
+            )
+        except Exception:
+            target_store.delete(target_project_id, target_owner)
+            raise
+
+    def delete(self, project_id: str, owner: dict | None = None) -> bool:
+        if owner is None:
+            raise OpenShopValidationError("OpenShop owner is required for deletion")
+        return self._store_for_owner(owner).delete(project_id, owner)
+
+    def reconcile_canvas_projects(
+        self,
+        canvas_type: str,
+        canvas_id: str,
+        project_owners,
+    ) -> list[dict]:
+        owner = {
+            "canvasType": canvas_type,
+            "canvasId": canvas_id,
+            "nodeId": "storage-router",
+        }
+        return self._store_for_owner(owner).reconcile_canvas_projects(
+            canvas_type,
+            canvas_id,
+            project_owners,
+            delete_project=self.delete,
+        )
+
+    def delete_canvas_projects(
+        self,
+        canvas_type: str,
+        canvas_id: str,
+    ) -> list[dict]:
+        owner = {
+            "canvasType": canvas_type,
+            "canvasId": canvas_id,
+            "nodeId": "storage-router",
+        }
+        return self._store_for_owner(owner).delete_canvas_projects(
+            canvas_type, canvas_id
+        )
+
+    def collect_garbage(self, additional_asset_refs=None) -> list[str]:
+        return self.primary_store.collect_garbage(additional_asset_refs)
