@@ -5,9 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const integrationRoot = resolve(testDir, '..');
-const staticRoot = resolve(integrationRoot, '..', '..', 'static', 'openshop');
+const projectRoot = resolve(integrationRoot, '..', '..');
+const staticRoot = resolve(projectRoot, 'static', 'openshop');
 const html = readFileSync(resolve(integrationRoot, 'index.html'), 'utf8');
-const appVersion = readFileSync(resolve(integrationRoot, '..', '..', 'VERSION'), 'utf8').trim().split(/\r?\n/)[0];
+const backendSource = readFileSync(resolve(projectRoot, 'main.py'), 'utf8');
+const openShopRuntimeRevision = backendSource.match(/OPENSHOP_RUNTIME_REVISION\s*=\s*["']([^"']+)["']/)?.[1];
 const manifestPath = resolve(integrationRoot, 'vendor', 'runtime-manifest.json');
 const buildScript = readFileSync(resolve(integrationRoot, 'scripts', 'build-hstar.mjs'), 'utf8');
 
@@ -94,7 +96,8 @@ describe('Hstar OpenShop offline runtime', () => {
 
     const staticHtml = readFileSync(resolve(staticRoot, 'index.html'), 'utf8');
     const staticRuntimeRevision = staticHtml.match(/openshop-text-tools\.js\?v=([0-9.]+)/)?.[1];
-    expect(staticRuntimeRevision).toBe(appVersion);
+    expect(openShopRuntimeRevision).toBeTruthy();
+    expect(staticRuntimeRevision).toBe(openShopRuntimeRevision);
     expect(staticHtml).toContain(`<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=${staticRuntimeRevision}">`);
     expect(staticHtml).toContain(`<script src="./host/openshop-writing-mode.js?v=${staticRuntimeRevision}"></script>`);
     expect(staticHtml.indexOf('./host/openshop-writing-mode.js'))

@@ -268,7 +268,7 @@ GLOBAL_LOOP = None
 COLLABORATION_KEY = secrets.token_urlsafe(24)
 COLLABORATION_LOCK = Lock()
 APP_VERSION = "2026.06.03"
-OPENSHOP_RUNTIME_REVISION = "2026.07.26.1630000001"
+OPENSHOP_RUNTIME_REVISION = "2026.07.27.104021979"
 OPENSHOP_ENTRY_ASSET_URLS = frozenset({
     "/static/css/openshop-host.css",
     "/static/openshop/host/openshop-protocol.js",
@@ -1908,6 +1908,18 @@ def versioned_static_html(html: str) -> str:
         return f"{match.group('prefix')}{url}?v={cache_version}"
     return pattern.sub(replace, html)
 
+def versioned_openshop_runtime_html(html: str) -> str:
+    pattern = re.compile(
+        r'(?P<prefix>(?:src|href)=["\']|@import\s+url\(["\'])'
+        r'(?P<url>\./(?:host|locales)/[^"\')?#]+\.(?:js|css))'
+        r'(?:\?v=[^"\')#]*)?',
+        re.I,
+    )
+    return pattern.sub(
+        lambda match: f"{match.group('prefix')}{match.group('url')}?v={OPENSHOP_RUNTIME_REVISION}",
+        html,
+    )
+
 def sync_static_html_versions():
     if EDITION != "development":
         return
@@ -1928,6 +1940,7 @@ def sync_static_html_versions():
                 if os.path.isfile(path):
                     html_paths.append(path)
         shell_path = os.path.abspath(os.path.join(STATIC_DIR, "index.html"))
+        openshop_entry_path = os.path.abspath(os.path.join(STATIC_DIR, "openshop", "index.html"))
         html_paths.sort(key=lambda path: (os.path.abspath(path) == shell_path, path.lower()))
         for path in html_paths:
             # 单文件容错：某个文件读写失败不应中断整批同步。
@@ -1935,6 +1948,8 @@ def sync_static_html_versions():
                 with open(path, "r", encoding="utf-8") as f:
                     old = f.read()
                 new = versioned_static_html(re.sub(r'([?&]v=)[^"\'`\s<>)]*', rf'\g<1>{safe_version}', old))
+                if os.path.abspath(path) == openshop_entry_path:
+                    new = versioned_openshop_runtime_html(new)
                 if new != old:
                     with open(path, "w", encoding="utf-8", newline="") as f:
                         f.write(new)
