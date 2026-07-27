@@ -5,7 +5,13 @@ cd /d "%~dp0"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 set "HSTAR_EDITION=development"
-set "HSTAR_DATA_DIR=%~dp0"
+if not defined HSTAR_DATA_DIR (
+    if exist "E:\" (
+        set "HSTAR_DATA_DIR=E:\Hstar缓存"
+    ) else (
+        set "HSTAR_DATA_DIR=%USERPROFILE%\Documents\Hstar缓存"
+    )
+)
 set "HSTAR_PROGRAM_DIR=%~dp0"
 set "HSTAR_PORT=3000"
 

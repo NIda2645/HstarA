@@ -12,10 +12,11 @@ assert.match(main, /from hstar_runtime\.bootstrap import [^\n]*BootstrapStore/, 
 assert.match(main, /from hstar_runtime\.credentials import [\s\S]*create_credential_store/, 'backend must use the shared credential store');
 assert.match(main, /from hstar_runtime\.api_merge import [^\n]*merge_api_defaults/, 'backend must understand packaged API defaults');
 assert.match(main, /from hstar_runtime\.atomic import [^\n]*atomic_write_bytes/, 'backend configuration writes must be atomic');
-assert.match(main, /from hstar_runtime\.paths import [^\n]*build_runtime_paths/, 'backend must use the typed runtime path builder');
+assert.match(main, /from hstar_runtime\.paths import [^\n]*build_runtime_paths[^\n]*default_data_root/, 'backend must use the typed runtime path builder and shared default data root');
 assert.match(main, /os\.environ\.get\("HSTAR_PROGRAM_DIR"\)/, 'backend must accept the packaged program root');
 assert.match(main, /os\.environ\.get\("HSTAR_DATA_DIR"[^)]*\)/, 'backend must accept the selected data root');
 assert.match(main, /os\.environ\.get\("HSTAR_EDITION"/, 'backend must isolate edition bootstrap state');
+assert.match(main, /elif EDITION == "development":\s*DATA_ROOT = default_data_root\(\)\.resolve\(\)/, 'development fallback must read the shared Hstar cache instead of AppData');
 assert.doesNotMatch(main, /resolve_runtime_paths\(BASE_DIR,/, 'backend must not derive writable paths from the program directory');
 assert.match(main, /LEGACY_API_ENV_FILE\s*=\s*os\.path\.join\(BASE_DIR,\s*"API",\s*"\.env"\)/, 'legacy API env may remain only as a migration source');
 assert.match(main, /CREDENTIAL_FILE\s*=\s*RUNTIME_PATHS\.secrets_dir\s*\/\s*"credentials\.dpapi"/, 'credential storage must live beneath the selected data root');
@@ -42,7 +43,10 @@ assert.match(main, /purpose\s*==\s*"storage"/, 'native choose-folder must suppor
 
 const launcher = readFileSync(resolve(root, 'run.bat'), 'utf8');
 assert.match(launcher, /set "HSTAR_EDITION=development"/, 'engineering launcher must set the development edition');
-assert.match(launcher, /set "HSTAR_DATA_DIR=%~dp0"/, 'engineering launcher must explicitly own its data root');
+assert.match(launcher, /if not defined HSTAR_DATA_DIR \(/, 'engineering launcher must preserve an explicitly selected data root');
+assert.match(launcher, /if exist "E:\\" \([\s\S]*set "HSTAR_DATA_DIR=E:\\Hstar缓存"/, 'engineering launcher must prefer the shared E-drive Hstar cache');
+assert.match(launcher, /set "HSTAR_DATA_DIR=%USERPROFILE%\\Documents\\Hstar缓存"/, 'engineering launcher must retain the shared Documents fallback when E drive is unavailable');
+assert.doesNotMatch(launcher, /set "HSTAR_DATA_DIR=%~dp0"/, 'engineering launcher must not store user data inside the source tree');
 assert.match(launcher, /set "HSTAR_PROGRAM_DIR=%~dp0"/, 'engineering launcher must explicitly own its program root');
 assert.match(launcher, /set "HSTAR_PORT=3000"/, 'engineering launcher must stay on port 3000');
 

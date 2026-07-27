@@ -95,7 +95,7 @@ from hstar_runtime.credentials import (
     migrate_legacy_env_sources,
 )
 from hstar_runtime.migration import MigrationError, MigrationManager, MigrationState
-from hstar_runtime.paths import RuntimePaths, build_runtime_paths
+from hstar_runtime.paths import RuntimePaths, build_runtime_paths, default_data_root
 
 
 def configure_process_stdio():
@@ -349,7 +349,7 @@ else:
     if bootstrap_config is not None:
         DATA_ROOT = bootstrap_config.resolved_data_root()
     elif EDITION == "development":
-        DATA_ROOT = (APPDATA_ROOT / "Hstar" / "development-data").resolve()
+        DATA_ROOT = default_data_root().resolve()
     else:
         DATA_ROOT = BOOTSTRAP.require().resolved_data_root()
 
