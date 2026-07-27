@@ -28,6 +28,18 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function clearAutomaticFontStyles(styles){
+    Object.values(styles || {}).forEach(line => {
+      Object.values(line || {}).forEach(style => {
+        if(!style || typeof style !== 'object') return;
+        delete style.fontFamily;
+        delete style.fontWeight;
+        delete style.fontStyle;
+      });
+    });
+    return styles;
+  }
+
   function createController(options = {}){
     const editor = options.editor;
     const fontManager = options.fontManager;
@@ -100,6 +112,56 @@
       target.dirty = true;
       target.initDimensions?.();
       target.setCoords?.();
+    }
+
+    function disableAutomaticFontPolicy(target = activeTextObject()){
+      if(target?.hstarAutomaticFontPolicy !== 'script-default') return false;
+      delete target.hstarAutomaticFontPolicy;
+      return true;
+    }
+
+    function applyAutomaticFontPolicy(target = activeTextObject()){
+      if(target?.hstarAutomaticFontPolicy !== 'script-default') return false;
+      const text = String(target.text || '');
+      const runs = fontManager.defaultTextRuns?.(text, {
+        weight:target.fontWeight,
+        italic:target.fontStyle === 'italic',
+      }) || [];
+      if(!runs.length) return false;
+      const styles = clearAutomaticFontStyles(clone(target.styles || {}));
+      let outerIndex = 0;
+      let innerIndex = 0;
+      let runIndex = 0;
+      Array.from(text).forEach((character, codePointIndex) => {
+        while(runs[runIndex] && codePointIndex >= runs[runIndex].end) runIndex += 1;
+        if(character === '\r') return;
+        if(character === '\n'){
+          outerIndex += 1;
+          innerIndex = 0;
+          return;
+        }
+        const run = runs[runIndex];
+        if(!run || codePointIndex < run.start) return;
+        const line = styles[outerIndex] || {};
+        line[innerIndex] = {
+          ...(line[innerIndex] || {}),
+          fontFamily:run.faceFamily,
+          fontWeight:run.weight,
+          fontStyle:run.italic ? 'italic' : 'normal',
+        };
+        styles[outerIndex] = line;
+        innerIndex += 1;
+      });
+      const base = runs[0];
+      setObject(target, {
+        fontFamily:base.faceFamily,
+        fontWeight:base.weight,
+        fontStyle:base.italic ? 'italic' : 'normal',
+        styles,
+      });
+      refreshTextGeometry(target);
+      editor.canvas.renderAll?.();
+      return true;
     }
 
     function editingRange(target){
@@ -265,6 +327,7 @@
         if(commit) commitChange('字型');
       } else {
         editor.state.textFont = family;
+        editor.state.textFontAutomatic = false;
         editor.state.textFontWeight = weight;
         editor.state.textBold = weight >= 600;
         editor.state.textItalic = Boolean(style.italic);
@@ -340,6 +403,7 @@
     function applyProperty(property, value, {commit = true} = {}){
       const target = activeTextObject();
       if(!target) return false;
+      if(property === 'fontFamily') disableAutomaticFontPolicy(target);
       const normalized = property === 'fontSize' ? pointsToPixels(value) : value;
       const range = editingRange(target);
       if(CHARACTER_PROPERTIES.has(property) && range) {
@@ -392,6 +456,7 @@
       if(!isTextObject(candidate)) return;
       state.target = candidate;
       state.previousText = String(candidate.text || '');
+      applyAutomaticFontPolicy(candidate);
       activateTextTab();
       syncControls();
     }
@@ -414,6 +479,7 @@
         target.setSelectionStyles?.(state.caretStyles, Math.max(0, currentEnd - inserted), currentEnd);
         editor.canvas.renderAll?.();
       }
+      applyAutomaticFontPolicy(target);
       state.previousText = currentText;
       syncControls();
     }
@@ -620,6 +686,7 @@
       }
       const actualFamily = clean(style?.family) || normalizedFamily;
       editor.state.textFont = actualFamily;
+      editor.state.textFontAutomatic = false;
       if(style) {
         editor.state.textFontWeight = Number(style.weight) || 400;
         editor.state.textBold = (Number(style.weight) || 400) >= 600;
@@ -939,6 +1006,9 @@
         syncControls();
       });
       await fontManager.loadSystemFonts?.();
+      editor.canvas.getObjects?.().forEach(object => {
+        if(isTextObject(object)) applyAutomaticFontPolicy(object);
+      });
       fontManager.scanEditor?.(editor);
       syncControls();
       return controller;
@@ -971,6 +1041,7 @@
       destroy,
       applyProperty,
       applyKerning,
+      applyAutomaticFontPolicy,
       sync:syncControls,
       getState:() => ({...state, caretStyles:clone(state.caretStyles)}),
       pointsToPixels,
