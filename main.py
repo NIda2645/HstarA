@@ -95,7 +95,7 @@ from hstar_runtime.credentials import (
     migrate_legacy_env_sources,
 )
 from hstar_runtime.migration import MigrationError, MigrationManager, MigrationState
-from hstar_runtime.paths import RuntimePaths, build_runtime_paths, default_data_root
+from hstar_runtime.paths import RuntimePaths, build_runtime_paths, build_storage_path_map, default_data_root, uses_existing_legacy_storage_layout
 
 
 def configure_process_stdio():
@@ -293,29 +293,28 @@ MODELSCOPE_TREE_URL = "https://www.modelscope.ai/api/v1/studio/daniel8152/Infini
 async def startup_event():
     global GLOBAL_LOOP
     GLOBAL_LOOP = asyncio.get_running_loop()
-    VOICE_ASSISTANT.schedule_background_tasks()
+    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+        VOICE_ASSISTANT.schedule_background_tasks()
     await asyncio.sleep(0)
     await asyncio.to_thread(sync_static_html_versions)
-    # 启动时整理资产库：给所有图片分组（含默认角色/场景）建好文件夹，并把根目录里的旧素材归整进去。
-    try:
-        await asyncio.to_thread(migrate_asset_library_into_dirs)
-    except Exception as exc:
-        print(f"资产库分组整理失败: {exc}")
-    # 修复历史遗留的双重扩展名素材（foo.png.png → foo.png），否则这些卡片无法显示
-    try:
-        await asyncio.to_thread(migrate_double_extension_uploads)
-    except Exception as exc:
-        print(f"修复双重扩展名素材失败: {exc}")
-    # 纠正内容与扩展名不符的图片（如 WebP 内容却叫 .png），否则严格客户端解不出来
-    try:
-        await asyncio.to_thread(migrate_mislabeled_image_extensions)
-    except Exception as exc:
-        print(f"纠正图片扩展名失败: {exc}")
-
-    try:
-        await asyncio.to_thread(reconcile_saved_openshop_projects)
-    except Exception:
-        logging.exception("OpenShop startup reconciliation failed")
+    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+        # 只在新数据布局中执行自动整理；开发版接入旧 Hstar 缓存时原地读取。
+        try:
+            await asyncio.to_thread(migrate_asset_library_into_dirs)
+        except Exception as exc:
+            print(f"资产库分组整理失败: {exc}")
+        try:
+            await asyncio.to_thread(migrate_double_extension_uploads)
+        except Exception as exc:
+            print(f"修复双重扩展名素材失败: {exc}")
+        try:
+            await asyncio.to_thread(migrate_mislabeled_image_extensions)
+        except Exception as exc:
+            print(f"纠正图片扩展名失败: {exc}")
+        try:
+            await asyncio.to_thread(reconcile_saved_openshop_projects)
+        except Exception:
+            logging.exception("OpenShop startup reconciliation failed")
 
 @app.websocket("/ws/stats")
 async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
@@ -354,6 +353,11 @@ else:
         DATA_ROOT = BOOTSTRAP.require().resolved_data_root()
 
 RUNTIME_PATHS: RuntimePaths = build_runtime_paths(PROGRAM_ROOT, DATA_ROOT, EDITION)
+PRESERVE_EXISTING_DATA_ON_STARTUP = EDITION == "development" and uses_existing_legacy_storage_layout(RUNTIME_PATHS)
+INITIAL_STORAGE_PATHS = build_storage_path_map(
+    RUNTIME_PATHS,
+    prefer_existing_legacy=PRESERVE_EXISTING_DATA_ON_STARTUP,
+)
 APP_DATA_ROOT = str(RUNTIME_PATHS.data_root)
 BUILTIN_WORKFLOW_DIR = str(RUNTIME_PATHS.builtin_workflow_dir)
 USER_WORKFLOW_DIR = str(RUNTIME_PATHS.user_workflow_dir)
@@ -364,7 +368,7 @@ STATIC_RUNNINGHUB_THUMBNAIL_DIR = os.path.join(STATIC_RUNNINGHUB_DIR, "thumbnail
 STATIC_RUNNINGHUB_API_PROVIDERS_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "api_providers.json")
 STATIC_RUNNINGHUB_MODEL_REGISTRY_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "models_registry.json")
 PACKAGED_API_DEFAULTS_FILE = RUNTIME_PATHS.api_defaults_dir / "api-providers.json"
-SOFTWARE_SETTINGS_FILE = str(RUNTIME_PATHS.config_dir / "software-settings.json")
+SOFTWARE_SETTINGS_FILE = str(INITIAL_STORAGE_PATHS["software_settings_file"])
 LEGACY_API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
 TRANSITIONAL_API_ENV_FILE = RUNTIME_PATHS.secrets_dir / "api.env"
 CREDENTIAL_FILE = RUNTIME_PATHS.secrets_dir / "credentials.dpapi"
@@ -492,6 +496,8 @@ async def packaged_shell_session(request: Request, call_next):
     return JSONResponse(status_code=401, content={"detail": "请从 Hstar 桌面程序打开此页面"})
 
 def bootstrap_app_software_settings() -> None:
+    if PRESERVE_EXISTING_DATA_ON_STARTUP:
+        return
     if os.path.isfile(SOFTWARE_SETTINGS_FILE):
         return
     candidates = (
@@ -511,7 +517,7 @@ def bootstrap_app_software_settings() -> None:
 
 
 def bootstrap_legacy_api_env() -> None:
-    if EDITION.startswith("test"):
+    if EDITION.startswith("test") or PRESERVE_EXISTING_DATA_ON_STARTUP:
         return
     try:
         migrate_legacy_env_sources(
@@ -530,30 +536,11 @@ def runtime_paths_for_storage_root(
     software_settings_file: str = "",
 ) -> Dict[str, str]:
     paths = build_runtime_paths(PROGRAM_ROOT, Path(storage_root), EDITION)
-    data_dir = str(paths.config_dir)
-    assets_dir = str(paths.asset_dir)
-    return {
-        "storage_root": str(paths.data_root),
-        "data_dir": data_dir,
-        "conversation_dir": str(paths.history_dir / "conversations"),
-        "canvas_dir": str(paths.canvas_dir),
-        "openshop_data_dir": str(paths.openshop_dir),
-        "media_preview_dir": str(paths.cache_dir / "media-previews"),
-        "asset_library_path": str(paths.config_dir / "asset-library.json"),
-        "prompt_library_path": str(paths.config_dir / "prompt-libraries.json"),
-        "api_providers_file": str(paths.config_dir / "api-providers.user.json"),
-        "runninghub_workflow_store_file": str(paths.config_dir / "runninghub-workflows.json"),
-        "shared_folders_file": str(paths.config_dir / "shared-folders.json"),
-        "software_settings_file": str(paths.config_dir / "software-settings.json"),
-        "global_config_file": str(paths.config_dir / "global-config.json"),
-        "history_file": str(paths.history_dir / "generations.json"),
-        "assets_dir": assets_dir,
-        "output_dir": str(paths.output_dir),
-        "output_input_dir": os.path.join(assets_dir, "input"),
-        "output_output_dir": str(paths.output_dir / "generated"),
-        "asset_library_dir": os.path.join(assets_dir, "library"),
-        "local_upload_dir": os.path.join(assets_dir, "uploads"),
-    }
+    resolved = build_storage_path_map(
+        paths,
+        prefer_existing_legacy=EDITION == "development",
+    )
+    return {key: str(value) for key, value in resolved.items()}
 
 RUNTIME_STORAGE_PATHS = runtime_paths_for_storage_root(str(RUNTIME_PATHS.data_root))
 STORAGE_ROOT = RUNTIME_STORAGE_PATHS["storage_root"]
@@ -576,7 +563,11 @@ RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_STORAGE_PATHS["runninghub_workflow_stor
 SHARED_FOLDERS_FILE = RUNTIME_STORAGE_PATHS["shared_folders_file"]
 GLOBAL_CONFIG_FILE = RUNTIME_STORAGE_PATHS["global_config_file"]
 STORAGE_MIGRATIONS = MigrationManager(BOOTSTRAP, PROGRAM_ROOT)
-OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR, canvas_dir=CANVAS_DIR)
+OPENSHOP_STORE = OpenShopProjectStore(
+    OPENSHOP_DATA_DIR,
+    canvas_dir=CANVAS_DIR,
+    create_directories=not PRESERVE_EXISTING_DATA_ON_STARTUP,
+)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
 OPENSHOP_PROJECT_LIFECYCLE_LOCK = RLock()
 OPENSHOP_FONTS = OpenShopFontCatalog(
@@ -804,6 +795,8 @@ RUNNINGHUB_DEFAULT_WORKFLOWS = [
 
 def ensure_runtime_config_files():
     """Create writable configuration directories before the first save."""
+    if PRESERVE_EXISTING_DATA_ON_STARTUP:
+        return
     try:
         os.makedirs(RUNTIME_PATHS.secrets_dir, exist_ok=True)
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -1757,17 +1750,26 @@ def update_env_values(updates):
 
 BACKEND_LOCAL_LOAD = {addr: 0 for addr in COMFYUI_INSTANCES}
 
-for writable_path in RUNTIME_PATHS.writable_paths():
-    os.makedirs(writable_path, exist_ok=True)
-os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
-os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
-os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
-os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
-os.makedirs(CONVERSATION_DIR, exist_ok=True)
+if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+    for writable_path in RUNTIME_PATHS.writable_paths():
+        os.makedirs(writable_path, exist_ok=True)
+    os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
+    os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
+    os.makedirs(CONVERSATION_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
-app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+app.mount(
+    "/output",
+    StaticFiles(directory=OUTPUT_DIR, check_dir=not PRESERVE_EXISTING_DATA_ON_STARTUP),
+    name="output",
+)
+app.mount(
+    "/assets",
+    StaticFiles(directory=ASSETS_DIR, check_dir=not PRESERVE_EXISTING_DATA_ON_STARTUP),
+    name="assets",
+)
 
 # --- Pydantic 模型 ---
 
@@ -3522,7 +3524,7 @@ def project_record(p):
         "updated_at": p.get("updated_at", 0),
     }
 
-def ensure_default_project():
+def ensure_default_project(*, persist=True):
     """保证存在一个“默认项目”，并把没有归属项目的画布迁移进去（一次性、幂等）。"""
     projects = load_projects()
     changed = False
@@ -3530,7 +3532,7 @@ def ensure_default_project():
         ts = now_ms()
         projects.insert(0, {"id": DEFAULT_PROJECT_ID, "name": "默认项目", "order": 0, "created_at": ts, "updated_at": ts})
         changed = True
-    if changed:
+    if changed and persist:
         save_projects(projects)
     return projects
 
@@ -3545,7 +3547,7 @@ def new_project(name="新项目"):
     return proj
 
 def list_projects():
-    projects = ensure_default_project()
+    projects = ensure_default_project(persist=not PRESERVE_EXISTING_DATA_ON_STARTUP)
     counts = {}
     for rec in iter_canvas_records(include_deleted=False):
         pid = rec.get("project") or DEFAULT_PROJECT_ID
@@ -3559,6 +3561,7 @@ def list_projects():
 
 def create_canvas_file(canvas):
     path = canvas_path(canvas["id"])
+    os.makedirs(CANVAS_DIR, exist_ok=True)
     file_descriptor = os.open(
         path,
         os.O_CREAT | os.O_EXCL | os.O_WRONLY,
@@ -3691,7 +3694,8 @@ def cleanup_expired_canvas_trash():
         collect_openshop_garbage()
 
 def iter_canvas_records(include_deleted=False):
-    cleanup_expired_canvas_trash()
+    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+        cleanup_expired_canvas_trash()
     records = []
     for filename in os.listdir(CANVAS_DIR):
         if not filename.endswith(".json"):
@@ -3852,7 +3856,8 @@ def canvas_assets_index():
     items = []
     canvas_counts = {"all": 0, "smart": 0, "classic": 0}
     item_counts = {"all": 0, "smart": 0, "classic": 0}
-    cleanup_expired_canvas_trash()
+    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+        cleanup_expired_canvas_trash()
     for filename in os.listdir(CANVAS_DIR):
         if not filename.endswith(".json"):
             continue

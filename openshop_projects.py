@@ -71,15 +71,22 @@ class OpenShopProjectStore:
         "image/webp": ("webp", "WEBP"),
     }
 
-    def __init__(self, data_dir: str, canvas_dir: str | None = None):
+    def __init__(
+        self,
+        data_dir: str,
+        canvas_dir: str | None = None,
+        *,
+        create_directories: bool = True,
+    ):
         root = Path(data_dir).expanduser().resolve()
         self.root = root
         self.legacy_projects_dir = root / "projects"
         self.assets_dir = root / "assets"
         self.canvas_dir = Path(canvas_dir or (root / "canvases")).expanduser().resolve()
-        self.legacy_projects_dir.mkdir(parents=True, exist_ok=True)
-        self.assets_dir.mkdir(parents=True, exist_ok=True)
-        self.canvas_dir.mkdir(parents=True, exist_ok=True)
+        if create_directories:
+            self.legacy_projects_dir.mkdir(parents=True, exist_ok=True)
+            self.assets_dir.mkdir(parents=True, exist_ok=True)
+            self.canvas_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
     def initialize(self, project_id: str, owner: dict, document: dict) -> dict:

@@ -54,6 +54,77 @@ def default_data_root(
     return (documents or Path.home() / "Documents") / "Hstar缓存"
 
 
+def _has_canvas_records(directory: Path) -> bool:
+    try:
+        return directory.is_dir() and any(directory.glob("*.json"))
+    except OSError:
+        return False
+
+
+def uses_existing_legacy_storage_layout(paths: RuntimePaths) -> bool:
+    legacy_data_dir = paths.data_root / "data"
+    legacy_canvas_dir = legacy_data_dir / "canvases"
+    legacy_settings_file = legacy_data_dir / "software_settings.json"
+    has_legacy_data = _has_canvas_records(legacy_canvas_dir) or legacy_settings_file.is_file()
+    return has_legacy_data and not _has_canvas_records(paths.canvas_dir)
+
+
+def build_storage_path_map(
+    paths: RuntimePaths,
+    *,
+    prefer_existing_legacy: bool = False,
+) -> dict[str, Path]:
+    root = paths.data_root
+    assets_dir = root / "assets"
+    if prefer_existing_legacy and uses_existing_legacy_storage_layout(paths):
+        data_dir = root / "data"
+        return {
+            "storage_root": root,
+            "data_dir": data_dir,
+            "conversation_dir": data_dir / "conversations",
+            "canvas_dir": data_dir / "canvases",
+            "openshop_data_dir": data_dir / "openshop",
+            "media_preview_dir": data_dir / "media_previews",
+            "asset_library_path": data_dir / "asset_library.json",
+            "prompt_library_path": data_dir / "prompt_libraries.json",
+            "api_providers_file": data_dir / "api_providers.json",
+            "runninghub_workflow_store_file": data_dir / "runninghub_workflows.json",
+            "shared_folders_file": data_dir / "shared_folders.json",
+            "software_settings_file": data_dir / "software_settings.json",
+            "global_config_file": root / "global_config.json",
+            "history_file": root / "history.json",
+            "assets_dir": assets_dir,
+            "output_dir": root / "output",
+            "output_input_dir": assets_dir / "input",
+            "output_output_dir": assets_dir / "output",
+            "asset_library_dir": assets_dir / "library",
+            "local_upload_dir": assets_dir / "uploads",
+        }
+
+    return {
+        "storage_root": root,
+        "data_dir": paths.config_dir,
+        "conversation_dir": paths.history_dir / "conversations",
+        "canvas_dir": paths.canvas_dir,
+        "openshop_data_dir": paths.openshop_dir,
+        "media_preview_dir": paths.cache_dir / "media-previews",
+        "asset_library_path": paths.config_dir / "asset-library.json",
+        "prompt_library_path": paths.config_dir / "prompt-libraries.json",
+        "api_providers_file": paths.config_dir / "api-providers.user.json",
+        "runninghub_workflow_store_file": paths.config_dir / "runninghub-workflows.json",
+        "shared_folders_file": paths.config_dir / "shared-folders.json",
+        "software_settings_file": paths.config_dir / "software-settings.json",
+        "global_config_file": paths.config_dir / "global-config.json",
+        "history_file": paths.history_dir / "generations.json",
+        "assets_dir": assets_dir,
+        "output_dir": paths.output_dir,
+        "output_input_dir": assets_dir / "input",
+        "output_output_dir": paths.output_dir / "generated",
+        "asset_library_dir": assets_dir / "library",
+        "local_upload_dir": assets_dir / "uploads",
+    }
+
+
 def build_runtime_paths(
     program_root: Path,
     data_root: Path,
