@@ -516,7 +516,7 @@ describe('Hstar OpenShop font catalog', () => {
       fallback:true,
     });
     expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Substituted Project']}})).toMatchObject({
-      family:fallbackFamily,
+      family:'system-ui',
       fallback:true,
     });
   });
@@ -575,6 +575,84 @@ describe('Hstar OpenShop font catalog', () => {
     expect(manager.matchOcrRun({
       script:'en', familyCandidates:['Missing'], weight:680,
     })).toMatchObject({family:englishFallbackFamily, faceFamily:englishFallbackFamily, weight:700, fallback:true});
+  });
+
+  it('resolves preferred Chinese and English default faces when installed', async () => {
+    const {manager} = await loadCatalog([
+      fallbackFont(),
+      englishFallbackFont(),
+    ]);
+
+    expect(manager.resolveDefaultFace('zh-hans')).toMatchObject({
+      family:fallbackFamily,
+      faceFamily:fallbackFamily,
+      weight:400,
+      italic:false,
+    });
+    expect(manager.resolveDefaultFace('en')).toMatchObject({
+      family:englishFallbackFamily,
+      faceFamily:englishFallbackFamily,
+      weight:400,
+      italic:false,
+    });
+  });
+
+  it('resolves installed script-suitable faces before the generic fallback', async () => {
+    const {manager} = await loadCatalog([
+      {family:'Microsoft YaHei UI', languageGroup:'zh-hans', sortName:'Microsoft YaHei UI'},
+      {family:'Arial', languageGroup:'en', sortName:'Arial'},
+    ]);
+
+    expect(manager.resolveDefaultFace('zh-hans', {weight:700})).toMatchObject({
+      family:'Microsoft YaHei UI',
+      faceFamily:'Microsoft YaHei UI',
+      weight:400,
+    });
+    expect(manager.resolveDefaultFace('en', {italic:true})).toMatchObject({
+      family:'Arial',
+      faceFamily:'Arial',
+      italic:false,
+    });
+  });
+
+  it('returns system-ui when no installed face can satisfy the script', async () => {
+    const {manager} = await loadCatalog([]);
+
+    expect(manager.resolveDefaultFace('zh-hans', {weight:650, italic:true})).toEqual({
+      family:'system-ui',
+      faceFamily:'system-ui',
+      styleId:'generic-system-ui',
+      weight:650,
+      italic:true,
+      fallback:true,
+    });
+    expect(manager.matchOcrRun({
+      script:'en', familyCandidates:['Missing'], weight:550, style:'italic',
+    })).toMatchObject({
+      family:'system-ui',
+      faceFamily:'system-ui',
+      weight:550,
+      italic:true,
+      fallback:true,
+    });
+  });
+
+  it('builds mixed-script default runs and assigns neutral text to the nearest script', async () => {
+    const {manager} = await loadCatalog([
+      fallbackFont(),
+      englishFallbackFont(),
+    ]);
+
+    expect(manager.defaultTextRuns('夏日，Open 2026！中文')).toEqual([
+      expect.objectContaining({start:0, end:3, script:'zh-hans', faceFamily:fallbackFamily}),
+      expect.objectContaining({start:3, end:13, script:'en', faceFamily:englishFallbackFamily}),
+      expect.objectContaining({start:13, end:15, script:'zh-hans', faceFamily:fallbackFamily}),
+    ]);
+    expect(manager.defaultTextRuns(' - ').map(run => run.script)).toEqual(['zh-hans']);
+    expect(manager.defaultTextRuns('中   A').map(run => ({start:run.start, end:run.end, script:run.script}))).toEqual([
+      {start:0, end:3, script:'zh-hans'},
+      {start:3, end:5, script:'en'},
+    ]);
   });
 
   it('prefers italic first and the lower real face when weight distances tie', async () => {
@@ -716,7 +794,7 @@ describe('Hstar OpenShop font catalog', () => {
     await manager.refreshSystemFonts();
     expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Refresh B']}}).family).toBe('03免Refresh B');
     expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Refresh A']}})).toMatchObject({
-      family:fallbackFamily,
+      family:'03免Refresh B',
       fallback:true,
     });
   });
@@ -787,13 +865,16 @@ describe('Hstar OpenShop font catalog', () => {
     });
   });
 
-  it('throws an explicit error when the exact Alibaba 3.0 family is not installed', async () => {
+  it('uses an installed same-script family when the exact Alibaba 3.0 family is not installed', async () => {
     const {manager} = await loadCatalog([
       {family:'01免Unrelated Serif', languageGroup:'zh-hans', freeCommercialCategory:'01', sortName:'Unrelated Serif'},
     ], {fontProbe:() => true});
 
-    expect(() => manager.matchOcrFont({script:'zh-hans', font:{familyCandidates:['Unknown Sans']}}))
-      .toThrow(`未安装必需的回退字体：${fallbackFamily}`);
+    expect(manager.matchOcrFont({script:'zh-hans', font:{familyCandidates:['Unknown Sans']}})).toMatchObject({
+      family:'01免Unrelated Serif',
+      faceFamily:'01免Unrelated Serif',
+      fallback:true,
+    });
   });
 
   it('never treats project refs or common-font probes as installed automatic candidates', async () => {
@@ -804,11 +885,11 @@ describe('Hstar OpenShop font catalog', () => {
     });
 
     expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Project Probe Sans']}})).toMatchObject({
-      family:fallbackFamily,
+      family:'system-ui',
       fallback:true,
     });
     expect(manager.matchOcrFont({script:'en', font:{familyCandidates:['Arial']}})).toMatchObject({
-      family:fallbackFamily,
+      family:'system-ui',
       fallback:true,
     });
 
@@ -820,8 +901,8 @@ describe('Hstar OpenShop font catalog', () => {
       ],
       canvas:{getObjects:() => []},
     });
-    expect(() => probeOnlyManager.matchOcrFont({script:'en', font:{familyCandidates:['Project Probe Sans']}}))
-      .toThrow(`未安装必需的回退字体：${fallbackFamily}`);
+    expect(probeOnlyManager.matchOcrFont({script:'en', font:{familyCandidates:['Project Probe Sans']}}))
+      .toMatchObject({family:'system-ui', faceFamily:'system-ui', fallback:true});
   });
 
   it('notifies subscribers when loading starts and finishes', async () => {
