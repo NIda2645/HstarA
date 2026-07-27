@@ -653,6 +653,7 @@ describe('Hstar OpenShop font catalog', () => {
       {start:0, end:3, script:'zh-hans'},
       {start:3, end:5, script:'en'},
     ]);
+    expect(manager.defaultTextRuns('A𠀀').map(run => run.script)).toEqual(['en', 'zh-hans']);
   });
 
   it('prefers italic first and the lower real face when weight distances tie', async () => {

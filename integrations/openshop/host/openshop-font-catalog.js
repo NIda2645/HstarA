@@ -2,7 +2,7 @@
   const GENERIC_FAMILIES = new Set([
     'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
   ]);
-  const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
+  const CJK_RE = /\p{Script=Han}/u;
   const FONT_COLLATOR = new Intl.Collator('zh-CN', {numeric:true, sensitivity:'base'});
   const FALLBACK_FAMILIES = Object.freeze({
     'zh-hans':'阿里巴巴普惠体 3.0',

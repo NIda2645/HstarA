@@ -130,6 +130,7 @@ describe('Hstar OpenShop editor host runtime', () => {
       'hstarOcrSourceAssetId', 'hstarOcrSourceLayerId', 'hstarOcrBlockId', 'hstarOcrQuad',
       'hstarOcrVisualProfile', 'hstarOcrOriginalText', 'hstarArtFontRequestGeneration',
       'hstarOcrConfidence', 'hstarOcrLanguage', 'hstarOcrFontCandidates',
+      'hstarAutomaticFontPolicy',
     ]));
     expect(customProperties.filter(property => property === 'hstarAiGeneration')).toHaveLength(1);
     expect(html).toContain('window.HstarOpenShopAssetApi');

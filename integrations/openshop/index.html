@@ -1558,6 +1558,7 @@ const OS = {
         'hstarOcrConfidence',
         'hstarOcrLanguage',
         'hstarOcrFontCandidates',
+        'hstarAutomaticFontPolicy',
     ]),
     _esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; },
     _downloadBlob(blob, filename) {
@@ -1664,7 +1665,7 @@ const OS = {
         tool: 'select', fgColor: '#ffffff', bgColor: '#000000',
         brushSize: 8, brushOpacity: 100, brushHardness: 100, brushPreset: 'round',
         shapeFill: '#6c8cff', shapeStroke: '#ffffff', shapeStrokeWidth: 2, shapeFilled: true,
-        textFont: 'Microsoft YaHei UI', textFontWeight: 400, textSize: 24, textColor: '#000000', textBold: false, textItalic: false,
+        textFont: 'Microsoft YaHei UI', textFontAutomatic: true, textFontWeight: 400, textSize: 24, textColor: '#000000', textBold: false, textItalic: false,
         textWritingMode: 'horizontal',
         gradFrom: '#6c8cff', gradTo: '#000000', gradType: 'linear',
         patternType: 'checkerboard', patternScale: 20, patternColor: '#6c8cff',
@@ -3813,14 +3814,17 @@ self.onmessage = function(e) {
                 this.canvas.requestRenderAll?.();
                 return;
             }
+            const automaticFont = this.state.textFontAutomatic !== false;
             const text = window.HstarOpenShopWritingMode.createTextObject(fabric, 'Type here', {
-                left:ptr.x, top:ptr.y, fontFamily:this.state.textFont, fontSize:this.state.textSize,
+                left:ptr.x, top:ptr.y, fontFamily:automaticFont ? 'system-ui' : this.state.textFont, fontSize:this.state.textSize,
                 fill:this.state.textColor, editable:true,
                 fontWeight:this.state.textFontWeight ?? (this.state.textBold ? 700 : 400),
                 fontStyle:this.state.textItalic?'italic':'normal',
                 hstarWritingMode:this.state.textWritingMode,
+                ...(automaticFont ? {hstarAutomaticFontPolicy:'script-default'} : {}),
             });
             this.canvas.add(text); this._createObjectLayer(text, text.text);
+            window.HstarOpenShopTextPropertiesController?.applyAutomaticFontPolicy?.(text);
             this.canvas.setActiveObject(text); text.enterEditing(opt.e); this._markVoiceTextEditor(text); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
         }
         if (tool==='fill') {

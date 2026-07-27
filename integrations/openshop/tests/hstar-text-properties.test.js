@@ -1042,6 +1042,7 @@ describe('Hstar OpenShop text properties', () => {
       textFontWeight:700,
       textBold:true,
       textItalic:false,
+      textFontAutomatic:false,
     });
     expect(style.value).toBe('creation-bold');
     controller.destroy();
