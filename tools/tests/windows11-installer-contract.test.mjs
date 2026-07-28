@@ -8,14 +8,20 @@ const installerPath = resolve(root, 'build/installer/Hstar.Windows11.iss');
 const retiredInstallerPath = resolve(root, 'build/installer/Hstar.iss');
 const builderPath = resolve(root, 'build/scripts/New-HstarWindows11Installer.ps1');
 const chineseLanguagePath = resolve(root, 'build/installer/languages/ChineseSimplified.isl');
+const desktopProjectPath = resolve(root, 'desktop/Hstar.Desktop/Hstar.Desktop.csproj');
+const brandIconPath = resolve(root, 'desktop/Hstar.Desktop/Branding/Hstar.ico');
+const brandIconSourcePath = resolve(root, 'desktop/Hstar.Desktop/Branding/Hstar.svg');
 
 assert.ok(existsSync(installerPath), 'independent Windows 11 installer definition exists');
 assert.ok(existsSync(builderPath), 'Windows 11 installer builder exists');
 assert.ok(existsSync(chineseLanguagePath), 'Simplified Chinese installer messages are a pinned build input');
+assert.ok(existsSync(brandIconPath), 'the Windows brand icon exists');
+assert.ok(existsSync(brandIconSourcePath), 'the editable Windows brand icon source exists');
 
 const installer = readFileSync(installerPath, 'utf8');
 const retiredInstaller = readFileSync(retiredInstallerPath, 'utf8');
 const builder = readFileSync(builderPath, 'utf8');
+const desktopProject = readFileSync(desktopProjectPath, 'utf8');
 const ignore = readFileSync(resolve(root, '.gitignore'), 'utf8');
 
 assert.match(installer, /#define\s+MyEdition\s+"Windows11"/i);
@@ -30,8 +36,10 @@ assert.match(installer, /^ArchitecturesInstallIn64BitMode=x64compatible$/mi);
 assert.match(installer, /^MinVersion=10\.0\.22000$/mi);
 assert.match(installer, /^OutputDir=\.\.\\release\\windows11$/mi);
 assert.match(installer, /^OutputBaseFilename=Hstar_Windows11_Setup_\{#MyAppVersion\}$/mi);
+assert.match(installer, /^SetupIconFile=\.\.\\\.\.\\desktop\\Hstar\.Desktop\\Branding\\Hstar\.ico$/mi);
 assert.match(installer, /^AppMutex=\{#MyAppMutex\}$/mi, 'installer binds only the Windows 11 mutex');
 assert.match(installer, /^CloseApplications=no$/mi, 'installer does not terminate unrelated processes');
+assert.match(desktopProject, /<ApplicationIcon>Branding\\Hstar\.ico<\/ApplicationIcon>/i);
 assert.match(installer, /MessagesFile:\s*"languages\\ChineseSimplified\.isl"/i);
 assert.doesNotMatch(installer, /compiler:Languages\\ChineseSimplified\.isl/i);
 
@@ -66,6 +74,21 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(installer, /\[UninstallDelete\]/i, 'uninstall never declares destructive cleanup');
 assert.doesNotMatch(installer, /(?:Fun-ASR-Nano|safetensors|model\.pt|voice-assistant-data)/i);
+
+const icon = readFileSync(brandIconPath);
+assert.equal(icon.readUInt16LE(0), 0, 'ICO reserved field is zero');
+assert.equal(icon.readUInt16LE(2), 1, 'brand asset is a Windows ICO');
+const iconSizes = new Set();
+const iconCount = icon.readUInt16LE(4);
+for (let index = 0; index < iconCount; index += 1) {
+  const width = icon[6 + (index * 16)] || 256;
+  const height = icon[7 + (index * 16)] || 256;
+  if (width === height) iconSizes.add(width);
+}
+for (const size of [16, 32, 48, 256]) {
+  assert.ok(iconSizes.has(size), `brand ICO contains a ${size}x${size} layer`);
+}
+
 assert.match(retiredInstaller, /retired/i, 'legacy combined installer is explicitly retired');
 assert.doesNotMatch(retiredInstaller, /^\[Setup\]/mi, 'retired installer cannot produce a package');
 

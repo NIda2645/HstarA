@@ -25,6 +25,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.22000
 OutputDir=..\release\windows11
 OutputBaseFilename=Hstar_Windows11_Setup_{#MyAppVersion}
+SetupIconFile=..\..\desktop\Hstar.Desktop\Branding\Hstar.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

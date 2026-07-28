@@ -8,6 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Hstar</AssemblyName>
     <RootNamespace>Hstar.Desktop</RootNamespace>
+    <ApplicationIcon>Branding\Hstar.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
