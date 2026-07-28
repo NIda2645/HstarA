@@ -35,6 +35,110 @@ test('loads the editor shell and supports core UI interactions', async ({ page }
   expect(pageErrors).toEqual([]);
 });
 
+test('paints and erases on a newly created blank layer', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => OS.dismissWelcome());
+
+  const result = await page.evaluate(() => {
+    OS.addLayer();
+    OS.state.fgColor = '#ff0000';
+    OS.state.brushSize = 36;
+    OS.state.brushOpacity = 100;
+    OS.state.brushPreset = 'round';
+    OS.state.brushHardness = 100;
+
+    const point = { x: Math.round(OS.canvasW / 2), y: Math.round(OS.canvasH / 2) };
+    OS.setTool('brush');
+    const brushResult = OS._rasterTools.begin('brush', point);
+    OS._rasterTools.end();
+    const target = OS.layers[OS.activeLayerIdx].objects.find((object) => object?.hstarPaintSurface);
+    const painted = target?.getElement?.().getContext('2d').getImageData(point.x, point.y, 1, 1).data;
+
+    OS.setTool('eraser');
+    const eraserResult = OS._rasterTools.begin('eraser', point);
+    OS._rasterTools.end();
+    const erased = target?.getElement?.().getContext('2d').getImageData(point.x, point.y, 1, 1).data;
+
+    return {
+      brushOk: brushResult?.ok,
+      eraserOk: eraserResult?.ok,
+      targetType: target?.type,
+      targetInLayer: OS.layers[OS.activeLayerIdx].objects.includes(target),
+      paintedAlpha: painted?.[3] ?? -1,
+      erasedAlpha: erased?.[3] ?? -1,
+    };
+  });
+
+  expect(result).toMatchObject({
+    brushOk: true,
+    eraserOk: true,
+    targetType: 'image',
+    targetInLayer: true,
+  });
+  expect(result.paintedAlpha).toBeGreaterThan(0);
+  expect(result.erasedAlpha).toBeLessThan(result.paintedAlpha);
+  expect(pageErrors).toEqual([]);
+});
+
+test('routes real brush and eraser pointer input to a blank active layer', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => OS.dismissWelcome());
+  await page.evaluate(() => {
+    OS.addLayer();
+    OS.state.fgColor = '#00ff00';
+    OS.state.brushSize = 44;
+    OS.state.brushOpacity = 100;
+    OS.state.brushPreset = 'round';
+    OS.state.brushHardness = 100;
+  });
+
+  const canvas = page.locator('.upper-canvas').first();
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+
+  await page.locator('.tool-btn[data-tool="brush"]').first().click();
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 24, y);
+  await page.mouse.up();
+
+  const afterBrush = await page.evaluate(() => {
+    const layer = OS.layers[OS.activeLayerIdx];
+    const target = layer.objects.find((object) => object?.hstarPaintSurface);
+    return {
+      count: layer.objects.length,
+      hasTarget: Boolean(target),
+      history: OS.history.at(-1)?.action,
+      toastText: document.getElementById('toast-container')?.textContent || '',
+    };
+  });
+  expect(afterBrush.hasTarget).toBe(true);
+  expect(afterBrush.history).toBe('Brush');
+  expect(afterBrush.toastText).not.toContain('Select an image');
+
+  await page.locator('.tool-btn[data-tool="eraser"]').first().click();
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 24, y);
+  await page.mouse.up();
+
+  const afterEraser = await page.evaluate(() => ({
+    history: OS.history.at(-1)?.action,
+    toastText: document.getElementById('toast-container')?.textContent || '',
+  }));
+  expect(afterEraser.history).toBe('Eraser');
+  expect(afterEraser.toastText).not.toContain('Select an image');
+  expect(pageErrors).toEqual([]);
+});
+
 test('applies a one-click pixel filter to an active image layer', async ({ page }) => {
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: 'Skip' }).click();
@@ -89,7 +193,7 @@ test('applies a one-click pixel filter to an active image layer', async ({ page 
   });
 
   expect(result.historyAction).toBe('Filter: Sharpen');
-  expect(result.activeName).toBe('Filter: Sharpen');
+  expect(result.activeName).toBe('Filter Smoke');
   expect(typeof result.photonDisabled).toBe('boolean');
 });
 
@@ -213,6 +317,44 @@ test('loads the editor on a mobile viewport without clipped controls', async ({ 
   }));
   expect(result.canvasVisible).toBe(true);
   expect(result.toolbarVisible).toBe(true);
+});
+
+test('keeps the welcome screen reachable on a short desktop viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+
+  const initial = await page.evaluate(() => {
+    const overlay = document.getElementById('welcome-overlay');
+    const inner = overlay.querySelector('.welcome-inner');
+    const overlayRect = overlay.getBoundingClientRect();
+    const innerRect = inner.getBoundingClientRect();
+    return {
+      overflowY: getComputedStyle(overlay).overflowY,
+      overlayTop: overlayRect.top,
+      innerTop: innerRect.top,
+      canScroll: overlay.scrollHeight > overlay.clientHeight,
+    };
+  });
+
+  expect(initial.overflowY).toBe('auto');
+  expect(initial.innerTop).toBeGreaterThanOrEqual(initial.overlayTop);
+  expect(initial.canScroll).toBe(true);
+
+  const scrolled = await page.evaluate(() => {
+    const overlay = document.getElementById('welcome-overlay');
+    const inner = overlay.querySelector('.welcome-inner');
+    overlay.scrollTop = overlay.scrollHeight;
+    const overlayRect = overlay.getBoundingClientRect();
+    const innerRect = inner.getBoundingClientRect();
+    return {
+      scrollTop: overlay.scrollTop,
+      innerBottom: innerRect.bottom,
+      overlayBottom: overlayRect.bottom,
+    };
+  });
+
+  expect(scrolled.scrollTop).toBeGreaterThan(0);
+  expect(scrolled.innerBottom).toBeLessThanOrEqual(scrolled.overlayBottom);
 });
 
 test('renders persisted UI data without activating markup', async ({ page }) => {

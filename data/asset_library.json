@@ -1,55 +1,43 @@
 {
-  "active_library_id": "default",
+  "active_library_id": "openshop-test-library",
   "libraries": [
     {
-      "id": "default",
-      "name": "默认资产库",
+      "id": "openshop-test-library",
+      "name": "OpenShop 测试素材库",
       "type": "asset",
       "categories": [
         {
-          "id": "characters",
-          "name": "角色",
+          "id": "reference-images",
+          "name": "参考图",
           "type": "image",
-          "items": [],
-          "dir": "角色"
-        },
-        {
-          "id": "scenes",
-          "name": "场景",
-          "type": "image",
-          "items": [],
-          "dir": "场景"
-        },
-        {
-          "id": "workflows",
-          "name": "工作流",
-          "type": "workflow",
-          "items": []
+          "items": [
+            {
+              "id": "reference-item-1",
+              "name": "紫色参考图.png",
+              "type": "image",
+              "url": "/assets/library/openshop-library-reference.png",
+              "registrations": {}
+            }
+          ]
         }
       ]
     }
   ],
   "categories": [
     {
-      "id": "characters",
-      "name": "角色",
+      "id": "reference-images",
+      "name": "参考图",
       "type": "image",
-      "items": [],
-      "dir": "角色"
-    },
-    {
-      "id": "scenes",
-      "name": "场景",
-      "type": "image",
-      "items": [],
-      "dir": "场景"
-    },
-    {
-      "id": "workflows",
-      "name": "工作流",
-      "type": "workflow",
-      "items": []
+      "items": [
+        {
+          "id": "reference-item-1",
+          "name": "紫色参考图.png",
+          "type": "image",
+          "url": "/assets/library/openshop-library-reference.png",
+          "registrations": {}
+        }
+      ]
     }
   ],
-  "updated_at": 1783212587156
+  "updated_at": 1785063261894
 }

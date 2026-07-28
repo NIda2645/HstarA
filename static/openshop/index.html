@@ -4,16 +4,16 @@
 <meta charset="UTF-8">
     <meta property="og:image" content="./icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="OpenShop — Free browser-based image editor with layers, AI tools, selections, filters, PSD import, and a Photoshop-inspired workflow. No server, no signup, no install.">
-<meta property="og:title" content="OpenShop — Free Online Image Editor">
+    <meta name="description" content="OpenShop - Free browser-based image editor with layers, AI tools, selections, filters, PSD import, and a Photoshop-inspired workflow. No server, no signup, no install.">
+<meta property="og:title" content="OpenShop - Free Online Image Editor">
 <meta property="og:description" content="Professional image editing in your browser. Layers, AI tools, selections, filters, PSD import. Zero install.">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#0a0c10">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https://huggingface.co https://*.hf.co blob:; worker-src 'self' blob:; frame-src 'self';">
-<title>OpenShop v0.19.1 — Online Image Editor</title>
-<link rel="stylesheet" href="./host/openshop-text-properties.css">
-<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=2026.07.20.1784548314504">
-<link rel="stylesheet" href="./host/openshop-color-panel.css">
+<title>OpenShop v0.19.1 - Online Image Editor</title>
+<link rel="stylesheet" href="./host/openshop-text-properties.css?v=2026.07.27.150100001">
+<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=2026.07.27.150100001">
+<link rel="stylesheet" href="./host/openshop-color-panel.css?v=2026.07.27.150100001">
 <script src="./vendor/fabric-5.3.1.min.js"></script>
 <script src="./vendor/ag-psd-22.0.2.bundle.js"></script>
 <script src="./vendor/jspdf-4.2.1.umd.min.js"></script>
@@ -95,6 +95,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-depth-0);co
 .opt-group input[type="color"]{width:24px;height:22px;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;padding:0}
 .opt-val{font-family:Consolas,'Microsoft YaHei UI',monospace;font-size:11px;color:var(--text-secondary);min-width:24px;text-align:center}
 .opt-group input[type="checkbox"]{accent-color:var(--accent)}
+.selection-mode-toolbar{display:inline-flex;align-items:center;gap:2px;height:26px;padding:2px;border:1px solid var(--border);border-radius:6px;background:var(--bg-depth-2)}
+.selection-mode-btn{height:20px;min-width:38px;padding:0 7px;border:0;border-radius:4px;background:transparent;color:var(--text-muted);font:inherit;font-size:10.5px;cursor:pointer;transition:background .14s var(--ease-out),color .14s var(--ease-out),box-shadow .14s var(--ease-out)}
+.selection-mode-btn:hover{color:var(--text-primary);background:var(--bg-depth-4)}
+.selection-mode-btn.active,.selection-mode-btn[aria-pressed="true"]{color:#fff;background:var(--accent);box-shadow:inset 0 1px rgba(255,255,255,.16)}
+.selection-mode-btn:active{transform:translateY(1px)}
+.selection-mode-btn:focus-visible{box-shadow:var(--focus-ring)}
+.selection-mode-shortcut-hint{margin-left:5px;padding-right:5px;color:var(--text-muted);font-size:10px;white-space:nowrap}
 
 /* === PANELS === */
 #panels{position:absolute;right:0;top:var(--topbar-h);bottom:var(--statusbar-h);width:var(--panel-width);background:var(--bg-depth-1);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50;overflow:hidden}
@@ -293,10 +300,10 @@ animation:marchAnts .4s linear infinite}
 .toast.show{opacity:1;transform:translateY(0) scale(1)}.toast.success{border-left:3px solid var(--success)}.toast.error{border-left:3px solid var(--danger)}.toast.info{border-left:3px solid var(--accent)}
 
 /* === WELCOME SCREEN === */
-#welcome-overlay{position:fixed;inset:0;background:var(--bg-depth-0);z-index:30000;display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:1;transition:opacity .4s var(--ease-out)}
+#welcome-overlay{position:fixed;inset:0;background:var(--bg-depth-0);z-index:30000;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;overflow-y:auto;overscroll-behavior:contain;padding:24px 0;box-sizing:border-box;opacity:1;transition:opacity .4s var(--ease-out)}
 #welcome-overlay.hidden{opacity:0;pointer-events:none}
 #welcome-overlay::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 80% 60% at 50% 30%,rgba(108,140,255,.06) 0%,transparent 70%);pointer-events:none}
-.welcome-inner{max-width:720px;width:90%;text-align:center;position:relative}
+.welcome-inner{max-width:720px;width:90%;text-align:center;position:relative;flex:none;margin:auto 0}
 .welcome-inner h1{font-family:Consolas,'Microsoft YaHei UI',monospace;font-size:32px;color:var(--accent);margin-bottom:6px;letter-spacing:-1.5px;font-weight:700}
 .welcome-inner p{color:var(--text-muted);font-size:14px;margin-bottom:32px;line-height:1.5}
 .welcome-actions{display:flex;gap:12px;justify-content:center;margin-bottom:36px}
@@ -410,6 +417,8 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 .pen-point{fill:var(--accent);cursor:move;pointer-events:all}
 .pen-control{fill:none;stroke:var(--accent);stroke-width:1;stroke-dasharray:3 2}
 .pen-path-preview{fill:none;stroke:var(--accent);stroke-width:2}
+.pen-close-hint{display:none;fill:#fff;stroke:#111;stroke-width:2;filter:drop-shadow(0 1px 3px rgba(0,0,0,.65))}
+.pen-close-hint.active{display:block}
 
 /* === LAYER DRAG === */
 .layer-item.dragging{opacity:.4;background:var(--accent-dim)}
@@ -581,7 +590,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 @media(max-width:767px){
   :root{--panel-width:0px;--toolbar-w:0px;--topbar-h:36px;--tool-size:32px;--statusbar-h:0px}
   #welcome-overlay{justify-content:flex-start;overflow-y:auto;overscroll-behavior:contain;padding:20px 0 28px}
-  .welcome-inner{width:calc(100% - 24px);max-width:520px;flex:none}
+  .welcome-inner{width:calc(100% - 24px);max-width:520px;flex:none;margin:0}
   .welcome-inner h1{font-size:24px;letter-spacing:0}
   .welcome-inner p{font-size:12px;margin-bottom:18px}
   .welcome-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:24px}
@@ -617,7 +626,8 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
   :root{--panel-width:200px}
 }
 </style>
-<link rel="stylesheet" href="./host/openshop-generative-tools.css">
+<link rel="stylesheet" href="./host/openshop-generative-tools.css?v=2026.07.27.150100001">
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.28.2.1785229104"></script>
 </head>
 <body>
 
@@ -824,22 +834,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
             <div class="dd-item" onclick="OS.autoContrast()" data-i18n="Auto Contrast">Auto Contrast</div>
             <div class="dd-item" onclick="OS.showPresets()" data-i18n="Photo Presets...">Photo Presets...</div>
             <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.aiRemoveBackground()" data-i18n="Remove Background (AI)">Remove Background (AI)</div>
-            <div class="dd-sep"></div>
             <div class="dd-item" onclick="OS.clearFilters()" data-i18n="Clear All Filters">Clear All Filters</div>
-        </div>
-    </div>
-    <div class="menu-item" role="menuitem" aria-haspopup="true">AI
-        <div class="menu-dropdown">
-            <div class="dd-item" onclick="OS.aiRemoveBackground()" data-i18n="Background Remove">Background Remove</div>
-            <div class="dd-item" onclick="OS.aiDepthMap()" data-i18n="Depth Map">Depth Map</div>
-            <div class="dd-item" onclick="OS.aiObjectDetect()" data-i18n="Detect Objects">Detect Objects</div>
-            <div class="dd-item" onclick="OS.activateSegmentSelect()" data-i18n="Segment Select">Segment Select</div>
-            <div class="dd-sep"></div>
-            <div class="dd-item" onclick="OS.aiUpscale(2)" data-i18n="Smart Upscale 2x">Smart Upscale 2x</div>
-            <div class="dd-item" onclick="OS.aiUpscale(4)" data-i18n="Smart Upscale 4x">Smart Upscale 4x</div>
-            <div class="dd-sep"></div>
-            <div class="dd-note" role="note" aria-hidden="true" data-i18n="Models download on first use — no API keys needed">Models download on first use — no API keys needed</div>
         </div>
     </div>
     <div class="menu-item" role="menuitem" aria-haspopup="true" data-i18n="View">View
@@ -1024,12 +1019,12 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         <div class="hstar-top-font-selectors" data-top-text-font-selectors>
             <label><span>中文</span>
                 <button type="button" class="hstar-font-select hstar-top-font-select" data-top-text-family="zh" aria-haspopup="listbox" aria-expanded="false" title="选择中文字体">
-                    <span data-text-family-label>选择字体</span><span aria-hidden="true">▾</span>
+                    <span data-text-family-label>选择字体</span><span aria-hidden="true">▼</span>
                 </button>
             </label>
             <label><span>英文及其他语言</span>
                 <button type="button" class="hstar-font-select hstar-top-font-select" data-top-text-family="other" aria-haspopup="listbox" aria-expanded="false" title="选择英文及其他语言字体">
-                    <span data-text-family-label>选择字体</span><span aria-hidden="true">▾</span>
+                    <span data-text-family-label>选择字体</span><span aria-hidden="true">▼</span>
                 </button>
             </label>
         </div>
@@ -1060,6 +1055,13 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         <span style="color:var(--text-muted);font-size:11px;margin-left:8px" data-i18n="Alt+Click source">Alt+Click source</span>
     </div>
     <div class="opt-group" id="opt-wand" style="display:none">
+        <div class="selection-mode-toolbar" role="toolbar" aria-label="选区模式">
+            <button type="button" class="selection-mode-btn active" data-selection-mode="new" onclick="OS.setSelectionMode('new')" title="新建选区 (N)">新建</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="add" onclick="OS.setSelectionMode('add')" title="添加到选区 (A)">添加</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="subtract" onclick="OS.setSelectionMode('subtract')" title="从选区减去 (S)">减去</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="intersect" onclick="OS.setSelectionMode('intersect')" title="与选区相交 (I)">相交</button>
+            <span class="selection-mode-shortcut-hint">Shift 添加 · Alt 减去 · Shift+Alt 相交</span>
+        </div>
         <label data-i18n="Tolerance">Tolerance</label>
         <input type="range" id="wand-tolerance" min="0" max="255" value="32" oninput="OS.state.wandTolerance=+this.value;document.getElementById('wand-tol-val').textContent=this.value">
         <span class="opt-val" id="wand-tol-val">32</span>
@@ -1087,9 +1089,36 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         <button class="btn btn-primary" style="padding:3px 14px;font-size:11px" onclick="OS.applyCrop()" data-i18n="Apply">Apply</button>
         <button class="btn" style="padding:3px 10px;font-size:11px" onclick="OS.cancelCrop()" data-i18n="Cancel">Cancel</button>
     </div>
-    <div class="opt-group" id="opt-marquee" style="display:none"><span style="color:var(--text-muted);font-size:11px" data-i18n="Drag to create selection.">Drag to create selection.</span></div>
-    <div class="opt-group" id="opt-lasso" style="display:none"><span style="color:var(--text-muted);font-size:11px" data-i18n="Freehand Lasso">Freehand Lasso</span></div>
-    <div class="opt-group" id="opt-ai-segment" style="display:none"><span style="color:var(--text-muted);font-size:11px" data-i18n="Segment Select">Segment Select</span><span style="color:var(--accent);font-size:11px;margin-left:8px" data-i18n="Panoptic model loads on demand">Panoptic model loads on demand</span></div>
+    <div class="opt-group" id="opt-marquee" style="display:none">
+        <div class="selection-mode-toolbar" role="toolbar" aria-label="选区模式">
+            <button type="button" class="selection-mode-btn active" data-selection-mode="new" onclick="OS.setSelectionMode('new')" title="新建选区 (N)">新建</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="add" onclick="OS.setSelectionMode('add')" title="添加到选区 (A)">添加</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="subtract" onclick="OS.setSelectionMode('subtract')" title="从选区减去 (S)">减去</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="intersect" onclick="OS.setSelectionMode('intersect')" title="与选区相交 (I)">相交</button>
+            <span class="selection-mode-shortcut-hint">Shift 添加 · Alt 减去 · Shift+Alt 相交</span>
+        </div>
+        <span style="color:var(--text-muted);font-size:11px" data-i18n="Drag to create selection.">Drag to create selection.</span>
+    </div>
+    <div class="opt-group" id="opt-lasso" style="display:none">
+        <div class="selection-mode-toolbar" role="toolbar" aria-label="选区模式">
+            <button type="button" class="selection-mode-btn active" data-selection-mode="new" onclick="OS.setSelectionMode('new')" title="新建选区 (N)">新建</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="add" onclick="OS.setSelectionMode('add')" title="添加到选区 (A)">添加</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="subtract" onclick="OS.setSelectionMode('subtract')" title="从选区减去 (S)">减去</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="intersect" onclick="OS.setSelectionMode('intersect')" title="与选区相交 (I)">相交</button>
+            <span class="selection-mode-shortcut-hint">Shift 添加 · Alt 减去 · Shift+Alt 相交</span>
+        </div>
+        <span style="color:var(--text-muted);font-size:11px" data-i18n="Freehand Lasso">Freehand Lasso</span>
+    </div>
+    <div class="opt-group" id="opt-ai-segment" style="display:none">
+        <div class="selection-mode-toolbar" role="toolbar" aria-label="选区模式">
+            <button type="button" class="selection-mode-btn active" data-selection-mode="new" onclick="OS.setSelectionMode('new')" title="新建选区 (N)">新建</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="add" onclick="OS.setSelectionMode('add')" title="添加到选区 (A)">添加</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="subtract" onclick="OS.setSelectionMode('subtract')" title="从选区减去 (S)">减去</button>
+            <button type="button" class="selection-mode-btn" data-selection-mode="intersect" onclick="OS.setSelectionMode('intersect')" title="与选区相交 (I)">相交</button>
+            <span class="selection-mode-shortcut-hint">Shift 添加 · Alt 减去 · Shift+Alt 相交</span>
+        </div>
+        <span style="color:var(--text-muted);font-size:11px" data-i18n="Segment Select">Segment Select</span><span style="color:var(--accent);font-size:11px;margin-left:8px" data-i18n="Panoptic model loads on demand">Panoptic model loads on demand</span>
+    </div>
     <div class="opt-group" id="opt-pen" style="display:none">
         <span style="color:var(--text-muted);font-size:11px" data-i18n="Click to add anchor points. Double-click to finish path.">Click to add anchor points. Double-click to finish path.</span>
         <label data-i18n="Stroke">Stroke</label><input type="color" id="pen-stroke" value="#ffffff" onchange="OS.state.penStroke=this.value">
@@ -1147,7 +1176,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
     <canvas class="canvas-grid" id="grid-overlay"></canvas>
     <div id="guides-container"></div>
     <div id="lasso-overlay" class="lasso-overlay" style="display:none"><svg><polyline class="lasso-path" points=""/></svg></div>
-    <div id="pen-overlay" class="pen-overlay" style="display:none"><svg><path class="pen-path-preview" d=""/></svg></div>
+    <div id="pen-overlay" class="pen-overlay" style="display:none"><svg><path class="pen-path-preview" d=""/><circle class="pen-close-hint" cx="0" cy="0" r="6"/></svg></div>
     <div id="measure-overlay" style="position:absolute;inset:0;pointer-events:none;z-index:98;display:none"></div>
     <div id="selection-overlay" class="selection-rect" style="display:none"></div>
     <canvas id="selection-mask-overlay" class="selection-mask-overlay" style="display:none"></canvas>
@@ -1291,7 +1320,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
         </div>
     </div>
 
-    <div class="panel-group-splitter" id="panel-group-splitter" role="separator" tabindex="0" aria-label="Resize panels" aria-orientation="horizontal" aria-grabbed="false"></div>
+    <div class="panel-group-splitter" id="panel-group-splitter" role="separator" tabindex="0" aria-label="Resize panels" data-i18n-aria-label="Resize panels" aria-orientation="horizontal" aria-grabbed="false"></div>
 
     <!-- ===== TAB GROUP 2: Color / Palettes ===== -->
     <div class="panel-tab-group" id="ptg2-group" data-panel-region="secondary">
@@ -1489,15 +1518,16 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <input type="file" id="psd-input" accept=".psd" style="display:none" onchange="OS.handlePSDOpen(event)">
 <input type="file" id="project-input" accept=".json" style="display:none" onchange="OS.handleProjectOpen(event)">
 
-<script src="./host/openshop-i18n.js"></script>
-<script src="./locales/zh-CN.js"></script>
-<script src="./host/openshop-pixel-fill.js"></script>
-<script src="./host/openshop-desktop-input.js"></script>
-<script src="./host/openshop-writing-mode.js?v=2026.07.20.1784548314504"></script>
-<script src="./host/openshop-panel-splitter.js"></script>
+<script src="./host/openshop-i18n.js?v=2026.07.27.150100001"></script>
+<script src="./locales/zh-CN.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-pixel-fill.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-desktop-input.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-writing-mode.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-ocr-layout.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-panel-splitter.js?v=2026.07.27.150100001"></script>
 <script>
 // ================================================================
-//  OpenShop v0.19.1 — Core Engine (Phase 10: Pro Toolbar)
+//  OpenShop v0.19.1 - Core Engine (Phase 10: Pro Toolbar)
 // ================================================================
 const eventElementTarget = event => {
     const target = event?.target;
@@ -1528,6 +1558,7 @@ const OS = {
         'hstarOcrConfidence',
         'hstarOcrLanguage',
         'hstarOcrFontCandidates',
+        'hstarAutomaticFontPolicy',
     ]),
     _esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; },
     _downloadBlob(blob, filename) {
@@ -1573,6 +1604,7 @@ const OS = {
     zoom: 1, canvasW: 1920, canvasH: 1080,
     _shapeStart: null, _tempShape: null,
     _marqueeStart: null,
+    _marqueeMode: 'new',
     _rasterTools: null,
     _brushCursor: null,
     _adjDebounce: null,
@@ -1583,8 +1615,10 @@ const OS = {
     _lassoMode: 'new',
     _selectionAntsFrame: 0,
     _selectionAntsToken: 0,
+    _selectionDocumentBounds: null,
+    _selectionRegions: [],
     _measureStart: null,
-    _penPoints: [],
+    _penPoints: [], _penHoverPoint: null, _penCanClose: false,
     _histChannel: 'luminance',
     _baSnapshot: null,
     _cmdIdx: 0,
@@ -1631,12 +1665,12 @@ const OS = {
         tool: 'select', fgColor: '#ffffff', bgColor: '#000000',
         brushSize: 8, brushOpacity: 100, brushHardness: 100, brushPreset: 'round',
         shapeFill: '#6c8cff', shapeStroke: '#ffffff', shapeStrokeWidth: 2, shapeFilled: true,
-        textFont: 'Microsoft YaHei UI', textSize: 24, textColor: '#000000', textBold: false, textItalic: false,
+        textFont: 'Microsoft YaHei UI', textFontAutomatic: true, textFontWeight: 400, textSize: 24, textColor: '#000000', textBold: false, textItalic: false,
         textWritingMode: 'horizontal',
         gradFrom: '#6c8cff', gradTo: '#000000', gradType: 'linear',
         patternType: 'checkerboard', patternScale: 20, patternColor: '#6c8cff',
         cloneSize: 20, sprayDensity: 30, sprayWidth: 30, healingSize: 15,
-        wandTolerance: 32, wandContiguous: true,
+        wandTolerance: 32, wandContiguous: true, selectionMode: 'new',
         penStroke: '#ffffff', penWidth: 2, penFilled: false,
         polySides: 5, starPoints: 5, starInner: 40, shapeDash: '',
         dodgeSize: 20, dodgeExposure: 30, dodgeRange: 'midtones',
@@ -1680,9 +1714,11 @@ const OS = {
         this._initToolRuntimeCache();
         this.canvas.on('object:added', () => this._markToolObjectsDirty());
         this.canvas.on('object:removed', () => this._markToolObjectsDirty());
+        this.canvas.on('text:editing:entered', event => this._markVoiceTextEditor(event?.target));
         this.createNewDocument(this.canvasW, this.canvasH);
         this.canvas.on('mouse:move', e => this.onMouseMove(e));
         this.canvas.on('mouse:down', e => this.onMouseDown(e));
+        this.canvas.on('mouse:dblclick', e => this.onMouseDoubleClick(e));
         this.canvas.on('mouse:up', e => this.onMouseUp(e));
         this.canvas.on('object:modified', event => {
             this.saveHistory('Object Modified');
@@ -2185,10 +2221,12 @@ const OS = {
         try {
             const result = await this.downloadToLocal({format, options});
             if (result?.cancelled) return result;
-            this.toast(`已保存：${result?.filename || this._documentExportName(format)}`, 'success');
+            this.toast(this._t('Saved: {name}', {
+                name:result?.filename || this._documentExportName(format),
+            }), 'success');
             return result;
         } catch (error) {
-            this.toast(window.HstarOpenShopExportService?.safeError(error) || '导出失败', 'error');
+            this.toast(window.HstarOpenShopExportService?.safeError(error) || this._t('Export failed'), 'error');
             return {ok:false, error};
         }
     },
@@ -2228,7 +2266,9 @@ const OS = {
     },
     async _saveBatchFormats(formats) {
         const result = await this._getExportService().saveBatch(formats);
-        if (!result?.cancelled) this.toast(`已保存 ${result.count || formats.length} 个文件`, 'success');
+        if (!result?.cancelled) this.toast(this._t('Saved {count} files', {
+            count:result.count || formats.length,
+        }), 'success');
         return result;
     },
     async doBatchExport(o) {
@@ -2241,7 +2281,7 @@ const OS = {
             await this._saveBatchFormats(formats);
             o.remove();
         } catch (error) {
-            this.toast(window.HstarOpenShopExportService?.safeError(error) || '批量导出失败', 'error');
+            this.toast(window.HstarOpenShopExportService?.safeError(error) || this._t('Batch export failed'), 'error');
             if (action?.isConnected) action.disabled = false;
         }
     },
@@ -2536,7 +2576,38 @@ self.onmessage = function(e) {
         this._normalizeLayerSelection();
         return this.layers.filter(layer => this._selectedLayers.has(layer));
     },
+    _canvasObjectsForLayerSelection() {
+        const objects = [];
+        this._selectedLayerList().forEach(layer => {
+            if (layer.locked || layer.visible === false) return;
+            (layer.objects || []).forEach(object => {
+                if (!object || object.visible === false || object.name === '__boundary__'
+                    || object._wandOverlay || objects.includes(object)) return;
+                objects.push(object);
+            });
+        });
+        return objects;
+    },
+    _syncCanvasSelectionFromLayerSelection() {
+        const objects = this._canvasObjectsForLayerSelection();
+        this._syncingCanvasSelectionFromLayers = true;
+        try {
+            if (!objects.length) {
+                this.canvas.discardActiveObject?.();
+            } else if (objects.length === 1) {
+                this.canvas.setActiveObject?.(objects[0]);
+            } else {
+                this.canvas.setActiveObject?.(new fabric.ActiveSelection(objects, {canvas:this.canvas}));
+            }
+        } finally {
+            this._syncingCanvasSelectionFromLayers = false;
+        }
+        if (typeof this.canvas.requestRenderAll === 'function') this.canvas.requestRenderAll();
+        else this.canvas.renderAll?.();
+        return objects;
+    },
     _syncLayerSelectionFromCanvasSelection(event = {}) {
+        if (this._syncingCanvasSelectionFromLayers) return false;
         const candidates = [];
         const addCandidate = object => {
             if (!object) return;
@@ -2587,7 +2658,10 @@ self.onmessage = function(e) {
             if (canvasIndex >= 0) this.canvas.moveTo?.(converted, canvasIndex);
         }
         this.canvas.setActiveObject(converted);
-        if (wasEditing) converted.enterEditing?.();
+        if (wasEditing) {
+            converted.enterEditing?.();
+            this._markVoiceTextEditor(converted);
+        }
         this.canvas.requestRenderAll?.();
         this._markToolObjectsDirty();
         this._syncTextToolFace(writingMode);
@@ -2605,6 +2679,53 @@ self.onmessage = function(e) {
         return [...(layer.objects || [])].reverse().find(object => (
             object?.type === 'image' && object.visible !== false
         )) || null;
+    },
+    _ensureActiveRasterTarget() {
+        const layer=this.layers[this.activeLayerIdx];
+        if(!layer || layer.locked || layer.visible===false) return null;
+        const existing=this._activeLayerRasterTarget();
+        if(existing) return existing;
+        const width=Math.max(1,Math.round(this.canvasW));
+        const height=Math.max(1,Math.round(this.canvasH));
+        const surface=document.createElement('canvas');
+        surface.width=width;
+        surface.height=height;
+        const image=new fabric.Image(surface,{
+            left:0,
+            top:0,
+            width,
+            height,
+            originX:'left',
+            originY:'top',
+            selectable:true,
+            evented:true,
+            name:this._nextObjectLayerName('Paint Layer'),
+        });
+        image.hstarPaintSurface=true;
+        this.canvas.add(image);
+        layer.objects.push(image);
+        if(!layer.name || /^Layer \d+$/.test(String(layer.name))) layer.name=image.name;
+        this.canvas.setActiveObject(image);
+        this.updateLayersPanel();
+        return image;
+    },
+    _insertObjectLayerAbove(index, object, requestedName) {
+        if (!object) return null;
+        const insertAt = Math.max(0, Math.min(this.layers.length, Math.floor(Number(index)) + 1));
+        const name = this._nextObjectLayerName(requestedName || object.name || 'Layer');
+        if (!object.name) object.name = name;
+        const layer = {
+            name,
+            visible:true,
+            locked:false,
+            opacity:100,
+            blend:'source-over',
+            objects:[object],
+        };
+        this.layers.splice(insertAt, 0, layer);
+        this.activeLayerIdx = insertAt;
+        this._resetLayerSelection(layer);
+        return layer;
     },
     _refreshLayerSelectionPresentation() {
         document.querySelectorAll('#layers-list .layer-item[data-layer-index]').forEach(row => {
@@ -2668,6 +2789,32 @@ self.onmessage = function(e) {
         this.activeLayerIdx = this.layers.length - 1;
         this._resetLayerSelection(layer);
         return layer;
+    },
+    _addClonedObjectToNewLayer(object, requestedName) {
+        if (!object) return null;
+        this.canvas.add(object);
+        return this._createObjectLayer(object, requestedName || object.name || 'Pasted Layer');
+    },
+    _addClonedSelectionToNewLayers(cloned, {namePrefix = 'Pasted Layer'} = {}) {
+        const objects = [];
+        if (cloned?.type === 'activeSelection') {
+            cloned.canvas = this.canvas;
+            cloned.forEachObject(object => {
+                objects.push(object);
+                this._addClonedObjectToNewLayer(object, object.name || namePrefix);
+            });
+            cloned.setCoords?.();
+            if (objects.length > 1) {
+                this.canvas.setActiveObject(new fabric.ActiveSelection(objects, {canvas:this.canvas}));
+            } else if (objects.length === 1) {
+                this.canvas.setActiveObject(objects[0]);
+            }
+        } else if (cloned) {
+            objects.push(cloned);
+            this._addClonedObjectToNewLayer(cloned, cloned.name || namePrefix);
+            this.canvas.setActiveObject(cloned);
+        }
+        return objects;
     },
     _deleteEmptyObjectLayers(affectedLayers) {
         const candidates = new Set(affectedLayers || []);
@@ -2795,6 +2942,7 @@ self.onmessage = function(e) {
             this._activateAnimationLayer(layer);
         }
         this._keyboardContext = 'layers';
+        this._syncCanvasSelectionFromLayerSelection();
         this._refreshLayerSelectionPresentation();
     },
     toggleLayerVisibility(idx) {
@@ -2976,7 +3124,7 @@ self.onmessage = function(e) {
             const artTitleKey = artBusy
                 ? 'Artistic font processing in progress'
                 : artEligible ? 'Artistic font processing' : 'No original image reference';
-            const artTitle = this._esc(artEligible || artBusy ? artTitleKey : this._t(artTitleKey));
+            const artTitle = this._esc(this._t(artTitleKey));
             const artButton = textObject
                 ? `<button type="button" class="layer-art-font${artBusy?' busy':''}" title="${artTitle}" aria-label="${artTitle}" ${!artEligible || artBusy ? 'disabled' : ''}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg></button>`
                 : '';
@@ -3141,6 +3289,8 @@ self.onmessage = function(e) {
                 e.preventDefault(); e.stopPropagation();
                 const wasOpen = flyout.classList.contains('show');
                 if (!wasOpen) {
+                    const tool = face.dataset.tool;
+                    if (tool) this.setTool(tool);
                     openFlyout(false);
                 } else {
                     this._closeAllFlyouts();
@@ -3223,6 +3373,7 @@ self.onmessage = function(e) {
                     this.drawRulers();
                     this._drawPixelGrid();
                     this._updateMinimapViewport?.();
+                    this._refreshSelectionViewport?.();
                 },
             },
             idleKeys:['minimap', 'histogram'],
@@ -3251,6 +3402,7 @@ self.onmessage = function(e) {
                 this.drawRulers();
                 this._drawPixelGrid();
                 this._updateMinimapViewport?.();
+                this._refreshSelectionViewport?.();
             },
         };
         [...new Set(keys.flat())].forEach(key => immediate[key]?.());
@@ -3363,6 +3515,25 @@ self.onmessage = function(e) {
         return runtime.brushes.get(key);
     },
 
+    _syncSelectionModeToolbar() {
+        const mode = ['new','add','subtract','intersect'].includes(this.state.selectionMode)
+            ? this.state.selectionMode : 'new';
+        document.querySelectorAll('[data-selection-mode]').forEach(button => {
+            const active = button.dataset.selectionMode === mode;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-pressed', String(active));
+        });
+    },
+    setSelectionMode(mode) {
+        if (!['new','add','subtract','intersect'].includes(mode)) return;
+        this.state.selectionMode = mode;
+        this._syncSelectionModeToolbar();
+    },
+    _selectionModeForEvent(event = {}) {
+        const engine = window.HstarOpenShopSelectionEngine;
+        return engine?.selectionMode?.(event, this.state.selectionMode) || this.state.selectionMode || 'new';
+    },
+
 
     setTool(tool, {forceInteraction = false, convertTextSelection = !forceInteraction} = {}) {
         if (tool === 'text') tool = 'text-horizontal';
@@ -3399,7 +3570,7 @@ self.onmessage = function(e) {
         // They only clear on: Esc, Ctrl+D, Edit>Deselect, or new selection.
         // Only hide the lasso drawing overlay (not the marching-ants result):
         if (prevTool === 'lasso' && tool !== 'lasso') {
-            // Lasso was active — if no selection was finalized, clear its points
+            // Lasso was active - if no selection was finalized, clear its points
             if (!this._selectionBounds) {
                 document.getElementById('lasso-overlay').style.display='none';
                 this._lassoPoints = [];
@@ -3409,7 +3580,7 @@ self.onmessage = function(e) {
         document.getElementById('pen-overlay').style.display='none';
         document.getElementById('measure-overlay').style.display='none';
         // Lasso cleanup handled above in selection persistence block
-        this._penPoints = [];
+        this._resetPenDraft();
         this.cancelCrop();
         switch(tool) {
             case 'select':
@@ -3469,6 +3640,9 @@ self.onmessage = function(e) {
             case 'crop': showOption('opt-crop'); this._initCrop(); break;
         }
         this._applyToolInteractionState(tool, {force:forceInteraction});
+        if (['marquee-rect','marquee-ellipse','lasso','magic-wand','ai-segment'].includes(tool)) {
+            this._syncSelectionModeToolbar();
+        }
         document.getElementById('tool-display').textContent = this._t(this._toolLabel(tool));
         this._brushCursor?.refresh();
         this._renderAccessibilityTree();
@@ -3559,6 +3733,25 @@ self.onmessage = function(e) {
     },
 
     // ====================== MOUSE ======================
+    _markVoiceTextEditor(target) {
+        const input = target?.hiddenTextarea;
+        if (!input?.isConnected) return false;
+        input.dataset.voiceInput = 'on';
+        input.dataset.voiceLabel = '画布文字编辑';
+        input.setAttribute('aria-label', '画布文字编辑');
+        return true;
+    },
+
+    onMouseDoubleClick(opt) {
+        const target = opt?.target;
+        if (!this._isEditableTextObject(target)) return false;
+        this.canvas.setActiveObject(target);
+        if (!target.isEditing) target.enterEditing?.(opt?.e);
+        this._markVoiceTextEditor(target);
+        this.canvas.requestRenderAll?.();
+        return true;
+    },
+
     onMouseDown(opt) {
         const ptr = this.canvas.getPointer(opt.e), tool = this.state.tool;
         if (this._colorPanelController?.getState?.().sampling) {
@@ -3571,12 +3764,20 @@ self.onmessage = function(e) {
         if (tool==='pan' || this._tempPanning) { this.state.isPanning=true; this.state.panStart={x:opt.e.clientX,y:opt.e.clientY}; this.canvas.defaultCursor='grabbing'; return; }
         if (tool==='zoom') { opt.e.altKey?this.zoomOut():this.zoomIn(); return; }
         if (tool==='marquee-rect'||tool==='marquee-ellipse') {
-            // Clear any previous selection (wand overlay, old bounds)
+            const mode = this._selectionModeForEvent(opt.e);
+            this._marqueeMode = mode;
             this.canvas.getObjects().filter(o=>o._wandOverlay).forEach(o=>this.canvas.remove(o));
-            this._selectionMask=null; this._selectionBounds=null;
-            this._marqueeStart={x:opt.e.offsetX,y:opt.e.offsetY};
+            if (mode === 'new') {
+                this._selectionMask=null;
+                this._selectionBounds=null;
+                this._selectionDocumentBounds=null;
+                this._selectionRegions=[];
+            }
+            this._stopSelectionAnts();
+            this._marqueeStart={x:ptr.x,y:ptr.y};
             const el=document.getElementById('selection-overlay');
-            el.style.display='block'; el.style.left=opt.e.offsetX+'px'; el.style.top=opt.e.offsetY+'px'; el.style.width='0'; el.style.height='0';
+            const screenStart=this._documentSelectionBoundsToScreen({x:ptr.x,y:ptr.y,w:0,h:0});
+            el.style.display='block'; el.style.left=(screenStart?.x||0)+'px'; el.style.top=(screenStart?.y||0)+'px'; el.style.width='0'; el.style.height='0';
             el.style.borderRadius = tool==='marquee-ellipse'?'50%':'0';
             this.state.isDrawing=true; return;
         }
@@ -3609,17 +3810,22 @@ self.onmessage = function(e) {
             if (this._isEditableTextObject(opt.target)) {
                 this.canvas.setActiveObject(opt.target);
                 if (!opt.target.isEditing) opt.target.enterEditing?.(opt.e);
+                this._markVoiceTextEditor(opt.target);
                 this.canvas.requestRenderAll?.();
                 return;
             }
+            const automaticFont = this.state.textFontAutomatic !== false;
             const text = window.HstarOpenShopWritingMode.createTextObject(fabric, 'Type here', {
-                left:ptr.x, top:ptr.y, fontFamily:this.state.textFont, fontSize:this.state.textSize,
-                fill:this.state.textColor, editable:true, fontWeight:this.state.textBold?'bold':'normal',
+                left:ptr.x, top:ptr.y, fontFamily:automaticFont ? 'system-ui' : this.state.textFont, fontSize:this.state.textSize,
+                fill:this.state.textColor, editable:true,
+                fontWeight:this.state.textFontWeight ?? (this.state.textBold ? 700 : 400),
                 fontStyle:this.state.textItalic?'italic':'normal',
                 hstarWritingMode:this.state.textWritingMode,
+                ...(automaticFont ? {hstarAutomaticFontPolicy:'script-default'} : {}),
             });
             this.canvas.add(text); this._createObjectLayer(text, text.text);
-            this.canvas.setActiveObject(text); text.enterEditing(opt.e); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
+            window.HstarOpenShopTextPropertiesController?.applyAutomaticFontPolicy?.(text);
+            this.canvas.setActiveObject(text); text.enterEditing(opt.e); this._markVoiceTextEditor(text); this.saveHistory('Add Text'); this.updateLayersPanel(); return;
         }
         if (tool==='fill') {
             const t=opt.target;
@@ -3683,8 +3889,14 @@ self.onmessage = function(e) {
             return;
         }
         if(this.state.isDrawing&&this._marqueeStart) {
-            const el=document.getElementById('selection-overlay'), sx=this._marqueeStart.x, sy=this._marqueeStart.y, cx=opt.e.offsetX, cy=opt.e.offsetY;
-            el.style.left=Math.min(sx,cx)+'px'; el.style.top=Math.min(sy,cy)+'px'; el.style.width=Math.abs(cx-sx)+'px'; el.style.height=Math.abs(cy-sy)+'px'; return;
+            const documentBounds=this._documentBoundsBetween(this._marqueeStart,ptr);
+            const screenBounds=this._documentSelectionBoundsToScreen(documentBounds);
+            this._renderSelectionBounds(screenBounds, this.state.tool === 'marquee-ellipse');
+            return;
+        }
+        if(this.state.tool==='pen' && this._penPoints.length) {
+            this._penPointerMove(ptr);
+            return;
         }
         if(['brush','eraser','clone'].includes(this.state.tool)
             && this._rasterTools?.getState?.().active) {
@@ -3728,16 +3940,51 @@ self.onmessage = function(e) {
             return;
         }
         if(this._marqueeStart){
-            const el=document.getElementById('selection-overlay');
-            const sw=parseFloat(el.style.width)||0,sh=parseFloat(el.style.height)||0;
-            const vpt=this.canvas.viewportTransform;
-            if(sw>2&&sh>2){
-                this._selectionBounds={x:parseFloat(el.style.left)||0,y:parseFloat(el.style.top)||0,w:sw,h:sh};
+            const end=this.canvas.getPointer(opt.e);
+            const documentBounds=this._documentBoundsBetween(this._marqueeStart,end,true);
+            const screenBounds=this._documentSelectionBoundsToScreen(documentBounds);
+            if(screenBounds?.w>2&&screenBounds?.h>2){
+                const left = documentBounds.x;
+                const top = documentBounds.y;
+                const sw = documentBounds.w;
+                const sh = documentBounds.h;
+                const width = Math.max(1, Math.round(this.canvasW));
+                const height = Math.max(1, Math.round(this.canvasH));
+                const incoming = new Uint8Array(width * height);
+                const centerX = left + sw / 2;
+                const centerY = top + sh / 2;
+                const radiusX = Math.max(1, sw / 2);
+                const radiusY = Math.max(1, sh / 2);
+                const ellipse = this.state.tool === 'marquee-ellipse';
+                const startX = Math.max(0, Math.floor(left));
+                const startY = Math.max(0, Math.floor(top));
+                const endX = Math.min(width, Math.ceil(left + sw));
+                const endY = Math.min(height, Math.ceil(top + sh));
+                for(let y=startY; y<endY; y+=1){
+                    for(let x=startX; x<endX; x+=1){
+                        if(!ellipse || ((x + 0.5 - centerX) ** 2 / radiusX ** 2) + ((y + 0.5 - centerY) ** 2 / radiusY ** 2) <= 1){
+                            incoming[y * width + x] = 1;
+                        }
+                    }
+                }
+                const summary = this._applyPixelSelection(
+                    incoming, width, height, this._marqueeMode, 'marquee',
+                    {coordinateSpace:'document'}
+                );
+                this.toast(this._t("Selection: {width} x {height} px", {
+                    width:Math.round(summary.bounds?.w || 0),
+                    height:Math.round(summary.bounds?.h || 0),
+                }),'info');
+            } else if(this._marqueeMode === 'new') {
+                this._renderSelectionBounds(null);
                 this._selectionMask=null;
-                this.toast(this._t("Selection: {width} x {height} px", { width: Math.round(sw/vpt[0]), height: Math.round(sh/vpt[3]) }),'info');
-            } else { el.style.display='none'; this._selectionBounds=null; }
+                this._selectionBounds=null;
+                this._selectionDocumentBounds=null;
+                this._selectionRegions=[];
+                this._emitSelectionChanged('cleared');
+            }
             this._marqueeStart=null;this.state.isDrawing=false;
-            this._emitSelectionChanged('marquee'); return;
+            return;
         }
         if(this.state.isDrawing&&this.state.tool==='gradient'&&this._shapeStart) {
             const ptr=this.canvas.getPointer(opt.e); this.drawGradient(this._shapeStart,ptr); this._shapeStart=null; this.state.isDrawing=false; return;
@@ -3870,17 +4117,160 @@ self.onmessage = function(e) {
     },
 
     // ====================== MAGIC WAND ======================
-    _emitSelectionChanged(reason='updated') {
+    _screenSelectionPointToDocument(point) {
+        const vpt = this.canvas?.viewportTransform || [1,0,0,1,0,0];
+        const determinant = vpt[0] * vpt[3] - vpt[1] * vpt[2];
+        if (!point || Math.abs(determinant) <= Number.EPSILON) return null;
+        const screenX = Number(point.x) - vpt[4];
+        const screenY = Number(point.y) - vpt[5];
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return {
+            x:(vpt[3] * screenX - vpt[2] * screenY) / determinant,
+            y:(-vpt[1] * screenX + vpt[0] * screenY) / determinant,
+        };
+    },
+    _screenSelectionBoundsToDocument(bounds) {
+        if (!bounds) return null;
+        const vpt = this.canvas?.viewportTransform || [1,0,0,1,0,0];
+        const determinant = vpt[0] * vpt[3] - vpt[1] * vpt[2];
+        if (Math.abs(determinant) <= Number.EPSILON) return null;
+        const point = (x, y) => {
+            const screenX = x - vpt[4];
+            const screenY = y - vpt[5];
+            return {
+                x:(vpt[3] * screenX - vpt[2] * screenY) / determinant,
+                y:(-vpt[1] * screenX + vpt[0] * screenY) / determinant,
+            };
+        };
+        const corners = [
+            point(bounds.x, bounds.y),
+            point(bounds.x + bounds.w, bounds.y),
+            point(bounds.x, bounds.y + bounds.h),
+            point(bounds.x + bounds.w, bounds.y + bounds.h),
+        ];
+        const minimumX = Math.max(0, Math.min(...corners.map(item => item.x)));
+        const minimumY = Math.max(0, Math.min(...corners.map(item => item.y)));
+        const maximumX = Math.min(this.canvasW, Math.max(...corners.map(item => item.x)));
+        const maximumY = Math.min(this.canvasH, Math.max(...corners.map(item => item.y)));
+        if (maximumX <= minimumX || maximumY <= minimumY) return null;
+        return {
+            x:minimumX,
+            y:minimumY,
+            w:maximumX - minimumX,
+            h:maximumY - minimumY,
+        };
+    },
+    _documentSelectionBoundsToScreen(bounds) {
+        if (!bounds) return null;
+        const vpt = this.canvas?.viewportTransform || [1,0,0,1,0,0];
+        const point = (x, y) => ({
+            x:vpt[0] * x + vpt[2] * y + vpt[4],
+            y:vpt[1] * x + vpt[3] * y + vpt[5],
+        });
+        const corners = [
+            point(bounds.x, bounds.y),
+            point(bounds.x + bounds.w, bounds.y),
+            point(bounds.x, bounds.y + bounds.h),
+            point(bounds.x + bounds.w, bounds.y + bounds.h),
+        ];
+        const minimumX = Math.min(...corners.map(item => item.x));
+        const minimumY = Math.min(...corners.map(item => item.y));
+        const maximumX = Math.max(...corners.map(item => item.x));
+        const maximumY = Math.max(...corners.map(item => item.y));
+        return {x:minimumX, y:minimumY, w:maximumX-minimumX, h:maximumY-minimumY};
+    },
+    _documentBoundsBetween(start, end, clampToDocument=false) {
+        const minimumX = Math.min(Number(start?.x)||0, Number(end?.x)||0);
+        const minimumY = Math.min(Number(start?.y)||0, Number(end?.y)||0);
+        const maximumX = Math.max(Number(start?.x)||0, Number(end?.x)||0);
+        const maximumY = Math.max(Number(start?.y)||0, Number(end?.y)||0);
+        if(!clampToDocument){
+            return {x:minimumX, y:minimumY, w:maximumX-minimumX, h:maximumY-minimumY};
+        }
+        const x=Math.max(0,Math.min(this.canvasW,minimumX));
+        const y=Math.max(0,Math.min(this.canvasH,minimumY));
+        const right=Math.max(0,Math.min(this.canvasW,maximumX));
+        const bottom=Math.max(0,Math.min(this.canvasH,maximumY));
+        return {x,y,w:Math.max(0,right-x),h:Math.max(0,bottom-y)};
+    },
+    _renderSelectionBounds(bounds, ellipse=false) {
+        const element=document.getElementById('selection-overlay');
+        if(!element) return;
+        if(!bounds || bounds.w<=0 || bounds.h<=0){
+            element.style.display='none';
+            return;
+        }
+        element.style.display='block';
+        element.style.left=`${bounds.x}px`;
+        element.style.top=`${bounds.y}px`;
+        element.style.width=`${bounds.w}px`;
+        element.style.height=`${bounds.h}px`;
+        element.style.borderRadius=ellipse?'50%':'0';
+    },
+    _positionSelectionMaskOverlay() {
+        const overlay=document.getElementById('selection-mask-overlay');
+        if(!overlay || !this._selectionMask) return;
+        if(this._selectionMaskSpace === 'document'){
+            const vpt=this.canvas?.viewportTransform || [1,0,0,1,0,0];
+            overlay.style.left='0';
+            overlay.style.top='0';
+            overlay.style.width=`${this._selectionMask.w}px`;
+            overlay.style.height=`${this._selectionMask.h}px`;
+            overlay.style.transformOrigin='0 0';
+            overlay.style.transform=`matrix(${vpt.join(', ')})`;
+            return;
+        }
+        overlay.style.left='0';
+        overlay.style.top='0';
+        overlay.style.width=`${this.canvas.width}px`;
+        overlay.style.height=`${this.canvas.height}px`;
+        overlay.style.transform='none';
+    },
+    _refreshSelectionViewport() {
+        if(this._selectionDocumentBounds){
+            this._selectionBounds=this._documentSelectionBoundsToScreen(this._selectionDocumentBounds);
+            if(this._selectionMask){
+                this._positionSelectionMaskOverlay();
+            } else {
+                this._renderSelectionBounds(this._selectionBounds, this.state.tool === 'marquee-ellipse');
+            }
+        }
+        if(this._lassoPoints?.length) this._renderLassoPath();
+        if(this._penPoints?.length) this._penUpdatePreview(this._penHoverPoint);
+    },
+    _selectionRegionsFromMask(mask, width, height, options={}) {
+        const engine = window.HstarOpenShopSelectionEngine;
+        if(!mask || !engine?.maskBounds) return [];
+        if(typeof engine.maskRegions === 'function') {
+            return engine.maskRegions(mask, width, height, options);
+        }
+        const summary = engine.maskBounds(mask, width, height);
+        if(!summary?.bounds) return [];
+        const region = {...summary.bounds, count:summary.count};
+        if(options?.includeMask === true) region.mask = new Uint8Array(mask);
+        return [region];
+    },
+    _emitSelectionChanged(reason='updated', extra={}) {
+        const documentBounds = this._selectionDocumentBounds || (this._selectionBounds
+            ? this._screenSelectionBoundsToDocument(this._selectionBounds)
+            : null);
+        this._selectionDocumentBounds = documentBounds;
+        if (!documentBounds) this._selectionRegions = [];
+        else if (!this._selectionRegions.length) this._selectionRegions = [{...documentBounds}];
         window.dispatchEvent(new CustomEvent('openshop:selection-changed', {
             detail: {
                 reason,
                 tool: this.state.tool,
                 hasSelection: Boolean(this._selectionMask || this._selectionBounds),
-                bounds: this._selectionBounds ? { ...this._selectionBounds } : null,
+                bounds: documentBounds ? { ...documentBounds } : null,
+                screenBounds: this._selectionBounds ? { ...this._selectionBounds } : null,
+                regions:this._selectionRegions.map(region => ({...region})),
+                regionCount:this._selectionRegions.length,
+                ...extra,
             },
         }));
     },
-    _selectionMask: null, _selectionBounds: null,
+    _selectionMask: null, _selectionMaskSpace: 'screen', _selectionBounds: null,
     _magicWandSample(width, height, viewportTransform) {
         const sampleCanvas=document.createElement('canvas');
         sampleCanvas.width=width; sampleCanvas.height=height;
@@ -3930,12 +4320,12 @@ self.onmessage = function(e) {
         const documentWidth=Math.max(0,Number(this.canvasW||boundary?.width||0));
         const documentHeight=Math.max(0,Number(this.canvasH||boundary?.height||0));
         if(ptr.x<0||ptr.y<0||ptr.x>=documentWidth||ptr.y>=documentHeight) return;
-        const vpt=this.canvas.viewportTransform;
-        const sx=Math.round(ptr.x*vpt[0]+vpt[4]), sy=Math.round(ptr.y*vpt[3]+vpt[5]);
-        const cw=this.canvas.width, ch=this.canvas.height;
-        if(sx < 0 || sy < 0 || sx >= cw || sy >= ch) return;
+        const sx=Math.max(0,Math.min(documentWidth-1,Math.round(ptr.x)));
+        const sy=Math.max(0,Math.min(documentHeight-1,Math.round(ptr.y)));
+        const cw=Math.max(1,Math.round(documentWidth));
+        const ch=Math.max(1,Math.round(documentHeight));
         try {
-            const sample=this._magicWandSample(cw,ch,vpt);
+            const sample=this._magicWandSample(cw,ch,[1,0,0,1,0,0]);
             const result=engine.magicWand({
                 data:sample.data,
                 width:cw,
@@ -3950,18 +4340,21 @@ self.onmessage = function(e) {
                 result.mask,
                 cw,
                 ch,
-                engine.selectionMode(event),
-                'magic-wand'
+                this._selectionModeForEvent(event),
+                'magic-wand',
+                {coordinateSpace:'document'}
             );
             this.toast(this._t("Selected {count} px", { count: summary.count.toLocaleString() }),'info');
         } catch(error) {
             this.toast(error instanceof Error ? error.message : String(error), 'error');
         }
     },
-    _selectionMaskFromBounds(width, height) {
-        if(!this._selectionBounds) return null;
+    _selectionMaskFromBounds(width, height, coordinateSpace='screen') {
+        const bounds=coordinateSpace === 'document'
+            ? this._selectionDocumentBounds
+            : this._selectionBounds;
+        if(!bounds) return null;
         const mask=new Uint8Array(width*height);
-        const bounds=this._selectionBounds;
         const startX=Math.max(0,Math.floor(bounds.x));
         const startY=Math.max(0,Math.floor(bounds.y));
         const endX=Math.min(width,Math.ceil(bounds.x+bounds.w));
@@ -3971,27 +4364,68 @@ self.onmessage = function(e) {
         }
         return mask;
     },
-    _applyPixelSelection(incoming, width, height, mode='new', reason='updated') {
+    _applyPixelSelection(incoming, width, height, mode='new', reason='updated', options={}) {
         const engine=window.HstarOpenShopSelectionEngine;
         if(!engine?.composeMasks || incoming.length!==width*height){
             throw new Error('Selection mask dimensions do not match');
         }
-        const existing=this._selectionMask?.w===width&&this._selectionMask?.h===height
+        const coordinateSpace=options.coordinateSpace === 'document' ? 'document' : 'screen';
+        const existing=this._selectionMask?.w===width&&this._selectionMask?.h===height&&this._selectionMaskSpace===coordinateSpace
             ? this._selectionMask.mask
-            : this._selectionMaskFromBounds(width,height);
+            : this._selectionMaskFromBounds(width,height,coordinateSpace);
         const mask=engine.composeMasks(existing,incoming,mode);
         const summary=engine.maskBounds(mask,width,height);
-        this._selectionMask=summary.count?{mask,w:width,h:height}:null;
-        this._selectionBounds=summary.bounds;
+        this._selectionMask=summary.count?{mask,w:width,h:height,coordinateSpace}:null;
+        this._selectionMaskSpace=coordinateSpace;
+        this._selectionDocumentBounds=summary.bounds
+            ? (coordinateSpace === 'document' ? {...summary.bounds} : this._screenSelectionBoundsToDocument(summary.bounds))
+            : null;
+        this._selectionBounds=this._selectionDocumentBounds
+            ? this._documentSelectionBoundsToScreen(this._selectionDocumentBounds)
+            : null;
+        this._selectionRegions = summary.count
+            ? this._selectionRegionsFromMask(mask, width, height)
+                .map(region => coordinateSpace === 'document' ? region : this._screenSelectionBoundsToDocument(region)).filter(Boolean)
+            : [];
         if(this._selectionMask) this._showMaskOverlay(this._selectionMask);
         else this._stopSelectionAnts();
         this._renderAccessibilityTree();
-        this._emitSelectionChanged(reason);
+        const incomingBounds = engine.maskBounds(incoming, width, height).bounds;
+        this._emitSelectionChanged(reason, {
+            mode,
+            incomingBounds:incomingBounds
+                ? (coordinateSpace === 'document' ? incomingBounds : this._screenSelectionBoundsToDocument(incomingBounds))
+                : null,
+        });
         return summary;
+    },
+    removeSelectionRegion(index) {
+        const regionIndex = Math.max(0, Math.floor(Number(index)));
+        if (!Number.isFinite(regionIndex)) return false;
+        const selection = this._selectionMask;
+        if (!selection?.mask) {
+            if (regionIndex !== 0 || !this._selectionBounds) return false;
+            this.clearSelection();
+            return true;
+        }
+        const regions = this._selectionRegionsFromMask(selection.mask, selection.w, selection.h, {includeMask:true});
+        const target = regions[regionIndex];
+        if (!target?.mask) return false;
+        this._applyPixelSelection(
+            target.mask,
+            selection.w,
+            selection.h,
+            'subtract',
+            'region-removed',
+            {coordinateSpace:this._selectionMaskSpace}
+        );
+        return true;
     },
     clearSelection(){
         this._storeLastSelection();
         this._selectionMask=null; this._selectionBounds=null;
+        this._selectionMaskSpace='screen';
+        this._selectionDocumentBounds=null; this._selectionRegions=[];
         const selOv = document.getElementById('selection-overlay');
         if (selOv) selOv.style.display='none';
         const lassoOv = document.getElementById('lasso-overlay');
@@ -4013,8 +4447,16 @@ self.onmessage = function(e) {
     _storeLastSelection() {
         if (this._selectionMask || this._selectionBounds) {
             this._lastSelection = {
-                mask: this._selectionMask ? { mask: new Uint8Array(this._selectionMask.mask), w: this._selectionMask.w, h: this._selectionMask.h } : null,
-                bounds: this._selectionBounds ? { ...this._selectionBounds } : null
+                mask: this._selectionMask ? {
+                    mask:new Uint8Array(this._selectionMask.mask),
+                    w:this._selectionMask.w,
+                    h:this._selectionMask.h,
+                    coordinateSpace:this._selectionMaskSpace,
+                } : null,
+                maskSpace:this._selectionMaskSpace,
+                bounds:this._selectionBounds ? {...this._selectionBounds} : null,
+                documentBounds:this._selectionDocumentBounds ? {...this._selectionDocumentBounds} : null,
+                regions:this._selectionRegions.map(region => ({...region})),
             };
         }
     },
@@ -4023,17 +4465,30 @@ self.onmessage = function(e) {
     reselectSelection() {
         if (!this._lastSelection) { this.toast(this._t("No previous selection to restore"), 'info'); return; }
         this._selectionMask = this._lastSelection.mask;
-        this._selectionBounds = this._lastSelection.bounds;
-        if (this._selectionBounds) {
-            const el = document.getElementById('selection-overlay');
-            el.style.display = 'block';
-            el.style.left = this._selectionBounds.x + 'px';
-            el.style.top = this._selectionBounds.y + 'px';
-            el.style.width = this._selectionBounds.w + 'px';
-            el.style.height = this._selectionBounds.h + 'px';
-            el.style.borderRadius = '0';
-        }
+        this._selectionMaskSpace = this._lastSelection.maskSpace
+            || this._selectionMask?.coordinateSpace
+            || 'screen';
+        this._selectionDocumentBounds = this._lastSelection.documentBounds
+            ? {...this._lastSelection.documentBounds}
+            : this._lastSelection.bounds
+                ? this._screenSelectionBoundsToDocument(this._lastSelection.bounds)
+                : null;
+        this._selectionBounds = this._selectionDocumentBounds
+            ? this._documentSelectionBoundsToScreen(this._selectionDocumentBounds)
+            : null;
+        this._selectionRegions = Array.isArray(this._lastSelection.regions)
+            ? this._lastSelection.regions.map(region => ({...region}))
+            : this._selectionMask
+                ? this._selectionRegionsFromMask(this._selectionMask.mask, this._selectionMask.w, this._selectionMask.h)
+                    .map(region => this._selectionMaskSpace === 'document'
+                        ? region
+                        : this._screenSelectionBoundsToDocument(region))
+                    .filter(Boolean)
+                : this._selectionDocumentBounds ? [{...this._selectionDocumentBounds}] : [];
+        this._renderSelectionBounds(this._selectionBounds);
         if (this._selectionMask) this._showMaskOverlay(this._selectionMask);
+        this._renderAccessibilityTree();
+        this._emitSelectionChanged('reselected');
         this.toast(this._t("Selection restored"), 'info');
     },
 
@@ -4056,24 +4511,14 @@ self.onmessage = function(e) {
             }
         }
         const m = this._selectionMask;
-        let minX = m.w, minY = m.h, maxX = 0, maxY = 0, count = 0;
+        let count = 0;
         for (let i = 0; i < m.mask.length; i++) {
             m.mask[i] = m.mask[i] ? 0 : 1;
-            if (m.mask[i]) {
-                const x = i % m.w, y = Math.floor(i / m.w);
-                if (x < minX) minX = x; if (x > maxX) maxX = x;
-                if (y < minY) minY = y; if (y > maxY) maxY = y;
-                count++;
-            }
+            if (m.mask[i]) count++;
         }
-        this._selectionBounds = count > 0 ? { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 } : null;
-        const el = document.getElementById('selection-overlay');
-        if (this._selectionBounds) {
-            el.style.display = 'block';
-            el.style.left = minX + 'px'; el.style.top = minY + 'px';
-            el.style.width = (maxX - minX + 1) + 'px'; el.style.height = (maxY - minY + 1) + 'px';
-        } else { el.style.display = 'none'; }
+        this._recalcSelectionBounds(m, '');
         this._showMaskOverlay(this._selectionMask);
+        this._emitSelectionChanged('inverted');
         this.toast(this._t("Selection inverted: {count} px", { count: count.toLocaleString() }), 'info');
     },
 
@@ -4200,7 +4645,7 @@ self.onmessage = function(e) {
             case 'feather':
                 // Copy original then we'll use soft edges (gaussian-ish blur on mask)
                 newMask.set(m.mask);
-                // Simple box blur approach on binary mask → creates gradient edges
+                // Simple box blur approach on binary mask - creates gradient edges
                 // Apply multiple passes for smoother feather
                 const passes = Math.min(px, 10);
                 const tempA = new Float32Array(w * h);
@@ -4258,7 +4703,7 @@ self.onmessage = function(e) {
     },
 
     // Recalculate bounding box from mask
-    _recalcSelectionBounds(m) {
+    _recalcSelectionBounds(m, reason='recalculated') {
         let minX = m.w, minY = m.h, maxX = 0, maxY = 0, count = 0;
         for (let y = 0; y < m.h; y++) for (let x = 0; x < m.w; x++) {
             if (m.mask[y * m.w + x]) {
@@ -4267,16 +4712,26 @@ self.onmessage = function(e) {
                 count++;
             }
         }
-        this._selectionBounds = count > 0 ? { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 } : null;
-        const el = document.getElementById('selection-overlay');
-        if (this._selectionBounds) {
-            el.style.display = 'block';
-            el.style.left = minX + 'px'; el.style.top = minY + 'px';
-            el.style.width = (maxX - minX + 1) + 'px'; el.style.height = (maxY - minY + 1) + 'px';
-            el.style.borderRadius = '0';
-        } else { el.style.display = 'none'; }
+        const maskBounds = count > 0 ? {x:minX, y:minY, w:maxX-minX+1, h:maxY-minY+1} : null;
+        this._selectionDocumentBounds = maskBounds
+            ? this._selectionMaskSpace === 'document'
+                ? {...maskBounds}
+                : this._screenSelectionBoundsToDocument(maskBounds)
+            : null;
+        this._selectionBounds = this._selectionDocumentBounds
+            ? this._documentSelectionBoundsToScreen(this._selectionDocumentBounds)
+            : null;
+        this._selectionRegions = maskBounds
+            ? this._selectionRegionsFromMask(m.mask, m.w, m.h)
+                .map(region => this._selectionMaskSpace === 'document'
+                    ? region
+                    : this._screenSelectionBoundsToDocument(region))
+                .filter(Boolean)
+            : [];
+        this._renderSelectionBounds(this._selectionBounds);
         this._renderAccessibilityTree();
-        this._emitSelectionChanged('recalculated');
+        if(reason === 'recalculated') this._emitSelectionChanged('recalculated');
+        else if(reason) this._emitSelectionChanged(reason);
     },
 
     _stopSelectionAnts() {
@@ -4303,11 +4758,21 @@ self.onmessage = function(e) {
         document.getElementById('selection-overlay').style.display='none';
         overlay.width=m.w;
         overlay.height=m.h;
-        overlay.style.width=`${this.canvas.width}px`;
-        overlay.style.height=`${this.canvas.height}px`;
+        this._positionSelectionMaskOverlay();
         overlay.style.display='block';
         const context=overlay.getContext('2d');
         const boundary=engine.boundaryPixels(m.mask,m.w,m.h);
+        const vpt=this.canvas?.viewportTransform || [1,0,0,1,0,0];
+        const scaleX=Math.abs(Number(vpt[0])) || 1;
+        const scaleY=Math.abs(Number(vpt[3])) || scaleX || 1;
+        const maskSpace=m.coordinateSpace || this._selectionMaskSpace;
+        const screenScale=maskSpace === 'document'
+            ? Math.max(0.05, Math.min(scaleX, scaleY))
+            : 1;
+        const antSize=Math.max(1, Math.min(6, Math.ceil(1.15 / screenScale)));
+        const strokePad=Math.max(1, Math.min(3, Math.ceil(0.55 / screenScale)));
+        const shadowPad=Math.max(strokePad, Math.min(4, Math.ceil(0.85 / screenScale)));
+        const dashSize=Math.max(5, Math.min(24, Math.round(5 / screenScale)));
         const token=++this._selectionAntsToken;
         let phase=0;
         let lastTime=0;
@@ -4315,18 +4780,34 @@ self.onmessage = function(e) {
             if(token!==this._selectionAntsToken) return;
             if(!lastTime||time-lastTime>=90){
                 context.clearRect(0,0,m.w,m.h);
+                context.fillStyle='rgba(0,0,0,0.45)';
+                context.beginPath();
+                for(const index of boundary){
+                    const x=index%m.w;
+                    const y=Math.floor(index/m.w);
+                    context.rect(x-shadowPad,y-shadowPad,antSize+shadowPad*2,antSize+shadowPad*2);
+                }
+                context.fill();
+                context.fillStyle='rgba(255,255,255,0.74)';
+                context.beginPath();
+                for(const index of boundary){
+                    const x=index%m.w;
+                    const y=Math.floor(index/m.w);
+                    context.rect(x-strokePad,y-strokePad,antSize+strokePad*2,antSize+strokePad*2);
+                }
+                context.fill();
                 for(let colorIndex=0;colorIndex<2;colorIndex+=1){
                     context.fillStyle=colorIndex===0?'#000000':'#ffffff';
                     context.beginPath();
                     for(const index of boundary){
                         const x=index%m.w;
                         const y=Math.floor(index/m.w);
-                        if((Math.floor((x+y+phase)/4)&1)!==colorIndex) continue;
-                        context.rect(x,y,1,1);
+                        if((Math.floor((x+y+phase)/dashSize)&1)!==colorIndex) continue;
+                        context.rect(x,y,antSize,antSize);
                     }
                     context.fill();
                 }
-                phase=(phase+1)%8;
+                phase=(phase+Math.max(1, Math.round(dashSize / 4)))%(dashSize*2);
                 lastTime=time;
             }
             this._selectionAntsFrame=requestAnimationFrame(draw);
@@ -4459,7 +4940,7 @@ self.onmessage = function(e) {
 
         if (mode === 'sampled') {
             if (this._crSamples.length === 0) {
-                // No samples — show blank
+                // No samples - show blank
             } else {
                 for (let i = 0; i < cw * ch; i++) {
                     const r = data[i*4], g = data[i*4+1], b = data[i*4+2];
@@ -4544,7 +5025,7 @@ self.onmessage = function(e) {
         const b = this._selectionBounds;
         // For magic wand, bounds are already in screen-canvas pixel space
         if (this._selectionMask) return { x: b.x, y: b.y, w: b.w, h: b.h };
-        // For marquee, bounds are in canvas-area div offset space — convert via viewport
+        // For marquee, bounds are in canvas-area div offset space - convert via viewport
         const vpt = this.canvas.viewportTransform;
         return {
             x: (b.x - vpt[4]) / vpt[0],
@@ -5082,21 +5563,21 @@ self.onmessage = function(e) {
     },
 
     // ====================== ZOOM ======================
-    zoomIn() { this.zoom=Math.min(this.zoom*1.25,20); this.canvas.zoomToPoint({x:this.canvas.width/2,y:this.canvas.height/2},this.zoom); document.getElementById('zoom-display').textContent=Math.round(this.zoom*100)+'%'; this.drawGrid(); this.drawRulers(); },
-    zoomOut() { this.zoom=Math.max(this.zoom/1.25,0.05); this.canvas.zoomToPoint({x:this.canvas.width/2,y:this.canvas.height/2},this.zoom); document.getElementById('zoom-display').textContent=Math.round(this.zoom*100)+'%'; this.drawGrid(); this.drawRulers(); },
+    zoomIn() { this.zoom=Math.min(this.zoom*1.25,20); this.canvas.zoomToPoint({x:this.canvas.width/2,y:this.canvas.height/2},this.zoom); document.getElementById('zoom-display').textContent=Math.round(this.zoom*100)+'%'; this.drawGrid(); this.drawRulers(); this._refreshSelectionViewport(); },
+    zoomOut() { this.zoom=Math.max(this.zoom/1.25,0.05); this.canvas.zoomToPoint({x:this.canvas.width/2,y:this.canvas.height/2},this.zoom); document.getElementById('zoom-display').textContent=Math.round(this.zoom*100)+'%'; this.drawGrid(); this.drawRulers(); this._refreshSelectionViewport(); },
     zoomFit() {
         const a=document.getElementById('canvas-area'), pad=40;
         this.zoom=Math.min((a.clientWidth-pad*2)/this.canvasW,(a.clientHeight-pad*2)/this.canvasH,1);
         this.canvas.setViewportTransform([1,0,0,1,0,0]); this.canvas.zoomToPoint({x:0,y:0},this.zoom);
         const vpt=this.canvas.viewportTransform;
         vpt[4]=(a.clientWidth-this.canvasW*this.zoom)/2; vpt[5]=(a.clientHeight-this.canvasH*this.zoom)/2;
-        this.canvas.setViewportTransform(vpt); document.getElementById('zoom-display').textContent=Math.round(this.zoom*100)+'%'; this.drawGrid(); this.drawRulers();
+        this.canvas.setViewportTransform(vpt); document.getElementById('zoom-display').textContent=Math.round(this.zoom*100)+'%'; this.drawGrid(); this.drawRulers(); this._refreshSelectionViewport();
     },
     zoomReset() {
         this.zoom=1; const a=document.getElementById('canvas-area');
         this.canvas.setViewportTransform([1,0,0,1,0,0]); this.canvas.zoomToPoint({x:0,y:0},1);
         const vpt=this.canvas.viewportTransform; vpt[4]=(a.clientWidth-this.canvasW)/2; vpt[5]=(a.clientHeight-this.canvasH)/2;
-        this.canvas.setViewportTransform(vpt); document.getElementById('zoom-display').textContent='100%'; this.drawGrid(); this.drawRulers();
+        this.canvas.setViewportTransform(vpt); document.getElementById('zoom-display').textContent='100%'; this.drawGrid(); this.drawRulers(); this._refreshSelectionViewport();
     },
     resizeCanvas() { const a=document.getElementById('canvas-area'); this.canvas.setWidth(a.clientWidth); this.canvas.setHeight(a.clientHeight); this.canvas.renderAll(); },
     zoomActual() { this.zoomReset(); },
@@ -5148,7 +5629,7 @@ self.onmessage = function(e) {
     deleteSelected() { this._deleteSelected(); },
     duplicateSelected() {
         const active=this.canvas.getActiveObject(); if(!active) return;
-        active.clone(c=>{ c.set({left:active.left+15,top:active.top+15}); this.canvas.add(c); this.layers[this.activeLayerIdx].objects.push(c); this.canvas.setActiveObject(c); this.canvas.renderAll(); this.saveHistory('Duplicate'); this.updateLayersPanel(); });
+        active.clone(c=>{ c.set({left:active.left+15,top:active.top+15}); this._addClonedSelectionToNewLayers(c, {namePrefix:'Duplicated Layer'}); this.canvas.renderAll(); this.saveHistory('Duplicate'); this.updateLayersPanel(); });
     },
     flipH() { const a=this.canvas.getActiveObject(); if(a){a.set('flipX',!a.flipX);this.canvas.renderAll();this.saveHistory('Flip H');} else{this.toast(this._t('Select an object first'),'info');} },
     flipV() { const a=this.canvas.getActiveObject(); if(a){a.set('flipY',!a.flipY);this.canvas.renderAll();this.saveHistory('Flip V');} else{this.toast(this._t('Select an object first'),'info');} },
@@ -5411,7 +5892,7 @@ self.onmessage = function(e) {
             name.textContent = this._safeText(r?.name, 100) || this._t('Untitled');
             const meta = document.createElement('span');
             meta.className = 'ri-date';
-            meta.textContent = `${this._safeText(r?.dims, 30)} · ${this._safeText(r?.date, 30)}`;
+            meta.textContent = `${this._safeText(r?.dims, 30)} 路 ${this._safeText(r?.date, 30)}`;
             item.append(name, meta);
             area.appendChild(item);
         });
@@ -5719,27 +6200,6 @@ self.onmessage = function(e) {
         const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
         const link = document.getElementById('pwa-manifest');
         if (link) link.href = URL.createObjectURL(blob);
-        this._precacheRuntime();
-    },
-    async _precacheRuntime() {
-        if (!('caches' in window)) return;
-        try {
-            const cache = await caches.open('openshop-runtime-v1');
-            const urls = [
-                './vendor/fabric-5.3.1.min.js',
-                './vendor/ag-psd-22.0.2.bundle.js',
-                './vendor/jspdf-4.2.1.umd.min.js',
-                './vendor/photon/photon_rs.js',
-                './vendor/photon/photon_rs_bg.wasm',
-                './vendor/gif/gif.js',
-                './vendor/gif/gif.worker.js'
-            ];
-            for (const url of urls) {
-                if (!await cache.match(url)) {
-                    try { await cache.add(url); } catch(e) { console.debug('Cache add failed for', url, e.message); }
-                }
-            }
-        } catch(e) { console.debug('Runtime precache failed:', e.message); }
     },
 
     // ====================== AUTO-SAVE (OPFS) ======================
@@ -5998,20 +6458,30 @@ self.onmessage = async function(e) {
     },
     _renderLassoPath() {
         const path=document.querySelector('#lasso-overlay svg polyline');
-        if(path) path.setAttribute('points',this._lassoPoints.map(point=>`${point.x},${point.y}`).join(' '));
+        if(!path) return;
+        const points=this._lassoPoints.map(point=>{
+            const screen=this._documentSelectionBoundsToScreen({x:point.x,y:point.y,w:0,h:0});
+            return `${screen?.x||0},${screen?.y||0}`;
+        });
+        path.setAttribute('points',points.join(' '));
+    },
+    _selectionDocumentPoint(event) {
+        const screen=this._selectionScreenPoint(event);
+        const documentPoint=this._screenSelectionPointToDocument(screen);
+        return {x:documentPoint?.x||0,y:documentPoint?.y||0};
     },
     _lassoStart(event) {
         const engine=window.HstarOpenShopSelectionEngine;
         if(!engine?.selectionMode) return;
-        this._lassoMode=engine.selectionMode(event);
-        this._lassoPoints=[this._selectionScreenPoint(event)];
+        this._lassoMode=this._selectionModeForEvent(event);
+        this._lassoPoints=[this._selectionDocumentPoint(event)];
         this.state.isDrawing=true;
         document.getElementById('lasso-overlay').style.display='block';
         this._renderLassoPath();
     },
     _lassoMove(event) {
         if(!this.state.isDrawing) return;
-        const point=this._selectionScreenPoint(event);
+        const point=this._selectionDocumentPoint(event);
         const previous=this._lassoPoints.at(-1);
         if(previous&&Math.hypot(point.x-previous.x,point.y-previous.y)<1) return;
         this._lassoPoints.push(point);
@@ -6023,13 +6493,16 @@ self.onmessage = async function(e) {
         this._lassoMove(event);
         this.state.isDrawing=false;
         const points=engine.simplifyPath(this._lassoPoints,1.25);
-        const result=engine.polygonMask(points,this.canvas.width,this.canvas.height);
+        const width=Math.max(1,Math.round(this.canvasW));
+        const height=Math.max(1,Math.round(this.canvasH));
+        const result=engine.polygonMask(points,width,height);
         const summary=this._applyPixelSelection(
             result.mask,
-            this.canvas.width,
-            this.canvas.height,
+            width,
+            height,
             this._lassoMode,
-            'lasso'
+            'lasso',
+            {coordinateSpace:'document'}
         );
         document.getElementById('lasso-overlay').style.display='none';
         const path=document.querySelector('#lasso-overlay svg polyline');
@@ -6782,24 +7255,65 @@ self.onmessage = async function(e) {
     },
 
     // ====================== PEN / BEZIER TOOL ======================
-    _penClick(ptr, evt) {
-        const vpt = this.canvas.viewportTransform;
-        const sx = ptr.x * vpt[0] + vpt[4], sy = ptr.y * vpt[3] + vpt[5];
-        this._penPoints.push({ x: ptr.x, y: ptr.y, sx, sy });
-        this._penUpdatePreview();
+    _resetPenDraft() {
+        this._penPoints = [];
+        this._penHoverPoint = null;
+        this._penCanClose = false;
+        const preview = document.querySelector('#pen-overlay svg path');
+        if (preview) preview.setAttribute('d', '');
+        document.querySelector('#pen-overlay svg .pen-close-hint')?.classList.remove('active');
     },
-    _penUpdatePreview() {
+    _penScreenPoint(point) {
+        const vpt = this.canvas.viewportTransform;
+        return {
+            x:point.x*vpt[0]+point.y*vpt[2]+vpt[4],
+            y:point.x*vpt[1]+point.y*vpt[3]+vpt[5],
+        };
+    },
+    _penCloseCandidate(point) {
+        if(this._penPoints.length<3 || !point) return false;
+        const first=this._penScreenPoint(this._penPoints[0]);
+        const current=this._penScreenPoint(point);
+        return Math.hypot(current.x-first.x,current.y-first.y)<=12;
+    },
+    _penClick(ptr, evt) {
+        if(this._penCloseCandidate(ptr)) {
+            this._penFinish(true);
+            return;
+        }
+        this._penPoints.push({x:ptr.x,y:ptr.y});
+        this._penHoverPoint={x:ptr.x,y:ptr.y};
+        this._penCanClose=false;
+        this._penUpdatePreview(this._penHoverPoint);
+    },
+    _penPointerMove(ptr) {
+        this._penHoverPoint={x:ptr.x,y:ptr.y};
+        this._penCanClose=this._penCloseCandidate(ptr);
+        this._penUpdatePreview(this._penHoverPoint);
+    },
+    _penUpdatePreview(hoverPoint=null) {
         const svg = document.querySelector('#pen-overlay svg path');
         if (!svg || this._penPoints.length < 1) return;
-        let d = `M ${this._penPoints[0].sx} ${this._penPoints[0].sy}`;
-        for (let i = 1; i < this._penPoints.length; i++) d += ` L ${this._penPoints[i].sx} ${this._penPoints[i].sy}`;
+        const screenPoints=this._penPoints.map(point=>this._penScreenPoint(point));
+        let d = `M ${screenPoints[0].x} ${screenPoints[0].y}`;
+        for (let i = 1; i < screenPoints.length; i++) d += ` L ${screenPoints[i].x} ${screenPoints[i].y}`;
+        if(hoverPoint && this._penPoints.length){
+            const hover=this._penCanClose ? screenPoints[0] : this._penScreenPoint(hoverPoint);
+            d += ` L ${hover.x} ${hover.y}`;
+        }
         svg.setAttribute('d', d);
+        const hint=document.querySelector('#pen-overlay svg .pen-close-hint');
+        if(hint){
+            hint.setAttribute('cx',String(screenPoints[0].x));
+            hint.setAttribute('cy',String(screenPoints[0].y));
+            hint.classList.toggle('active',this._penCanClose);
+        }
     },
-    _penFinish() {
-        if (this._penPoints.length < 2) { this._penPoints = []; return; }
-        const pts = this._penPoints.map(p => `${p.x} ${p.y}`).join(', ');
+    _penFinish(forceClosed=false) {
+        if (this._penPoints.length < 2) { this._resetPenDraft(); return; }
         const pathStr = 'M ' + this._penPoints.map(p => `${p.x} ${p.y}`).join(' L ');
-        const closed = this.state.penFilled ? pathStr + ' Z' : pathStr;
+        const shouldClose = forceClosed || this.state.penFilled;
+        const closed = shouldClose ? pathStr + ' Z' : pathStr;
         const path = new fabric.Path(closed, {
             fill: this.state.penFilled ? this.state.shapeFill : 'transparent',
             stroke: this.state.penStroke,
@@ -6810,9 +7324,7 @@ self.onmessage = async function(e) {
         this.layers[this.activeLayerIdx].objects.push(path);
         this.saveHistory('Pen Path'); this.updateLayersPanel();
         const segCount = this._penPoints.length;
-        this._penPoints = [];
-        const svg = document.querySelector('#pen-overlay svg path');
-        if (svg) svg.setAttribute('d', '');
+        this._resetPenDraft();
         this.toast(this._t("Path created ({segCount} segments)", { segCount: segCount }), 'success');
     },
 
@@ -8116,7 +8628,7 @@ self.onmessage = async function(e) {
             let items = [];
 
             if (active) {
-                // Object selected — object operations
+                // Object selected - object operations
                 items.push({label:'Cut',fn:()=>{this.copyObj();this.deleteSelected();},key:this._shortcut('cut')});
                 items.push({label:'Copy',fn:()=>this.copyObj(),key:this._shortcut('copy')});
                 items.push({label:'Paste',fn:()=>this.pasteObj(),key:this._shortcut('paste')});
@@ -8148,7 +8660,7 @@ self.onmessage = async function(e) {
                     items.push({label:'Clear Filters',fn:()=>this.clearFilters()});
                 }
             } else if (hasSelection) {
-                // Pixel selection active — selection operations
+                // Pixel selection active - selection operations
                 items.push({label:'Deselect',fn:()=>this.deselectAll(),key:this._shortcut('deselect')});
                 items.push({label:'Select Inverse',fn:()=>this.invertSelection(),key:this._shortcut('invert-selection')});
                 items.push({sep:true});
@@ -8164,7 +8676,7 @@ self.onmessage = async function(e) {
                 items.push({label:'Layer Via Copy',fn:()=>this._layerViaCopy()});
                 items.push({label:'Layer Via Cut',fn:()=>this._layerViaCut()});
             } else {
-                // No object, no selection — canvas operations
+                // No object, no selection - canvas operations
                 items.push({label:'Paste',fn:()=>this.pasteObj(),key:this._shortcut('paste')});
                 items.push({label:'Select All',fn:()=>this.selectAll(),key:this._shortcut('select-all')});
                 items.push({sep:true});
@@ -8548,7 +9060,11 @@ self.onmessage = async function(e) {
             'cut':()=>this._cutSelection(),
             'copy':()=>this._copySelection(),
             'paste':()=>this._pasteSelection(),
-            'duplicate-context':()=>this._keyboardContext === 'layers' ? this.duplicateLayer() : this._duplicateSelection(),
+            'duplicate-context':()=>{
+                if (this._keyboardContext === 'layers') return this.duplicateLayer();
+                if (this._selectionMask || this._selectionBounds) return this._copySelectionToNewLayer();
+                return this._duplicateSelection();
+            },
             'free-transform':()=>this.freeTransform(),
             'select-all':()=>this.selectAll(),
             'deselect':()=>this.deselectAll(),
@@ -8711,6 +9227,15 @@ self.onmessage = async function(e) {
                 return;
             }
             if (desktopInput.isEditableShortcutTarget(event.target, activeObject)) return;
+            if (['marquee-rect','marquee-ellipse','lasso','magic-wand','ai-segment'].includes(this.state.tool)
+                && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+                const mode = ({n:'new', a:'add', s:'subtract', i:'intersect'})[String(event.key || '').toLowerCase()];
+                if (mode) {
+                    event.preventDefault();
+                    this.setSelectionMode(mode);
+                    return;
+                }
+            }
             const resolved = desktopInput.resolveShortcut(event, {
                 context:this._keyboardContext,
                 currentTool:this.state.tool,
@@ -8762,16 +9287,8 @@ self.onmessage = async function(e) {
         this._clipboard.clone(cloned => {
             this.canvas.discardActiveObject();
             cloned.set({ left: cloned.left + 20, top: cloned.top + 20, evented: true });
-            if (cloned.type === 'activeSelection') {
-                cloned.canvas = this.canvas;
-                cloned.forEachObject(obj => { this.canvas.add(obj); this.layers[this.activeLayerIdx].objects.push(obj); });
-                cloned.setCoords();
-            } else {
-                this.canvas.add(cloned);
-                this.layers[this.activeLayerIdx].objects.push(cloned);
-            }
+            this._addClonedSelectionToNewLayers(cloned, {namePrefix:'Pasted Layer'});
             this._clipboard.set({ left: this._clipboard.left + 20, top: this._clipboard.top + 20 });
-            this.canvas.setActiveObject(cloned);
             this.canvas.requestRenderAll();
             this.saveHistory('Paste');
             this.updateLayersPanel();
@@ -8782,18 +9299,112 @@ self.onmessage = async function(e) {
         if (!active) return;
         active.clone(cloned => {
             cloned.set({ left: cloned.left + 20, top: cloned.top + 20, evented: true });
-            if (cloned.type === 'activeSelection') {
-                cloned.canvas = this.canvas;
-                cloned.forEachObject(obj => { this.canvas.add(obj); this.layers[this.activeLayerIdx].objects.push(obj); });
-            } else {
-                this.canvas.add(cloned);
-                this.layers[this.activeLayerIdx].objects.push(cloned);
-            }
-            this.canvas.setActiveObject(cloned);
+            this._addClonedSelectionToNewLayers(cloned, {namePrefix:'Duplicated Layer'});
             this.canvas.requestRenderAll();
             this.saveHistory('Duplicate');
             this.updateLayersPanel();
         });
+    },
+    _selectionCopyDocumentBounds() {
+        if (this._selectionDocumentBounds) return {...this._selectionDocumentBounds};
+        if (this._selectionBounds) return this._screenSelectionBoundsToDocument(this._selectionBounds);
+        const mask = this._selectionMask;
+        const engine = window.HstarOpenShopSelectionEngine;
+        if (!mask?.mask || !engine?.maskBounds) return null;
+        const bounds = engine.maskBounds(mask.mask, mask.w, mask.h)?.bounds;
+        if (!bounds) return null;
+        const maskSpace = mask.coordinateSpace || this._selectionMaskSpace;
+        return maskSpace === 'document' ? {...bounds} : this._screenSelectionBoundsToDocument(bounds);
+    },
+    _selectionMaskIncludesDocumentPixel(documentX, documentY) {
+        const mask = this._selectionMask;
+        if (!mask?.mask) return true;
+        const maskSpace = mask.coordinateSpace || this._selectionMaskSpace;
+        let maskX;
+        let maskY;
+        if (maskSpace === 'document') {
+            maskX = Math.floor(documentX);
+            maskY = Math.floor(documentY);
+        } else {
+            const vpt = this.canvas?.viewportTransform || [1,0,0,1,0,0];
+            maskX = Math.round(vpt[0] * documentX + vpt[2] * documentY + vpt[4]);
+            maskY = Math.round(vpt[1] * documentX + vpt[3] * documentY + vpt[5]);
+        }
+        return maskX >= 0 && maskY >= 0 && maskX < mask.w && maskY < mask.h
+            && Boolean(mask.mask[maskY * mask.w + maskX]);
+    },
+    _copySelectionToNewLayer() {
+        const source = this._activeLayerRasterTarget();
+        if (!source || source.type !== 'image') {
+            this.toast(this._t('Select an image first'), 'info');
+            return false;
+        }
+        const rawBounds = this._selectionCopyDocumentBounds();
+        if (!rawBounds || rawBounds.w <= 0 || rawBounds.h <= 0) {
+            this.toast(this._t('No pixel selection'), 'info');
+            return false;
+        }
+        const left = Math.max(0, Math.floor(rawBounds.x));
+        const top = Math.max(0, Math.floor(rawBounds.y));
+        const right = Math.min(Math.max(1, Math.round(this.canvasW)), Math.ceil(rawBounds.x + rawBounds.w));
+        const bottom = Math.min(Math.max(1, Math.round(this.canvasH)), Math.ceil(rawBounds.y + rawBounds.h));
+        const width = Math.max(1, right - left);
+        const height = Math.max(1, bottom - top);
+        const surface = document.createElement('canvas');
+        surface.width = width;
+        surface.height = height;
+        const context = surface.getContext('2d', {willReadFrequently:true});
+        if (!context) {
+            this.toast(this._t('OpenShop raster canvas is unavailable'), 'error');
+            return false;
+        }
+        context.save();
+        try {
+            context.translate(-left, -top);
+            source.render?.(context);
+        } finally {
+            context.restore();
+        }
+        if (this._selectionMask) {
+            const imageData = context.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            let selected = 0;
+            for (let y = 0; y < height; y += 1) {
+                for (let x = 0; x < width; x += 1) {
+                    const inside = this._selectionMaskIncludesDocumentPixel(left + x, top + y);
+                    const offset = (y * width + x) * 4;
+                    if (inside) selected += 1;
+                    else data[offset + 3] = 0;
+                }
+            }
+            if (!selected) {
+                this.toast(this._t('No pixel selection'), 'info');
+                return false;
+            }
+            context.putImageData(imageData, 0, 0);
+        }
+        const image = new fabric.Image(surface, {
+            left,
+            top,
+            width,
+            height,
+            originX:'left',
+            originY:'top',
+            selectable:true,
+            evented:true,
+            name:this._nextObjectLayerName('Layer Via Copy'),
+        });
+        image.hstarLayerViaCopy = true;
+        this.canvas.add(image);
+        this._insertObjectLayerAbove(this.activeLayerIdx, image, image.name || 'Layer Via Copy');
+        this._syncCanvasLayerOrder();
+        image.setCoords?.();
+        this.canvas.setActiveObject(image);
+        this.canvas.requestRenderAll?.();
+        this.saveHistory('Layer Via Copy');
+        this.updateLayersPanel();
+        this.toast(this._t('Layer Via Copy'), 'success');
+        return true;
     },
     _deleteSelected() {
         const active = this.canvas.getActiveObject();
@@ -8882,6 +9493,7 @@ self.onmessage = async function(e) {
         this.zoom = level;
         document.getElementById('zoom-display').textContent = Math.round(level * 100) + '%';
         this.drawGrid(); this.drawRulers(); this._drawPixelGrid();
+        this._refreshSelectionViewport();
     },
     freeTransform() {
         const active = this.canvas.getActiveObject();
@@ -9639,7 +10251,7 @@ self.onmessage = async function(e) {
 
 
     // ====================== AI MODULE (Transformers.js) ======================
-    // On-demand model loading — no API keys, runs 100% in-browser
+    // On-demand model loading - no API keys, runs 100% in-browser
     // Models cached in IndexedDB after first download
     _aiPipelines: {},
     _aiLib: null,
@@ -9870,21 +10482,14 @@ self.onmessage = async function(e) {
     },
 
     _setPixelSelectionMask(mask, w, h) {
-        let count = 0;
-        for (let i = 0; i < mask.length; i++) if (mask[i]) count++;
-        const el = document.getElementById('selection-overlay');
-        if (!count) {
-            this._selectionMask = null;
-            this._selectionBounds = null;
-            if (el) el.style.display = 'none';
-            this.canvas.getObjects().filter(o => o._wandOverlay).forEach(o => this.canvas.remove(o));
-            this.canvas.renderAll();
-            return 0;
-        }
-        this._selectionMask = { mask, w, h };
-        this._recalcSelectionBounds(this._selectionMask);
-        this._showMaskOverlay(this._selectionMask);
-        return count;
+        const summary = this._applyPixelSelection(
+            mask,
+            w,
+            h,
+            this._selectionModeForEvent({}),
+            'ai-segment',
+        );
+        return summary.count;
     },
 
     _applySegmentSelection(target, segment, imageW, imageH) {
@@ -9944,7 +10549,7 @@ self.onmessage = async function(e) {
     },
 
     // === AI BACKGROUND REMOVAL ===
-    // Uses Xenova/modnet — proper ONNX model with full Transformers.js support
+    // Uses Xenova/modnet - proper ONNX model with full Transformers.js support
     _aiRmbgModel: null,
     _aiRmbgProcessor: null,
     async _loadRmbgModel() {
@@ -10002,7 +10607,7 @@ self.onmessage = async function(e) {
             const image = await lib.RawImage.fromURL(dataUrl);
             const { pixel_values } = await this._aiRmbgProcessor(image);
             const { output } = await this._aiRmbgModel({ input: pixel_values });
-            // output is a tensor — convert to mask and resize to original dimensions
+            // output is a tensor - convert to mask and resize to original dimensions
             const mask = await lib.RawImage.fromTensor(output[0].mul(255).to('uint8')).resize(origW, origH);
             // Apply mask as alpha channel on original image
             const resultCanvas = document.createElement('canvas');
@@ -10504,24 +11109,24 @@ window.addEventListener('error', e => { console.error('Unhandled error:', e.erro
 window.addEventListener('unhandledrejection', e => { console.error('Unhandled promise rejection:', e.reason); if (typeof OS !== 'undefined' && OS.toast) OS.toast(OS._t('Something went wrong — see console'), 'error'); });
 window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
-<script src="./host/openshop-canvas-sampler.js"></script>
-<script src="./host/openshop-raster-tools.js"></script>
-<script src="./host/openshop-brush-cursor.js"></script>
-<script src="./host/openshop-selection-engine.js"></script>
-<script src="./host/openshop-color-panel.js"></script>
-<script src="./host/openshop-update-scheduler.js"></script>
-<script src="./host/openshop-snap-engine.js"></script>
-<script src="./host/openshop-protocol.js?v=2026.07.20.1784548314504"></script>
-<script src="./host/openshop-project-adapter.js?v=2026.07.20.1784548314504"></script>
-<script src="./host/openshop-export-service.js?v=2026.07.20.1784548314504"></script>
-<script src="./host/openshop-host-runtime.js?v=2026.07.20.1784548314504"></script>
-<script src="./host/openshop-ai-client.js"></script>
-<script src="./host/openshop-font-catalog.js"></script>
-<script src="./host/openshop-text-properties.js?v=2026.07.20.1784548314504"></script>
-<script src="./host/openshop-text-tools.js?v=2026.07.20.1784548314504"></script>
-<script src="./host/openshop-reference-manager.js"></script>
-<script src="./host/openshop-generative-client.js"></script>
-<script src="./host/openshop-generative-tools.js"></script>
+<script src="./host/openshop-canvas-sampler.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-raster-tools.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-brush-cursor.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-selection-engine.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-color-panel.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-update-scheduler.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-snap-engine.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-protocol.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-project-adapter.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-export-service.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-host-runtime.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-ai-client.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-font-catalog.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-text-properties.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-text-tools.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-reference-manager.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-generative-client.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-generative-tools.js?v=2026.07.27.150100001"></script>
 <script>
 function hstarOpenShopDataUrlToBlob(dataUrl) {
     const match = String(dataUrl || '').match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/i);

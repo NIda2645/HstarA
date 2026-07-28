@@ -1,0 +1,1790 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const testDir = dirname(fileURLToPath(import.meta.url));
+const runtimePath = resolve(testDir, '..', 'host', 'openshop-writing-mode.js');
+const editorCssPath = resolve(testDir, '..', 'host', 'openshop-writing-mode.css');
+const vendorFabricPath = resolve(testDir, '..', 'vendor', 'fabric-5.3.1.min.js');
+const TEXT_PROPERTIES = [
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke', 'strokeWidth',
+  'charSpacing', 'lineHeight', 'textAlign', 'textBackgroundColor', 'backgroundColor',
+  'underline', 'overline', 'linethrough', 'shadow', 'styles', 'opacity', 'angle', 'left',
+  'top', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY', 'originX', 'originY',
+  'visible', 'selectable', 'evented',
+];
+const BASE_OBJECT_PROPERTIES = [
+  'type', 'left', 'top', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY', 'angle',
+  'opacity', 'originX', 'originY', 'visible', 'selectable', 'evented',
+];
+const MOCK_TEXT_PROPERTIES = [
+  'text', 'baseTextOption', ...TEXT_PROPERTIES, 'direction', 'paintFirst', 'strokeUniform',
+  'strokeDashArray', 'strokeDashOffset', 'strokeLineCap', 'strokeLineJoin', 'strokeMiterLimit',
+  'futureTextOption',
+];
+const MOCK_RUNTIME_PROPERTIES = new Set([
+  'canvas', 'group', 'aCoords', 'oCoords', 'matrixCache', 'ownMatrixCache', 'cacheKey',
+  'dirty', 'selectionStart', 'selectionEnd', 'isEditing', 'hiddenTextarea',
+  'hiddenTextareaContainer', 'cursorDuration', 'inCompositionMode', 'keysMap', 'cursorWidth',
+  'cursorColor', 'cursorDelay', 'width', 'height', 'pathOffset',
+]);
+
+function cloneMockValue(value) {
+  if(value == null || ['string', 'number', 'boolean'].includes(typeof value)) return value;
+  if(typeof value === 'function') return undefined;
+  if(Array.isArray(value)) return value.map(cloneMockValue).filter(value => value !== undefined);
+  if(Object.getPrototypeOf(value) !== Object.prototype) return value;
+  return Object.fromEntries(Object.entries(value)
+    .map(([key, child]) => [key, cloneMockValue(child)])
+    .filter(([, child]) => child !== undefined));
+}
+
+function loadRuntime() {
+  delete window.HstarOpenShopWritingMode;
+  new Function(readFileSync(runtimePath, 'utf8'))();
+  return window.HstarOpenShopWritingMode;
+}
+
+function createFabricMock({withCreateClass = true} = {}) {
+  class FabricObject {
+    initialize(options = {}) {
+      Object.assign(this, options);
+      return this;
+    }
+
+    set(values, value) {
+      if(typeof values === 'string') this._set(values, value);
+      else Object.entries(values || {}).forEach(([key, item]) => this._set(key, item));
+      return this;
+    }
+
+    _set(key, value) {
+      this[key] = value;
+      return this;
+    }
+
+    setCoords() {
+      return this;
+    }
+
+    toObject(extra = []) {
+      const output = {};
+      const names = new Set([...BASE_OBJECT_PROPERTIES, ...(Array.isArray(extra) ? extra : [])]);
+      names.forEach(key => {
+        if(key.startsWith('_') || MOCK_RUNTIME_PROPERTIES.has(key)) return;
+        const value = this[key];
+        const serializable = key.startsWith('hstar') ? value : cloneMockValue(value);
+        if(serializable !== undefined) output[key] = serializable;
+      });
+      return output;
+    }
+  }
+
+  class IText extends FabricObject {
+    constructor(text, options = {}) {
+      super();
+      this.initialize(text, options);
+    }
+
+    initialize(text, options = {}) {
+      super.initialize(options);
+      this.type = 'i-text';
+      this.text = String(text);
+      return this;
+    }
+
+    toObject(extra = []) {
+      return super.toObject([...MOCK_TEXT_PROPERTIES, ...(Array.isArray(extra) ? extra : [])]);
+    }
+  }
+
+  class Text extends FabricObject {}
+
+  Object.assign(FabricObject.prototype, {
+    baseTextOption:'from-fabric-object',
+    controls:{ml:{cursorStyleHandler() { return 'runtime'; }}},
+  });
+
+  Object.assign(IText.prototype, {
+    fontFamily:'Prototype Sans',
+    fontSize:31,
+    fontWeight:600,
+    fontStyle:'italic',
+    fill:'#224466',
+    stroke:'#112233',
+    strokeWidth:3,
+    charSpacing:48,
+    lineHeight:1.4,
+    textAlign:'right',
+    textBackgroundColor:'#f8fafc',
+    backgroundColor:'#0f172a',
+    underline:true,
+    overline:true,
+    linethrough:true,
+    shadow:{color:'#000000', blur:4, offsetX:2, offsetY:3},
+    styles:{0:{0:{fill:'#ef4444'}}},
+    skewX:6,
+    skewY:-4,
+    flipX:true,
+    flipY:true,
+    originX:'center',
+    originY:'center',
+    visible:true,
+    selectable:true,
+    evented:true,
+    direction:'rtl',
+    paintFirst:'stroke',
+    strokeUniform:true,
+    strokeDashArray:[6, 3],
+    strokeDashOffset:2,
+    strokeLineCap:'round',
+    strokeLineJoin:'bevel',
+    strokeMiterLimit:9,
+    futureTextOption:{source:'prototype'},
+  });
+
+  const fabric = {Object:FabricObject, IText, Text};
+  if(withCreateClass) {
+    fabric.util = {
+      createClass(Parent, methods) {
+        class FabricSubclass extends Parent {
+          constructor(...args) {
+            super();
+            this.initialize(...args);
+          }
+
+          callSuper(method, ...args) {
+            return Parent.prototype[method].apply(this, args);
+          }
+        }
+        Object.assign(FabricSubclass.prototype, methods);
+        return FabricSubclass;
+      },
+    };
+  }
+  return fabric;
+}
+
+function attachEditingCanvas(object, {
+  objectRect = {left:10, top:20, width:80, height:120},
+  canvasRect = {left:100, top:50, width:800, height:600},
+  viewportTransform = [1, 0, 0, 1, 0, 0],
+  logicalWidth = 800,
+  logicalHeight = 600,
+} = {}) {
+  const upperCanvasEl = document.createElement('canvas');
+  upperCanvasEl.dataset.hstarWritingModeTest = '';
+  upperCanvasEl.getBoundingClientRect = vi.fn(() => canvasRect);
+  upperCanvasEl.focus = vi.fn();
+  document.body.append(upperCanvasEl);
+  object.getBoundingRect = vi.fn(() => objectRect);
+  object.setCoords = vi.fn();
+  const listeners = new Map();
+  const canvas = {
+    upperCanvasEl,
+    viewportTransform,
+    getWidth:vi.fn(() => logicalWidth),
+    getHeight:vi.fn(() => logicalHeight),
+    requestRenderAll:vi.fn(),
+  };
+  canvas.on = vi.fn((name, handler) => {
+    const handlers = listeners.get(name) || new Set();
+    handlers.add(handler);
+    listeners.set(name, handlers);
+    return canvas;
+  });
+  canvas.off = vi.fn((name, handler) => {
+    listeners.get(name)?.delete(handler);
+    return canvas;
+  });
+  canvas.fire = vi.fn((name, payload) => {
+    [...(listeners.get(name) || [])].forEach(handler => handler(payload || {}));
+    return canvas;
+  });
+  object.canvas = canvas;
+  return canvas;
+}
+
+function cssMatrixValues(transform) {
+  const match = /^matrix\(([^)]+)\)/.exec(transform);
+  return match ? match[1].split(',').map(value => Number(value.trim())) : null;
+}
+
+let runtime;
+
+beforeEach(() => {
+  runtime = loadRuntime();
+});
+
+afterEach(() => {
+  runtime?.destroy();
+  document.querySelectorAll('[data-hstar-writing-mode-test]').forEach(element => element.remove());
+  delete window.HstarOpenShopWritingMode;
+});
+
+describe('Hstar OpenShop writing mode runtime', () => {
+  it('normalizes only the canonical vertical value', () => {
+    expect(runtime.HORIZONTAL).toBe('horizontal');
+    expect(runtime.VERTICAL).toBe('vertical');
+    expect(runtime.normalizeWritingMode('vertical')).toBe('vertical');
+    expect(runtime.normalizeWritingMode('vertical-rl')).toBe('horizontal');
+    expect(runtime.normalizeWritingMode('Vertical')).toBe('horizontal');
+    expect(runtime.normalizeWritingMode()).toBe('horizontal');
+  });
+
+  it('keeps raw text, including null and explicit newlines, in distinct vertical columns', () => {
+    const raw = 'first\nsecond';
+    const layout = runtime.layoutVerticalText(raw, {fontSize:20, lineHeight:1});
+
+    expect(layout.text).toBe(raw);
+    expect(layout.writingMode).toBe('vertical');
+    expect(layout.columns).toEqual([['f', 'i', 'r', 's', 't'], ['s', 'e', 'c', 'o', 'n', 'd']]);
+    expect(layout.glyphs.map(glyph => glyph.character).join('')).toBe('firstsecond');
+    expect(runtime.layoutVerticalText(null).text).toBe('null');
+  });
+
+  it('uses Array.from Unicode code points and flows columns top-to-bottom from right to left', () => {
+    const layout = runtime.layoutVerticalText('A\u{1F642}e\u0301\nB2', {fontSize:20, lineHeight:1});
+    const firstColumn = layout.glyphs.filter(glyph => glyph.columnIndex === 0);
+    const secondColumn = layout.glyphs.filter(glyph => glyph.columnIndex === 1);
+
+    expect(firstColumn.map(glyph => glyph.character)).toEqual(Array.from('A\u{1F642}e\u0301'));
+    expect(secondColumn.map(glyph => glyph.character)).toEqual(['B', '2']);
+    expect(firstColumn[1].y).toBeGreaterThan(firstColumn[0].y);
+    expect(secondColumn[1].y).toBeGreaterThan(secondColumn[0].y);
+    expect(firstColumn[0].x).toBeGreaterThan(secondColumn[0].x);
+    expect(layout.width).toBeGreaterThan(0);
+    expect(layout.height).toBeGreaterThan(0);
+  });
+
+  it('registers the Fabric vertical class once with a createClass and class fallback', () => {
+    const fabric = createFabricMock();
+    const first = runtime.registerFabricClass(fabric);
+    const second = runtime.registerFabricClass(fabric);
+    const fallbackFabric = createFabricMock({withCreateClass:false});
+    const FallbackVerticalText = runtime.registerFabricClass(fallbackFabric);
+
+    expect(second).toBe(first);
+    expect(fabric.HstarVerticalText).toBe(first);
+    expect(first.prototype).toBeInstanceOf(fabric.Object);
+    expect(first.prototype.type).toBe('hstar-vertical-text');
+    expect(new FallbackVerticalText('fallback')).toBeInstanceOf(fallbackFabric.Object);
+  });
+
+  it('creates horizontal IText and vertical objects with their writing modes', () => {
+    const fabric = createFabricMock();
+    const horizontal = runtime.createTextObject(fabric, 'horizontal', {
+      left:12,
+      fontSize:30,
+      hstarWritingMode:'horizontal',
+    });
+    const vertical = runtime.createTextObject(fabric, 'vertical', {
+      left:14,
+      fontSize:30,
+      hstarWritingMode:'vertical',
+    });
+
+    expect(horizontal).toBeInstanceOf(fabric.IText);
+    expect(horizontal).toMatchObject({text:'horizontal', hstarWritingMode:'horizontal', left:12});
+    expect(vertical).toBeInstanceOf(fabric.HstarVerticalText);
+    expect(vertical).toMatchObject({text:'vertical', hstarWritingMode:'vertical', left:14});
+    expect(vertical.width).toBeGreaterThan(0);
+    expect(vertical.height).toBeGreaterThan(0);
+  });
+
+  it('opens and reuses one styled vertical textarea without changing its text', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'first\nsecond', {
+      hstarWritingMode:'vertical',
+      fontFamily:'Editor Sans',
+      fontSize:28,
+      fontWeight:700,
+      fontStyle:'italic',
+      fill:'red',
+      lineHeight:1.4,
+      angle:17,
+    });
+    attachEditingCanvas(vertical);
+
+    vertical.enterEditing();
+
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect(editor).not.toBeNull();
+    expect(editor.classList.contains('hstar-vertical-text-editor')).toBe(true);
+    expect(editor.dataset.voiceInput).toBe('on');
+    expect(editor.dataset.voiceLabel).toBe('竖排文字编辑');
+    expect(editor.value).toBe('first\nsecond');
+    expect(editor.style.display).toBe('block');
+    expect(editor.style.position).toBe('fixed');
+    expect(editor.style.writingMode).toBe('vertical-rl');
+    expect(editor.style.textOrientation).toBe('mixed');
+    expect(editor.style.resize).toBe('none');
+    expect(editor.style.fontFamily).toContain('Editor Sans');
+    expect(editor.style.fontSize).toBe('28px');
+    expect(editor.style.fontWeight).toBe('700');
+    expect(editor.style.fontStyle).toBe('italic');
+    expect(editor.style.color).toBe('transparent');
+    expect(editor.style.getPropertyValue('-webkit-text-fill-color')).toBe('transparent');
+    expect(editor.style.caretColor).toBe('transparent');
+    expect(editor.style.lineHeight).toBe('1.4');
+    expect(editor.style.transform).toBe('none');
+    expect(editor.style.left).toBe('110px');
+    expect(editor.style.top).toBe('70px');
+    expect(editor.style.width).toBe('80px');
+    expect(editor.style.height).toBe('120px');
+    expect(Number(editor.style.zIndex)).toBeGreaterThanOrEqual(10000);
+    expect(vertical.isEditing).toBe(true);
+    expect(runtime.activeEditorObject()).toBe(vertical);
+
+    vertical.exitEditing();
+    expect(editor.style.display).toBe('none');
+    const duplicate = document.createElement('textarea');
+    duplicate.setAttribute('data-hstar-vertical-editor', '');
+    document.body.append(duplicate);
+    vertical.enterEditing();
+
+    expect(document.querySelectorAll('textarea[data-hstar-vertical-editor]')).toHaveLength(1);
+    expect(document.querySelector('textarea[data-hstar-vertical-editor]')).toBe(editor);
+  });
+
+  it('refreshes the active vertical editor after viewport or typography changes', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '缩放', {
+      hstarWritingMode:'vertical',
+      fontSize:28,
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    vertical.fontSize = 64;
+
+    expect(runtime.refreshActiveEditor()).toBe(true);
+    expect(editor.style.fontSize).toBe('64px');
+
+    vertical.exitEditing();
+    expect(runtime.refreshActiveEditor()).toBe(false);
+  });
+
+  it('positions a custom collapsed caret from the vertical glyph layout', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '大大', {
+      hstarWritingMode:'vertical',
+      fontSize:20,
+      lineHeight:1.5,
+      fill:'red',
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const caret = document.querySelector('[data-hstar-vertical-caret]');
+
+    expect(caret).not.toBeNull();
+    expect(editor.style.caretColor).toBe('transparent');
+    expect(caret.style.display).toBe('block');
+    expect(caret.style.left).toBe(editor.style.left);
+    expect(caret.style.top).toBe(editor.style.top);
+    expect(caret.style.width).toBe(editor.style.width);
+    expect(caret.style.height).toBe(editor.style.height);
+    expect(caret.style.color).toBe('red');
+    expect(caret.style.getPropertyValue('--hstar-vertical-caret-left')).toBe('0%');
+    expect(caret.style.getPropertyValue('--hstar-vertical-caret-top')).toBe('83.333333%');
+    expect(caret.style.getPropertyValue('--hstar-vertical-caret-width')).toBe('100%');
+
+    editor.setSelectionRange(1, 1);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+    expect(caret.style.getPropertyValue('--hstar-vertical-caret-top')).toBe('50%');
+
+    editor.setSelectionRange(0, 2);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+    expect(caret.style.display).toBe('none');
+  });
+
+  it('wraps selected vertical glyphs using the same layout as the canvas renderer', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '大大', {
+      hstarWritingMode:'vertical',
+      fontSize:20,
+      lineHeight:1.5,
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const selection = document.querySelector('[data-hstar-vertical-selection]');
+    const css = readFileSync(editorCssPath, 'utf8');
+
+    editor.setSelectionRange(0, 2);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+
+    expect(selection).not.toBeNull();
+    expect(selection.style.display).toBe('block');
+    expect(selection.style.left).toBe(editor.style.left);
+    expect(selection.style.top).toBe(editor.style.top);
+    expect(selection.style.width).toBe(editor.style.width);
+    expect(selection.style.height).toBe(editor.style.height);
+    expect(selection.children).toHaveLength(1);
+    expect(selection.firstElementChild.style.left).toBe('0%');
+    expect(selection.firstElementChild.style.top).toBe('0%');
+    expect(selection.firstElementChild.style.width).toBe('100%');
+    expect(selection.firstElementChild.style.height).toBe('83.333333%');
+    expect(css).toMatch(/\.hstar-vertical-text-selection\s*\{[^}]*pointer-events:\s*none;/s);
+    expect(css).toMatch(/\.hstar-vertical-text-selection__rect\s*\{[^}]*background:\s*rgba\(37, 99, 235, 0\.24\);/s);
+    expect(css).toMatch(/\.hstar-vertical-text-editor::selection\s*\{[^}]*background:\s*transparent;/s);
+
+    editor.setSelectionRange(2, 2);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+    expect(selection.style.display).toBe('none');
+  });
+
+  it('uses CSS canvas ratios without applying viewport zoom twice to transformed bounds', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'zoomed', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(vertical, {
+      objectRect:{left:40, top:60, width:100, height:160},
+      canvasRect:{left:25, top:35, width:600, height:500},
+      viewportTransform:[2, 0, 0, 2, 0, 0],
+      logicalWidth:400,
+      logicalHeight:400,
+    });
+
+    vertical.enterEditing();
+
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect(editor.style.left).toBe('85px');
+    expect(editor.style.top).toBe('110px');
+    expect(editor.style.width).toBe('150px');
+    expect(editor.style.height).toBe('200px');
+  });
+
+  it('composes the Fabric viewport and object matrices once with CSS canvas ratios', () => {
+    new Function(readFileSync(vendorFabricPath, 'utf8'))();
+    const realFabric = window.fabric;
+    runtime.registerFabricClass(realFabric);
+    const vertical = new realFabric.HstarVerticalText('matrix', {
+      left:140,
+      top:90,
+      fontSize:40,
+      scaleX:1.4,
+      scaleY:0.65,
+      angle:29,
+      skewX:13,
+      skewY:-7,
+      flipX:true,
+    });
+    const viewportTransform = [2, 0.15, -0.1, 2, 30, -20];
+    const canvas = attachEditingCanvas(vertical, {
+      canvasRect:{left:25, top:35, width:600, height:500},
+      viewportTransform,
+      logicalWidth:400,
+      logicalHeight:400,
+    });
+    vertical.getBoundingRect.mockImplementation(() => { throw new Error('matrix path must not use bounds'); });
+    const objectMatrix = vertical.calcTransformMatrix();
+    const combined = realFabric.util.multiplyTransformMatrices(viewportTransform, objectMatrix);
+
+    vertical.enterEditing();
+
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const cssMatrix = cssMatrixValues(editor.style.transform);
+    expect(cssMatrix).not.toBeNull();
+    expect(cssMatrix[0]).toBeCloseTo(combined[0] * 1.5, 8);
+    expect(cssMatrix[1]).toBeCloseTo(combined[1] * 1.25, 8);
+    expect(cssMatrix[2]).toBeCloseTo(combined[2] * 1.5, 8);
+    expect(cssMatrix[3]).toBeCloseTo(combined[3] * 1.25, 8);
+    expect(cssMatrix.slice(4)).toEqual([0, 0]);
+    expect(editor.style.transform).toContain('translate(-50%, -50%)');
+    expect(editor.style.transformOrigin).toBe('0px 0px');
+    expect(Number.parseFloat(editor.style.left)).toBeCloseTo(25 + (combined[4] * 1.5), 8);
+    expect(Number.parseFloat(editor.style.top)).toBeCloseTo(35 + (combined[5] * 1.25), 8);
+    expect(Number.parseFloat(editor.style.width)).toBeCloseTo(vertical.width, 8);
+    expect(Number.parseFloat(editor.style.height)).toBeCloseTo(vertical.height, 8);
+    expect(canvas.viewportTransform).toEqual(viewportTransform);
+    delete window.fabric;
+  });
+
+  it('refreshes matrix geometry after input and keeps overflowing text usable', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {hstarWritingMode:'vertical', fontSize:20});
+    attachEditingCanvas(vertical);
+    vertical.calcTransformMatrix = vi.fn(() => [1, 0, 0, 1, 180, 160]);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const initialHeight = Number.parseFloat(editor.style.height);
+
+    editor.value = 'ABCDEFG';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(Number.parseFloat(editor.style.height)).toBeCloseTo(vertical.height, 8);
+    expect(Number.parseFloat(editor.style.height)).toBeGreaterThan(initialHeight);
+    expect(editor.style.transform).toContain('matrix(');
+    expect(readFileSync(editorCssPath, 'utf8')).toMatch(/overflow:\s*auto/);
+  });
+
+  it('fires live text events per input and one modification event only when changed', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'before', {hstarWritingMode:'vertical'});
+    const canvas = attachEditingCanvas(vertical);
+    vertical.fire = vi.fn();
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.value = 'after';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(vertical.fire).toHaveBeenCalledWith('changed');
+    expect(canvas.fire.mock.calls.filter(([name]) => name === 'text:changed')).toEqual([
+      ['text:changed', {target:vertical}],
+    ]);
+    expect(canvas.fire.mock.calls.filter(([name]) => name === 'object:modified')).toHaveLength(0);
+
+    vertical.exitEditing();
+    vertical.exitEditing();
+    expect(canvas.fire.mock.calls.filter(([name]) => name === 'object:modified')).toEqual([
+      ['object:modified', {target:vertical}],
+    ]);
+
+    vertical.enterEditing();
+    vertical.exitEditing();
+    expect(canvas.fire.mock.calls.filter(([name]) => name === 'object:modified')).toHaveLength(1);
+  });
+
+  it('cleans up editing when the object, canvas, or selection is removed', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'lifecycle', {hstarWritingMode:'vertical'});
+    const canvas = attachEditingCanvas(vertical);
+    vertical.enterEditing();
+
+    canvas.fire('object:removed', {target:vertical});
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(vertical.isEditing).toBe(false);
+    expect(canvas.off).toHaveBeenCalled();
+
+    vertical.enterEditing();
+    canvas.fire('canvas:cleared');
+    expect(runtime.activeEditorObject()).toBeNull();
+
+    vertical.enterEditing();
+    canvas.fire('selection:updated', {selected:[{type:'rect'}]});
+    expect(runtime.activeEditorObject()).toBeNull();
+
+    vertical.enterEditing();
+    canvas.requestRenderAll.mockImplementationOnce(() => { throw new Error('canvas disposed'); });
+    expect(() => canvas.fire('canvas:disposed')).not.toThrow();
+    expect(runtime.activeEditorObject()).toBeNull();
+  });
+
+  it('exposes an accessible editor and commits only Escape or Numpad Enter', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'keys', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const css = readFileSync(editorCssPath, 'utf8');
+
+    expect(editor.getAttribute('aria-label')).toBe('竖排文字编辑');
+    expect(editor.spellcheck).toBe(false);
+    expect(css).toMatch(/\.hstar-vertical-text-editor\s*\{[^}]*color:\s*transparent;[^}]*-webkit-text-fill-color:\s*transparent;/s);
+    expect(css).toMatch(/\.hstar-vertical-text-editor::selection\s*\{[^}]*color:\s*transparent;[^}]*-webkit-text-fill-color:\s*transparent;[^}]*background:/s);
+    expect(css).toMatch(/\.hstar-vertical-text-caret::after\s*\{[^}]*--hstar-vertical-caret-top/s);
+    expect(css).toMatch(/\.hstar-vertical-text-editor:focus-visible\s*\{[^}]*outline:/s);
+    editor.dispatchEvent(new KeyboardEvent('keydown', {
+      key:'Enter', code:'Enter', bubbles:true, cancelable:true,
+    }));
+    expect(runtime.activeEditorObject()).toBe(vertical);
+
+    const numpadGlobal = vi.fn();
+    document.addEventListener('keydown', numpadGlobal, {once:true});
+    editor.dispatchEvent(new KeyboardEvent('keydown', {
+      key:'Enter', code:'NumpadEnter', bubbles:true, cancelable:true,
+    }));
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(numpadGlobal).toHaveBeenCalledOnce();
+
+    vertical.enterEditing();
+    const escapeGlobal = vi.fn();
+    document.addEventListener('keydown', escapeGlobal, {once:true});
+    editor.dispatchEvent(new KeyboardEvent('keydown', {
+      key:'Escape', code:'Escape', bubbles:true, cancelable:true,
+    }));
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(escapeGlobal).toHaveBeenCalledOnce();
+  });
+
+  it('syncs textarea input to the object dimensions and canvas immediately', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {hstarWritingMode:'vertical', fontSize:20});
+    const canvas = attachEditingCanvas(vertical);
+    const set = vi.spyOn(vertical, 'set');
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const initialHeight = vertical.height;
+
+    editor.value = 'ABCDE';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(set).toHaveBeenCalledWith('text', 'ABCDE');
+    expect(vertical.text).toBe('ABCDE');
+    expect(vertical.height).toBeGreaterThan(initialHeight);
+    expect(vertical.dirty).toBe(true);
+    expect(vertical.setCoords).toHaveBeenCalled();
+    expect(canvas.requestRenderAll).toHaveBeenCalled();
+  });
+
+  it('rebases glyph styles through textarea insertions and deletions across columns', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '甲\nBC', {
+      hstarWritingMode:'vertical',
+      styles:{0:{0:{fill:'#008800'}}, 1:{0:{fill:'#ff0000'}, 1:{fill:'#0000ff'}}},
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.value = 'Z甲\nBC';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#008800'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#008800'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#0000ff'});
+
+    editor.value = 'Z甲\nB中C';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#008800'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[1][2]).toMatchObject({fill:'#0000ff'});
+
+    editor.value = 'Z甲\n中C';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#008800'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#0000ff'});
+    expect(vertical.styles[1][2]).toBeUndefined();
+  });
+
+  it('uses beforeinput ranges to rebase repeated glyph styles across columns', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AAAA\nAA', {
+      hstarWritingMode:'vertical',
+      styles:{
+        0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+        1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+      },
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.setSelectionRange(0, 0);
+    const insert = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(insert, 'inputType', {value:'insertText'});
+    editor.dispatchEvent(insert);
+    editor.value = 'AAAAA\nAA';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+
+    editor.setSelectionRange(1, 3);
+    const remove = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(remove, 'inputType', {value:'deleteContentBackward'});
+    editor.dispatchEvent(remove);
+    editor.value = 'AAA\nAA';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#0000ff'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#ffaa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+  });
+
+  it('expands a collapsed Delete range before rebasing repeated glyph styles', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AAAA\nBB', {
+      hstarWritingMode:'vertical',
+      styles:{
+        0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+        1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+      },
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.setSelectionRange(2, 2);
+    const remove = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(remove, 'inputType', {value:'deleteContentForward'});
+    editor.dispatchEvent(remove);
+    editor.value = 'AAA\nBB';
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#ffaa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+  });
+
+  it('expands collapsed Backspace ranges at the start, in repeated text, and across newlines', () => {
+    const fabric = createFabricMock();
+    const styles = {
+      0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+      1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+    };
+    const editWithBackspace = (text, start, nextText) => {
+      const vertical = runtime.createTextObject(fabric, text, {hstarWritingMode:'vertical', styles});
+      attachEditingCanvas(vertical);
+      vertical.enterEditing();
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.setSelectionRange(start, start);
+      const remove = new Event('beforeinput', {bubbles:true});
+      Object.defineProperty(remove, 'inputType', {value:'deleteContentBackward'});
+      editor.dispatchEvent(remove);
+      editor.value = nextText;
+      editor.dispatchEvent(new Event('input', {bubbles:true}));
+      vertical.exitEditing();
+      return vertical;
+    };
+
+    const atStart = editWithBackspace('AAAA\nBB', 0, 'AAAA\nBB');
+    expect(atStart.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(atStart.styles[0][1]).toMatchObject({fill:'#00aa00'});
+
+    const inMiddle = editWithBackspace('AAAA\nBB', 2, 'AAA\nBB');
+    expect(inMiddle.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(inMiddle.styles[0][1]).toMatchObject({fill:'#0000ff'});
+    expect(inMiddle.styles[0][2]).toMatchObject({fill:'#ffaa00'});
+    expect(inMiddle.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(inMiddle.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+
+    const acrossNewline = editWithBackspace('AAAA\nBB', 5, 'AAAABB');
+    expect(acrossNewline.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(acrossNewline.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(acrossNewline.styles[0][2]).toMatchObject({fill:'#0000ff'});
+    expect(acrossNewline.styles[0][3]).toMatchObject({fill:'#ffaa00'});
+    expect(acrossNewline.styles[0][4]).toMatchObject({fill:'#00aaaa'});
+    expect(acrossNewline.styles[0][5]).toMatchObject({fill:'#aa00aa'});
+  });
+
+  it('uses actual deletion lengths for collapsed directional delete input types', () => {
+    const fabric = createFabricMock();
+    const colors = {
+      red:'#ff0000', green:'#00aa00', blue:'#0000ff', orange:'#ffaa00', cyan:'#00aaaa', magenta:'#aa00aa',
+    };
+    const styles = {
+      0:{0:{fill:colors.red}, 1:{fill:colors.green}, 2:{fill:colors.blue}, 3:{fill:colors.orange}},
+      1:{0:{fill:colors.cyan}, 1:{fill:colors.magenta}},
+    };
+    const edit = ({inputType, start, nextText}) => {
+      const vertical = runtime.createTextObject(fabric, 'AAAA\nBB', {hstarWritingMode:'vertical', styles});
+      attachEditingCanvas(vertical);
+      vertical.enterEditing();
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.setSelectionRange(start, start);
+      const remove = new Event('beforeinput', {bubbles:true});
+      Object.defineProperty(remove, 'inputType', {value:inputType});
+      editor.dispatchEvent(remove);
+      editor.value = nextText;
+      editor.dispatchEvent(new Event('input', {bubbles:true}));
+      vertical.exitEditing();
+      return vertical;
+    };
+    const expectColumns = (vertical, columns) => {
+      columns.forEach((rows, columnIndex) => rows.forEach((color, rowIndex) => {
+        expect(vertical.styles[columnIndex][rowIndex]).toMatchObject({fill:colors[color]});
+      }));
+    };
+
+    expectColumns(edit({inputType:'deleteWordForward', start:2, nextText:'AA\nBB'}), [
+      ['red', 'green'], ['cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteWordBackward', start:3, nextText:'AA\nBB'}), [
+      ['red', 'orange'], ['cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteSoftLineForward', start:2, nextText:'AA\nBB'}), [
+      ['red', 'green'], ['cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteSoftLineBackward', start:3, nextText:'AA\nBB'}), [
+      ['red', 'orange'], ['cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteHardLineForward', start:2, nextText:'AABB'}), [
+      ['red', 'green', 'cyan', 'magenta'],
+    ]);
+    expectColumns(edit({inputType:'deleteHardLineBackward', start:5, nextText:'BB'}), [
+      ['cyan', 'magenta'],
+    ]);
+  });
+
+  it('tracks composition replacement ranges through preedit deletion and commit', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AAAA\nBB', {
+      hstarWritingMode:'vertical',
+      styles:{
+        0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+        1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+      },
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const beforeInput = (inputType, range) => {
+      const event = new Event('beforeinput', {bubbles:true});
+      Object.defineProperty(event, 'inputType', {value:inputType});
+      if(range) Object.defineProperty(event, 'getTargetRanges', {value:() => [range]});
+      editor.dispatchEvent(event);
+    };
+    const input = value => {
+      editor.value = value;
+      editor.dispatchEvent(new Event('input', {bubbles:true}));
+    };
+
+    editor.setSelectionRange(2, 4);
+    editor.dispatchEvent(new Event('compositionstart', {bubbles:true}));
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertCompositionText', {startOffset:2, endOffset:4});
+    input('AAX\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#00aa00'});
+
+    editor.dispatchEvent(new Event('compositionupdate', {bubbles:true}));
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertCompositionText');
+    input('AAYZ\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][3]).toMatchObject({fill:'#00aa00'});
+
+    editor.setSelectionRange(0, 0);
+    beforeInput('deleteCompositionText');
+    input('AA\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertCompositionText');
+    input('AAQ\nBB');
+    editor.setSelectionRange(0, 0);
+    beforeInput('deleteByComposition');
+    input('AA\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertCompositionText');
+    input('AAR\nBB');
+    editor.dispatchEvent(new Event('compositionend', {bubbles:true}));
+    editor.setSelectionRange(0, 0);
+    beforeInput('insertFromComposition');
+    input('AATU\nBB');
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][3]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(vertical.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+  });
+
+  it('uses the caret soft-line bounds for collapsed deleteEntireSoftLine', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AA\nAAAA\nBB', {
+      hstarWritingMode:'vertical',
+      styles:{
+        0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}},
+        1:{0:{fill:'#0000ff'}, 1:{fill:'#ffaa00'}, 2:{fill:'#00aaaa'}, 3:{fill:'#aa00aa'}},
+        2:{0:{fill:'#7744cc'}, 1:{fill:'#cc4477'}},
+      },
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    editor.setSelectionRange(5, 5);
+    const remove = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(remove, 'inputType', {value:'deleteEntireSoftLine'});
+    editor.dispatchEvent(remove);
+    editor.value = 'AA\n\nBB';
+    editor.setSelectionRange(3, 3);
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[2][0]).toMatchObject({fill:'#7744cc'});
+    expect(vertical.styles[2][1]).toMatchObject({fill:'#cc4477'});
+  });
+
+  it('anchors collapsed replacement text edits to the before and after carets', () => {
+    const fabric = createFabricMock();
+    const styles = {
+      0:{0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'}, 3:{fill:'#ffaa00'}},
+      1:{0:{fill:'#00aaaa'}, 1:{fill:'#aa00aa'}},
+    };
+    const replace = ({text, oldCaret, nextText, newCaret}) => {
+      const vertical = runtime.createTextObject(fabric, text, {hstarWritingMode:'vertical', styles});
+      attachEditingCanvas(vertical);
+      vertical.enterEditing();
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.setSelectionRange(oldCaret, oldCaret);
+      const event = new Event('beforeinput', {bubbles:true});
+      Object.defineProperty(event, 'inputType', {value:'insertReplacementText'});
+      editor.dispatchEvent(event);
+      editor.value = nextText;
+      editor.setSelectionRange(newCaret, newCaret);
+      editor.dispatchEvent(new Event('input', {bubbles:true}));
+      vertical.exitEditing();
+      return vertical;
+    };
+
+    const shortened = replace({text:'AAAA\nBB', oldCaret:4, nextText:'AA\nBB', newCaret:2});
+    expect(shortened.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(shortened.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(shortened.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(shortened.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+
+    const equalLength = replace({text:'AAAA\nBB', oldCaret:4, nextText:'AAXA\nBB', newCaret:4});
+    expect(equalLength.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(equalLength.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(equalLength.styles[0][2]).toMatchObject({fill:'#00aa00'});
+    expect(equalLength.styles[0][3]).toMatchObject({fill:'#00aa00'});
+    expect(equalLength.styles[1][0]).toMatchObject({fill:'#00aaaa'});
+    expect(equalLength.styles[1][1]).toMatchObject({fill:'#aa00aa'});
+  });
+
+  it('anchors deleteEntireSoftLine within a long logical line without hard newlines', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AAAAAA', {
+      hstarWritingMode:'vertical',
+      styles:{0:{
+        0:{fill:'#ff0000'}, 1:{fill:'#00aa00'}, 2:{fill:'#0000ff'},
+        3:{fill:'#ffaa00'}, 4:{fill:'#00aaaa'}, 5:{fill:'#aa00aa'},
+      }},
+    });
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    editor.setSelectionRange(3, 3);
+    const remove = new Event('beforeinput', {bubbles:true});
+    Object.defineProperty(remove, 'inputType', {value:'deleteEntireSoftLine'});
+    editor.dispatchEvent(remove);
+    editor.value = 'AAA';
+    editor.setSelectionRange(3, 3);
+    editor.dispatchEvent(new Event('input', {bubbles:true}));
+
+    expect(vertical.styles[0][0]).toMatchObject({fill:'#ff0000'});
+    expect(vertical.styles[0][1]).toMatchObject({fill:'#00aa00'});
+    expect(vertical.styles[0][2]).toMatchObject({fill:'#0000ff'});
+  });
+
+  it('places a missing editor selection at the end while preserving an explicit zero caret', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '甲\nA', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(vertical);
+
+    vertical.enterEditing();
+    let editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([vertical.text.length, vertical.text.length]);
+    vertical.exitEditing();
+
+    vertical.selectionStart = 0;
+    vertical.selectionEnd = 0;
+    vertical.enterEditing();
+    editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([0, 0]);
+  });
+
+  it('maps textarea selections onto vertical glyph cells and restores the caret range', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB\nCD', {hstarWritingMode:'vertical', fontSize:12});
+    const canvas = attachEditingCanvas(vertical);
+    const initialHeight = vertical.height;
+    vertical.selectionStart = 1;
+    vertical.selectionEnd = 4;
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([1, 4]);
+    editor.setSelectionRange(1, 4);
+    editor.dispatchEvent(new Event('select', {bubbles:true}));
+    vertical.setSelectionStyles({fontSize:36, fill:'#00aa00', fontWeight:700}, 1, 4);
+
+    expect(vertical.styles[0][1]).toMatchObject({fontSize:36, fill:'#00aa00', fontWeight:700});
+    expect(vertical.styles[1][0]).toMatchObject({fontSize:36, fill:'#00aa00', fontWeight:700});
+    expect(vertical.styles[0][0]).toBeUndefined();
+    expect(vertical.styles[1][1]).toBeUndefined();
+    expect(vertical.getSelectionStyles(1, 4, true)).toEqual([
+      expect.objectContaining({fontSize:36, fill:'#00aa00', fontWeight:700}),
+      expect.objectContaining({fontSize:36, fill:'#00aa00', fontWeight:700}),
+    ]);
+    expect(vertical.height).toBeGreaterThan(initialHeight);
+    expect(canvas.requestRenderAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits the first object and hands the same textarea to a second object', () => {
+    const fabric = createFabricMock();
+    const first = runtime.createTextObject(fabric, 'first', {hstarWritingMode:'vertical'});
+    const second = runtime.createTextObject(fabric, 'second', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(first);
+    attachEditingCanvas(second, {objectRect:{left:30, top:40, width:90, height:130}});
+    first.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    editor.value = 'committed first';
+
+    second.enterEditing();
+
+    expect(first.text).toBe('committed first');
+    expect(first.isEditing).toBe(false);
+    expect(second.isEditing).toBe(true);
+    expect(runtime.activeEditorObject()).toBe(second);
+    expect(editor.value).toBe('second');
+    expect(document.querySelectorAll('textarea[data-hstar-vertical-editor]')).toHaveLength(1);
+    expect(document.querySelector('textarea[data-hstar-vertical-editor]')).toBe(editor);
+  });
+
+  it('exits editing on blur and outside pointer or mouse input', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'close me', {hstarWritingMode:'vertical'});
+    const canvas = attachEditingCanvas(vertical);
+    const outside = document.createElement('button');
+    outside.dataset.hstarWritingModeTest = '';
+    document.body.append(outside);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+
+    editor.dispatchEvent(new FocusEvent('blur'));
+
+    expect(vertical.isEditing).toBe(false);
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(editor.style.display).toBe('none');
+    expect(canvas.upperCanvasEl.focus).toHaveBeenCalled();
+    expect(canvas.requestRenderAll).toHaveBeenCalled();
+
+    vertical.enterEditing();
+    outside.dispatchEvent(new MouseEvent('pointerdown', {bubbles:true}));
+    expect(vertical.isEditing).toBe(false);
+
+    vertical.enterEditing();
+    outside.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+    expect(vertical.isEditing).toBe(false);
+  });
+
+  it('survives the canvas focus default action after pointer-based editing starts', () => {
+    vi.useFakeTimers();
+    try {
+      const fabric = createFabricMock();
+      const vertical = runtime.createTextObject(fabric, '甲乙', {hstarWritingMode:'vertical'});
+      attachEditingCanvas(vertical);
+
+      vertical.enterEditing(new MouseEvent('mousedown'));
+      const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+      editor.dispatchEvent(new FocusEvent('blur'));
+
+      expect(vertical.isEditing).toBe(true);
+      expect(editor.style.display).toBe('block');
+      vi.runAllTimers();
+      expect(document.activeElement).toBe(editor);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses minimum editor dimensions when canvas and object geometry are unavailable', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '', {hstarWritingMode:'vertical', fontSize:0});
+    const canvas = attachEditingCanvas(vertical);
+    const lowerCanvasEl = document.createElement('canvas');
+    lowerCanvasEl.dataset.hstarWritingModeTest = '';
+    lowerCanvasEl.getBoundingClientRect = vi.fn(() => ({left:25, top:35, width:640, height:480}));
+    document.body.append(lowerCanvasEl);
+    canvas.lowerCanvasEl = lowerCanvasEl;
+    canvas.getZoom = vi.fn(() => { throw new Error('zoom unavailable'); });
+    vertical.getBoundingRect.mockImplementation(() => { throw new Error('geometry unavailable'); });
+    canvas.upperCanvasEl.getBoundingClientRect.mockImplementation(() => { throw new Error('canvas unavailable'); });
+
+    expect(() => vertical.enterEditing()).not.toThrow();
+
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    expect(Number.parseFloat(editor.style.width)).toBeGreaterThanOrEqual(32);
+    expect(Number.parseFloat(editor.style.height)).toBeGreaterThanOrEqual(48);
+    expect(editor.style.left).toBe('25px');
+    expect(editor.style.top).toBe('35px');
+  });
+
+  it('destroys editor DOM and listeners idempotently while clearing active state', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'destroy me', {hstarWritingMode:'vertical'});
+    attachEditingCanvas(vertical);
+    vertical.enterEditing();
+    const editor = document.querySelector('textarea[data-hstar-vertical-editor]');
+    const removeEventListener = vi.spyOn(document, 'removeEventListener');
+
+    runtime.destroy();
+
+    expect(vertical.isEditing).toBe(false);
+    expect(runtime.activeEditorObject()).toBeNull();
+    expect(editor.isConnected).toBe(false);
+    expect(removeEventListener).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(removeEventListener).toHaveBeenCalledWith('mousedown', expect.any(Function), true);
+    expect(() => runtime.destroy()).not.toThrow();
+    expect(document.querySelector('[data-hstar-vertical-editor]')).toBeNull();
+  });
+
+  it('converts text while retaining visual fields and enumerable Hstar metadata', () => {
+    const fabric = createFabricMock();
+    const source = runtime.createTextObject(fabric, 'keep\nthis', {
+      left:10,
+      top:20,
+      scaleX:1.2,
+      scaleY:0.8,
+      angle:15,
+      opacity:0.6,
+      fill:'#123456',
+      fontFamily:'Arial',
+      fontSize:28,
+      fontWeight:700,
+      fontStyle:'italic',
+    });
+    source.hstarLayerId = 'copy-me';
+    source.hstarData = {tags:['title']};
+    source.hstarRuntime = () => 'omit';
+    source._hstarPrivate = 'omit';
+
+    const vertical = runtime.convertTextObject(fabric, source, 'vertical');
+    const horizontal = runtime.convertTextObject(fabric, vertical, 'horizontal');
+
+    for(const object of [vertical, horizontal]) {
+      expect(object).toMatchObject({
+        text:'keep\nthis',
+        left:10,
+        top:20,
+        scaleX:1.2,
+        scaleY:0.8,
+        angle:15,
+        opacity:0.6,
+        fill:'#123456',
+        fontFamily:'Arial',
+        fontSize:28,
+        fontWeight:700,
+        fontStyle:'italic',
+        hstarLayerId:'copy-me',
+        hstarData:{tags:['title']},
+      });
+      expect(object.hstarRuntime).toBeUndefined();
+      expect(object._hstarPrivate).toBeUndefined();
+    }
+    expect(vertical).toBeInstanceOf(fabric.HstarVerticalText);
+    expect(horizontal).toBeInstanceOf(fabric.IText);
+  });
+
+  it('converts inherited IText defaults along with enumerable Hstar metadata', () => {
+    const fabric = createFabricMock();
+    const source = new fabric.IText('prototype values', {left:12, top:24, opacity:0.75});
+    source.hstarOrigin = {kind:'prototype-test'};
+    source.hstarHandler = () => 'omit';
+    source._hstarRuntime = 'omit';
+
+    const vertical = runtime.convertTextObject(fabric, source, 'vertical');
+
+    expect(vertical).toMatchObject({
+      text:'prototype values',
+      left:12,
+      top:24,
+      opacity:0.75,
+      ...Object.fromEntries(TEXT_PROPERTIES
+        .filter(key => key in source && !['left', 'top', 'opacity'].includes(key))
+        .map(key => [key, source[key]])),
+      hstarOrigin:{kind:'prototype-test'},
+    });
+    expect(Object.hasOwn(vertical, 'fontFamily')).toBe(true);
+    expect(vertical.styles).not.toBe(source.styles);
+    expect(vertical.shadow).not.toBe(source.shadow);
+    expect(vertical.hstarHandler).toBeUndefined();
+    expect(vertical._hstarRuntime).toBeUndefined();
+  });
+
+  it('collects inherited Fabric text options without copying runtime state', () => {
+    const fabric = createFabricMock();
+    const source = new fabric.IText('full inherited options');
+    source.canvas = {requestRenderAll() {}};
+    source.group = {objects:[]};
+    source.aCoords = {tl:{x:0, y:0}};
+    source.matrixCache = {key:'runtime'};
+    source.cacheKey = 'runtime-cache';
+    source.runtimeCallback = () => 'omit';
+    source._privateRuntime = 'omit';
+
+    const vertical = runtime.convertTextObject(fabric, source, 'vertical');
+    const serialized = vertical.toObject();
+    const reconstructed = fabric.HstarVerticalText.fromObject(serialized);
+    const expected = {
+      baseTextOption:'from-fabric-object',
+      direction:'rtl',
+      paintFirst:'stroke',
+      strokeUniform:true,
+      strokeDashArray:[6, 3],
+      strokeDashOffset:2,
+      strokeLineCap:'round',
+      strokeLineJoin:'bevel',
+      strokeMiterLimit:9,
+      futureTextOption:{source:'prototype'},
+    };
+
+    expect(vertical).toMatchObject(expected);
+    const serializedExpected = {
+      direction:'rtl',
+      paintFirst:'stroke',
+      strokeUniform:true,
+      strokeDashArray:[6, 3],
+      strokeDashOffset:2,
+      strokeLineCap:'round',
+      strokeLineJoin:'bevel',
+      strokeMiterLimit:9,
+    };
+    for(const object of [serialized, reconstructed]) {
+      expect(object).toMatchObject(serializedExpected);
+      expect(object.canvas).toBeUndefined();
+      expect(object.group).toBeUndefined();
+      expect(object.aCoords).toBeUndefined();
+      expect(object.matrixCache).toBeUndefined();
+      expect(object.cacheKey).toBeUndefined();
+      expect(object.runtimeCallback).toBeUndefined();
+      expect(object._privateRuntime).toBeUndefined();
+    }
+    expect(vertical.strokeDashArray).not.toBe(source.strokeDashArray);
+    expect(vertical.futureTextOption).not.toBe(source.futureTextOption);
+    expect(reconstructed.strokeDashArray).not.toBe(serialized.strokeDashArray);
+    expect(serialized.futureTextOption).toBeUndefined();
+  });
+
+  it('omits Fabric editor runtime state during text conversion', () => {
+    const fabric = createFabricMock();
+    const source = new fabric.IText('editor state', {
+      direction:'ltr',
+      selectionStart:2,
+      selectionEnd:5,
+      isEditing:true,
+      hiddenTextarea:{value:'editor state'},
+      hiddenTextareaContainer:{remove() {}},
+      cursorDuration:600,
+      inCompositionMode:true,
+      keysMap:{TAB:9},
+      cursorWidth:3,
+      cursorColor:'#ff00aa',
+      cursorDelay:250,
+    });
+    const baseToObject = source.toObject.bind(source);
+    const calls = [];
+    source.toObject = (...args) => {
+      calls.push(args);
+      return {...baseToObject(), serializedContractOption:{from:'toObject'}};
+    };
+
+    const vertical = runtime.convertTextObject(fabric, source, 'vertical');
+
+    expect(calls).toEqual([[]]);
+    expect(vertical).toMatchObject({
+      text:'editor state',
+      selectionStart:2,
+      selectionEnd:5,
+      direction:'ltr',
+      paintFirst:'stroke',
+      strokeUniform:true,
+      strokeDashArray:[6, 3],
+      serializedContractOption:{from:'toObject'},
+    });
+    for(const key of [
+      'isEditing', 'hiddenTextarea',
+      'hiddenTextareaContainer', 'cursorDuration', 'inCompositionMode', 'keysMap',
+      'cursorWidth', 'cursorColor', 'cursorDelay',
+    ]) {
+      expect(vertical[key]).toBeUndefined();
+    }
+  });
+
+  it('updates OCR writing metadata while retaining the source visual metrics', () => {
+    new Function(readFileSync(vendorFabricPath, 'utf8'))();
+    const realFabric = window.fabric;
+    runtime.registerFabricClass(realFabric);
+    const source = new realFabric.IText('激活', {
+      left:120,
+      top:300,
+      fontFamily:'Microsoft YaHei UI',
+      fontSize:24,
+      fontWeight:500,
+      fontStyle:'normal',
+      fill:'#8763c9',
+      charSpacing:0,
+      lineHeight:1.1,
+      scaleX:0.974,
+      scaleY:0.974,
+      hstarOcrVisualProfile:{writingMode:'horizontal', size:24, weight:500, fill:'#8763c9'},
+      hstarOcrBlockId:'ocr-12',
+    });
+
+    const vertical = runtime.convertTextObject(realFabric, source, 'vertical');
+
+    expect(vertical).toMatchObject({
+      type:'hstar-vertical-text', text:'激活', fontFamily:'Microsoft YaHei UI',
+      fontSize:24, fontWeight:500, fill:'#8763c9',
+      hstarOcrBlockId:'ocr-12',
+    });
+    expect(vertical.scaleX).toBeCloseTo(0.974, 2);
+    expect(vertical.scaleY).toBeCloseTo(0.974, 2);
+    expect(vertical.hstarOcrVisualProfile).toMatchObject({writingMode:'vertical', size:24});
+    expect(vertical._hstarVerticalLayout.glyphs.every(glyph => glyph.width === 24)).toBe(true);
+    delete window.fabric;
+  });
+
+  it('renders every glyph in vertical top-to-bottom and right-to-left coordinate order', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB\nC', {
+      hstarWritingMode:'vertical',
+      fontFamily:'Render Sans',
+      fontSize:24,
+      fontWeight:700,
+      fontStyle:'italic',
+      fill:'#ff00aa',
+    });
+    const calls = [];
+    const context = {
+      save() {},
+      restore() {},
+      fillText(...args) { calls.push(args); },
+    };
+
+    vertical._render(context);
+
+    expect(context.font).toBe('italic 700 24px "Render Sans"');
+    expect(context.fillStyle).toBe('#ff00aa');
+    expect(calls.map(([glyph]) => glyph)).toEqual(['A', 'B', 'C']);
+    expect(calls[1][2]).toBeGreaterThan(calls[0][2]);
+    expect(calls[0][1]).toBeGreaterThan(calls[2][1]);
+  });
+
+  it('quotes local font family names that contain version and style numbers', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '微风不燥，', {
+      hstarWritingMode:'vertical',
+      fontFamily:'阿里巴巴普惠体 3.0 55 Regular',
+      fontSize:56.539119,
+      fontWeight:400,
+    });
+    const fonts = [];
+    const context = {
+      save() {},
+      restore() {},
+      set font(value) { fonts.push(value); },
+      fillText() {},
+    };
+
+    vertical._render(context);
+
+    expect(fonts).toEqual([
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+      'normal 400 56.539119px "阿里巴巴普惠体 3.0 55 Regular"',
+    ]);
+  });
+
+  it('recomputes dimensions after text and typography changes', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB', {hstarWritingMode:'vertical', fontSize:20});
+    const initial = {width:vertical.width, height:vertical.height};
+
+    vertical.set({text:'ABCD', fontSize:40});
+
+    expect(vertical.width).toBeGreaterThan(initial.width);
+    expect(vertical.height).toBeGreaterThan(initial.height);
+    expect(vertical._hstarVerticalLayout.glyphs.map(glyph => glyph.character)).toEqual(['A', 'B', 'C', 'D']);
+    expect(vertical.dirty).toBe(true);
+  });
+
+  it('offsets only trailing vertical punctuation without moving primary glyphs', () => {
+    const fabric = createFabricMock();
+    const baseline = runtime.createTextObject(fabric, '微风不燥，', {
+      hstarWritingMode:'vertical', fontSize:40, lineHeight:1.2, charSpacing:0,
+    });
+    const adjusted = runtime.createTextObject(fabric, '微风不燥，', {
+      hstarWritingMode:'vertical', fontSize:40, lineHeight:1.2, charSpacing:0,
+      hstarVerticalTrailingPunctuationOffset:18,
+    });
+
+    expect(adjusted._hstarVerticalLayout.glyphs.slice(0, 4).map(glyph => glyph.y))
+      .toEqual(baseline._hstarVerticalLayout.glyphs.slice(0, 4).map(glyph => glyph.y));
+    expect(adjusted._hstarVerticalLayout.glyphs[4].y)
+      .toBe(baseline._hstarVerticalLayout.glyphs[4].y - 18);
+  });
+
+  it('marks paint changes dirty and sizes cells from per-glyph styles', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB\nC', {
+      hstarWritingMode:'vertical',
+      fontSize:10,
+      lineHeight:1,
+      styles:{0:{1:{fontSize:40, lineHeight:1.5, charSpacing:50}}},
+    });
+    const firstColumn = vertical._hstarVerticalLayout.glyphs.filter(glyph => glyph.columnIndex === 0);
+
+    expect(firstColumn[1]).toMatchObject({width:40, height:40});
+    expect(firstColumn[1].y).toBeGreaterThan(firstColumn[0].y);
+    expect(vertical.width).toBeGreaterThan(40);
+    vertical.dirty = false;
+    vertical.set('underline', true);
+    expect(vertical.dirty).toBe(true);
+    vertical.dirty = false;
+    vertical.set('backgroundColor', '#123456');
+    expect(vertical.dirty).toBe(true);
+  });
+
+  it('strokes before filling with dash state and leaves object backgrounds to Fabric', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {
+      hstarWritingMode:'vertical',
+      fill:'#111111',
+      stroke:'#222222',
+      strokeWidth:2,
+      paintFirst:'stroke',
+      strokeDashArray:[4, 2],
+      strokeDashOffset:3,
+      strokeLineCap:'round',
+      strokeLineJoin:'bevel',
+      strokeMiterLimit:7,
+      textBackgroundColor:'#eeeeee',
+      backgroundColor:'#ff00ff',
+    });
+    const events = [];
+    const rects = [];
+    const context = {
+      save() {}, restore() {},
+      fillText() { events.push('fill'); },
+      strokeText() { events.push('stroke'); },
+      fillRect(...args) { rects.push(args); },
+      setLineDash(value) { this.dash = value; },
+    };
+
+    vertical._render(context);
+
+    expect(events).toEqual(['stroke', 'fill']);
+    expect(context.dash).toEqual([4, 2]);
+    expect(context.lineDashOffset).toBe(3);
+    expect(context.lineCap).toBe('round');
+    expect(context.lineJoin).toBe('bevel');
+    expect(context.miterLimit).toBe(7);
+    expect(rects).not.toContainEqual([-vertical.width / 2, -vertical.height / 2, vertical.width, vertical.height]);
+    expect(rects).toHaveLength(1);
+  });
+
+  it('does not paint glyph background blocks for Fabric empty text backgrounds', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, '小暑', {
+      hstarWritingMode:'vertical',
+      fill:'#3f6f4d',
+      textBackgroundColor:'',
+    });
+    const context = {
+      save() {},
+      restore() {},
+      fillText:vi.fn(),
+      fillRect:vi.fn(),
+    };
+
+    vertical._render(context);
+
+    expect(context.fillText).toHaveBeenCalledTimes(2);
+    expect(context.fillRect).not.toHaveBeenCalled();
+  });
+
+  it('renders defaults, glyph overrides, stroke, backgrounds, and decorations', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB', {
+      hstarWritingMode:'vertical',
+      fill:'#111111',
+      stroke:'#222222',
+      strokeWidth:2,
+      shadow:{color:'#334155', blur:3, offsetX:1, offsetY:2},
+      underline:true,
+      textBackgroundColor:'#eeeeee',
+      styles:{0:{1:{fontFamily:'Override Sans', fontSize:24, fontWeight:700, fontStyle:'italic', fill:'#ff0000'}}},
+    });
+    const fonts = [];
+    const fills = [];
+    const strokes = [];
+    const lineWidths = [];
+    const shadows = [];
+    const rects = [];
+    const context = {
+      save() {}, restore() {},
+      set font(value) { fonts.push(value); },
+      set fillStyle(value) { fills.push(value); },
+      set strokeStyle(value) { strokes.push(value); },
+      set lineWidth(value) { lineWidths.push(value); },
+      set shadowColor(value) { shadows.push(value); },
+      fillText(...args) { this.fillTexts.push(args); },
+      strokeText(...args) { this.strokeTexts.push(args); },
+      fillRect(...args) { rects.push(args); },
+      fillTexts:[], strokeTexts:[],
+    };
+
+    vertical._render(context);
+
+    expect(fonts).toContain('normal normal 40px sans-serif');
+    expect(fonts).toContain('italic 700 24px "Override Sans"');
+    expect(context.fillTexts.map(([glyph]) => glyph)).toEqual(['A', 'B']);
+    expect(context.strokeTexts).toHaveLength(2);
+    expect(fills).toContain('#ff0000');
+    expect(strokes).toContain('#222222');
+    expect(lineWidths).toContain(2);
+    expect(shadows).toEqual([]);
+    expect(rects.length).toBeGreaterThan(2);
+  });
+
+  it('restores glyph paint after drawing a text background', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {
+      hstarWritingMode:'vertical',
+      fill:'#ff0000',
+      textBackgroundColor:'#eeeeee',
+    });
+    const fills = [];
+    const context = {
+      save() {}, restore() {}, fillRect() {},
+      set fillStyle(value) { this.currentFill = value; },
+      fillText() { fills.push(this.currentFill); },
+    };
+
+    vertical._render(context);
+
+    expect(fills).toEqual(['#ff0000']);
+  });
+
+  it('applies Fabric glyph paint helpers once after a text background without glyph shadows', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {
+      hstarWritingMode:'vertical', fill:'#ff0000', stroke:'#111111', strokeWidth:2,
+      textBackgroundColor:'#eeeeee', shadow:{color:'#000000', blur:2},
+    });
+    const handleFiller = vi.fn((context, property, filler) => { context[property] = filler; });
+    const shadowSetup = vi.fn();
+    fabric.Text.prototype.handleFiller = handleFiller;
+    vertical._setShadow = shadowSetup;
+    const context = {save() {}, restore() {}, fillRect() {}, fillText() {}, strokeText() {}};
+
+    vertical._render(context);
+
+    expect(handleFiller).toHaveBeenCalledWith(context, 'fillStyle', '#ff0000');
+    expect(handleFiller).toHaveBeenCalledWith(context, 'strokeStyle', '#111111');
+    expect(handleFiller).toHaveBeenCalledTimes(2);
+    expect(shadowSetup).not.toHaveBeenCalled();
+  });
+
+  it('applies separate Fabric paint offsets without leaking glyph transforms', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'A', {
+      hstarWritingMode:'vertical', fill:'#ff0000', stroke:'#111111', strokeWidth:2,
+    });
+    const handleFiller = vi.fn((context, property, filler) => (
+      property === 'fillStyle' ? {offsetX:2, offsetY:3} : [4, 5]
+    ));
+    fabric.Text.prototype.handleFiller = handleFiller;
+    vertical._setFillStyles = vi.fn();
+    vertical._setStrokeStyles = vi.fn();
+    vertical._applyPatternGradientTransform = vi.fn();
+    const fillCalls = [];
+    const strokeCalls = [];
+    let saves = 0;
+    let restores = 0;
+    const context = {
+      save() { saves += 1; },
+      restore() { restores += 1; },
+      fillText(...args) { fillCalls.push(args); },
+      strokeText(...args) { strokeCalls.push(args); },
+    };
+    const glyph = vertical._hstarVerticalLayout.glyphs[0];
+    const glyphX = (-vertical.width / 2) + glyph.x;
+    const glyphY = (-vertical.height / 2) + glyph.y;
+
+    vertical._render(context);
+
+    expect(fillCalls[0]).toEqual(['A', glyphX - 2, glyphY - 3]);
+    expect(strokeCalls[0]).toEqual(['A', glyphX - 4, glyphY - 5]);
+    expect(handleFiller).toHaveBeenCalledWith(context, 'fillStyle', '#ff0000');
+    expect(handleFiller).toHaveBeenCalledWith(context, 'strokeStyle', '#111111');
+    expect(handleFiller).toHaveBeenCalledTimes(2);
+    expect(vertical._setFillStyles).not.toHaveBeenCalled();
+    expect(vertical._setStrokeStyles).not.toHaveBeenCalled();
+    expect(vertical._applyPatternGradientTransform).not.toHaveBeenCalled();
+    expect(saves).toBe(restores);
+    expect(saves).toBeGreaterThanOrEqual(3);
+  });
+
+  it('updates one glyph style through the runtime API', () => {
+    const fabric = createFabricMock();
+    const vertical = runtime.createTextObject(fabric, 'AB', {hstarWritingMode:'vertical', fontSize:12, fill:'#111111'});
+    const requestRenderAll = vi.fn();
+    const setCoords = vi.fn();
+    vertical.canvas = {requestRenderAll};
+    vertical.setCoords = setCoords;
+    const beforeHeight = vertical.height;
+    const fills = [];
+    const context = {
+      save() {}, restore() {}, fillRect() {}, strokeText() {},
+      set fillStyle(value) { this.currentFill = value; },
+      fillText() { fills.push(this.currentFill); },
+    };
+
+    runtime.setGlyphStyle(vertical, 0, 1, {fontSize:36, fill:'#00aa00'});
+    vertical._render(context);
+
+    expect(vertical.dirty).toBe(true);
+    expect(vertical.height).toBeGreaterThan(beforeHeight);
+    expect(vertical._hstarVerticalLayout.glyphs[1]).toMatchObject({width:36, height:36});
+    expect(vertical.styles[0][1]).toMatchObject({fontSize:36, fill:'#00aa00'});
+    expect(setCoords).toHaveBeenCalled();
+    expect(requestRenderAll).toHaveBeenCalledOnce();
+    expect(fills).toContain('#00aa00');
+  });
+
+  it('uses real Fabric enlivening for vertical object reconstruction', async () => {
+    new Function(readFileSync(vendorFabricPath, 'utf8'))();
+    const realFabric = window.fabric;
+    runtime.registerFabricClass(realFabric);
+    const original = new realFabric.HstarVerticalText('A', {
+      fontSize:28,
+      fill:'#123456',
+      stroke:'#abcdef',
+      strokeWidth:1,
+      shadow:new realFabric.Shadow({color:'#000000', blur:3, offsetX:1, offsetY:2}),
+    });
+    const serialized = original.toObject();
+    const fromObject = vi.spyOn(realFabric.Object, '_fromObject');
+    const reconstructed = await new Promise(resolveObject => {
+      realFabric.HstarVerticalText.fromObject(serialized, resolveObject);
+    });
+    const context = {save() {}, restore() {}, fillText() {}, strokeText() {}, fillRect() {}};
+    const handleFiller = vi.spyOn(realFabric.Text.prototype, 'handleFiller');
+
+    expect(fromObject).toHaveBeenCalledWith('HstarVerticalText', serialized, expect.any(Function), 'text');
+    expect(typeof realFabric.Text.prototype.handleFiller).toBe('function');
+    expect(reconstructed.shadow).toBeInstanceOf(realFabric.Shadow);
+    expect(() => reconstructed._render(context)).not.toThrow();
+    expect(handleFiller).toHaveBeenCalledWith(context, 'fillStyle', '#123456');
+    expect(() => reconstructed.drawObject(context)).not.toThrow();
+    fromObject.mockRestore();
+    delete window.fabric;
+  });
+
+  it('normalizes real Fabric serialized style ranges for vertical glyph layout and paint', () => {
+    new Function(readFileSync(vendorFabricPath, 'utf8'))();
+    const realFabric = window.fabric;
+    runtime.registerFabricClass(realFabric);
+    const source = new realFabric.IText('AB', {
+      fontSize:20,
+      fill:'#111111',
+      styles:{0:{1:{fontSize:36, fill:'#ff0000'}}},
+    });
+    const serialized = source.toObject();
+    const vertical = runtime.convertTextObject(realFabric, source, 'vertical');
+    const fills = [];
+    const context = {
+      save() {}, restore() {}, fillRect() {}, strokeText() {},
+      set fillStyle(value) { this.currentFill = value; },
+      fillText() { fills.push(this.currentFill); },
+    };
+
+    expect(Array.isArray(serialized.styles)).toBe(true);
+    expect(vertical._hstarVerticalLayout.glyphs[1]).toMatchObject({width:36, height:36});
+    vertical._render(context);
+    expect(fills).toContain('#ff0000');
+    delete window.fabric;
+  });
+
+  it('serializes and restores raw vertical text, visual styles, metadata, and dimensions', () => {
+    const fabric = createFabricMock();
+    const original = runtime.createTextObject(fabric, 'A\nB', {
+      hstarWritingMode:'vertical',
+      left:28,
+      top:39,
+      fill:'#abcdef',
+      fontSize:32,
+      fontFamily:'Round Trip Sans',
+      fontWeight:700,
+      fontStyle:'italic',
+      stroke:'#012345',
+      strokeWidth:2,
+      strokeDashArray:[5, 2],
+      charSpacing:36,
+      lineHeight:1.5,
+      textAlign:'center',
+      textBackgroundColor:'#fef3c7',
+      backgroundColor:'#111827',
+      underline:true,
+      overline:true,
+      linethrough:true,
+      shadow:{color:'#334155', blur:5, offsetX:2, offsetY:4},
+      styles:{0:{0:{fill:'#f97316', fontWeight:700}}},
+      opacity:0.65,
+      angle:14,
+      scaleX:1.25,
+      scaleY:0.8,
+      skewX:7,
+      skewY:-3,
+      flipX:true,
+      flipY:true,
+      originX:'right',
+      originY:'bottom',
+      visible:false,
+      selectable:false,
+      evented:false,
+    });
+    original.hstarLayerId = 'vertical-title';
+    original.hstarData = {tags:['title']};
+    original.hstarRuntime = () => 'omit';
+    const serialized = original.toObject();
+    let reconstructed;
+    fabric.HstarVerticalText.fromObject(serialized, instance => { reconstructed = instance; });
+
+    expect(serialized).toMatchObject({
+      type:'hstar-vertical-text',
+      text:'A\nB',
+      hstarWritingMode:'vertical',
+      ...Object.fromEntries(TEXT_PROPERTIES.map(key => [key, original[key]])),
+      hstarLayerId:'vertical-title',
+      hstarData:{tags:['title']},
+    });
+    expect(reconstructed).toBeInstanceOf(fabric.HstarVerticalText);
+    expect(reconstructed).toMatchObject({
+      text:'A\nB',
+      hstarWritingMode:'vertical',
+      ...Object.fromEntries(TEXT_PROPERTIES.map(key => [key, original[key]])),
+      hstarLayerId:'vertical-title',
+      hstarData:{tags:['title']},
+    });
+    expect(reconstructed.width).toBeCloseTo(original.width, 8);
+    expect(reconstructed.height).toBeCloseTo(original.height, 8);
+    expect(serialized.styles).not.toBe(original.styles);
+    expect(serialized.shadow).not.toBe(original.shadow);
+    expect(serialized.controls).toBeUndefined();
+    expect(serialized.hstarRuntime).toBeUndefined();
+    expect(reconstructed.styles).not.toBe(serialized.styles);
+    expect(reconstructed.shadow).not.toBe(serialized.shadow);
+    serialized.styles[0][0].fill = '#000000';
+    serialized.shadow.color = '#ffffff';
+    serialized.strokeDashArray[0] = 99;
+    serialized.hstarData.tags.push('serialized-only');
+    expect(original.styles[0][0].fill).toBe('#f97316');
+    expect(original.shadow.color).toBe('#334155');
+    expect(original.strokeDashArray[0]).toBe(5);
+    expect(original.hstarData.tags).toEqual(['title']);
+  });
+
+  it('honors explicit writing modes and defaults legacy objects to horizontal', () => {
+    expect(runtime.writingModeFor({hstarWritingMode:'vertical'})).toBe('vertical');
+    expect(runtime.writingModeFor({type:'hstar-vertical-text', hstarWritingMode:'horizontal'})).toBe('horizontal');
+    expect(runtime.writingModeFor({})).toBe('horizontal');
+  });
+});

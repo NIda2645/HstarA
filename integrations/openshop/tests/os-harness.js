@@ -7,6 +7,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const indexPath = join(__dirname, '..', 'index.html');
 const i18nRuntimePath = join(__dirname, '..', 'host', 'openshop-i18n.js');
 const chineseLocalePath = join(__dirname, '..', 'locales', 'zh-CN.js');
+const desktopInputPath = join(__dirname, '..', 'host', 'openshop-desktop-input.js');
+const canvasSamplerPath = join(__dirname, '..', 'host', 'openshop-canvas-sampler.js');
+const rasterToolsPath = join(__dirname, '..', 'host', 'openshop-raster-tools.js');
+const brushCursorPath = join(__dirname, '..', 'host', 'openshop-brush-cursor.js');
+const pixelFillPath = join(__dirname, '..', 'host', 'openshop-pixel-fill.js');
+const selectionEnginePath = join(__dirname, '..', 'host', 'openshop-selection-engine.js');
+const updateSchedulerPath = join(__dirname, '..', 'host', 'openshop-update-scheduler.js');
+const exportServicePath = join(__dirname, '..', 'host', 'openshop-export-service.js');
+const writingModePath = join(__dirname, '..', 'host', 'openshop-writing-mode.js');
 
 export function loadOpenShop() {
   delete globalThis.OS;
@@ -14,6 +23,16 @@ export function loadOpenShop() {
   delete window.HstarOpenShopI18n;
   new Function(readFileSync(i18nRuntimePath, 'utf8'))();
   new Function(readFileSync(chineseLocalePath, 'utf8'))();
+  new Function(readFileSync(desktopInputPath, 'utf8'))();
+  new Function(readFileSync(canvasSamplerPath, 'utf8'))();
+  new Function(readFileSync(rasterToolsPath, 'utf8'))();
+  new Function(readFileSync(brushCursorPath, 'utf8'))();
+  new Function(readFileSync(pixelFillPath, 'utf8'))();
+  new Function(readFileSync(selectionEnginePath, 'utf8'))();
+  new Function(readFileSync(updateSchedulerPath, 'utf8'))();
+  new Function(readFileSync(exportServicePath, 'utf8'))();
+  new Function(readFileSync(writingModePath, 'utf8'))();
+  if (globalThis.fabric) window.HstarOpenShopWritingMode.registerFabricClass(globalThis.fabric);
   window.HstarOpenShopI18n.setLocale('en-US');
   const html = readFileSync(indexPath, 'utf8');
   const start = html.indexOf('const OS = {');
@@ -30,6 +49,13 @@ export function loadOpenShop() {
   return globalThis.OS;
 }
 
+export function mountOpenShopToolbar() {
+  const source = new DOMParser().parseFromString(readFileSync(indexPath, 'utf8'), 'text/html');
+  const toolbar = document.importNode(source.getElementById('toolbar'), true);
+  document.getElementById('toolbar')?.replaceWith(toolbar);
+  return toolbar;
+}
+
 export function installFabricMock() {
   class Brush {
     constructor(canvas) {
@@ -39,7 +65,48 @@ export function installFabricMock() {
     }
   }
 
+  class FabricObject {
+    initialize(options = {}) {
+      Object.assign(this, options);
+      return this;
+    }
+
+    _set(key, value) {
+      this[key] = value;
+      return this;
+    }
+
+    set(values, value) {
+      if (typeof values === 'string') return this._set(values, value);
+      Object.entries(values || {}).forEach(([key, item]) => this._set(key, item));
+      return this;
+    }
+
+    setCoords() { return this; }
+
+    toObject(extra = []) {
+      const included = Array.isArray(extra) ? extra : [];
+      const output = {};
+      [...new Set([...Object.keys(this), ...included])].forEach(key => {
+        if (typeof this[key] !== 'function' && this[key] !== undefined) output[key] = this[key];
+      });
+      return output;
+    }
+  }
+
+  class IText extends FabricObject {
+    constructor(text, options = {}) {
+      super();
+      this.type = 'i-text';
+      this.text = text;
+      this.isEditing = false;
+      Object.assign(this, options);
+      this.enterEditing = vi.fn(() => { this.isEditing = true; });
+    }
+  }
+
   globalThis.fabric = {
+    Object: FabricObject,
     util: {
       invertTransform(matrix) {
         const [a = 1, b = 0, c = 0, d = 1, e = 0, f = 0] = matrix || [];
@@ -56,6 +123,7 @@ export function installFabricMock() {
     },
     PencilBrush: Brush,
     SprayBrush: class extends Brush {},
+    IText,
     Shadow: class {
       constructor(options) {
         Object.assign(this, options);
@@ -71,7 +139,22 @@ export function installFabricMock() {
       forEachObject(callback) {
         this._objects.forEach(callback);
       }
+    },
+    Text: class extends FabricObject {}
+  };
+  globalThis.fabric.util.createClass = (Parent, methods) => {
+    class FabricSubclass extends Parent {
+      constructor(...args) {
+        super();
+        this.initialize(...args);
+      }
+
+      callSuper(method, ...args) {
+        return Parent.prototype[method].apply(this, args);
+      }
     }
+    Object.assign(FabricSubclass.prototype, methods);
+    return FabricSubclass;
   };
 }
 
@@ -93,6 +176,14 @@ export function createCanvasMock(initialObjects = []) {
     remove: vi.fn((object) => {
       const index = objects.indexOf(object);
       if (index >= 0) objects.splice(index, 1);
+    }),
+    insertAt: vi.fn((object, index) => {
+      objects.splice(index, 0, object);
+    }),
+    moveTo: vi.fn((object, index) => {
+      const current = objects.indexOf(object);
+      if (current >= 0) objects.splice(current, 1);
+      objects.splice(index, 0, object);
     }),
     renderAll: vi.fn(),
     requestRenderAll: vi.fn(),
@@ -167,10 +258,11 @@ export function mountEditorDom() {
     <div id="tool-options">
       ${optionIds.map((id) => `<div class="opt-group" id="${id}" style="display:none"></div>`).join('')}
     </div>
-    <div id="lasso-overlay" style="display:none"><svg><polygon points=""></polygon></svg></div>
+    <div id="lasso-overlay" style="display:none"><svg><polyline points=""></polyline></svg></div>
     <div id="pen-overlay" style="display:none"></div>
     <div id="measure-overlay" style="display:none"></div>
     <div id="selection-overlay" style="display:none"></div>
+    <canvas id="selection-mask-overlay" style="display:none"></canvas>
     <div id="canvas-area" role="application" aria-describedby="canvas-a11y-summary"></div>
     <section id="canvas-a11y-tree">
       <p id="canvas-a11y-summary"></p>
@@ -199,14 +291,16 @@ export function mountEditorDom() {
     <div id="macro-list"></div>
     <div id="ai-progress"><div id="ai-title"></div><div id="ai-msg"></div><div id="ai-bar"></div><div id="ai-pct"></div></div>
     <span id="brush-size-val"></span>
+    <span id="cursor-pos"></span>
+    <span id="info-cursor"></span>
     <span id="zoom-display"></span>
     <div id="panels"></div>
   `;
 }
 
-export function quietUiMethods(OS) {
+export function quietUiMethods(OS, {keepLayersPanel = false} = {}) {
   OS.updateInfoPanel = vi.fn();
-  OS.updateLayersPanel = vi.fn();
+  if (!keepLayersPanel) OS.updateLayersPanel = vi.fn();
   OS.updateHistoryPanel = vi.fn();
   OS.updateStatus = vi.fn();
   OS.updateMinimap = vi.fn();

@@ -15,6 +15,10 @@ const requiredFiles = [
   'host/openshop-ai-client.js',
   'host/openshop-font-catalog.js',
   'host/openshop-text-tools.js',
+  'host/openshop-reference-manager.js',
+  'host/openshop-generative-client.js',
+  'host/openshop-generative-tools.js',
+  'host/openshop-generative-tools.css',
   'host/openshop-i18n.js',
   'locales/zh-CN.js',
   'vendor/runtime-manifest.json',
@@ -44,14 +48,30 @@ function digest(path){
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+function htmlDigestWithoutCacheVersions(path){
+  const normalized = readFileSync(path, 'utf8')
+    .replace(/\r\n/g, '\n')
+    .replace(/([?&]v=)[^"'`\s<>)]*/g, '$1__CACHE_VERSION__');
+  return createHash('sha256').update(normalized).digest('hex');
+}
+
+assert.equal(
+  htmlDigestWithoutCacheVersions(`${runtimeRoot}/index.html`),
+  htmlDigestWithoutCacheVersions('integrations/openshop/index.html'),
+  'index.html should match the integration source except for published cache versions',
+);
+
 for(const relativePath of [
-  'index.html',
   'host/openshop-protocol.js',
   'host/openshop-project-adapter.js',
   'host/openshop-host-runtime.js',
   'host/openshop-ai-client.js',
   'host/openshop-font-catalog.js',
   'host/openshop-text-tools.js',
+  'host/openshop-reference-manager.js',
+  'host/openshop-generative-client.js',
+  'host/openshop-generative-tools.js',
+  'host/openshop-generative-tools.css',
 ]){
   const integrationPath = `integrations/openshop/${relativePath}`;
   assert.ok(existsSync(integrationPath), `${integrationPath} should exist`);
@@ -79,6 +99,9 @@ const runtimeIndex = index.indexOf('./host/openshop-host-runtime.js');
 const aiClientIndex = index.indexOf('./host/openshop-ai-client.js');
 const fontCatalogIndex = index.indexOf('./host/openshop-font-catalog.js');
 const textToolsIndex = index.indexOf('./host/openshop-text-tools.js');
+const referenceIndex = index.indexOf('./host/openshop-reference-manager.js');
+const generativeClientIndex = index.indexOf('./host/openshop-generative-client.js');
+const generativeToolsIndex = index.indexOf('./host/openshop-generative-tools.js');
 const bodyEndIndex = index.lastIndexOf('</body>');
 
 assert.ok(protocolIndex > 0, 'runtime index should load the OpenShop protocol');
@@ -87,12 +110,31 @@ assert.ok(runtimeIndex > adapterIndex, 'runtime index should load the host runti
 assert.ok(aiClientIndex > runtimeIndex, 'runtime index should load the API client after the host runtime');
 assert.ok(fontCatalogIndex > aiClientIndex, 'runtime index should load the font catalog after the API client');
 assert.ok(textToolsIndex > fontCatalogIndex, 'runtime index should load text tools after their dependencies');
-assert.ok(bodyEndIndex > textToolsIndex, 'host scripts should load before the closing body tag');
+assert.ok(referenceIndex > textToolsIndex, 'runtime index should load references after text tools');
+assert.ok(generativeClientIndex > referenceIndex, 'runtime index should load the generative client after references');
+assert.ok(generativeToolsIndex > generativeClientIndex, 'runtime index should load generative tools after their dependencies');
+assert.ok(bodyEndIndex > generativeToolsIndex, 'host scripts should load before the closing body tag');
 assert.match(index, /HstarOpenShopAssetApi\.upload/, 'runtime should expose same-origin asset persistence');
 assert.match(index, /previewWriter:/, 'runtime should configure preview persistence');
 assert.match(index, /outputWriter:/, 'runtime should configure output persistence');
 assert.match(index, /HstarOpenShopAiClient\.createClient/, 'runtime should start the global API client');
 assert.match(index, /HstarOpenShopTextTools\.createController/, 'runtime should start multilingual text tools');
+assert.match(index, /HstarOpenShopGenerativeTools\.createController/, 'runtime should start inline generative tools');
+
+for(const path of [
+  'host/openshop-reference-manager.js',
+  'host/openshop-generative-client.js',
+  'host/openshop-generative-tools.js',
+]){
+  assert.doesNotMatch(readFileSync(`${runtimeRoot}/${path}`, 'utf8'), /\bseed\b/i, `${path} must not expose seed controls`);
+}
+
+const packageJson = JSON.parse(readFileSync('integrations/openshop/package.json', 'utf8'));
+assert.equal(
+  packageJson.scripts?.['test:hstar:generative'],
+  'playwright test tests/hstar-generative-tools.e2e.spec.js',
+  'package should expose the generative E2E suite',
+);
 
 const shell = readFileSync('static/index.html', 'utf8');
 const classic = readFileSync('static/canvas.html', 'utf8');

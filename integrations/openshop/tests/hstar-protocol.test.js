@@ -19,13 +19,17 @@ describe('Hstar OpenShop protocol', () => {
 
     expect(protocol.PROTOCOL_VERSION).toBe(1);
     expect(protocol.TYPES).toMatchObject({
+      FIT_WORKSPACE: 'hstar:openshop:fit-workspace',
       SYNC_SOURCES: 'hstar:openshop:sync-sources',
       RESOLVE_SOURCE_UPDATE: 'hstar:openshop:resolve-source-update',
       REQUEST_SAVE: 'hstar:openshop:request-save',
       SAVE_CONFIRMED: 'hstar:openshop:save-confirmed',
       REQUEST_SEND_TO_CANVAS: 'hstar:openshop:request-send-to-canvas',
       SEND_TO_CANVAS: 'hstar:openshop:send-to-canvas',
+      REQUEST_DOWNLOAD_LOCAL: 'hstar:openshop:request-download-local',
+      DOWNLOAD_LOCAL_RESULT: 'hstar:openshop:download-local-result',
       OPEN_API_SETTINGS: 'hstar:openshop:open-api-settings',
+      SESSION_VISIBILITY: 'hstar:openshop:session-visibility',
     });
     expect(protocol.createProjectScope({
       canvasType: 'classic',

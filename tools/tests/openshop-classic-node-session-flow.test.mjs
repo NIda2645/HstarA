@@ -13,10 +13,12 @@ const i18nSource = fs.readFileSync('static/js/i18n/canvas.js', 'utf8');
 
 const listeners = new Map();
 const openedSessions = [];
+const disposedProjects = [];
 let renderCount = 0;
 let saveCount = 0;
 let undoCount = 0;
 const uidCounts = {};
+let canvasId = 'canvas-source';
 let nodes = [];
 let connections = [];
 const selected = new Set();
@@ -25,6 +27,10 @@ const host = {
   openNodeSession(context, sources) {
     openedSessions.push({context, sources});
   },
+  disposeProject(projectId, context) {
+    disposedProjects.push({projectId, context});
+    return Promise.resolve(true);
+  },
 };
 
 const hooks = {
@@ -32,7 +38,7 @@ const hooks = {
     uidCounts[prefix] = (uidCounts[prefix] || 0) + 1;
     return `${prefix}_${uidCounts[prefix]}`;
   },
-  getCanvasId: () => 'canvas-1',
+  getCanvasId: () => canvasId,
   getNodes: () => nodes,
   getConnections: () => connections,
   mediaRefsFromNode(node) {
@@ -78,16 +84,23 @@ vm.runInContext(adapterSource, sandbox, {filename:adapterPath});
 
 const adapter = sandbox.window.HstarClassicOpenShopAdapter;
 assert.ok(adapter, 'classic OpenShop adapter should be exported');
+assert.equal(typeof adapter.captureCloneSource, 'function');
 const node = adapter.createNode({x:100, y:120});
 assert.equal(node.type, 'openshop-layered');
 assert.match(node.projectId, /^osp_/);
 assert.equal(node.saveState, 'new');
+assert.equal(node.aiStatus, '');
+assert.equal(node.aiTargetCount, 0);
+assert.equal(node.cloneSourceCanvasType, '');
+assert.equal(node.cloneSourceCanvasId, '');
+assert.equal(node.cloneSourceNodeId, '');
 assert.equal(node.x, 100);
 assert.equal(node.y, 120);
 
 const imageOne = {id:'image-1', type:'image', url:'/image-one.png', name:'第一张.png', mediaKind:'image', updated_at:11};
 const imageTwo = {id:'image-2', type:'image', url:'/image-two.png', name:'第二张.png', mediaKind:'image', updated_at:22};
 const prompt = {id:'prompt-1', type:'prompt', text:'not an image'};
+const generator = {id:'generator-1', type:'generator'};
 nodes = [imageOne, imageTwo, prompt, node];
 connections = [
   {id:'edge-first', from:'image-1', to:node.id},
@@ -95,8 +108,10 @@ connections = [
 ];
 
 assert.equal(adapter.canConnect(imageOne, node), true);
+assert.equal(adapter.canConnect(generator, node), true, 'an image generator should connect to OpenShop before its first output exists');
 assert.equal(adapter.canConnect(prompt, node), false);
 assert.equal(adapter.canConnect(node, imageOne), true);
+assert.equal(adapter.canConnect(node, generator), true, 'OpenShop should connect upstream of an API generation node');
 const sources = adapter.sourcesForNode(node);
 assert.deepEqual(Array.from(sources, item => item.sequence), [0, 1]);
 assert.deepEqual(Array.from(sources, item => item.edgeId), ['edge-first', 'edge-second']);
@@ -106,7 +121,7 @@ assert.equal(adapter.openNode(node.id), true);
 assert.equal(openedSessions.length, 1);
 assert.deepEqual({...openedSessions[0].context}, {
   canvasType:'classic',
-  canvasId:'canvas-1',
+  canvasId:'canvas-source',
   nodeId:node.id,
   projectId:node.projectId,
   projectName:'图文分层项目',
@@ -129,19 +144,36 @@ function dispatchMessage(data) {
 dispatchMessage({
   type:'hstar-openshop-node-meta',
   requestId:'meta-1',
-  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId},
-  meta:{previewUrl:'/api/openshop/assets/preview', layerCount:3, sourceUpdateCount:1, autosaveVersion:4, saveState:'saved'},
+  context:{canvasType:'classic', canvasId:'canvas-source', nodeId:node.id, projectId:node.projectId},
+  meta:{
+    previewUrl:'/api/openshop/assets/preview', layerCount:7, sourceUpdateCount:1,
+    autosaveVersion:4, saveState:'saving', aiStatus:'running',
+    aiTargetCount:5, aiCompletedCount:2, aiFailedCount:0,
+  },
 });
 assert.equal(node.previewUrl, '/api/openshop/assets/preview');
-assert.equal(node.layerCount, 3);
+assert.equal(node.layerCount, 7);
 assert.equal(node.sourceUpdateCount, 1);
 assert.equal(node.autosaveVersion, 4);
-assert.equal(node.saveState, 'saved');
+assert.equal(node.saveState, 'saving');
+assert.equal(node.aiStatus, 'running');
+assert.equal(node.aiTargetCount, 5);
+assert.equal(node.aiCompletedCount, 2);
+assert.equal(node.aiFailedCount, 0);
+assert.match(adapter.renderNode(node).innerHTML, /生成中\s*2\s*\/\s*5/);
+
+dispatchMessage({
+  type:'hstar-openshop-node-meta',
+  requestId:'meta-partial',
+  context:{canvasType:'classic', canvasId:'canvas-source', nodeId:node.id, projectId:node.projectId},
+  meta:{layerCount:7, saveState:'saved', aiStatus:'partial', aiTargetCount:5, aiCompletedCount:3, aiFailedCount:2},
+});
+assert.match(adapter.renderNode(node).innerHTML, /已完成\s*3\s*\/\s*5/);
 
 dispatchMessage({
   type:'hstar-openshop-output',
   requestId:'output-1',
-  context:{canvasType:'classic', canvasId:'canvas-1', nodeId:node.id, projectId:node.projectId},
+  context:{canvasType:'classic', canvasId:'canvas-source', nodeId:node.id, projectId:node.projectId},
   output:{assetId:'asset-output', url:'/api/openshop/assets/asset-output', name:'图文分层输出.png', width:1920, height:1080},
 });
 await new Promise(resolvePromise => setTimeout(resolvePromise, 0));
@@ -155,30 +187,104 @@ assert.equal(undoCount, 1);
 assert.ok(renderCount > 0);
 assert.equal(saveCount, 1);
 
-const clone = {...node, id:'openshop-copy'};
-adapter.prepareClone(node, clone);
+const clipboardCopy = {...node};
+assert.equal(adapter.captureCloneSource(node, clipboardCopy), clipboardCopy);
+assert.equal(clipboardCopy.cloneSourceProjectId, node.projectId);
+assert.equal(clipboardCopy.cloneSourceCanvasType, 'classic');
+assert.equal(clipboardCopy.cloneSourceCanvasId, 'canvas-source');
+assert.equal(clipboardCopy.cloneSourceNodeId, node.id);
+assert.equal(node.cloneSourceProjectId, '');
+assert.equal(node.cloneSourceCanvasId, '');
+
+canvasId = 'canvas-target';
+const clone = {...clipboardCopy, id:'openshop-copy'};
+adapter.prepareClone(clipboardCopy, clone);
 assert.notEqual(clone.projectId, node.projectId);
 assert.equal(clone.cloneSourceProjectId, node.projectId);
 assert.equal(clone.cloneSourceCanvasType, 'classic');
-assert.equal(clone.cloneSourceCanvasId, 'canvas-1');
+assert.equal(clone.cloneSourceCanvasId, 'canvas-source');
 assert.equal(clone.cloneSourceNodeId, node.id);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
+assert.equal(clone.aiStatus, '');
+assert.equal(clone.aiTargetCount, 0);
 nodes.push(clone);
 assert.equal(adapter.openNode(clone.id), true);
-assert.deepEqual({...openedSessions.at(-1).context}, {
-  canvasType:'classic',
-  canvasId:'canvas-1',
-  nodeId:clone.id,
-  projectId:clone.projectId,
-  projectName:'图文分层项目',
-  frameId:'frame-canvas',
+assert.equal(openedSessions.length, 2);
+assert.equal(openedSessions[1].context.canvasId, 'canvas-target');
+assert.equal(openedSessions[1].context.cloneSourceProjectId, node.projectId);
+assert.equal(openedSessions[1].context.cloneSourceCanvasType, 'classic');
+assert.equal(openedSessions[1].context.cloneSourceCanvasId, 'canvas-source');
+assert.equal(openedSessions[1].context.cloneSourceNodeId, node.id);
+
+dispatchMessage({
+  type:'hstar-openshop-node-meta',
+  requestId:'clone-meta-1',
+  context:{canvasType:'classic', canvasId:'canvas-target', nodeId:clone.id, projectId:clone.projectId},
+  meta:{autosaveVersion:1, saveState:'saved'},
+});
+assert.equal(clone.cloneSourceProjectId, '');
+assert.equal(clone.cloneSourceCanvasType, '');
+assert.equal(clone.cloneSourceCanvasId, '');
+assert.equal(clone.cloneSourceNodeId, '');
+
+canvasId = 'canvas-source';
+const pendingCloneB = {...node, id:'openshop-pending-b'};
+adapter.prepareClone(node, pendingCloneB);
+assert.equal(pendingCloneB.cloneSourceProjectId, node.projectId);
+assert.equal(pendingCloneB.cloneSourceCanvasId, 'canvas-source');
+assert.equal(pendingCloneB.cloneSourceNodeId, node.id);
+
+canvasId = 'canvas-pending-b';
+const pendingClipboardCopy = {...pendingCloneB};
+adapter.captureCloneSource(pendingCloneB, pendingClipboardCopy);
+assert.equal(pendingClipboardCopy.cloneSourceProjectId, node.projectId);
+assert.equal(pendingClipboardCopy.cloneSourceCanvasType, 'classic');
+assert.equal(pendingClipboardCopy.cloneSourceCanvasId, 'canvas-source');
+assert.equal(pendingClipboardCopy.cloneSourceNodeId, node.id);
+
+canvasId = 'canvas-pending-c';
+const pendingCloneC = {...pendingClipboardCopy, id:'openshop-pending-c'};
+adapter.prepareClone(pendingClipboardCopy, pendingCloneC);
+assert.equal(pendingCloneC.cloneSourceProjectId, node.projectId);
+assert.equal(pendingCloneC.cloneSourceCanvasType, 'classic');
+assert.equal(pendingCloneC.cloneSourceCanvasId, 'canvas-source');
+assert.equal(pendingCloneC.cloneSourceNodeId, node.id);
+
+canvasId = 'canvas-partial-owner';
+const partialSource = {
+  ...pendingCloneB,
+  id:'openshop-partial-b',
+  projectId:'project-partial-b',
   cloneSourceProjectId:node.projectId,
   cloneSourceCanvasType:'classic',
-  cloneSourceCanvasId:'canvas-1',
+  cloneSourceCanvasId:'',
   cloneSourceNodeId:node.id,
-  documentWidth:1920,
-  documentHeight:1080,
+};
+const partialClipboardCopy = {...partialSource};
+adapter.captureCloneSource(partialSource, partialClipboardCopy);
+assert.equal(partialClipboardCopy.cloneSourceProjectId, 'project-partial-b');
+assert.equal(partialClipboardCopy.cloneSourceCanvasType, 'classic');
+assert.equal(partialClipboardCopy.cloneSourceCanvasId, 'canvas-partial-owner');
+assert.equal(partialClipboardCopy.cloneSourceNodeId, 'openshop-partial-b');
+assert.equal(partialSource.cloneSourceProjectId, node.projectId);
+assert.equal(partialSource.cloneSourceCanvasId, '');
+
+canvasId = 'canvas-direct-partial';
+const directPartialClone = {...partialSource, id:'openshop-direct-partial-copy'};
+adapter.prepareClone(partialSource, directPartialClone);
+assert.equal(directPartialClone.cloneSourceProjectId, 'project-partial-b');
+assert.equal(directPartialClone.cloneSourceCanvasType, 'classic');
+assert.equal(directPartialClone.cloneSourceCanvasId, 'canvas-direct-partial');
+assert.equal(directPartialClone.cloneSourceNodeId, 'openshop-partial-b');
+
+canvasId = 'canvas-source';
+assert.equal(disposedProjects.length, 0, 'opening and metadata updates must not dispose projects');
+assert.equal(adapter.disposeNode(node), true);
+assert.equal(disposedProjects.length, 1);
+assert.equal(disposedProjects[0].projectId, node.projectId);
+assert.deepEqual({...disposedProjects[0].context}, {
+  canvasType:'classic', canvasId:'canvas-source', nodeId:node.id, projectId:node.projectId,
 });
 
 assert.match(htmlSource, /src=["']\/static\/js\/canvas-openshop\.js(?:\?[^"']*)?["']/);
@@ -188,7 +294,9 @@ assert.match(canvasSource, /function\s+addOpenShopLayeredNode\s*\(/);
 assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.renderNode/);
 assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.canConnect/);
 assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.prepareClone/);
+assert.match(canvasSource, /HstarClassicOpenShopAdapter\?\.captureCloneSource\?\.\(/);
 assert.match(canvasSource, /type\s*===\s*['"]openshop-layered['"]/);
+assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.disposeNode\??\.\(node\)/);
 assert.match(cssSource, /\.openshop-layered-node/);
 assert.match(cssSource, /\.openshop-layered-card\s*\{[^}]*width:\s*100%[^}]*height:\s*100%[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/s);
 assert.match(cssSource, /\.openshop-layered-preview img\s*\{[^}]*width:\s*100%[^}]*height:\s*100%[^}]*object-fit:\s*contain/s);

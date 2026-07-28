@@ -1,7 +1,11 @@
 import json
 import ipaddress
+import socket
+import ssl
+import http.client
 import uuid
 import base64
+import binascii
 import hashlib
 import hmac
 import datetime
@@ -28,10 +32,14 @@ import math
 import shlex
 import functools
 import html
-import xml.etree.ElementTree as ET
+import contextlib
 from contextlib import asynccontextmanager
-from typing import List, Dict, Any, Optional, Tuple
-from threading import Lock, Thread
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple, Literal
+from threading import Lock, RLock, Thread
 import httpx
 from PIL import Image, ImageOps
 from io import BytesIO
@@ -45,19 +53,67 @@ from openshop_projects import (
     OpenShopNotFound,
     OpenShopOwnershipError,
     OpenShopProjectStore,
+    OpenShopStorageRouter,
+    OpenShopReconciliationError,
     OpenShopStoreError,
     OpenShopValidationError,
     OpenShopVersionConflict,
 )
 from openshop_ai import (
+    OPENSHOP_GENERATIVE_TOOL_IDS,
     OpenShopAiTaskNotFound,
     OpenShopAiTaskOwnershipError,
     OpenShopAiTaskRegistry,
     OpenShopAiValidationError,
+    build_art_font_prompt,
     build_capability_catalog,
     build_ocr_prompt,
+    is_standard_generation_size,
+    normalize_generation_snapshot,
     normalize_ocr_layout,
 )
+from openshop_image_ops import (
+    MAX_ART_FONT_COMPRESSED_BYTES,
+    MAX_IMAGE_BYTES,
+    normalize_art_font_patch_output,
+    normalize_generated_text_removal,
+    normalize_local_generation,
+    prepare_art_font_edit,
+    prepare_local_generation_inputs,
+)
+from openshop_fonts import OpenShopFontCatalog
+from native_file_picker import (
+    NativeFilePickerError,
+    choose_open_file_path,
+    selected_file_metadata,
+)
+from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
+from hstar_runtime.api_merge import merge_api_defaults
+from hstar_runtime.atomic import atomic_create_json, atomic_write_bytes, atomic_write_json
+from hstar_runtime.bootstrap import BootstrapStore
+from hstar_runtime.credentials import (
+    create_credential_store,
+    migrate_legacy_env_sources,
+)
+from hstar_runtime.migration import MigrationError, MigrationManager, MigrationState
+from hstar_runtime.paths import RuntimePaths, build_runtime_paths, build_storage_path_map, default_data_root, uses_existing_legacy_storage_layout
+from hstar_runtime.storage_barrier import StorageMutationBarrier, StorageMutationBlocked
+
+
+def configure_process_stdio():
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+configure_process_stdio()
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -99,13 +155,18 @@ SHELL_TOKEN_HEADER = "X-Hstar-Shell-Token"
 SHELL_TOKEN_QUERY = "hstar_shell_token"
 SHELL_SESSION_COOKIE = "hstar_shell_session"
 COLLABORATION_SESSION_COOKIE = "hstar_collaboration_session"
-EDITION = os.environ.get("HSTAR_EDITION", "development").strip().lower() or "development"
 SHELL_TOKEN = os.environ.get("HSTAR_SHELL_TOKEN", "").strip()
 SHELL_BOOTSTRAP_TOKEN_CONSUMED = False
 SHELL_SESSION_LOCK = Lock()
 ACTIVE_UVICORN_SERVER = None
+DEVELOPMENT_RESTART_TARGET: Optional[Path] = None
+DEVELOPMENT_RESTART_LOCK = Lock()
 SHELL_PUBLIC_PATHS = {"/favicon.ico"}
 SHELL_PUBLIC_PREFIXES = ("/static/", "/assets/", "/output/")
+STORAGE_BARRIER_LIFECYCLE_PATHS = {
+    "/api/runtime/restart",
+    "/api/shell/shutdown",
+}
 
 @asynccontextmanager
 async def app_lifespan(_app):
@@ -113,9 +174,7 @@ async def app_lifespan(_app):
     try:
         yield
     finally:
-        voice_assistant = globals().get("VOICE_ASSISTANT")
-        if voice_assistant is not None:
-            await voice_assistant.shutdown()
+        await VOICE_ASSISTANT.shutdown()
 
 
 app = FastAPI(lifespan=app_lifespan)
@@ -217,6 +276,14 @@ GLOBAL_LOOP = None
 COLLABORATION_KEY = secrets.token_urlsafe(24)
 COLLABORATION_LOCK = Lock()
 APP_VERSION = "2026.06.03"
+OPENSHOP_RUNTIME_REVISION = "2026.07.27.150100001"
+OPENSHOP_ENTRY_ASSET_URLS = frozenset({
+    "/static/css/openshop-host.css",
+    "/static/openshop/host/openshop-protocol.js",
+    "/static/js/openshop-host.js",
+    "/static/js/canvas-openshop.js",
+    "/static/js/smart-canvas-openshop.js",
+})
 GITHUB_REPO_URL = "https://github.com/hero8152/Infinite-Canvas"
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/hero8152/Infinite-Canvas/main/VERSION"
 GITHUB_TREE_URL = "https://api.github.com/repos/hero8152/Infinite-Canvas/git/trees/main?recursive=1"
@@ -231,26 +298,32 @@ MODELSCOPE_VERSION_URL = MODELSCOPE_FILE_API_ROOT + "VERSION"
 MODELSCOPE_UPDATE_NOTES_URL = MODELSCOPE_FILE_API_ROOT + "static/update-notes.json"
 MODELSCOPE_TREE_URL = "https://www.modelscope.ai/api/v1/studio/daniel8152/Infinite-Canvas/repo/files?Revision=master&Recursive=true"
 
-@app.on_event("startup")
 async def startup_event():
     global GLOBAL_LOOP
     GLOBAL_LOOP = asyncio.get_running_loop()
-    sync_static_html_versions()
-    # 启动时整理资产库：给所有图片分组（含默认角色/场景）建好文件夹，并把根目录里的旧素材归整进去。
-    try:
-        await asyncio.to_thread(migrate_asset_library_into_dirs)
-    except Exception as exc:
-        print(f"资产库分组整理失败: {exc}")
-    # 修复历史遗留的双重扩展名素材（foo.png.png → foo.png），否则这些卡片无法显示
-    try:
-        await asyncio.to_thread(migrate_double_extension_uploads)
-    except Exception as exc:
-        print(f"修复双重扩展名素材失败: {exc}")
-    # 纠正内容与扩展名不符的图片（如 WebP 内容却叫 .png），否则严格客户端解不出来
-    try:
-        await asyncio.to_thread(migrate_mislabeled_image_extensions)
-    except Exception as exc:
-        print(f"纠正图片扩展名失败: {exc}")
+    if MODERN_STORAGE_ACTIVE_ON_STARTUP:
+        VOICE_ASSISTANT.schedule_background_tasks()
+    await asyncio.sleep(0)
+    await asyncio.to_thread(sync_static_html_versions)
+    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+        # 只在新数据布局中执行自动整理；开发版接入旧 Hstar 缓存时原地读取。
+        try:
+            await asyncio.to_thread(migrate_asset_library_into_dirs)
+        except Exception as exc:
+            print(f"资产库分组整理失败: {exc}")
+        try:
+            await asyncio.to_thread(migrate_double_extension_uploads)
+        except Exception as exc:
+            print(f"修复双重扩展名素材失败: {exc}")
+        try:
+            await asyncio.to_thread(migrate_mislabeled_image_extensions)
+        except Exception as exc:
+            print(f"纠正图片扩展名失败: {exc}")
+    if os.path.isdir(CANVAS_DIR):
+        try:
+            await asyncio.to_thread(reconcile_saved_openshop_projects)
+        except Exception:
+            logging.exception("OpenShop startup reconciliation failed")
 
 @app.websocket("/ws/stats")
 async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
@@ -270,17 +343,60 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
 
 CLIENT_ID = str(uuid.uuid4())
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_APP_DATA_ROOT = os.path.join(os.environ.get("APPDATA") or BASE_DIR, "Hstar")
-APP_DATA_ROOT = os.path.abspath(os.environ.get("HSTAR_DATA_DIR") or DEFAULT_APP_DATA_ROOT)
-WORKFLOW_DIR = os.path.join(BASE_DIR, "workflows")
-WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "Z-Image.json")
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+PROGRAM_ROOT = Path(os.environ.get("HSTAR_PROGRAM_DIR") or BASE_DIR).expanduser().resolve()
+EDITION = os.environ.get("HSTAR_EDITION", "development").strip().lower()
+APPDATA_ROOT = Path(
+    os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming"
+).expanduser().resolve()
+BOOTSTRAP = BootstrapStore(APPDATA_ROOT, EDITION, PROGRAM_ROOT)
+EXPLICIT_DATA_ROOT = os.environ.get("HSTAR_DATA_DIR", "").strip()
+if EXPLICIT_DATA_ROOT:
+    DATA_ROOT = Path(os.path.expandvars(EXPLICIT_DATA_ROOT)).expanduser().resolve()
+else:
+    bootstrap_config = BOOTSTRAP.load()
+    if bootstrap_config is not None:
+        DATA_ROOT = bootstrap_config.resolved_data_root()
+    elif EDITION == "development":
+        DATA_ROOT = default_data_root().resolve()
+    else:
+        DATA_ROOT = BOOTSTRAP.require().resolved_data_root()
+
+RUNTIME_PATHS: RuntimePaths = build_runtime_paths(PROGRAM_ROOT, DATA_ROOT, EDITION)
+PRESERVE_EXISTING_DATA_ON_STARTUP = uses_existing_legacy_storage_layout(RUNTIME_PATHS)
+MODERN_STORAGE_ACTIVE_ON_STARTUP = not PRESERVE_EXISTING_DATA_ON_STARTUP or any(
+    path.is_dir()
+    for path in (
+        RUNTIME_PATHS.config_dir,
+        RUNTIME_PATHS.project_dir,
+        RUNTIME_PATHS.history_dir,
+        RUNTIME_PATHS.output_dir,
+    )
+)
+INITIAL_STORAGE_PATHS = build_storage_path_map(RUNTIME_PATHS)
+LEGACY_STORAGE_PATHS = (
+    build_storage_path_map(RUNTIME_PATHS, prefer_existing_legacy=True)
+    if PRESERVE_EXISTING_DATA_ON_STARTUP
+    else {}
+)
+APP_DATA_ROOT = str(RUNTIME_PATHS.data_root)
+BUILTIN_WORKFLOW_DIR = str(RUNTIME_PATHS.builtin_workflow_dir)
+USER_WORKFLOW_DIR = str(RUNTIME_PATHS.user_workflow_dir)
+WORKFLOW_PATH = os.path.join(BUILTIN_WORKFLOW_DIR, "Z-Image.json")
+STATIC_DIR = str(RUNTIME_PATHS.static_dir)
 STATIC_RUNNINGHUB_DIR = os.path.join(STATIC_DIR, "runninghub")
 STATIC_RUNNINGHUB_THUMBNAIL_DIR = os.path.join(STATIC_RUNNINGHUB_DIR, "thumbnails")
 STATIC_RUNNINGHUB_API_PROVIDERS_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "api_providers.json")
 STATIC_RUNNINGHUB_MODEL_REGISTRY_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "models_registry.json")
-APP_DATA_DIR = os.path.join(APP_DATA_ROOT, "data")
-APP_SOFTWARE_SETTINGS_FILE = os.path.join(APP_DATA_DIR, "software_settings.json")
+PACKAGED_API_DEFAULTS_FILE = RUNTIME_PATHS.api_defaults_dir / "api-providers.json"
+SOFTWARE_SETTINGS_FILE = str(INITIAL_STORAGE_PATHS["software_settings_file"])
+LEGACY_API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
+TRANSITIONAL_API_ENV_FILE = RUNTIME_PATHS.secrets_dir / "api.env"
+CREDENTIAL_FILE = RUNTIME_PATHS.secrets_dir / "credentials.dpapi"
+CREDENTIAL_STORE = create_credential_store(
+    CREDENTIAL_FILE,
+    edition=EDITION,
+    plaintext_path=TRANSITIONAL_API_ENV_FILE,
+)
 
 
 def shell_request_is_loopback(request: Request) -> bool:
@@ -399,83 +515,166 @@ async def packaged_shell_session(request: Request, call_next):
         return await call_next(request)
     return JSONResponse(status_code=401, content={"detail": "请从 Hstar 桌面程序打开此页面"})
 
+
+@app.middleware("http")
+async def storage_mutation_barrier(request: Request, call_next):
+    if (
+        request.method not in {"POST", "PUT", "PATCH", "DELETE"}
+        or request.url.path in STORAGE_BARRIER_LIFECYCLE_PATHS
+    ):
+        return await call_next(request)
+    try:
+        mutation = STORAGE_WRITE_BARRIER.mutation()
+        mutation.__enter__()
+    except StorageMutationBlocked as error:
+        code = "STORAGE_SWITCHING" if error.reason == "switching" else "STORAGE_RESTART_REQUIRED"
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "1"},
+            content={"detail": {"code": code, "message": str(error)}},
+        )
+    try:
+        response = await call_next(request)
+    except BaseException as error:
+        mutation.__exit__(type(error), error, error.__traceback__)
+        raise
+
+    body_iterator = getattr(response, "body_iterator", None)
+    if body_iterator is None:
+        mutation.__exit__(None, None, None)
+        return response
+
+    async def guarded_body_iterator():
+        try:
+            async for chunk in body_iterator:
+                yield chunk
+        except BaseException as error:
+            mutation.__exit__(type(error), error, error.__traceback__)
+            raise
+        else:
+            mutation.__exit__(None, None, None)
+
+    response.body_iterator = guarded_body_iterator()
+    return response
+
 def bootstrap_app_software_settings() -> None:
-    legacy_file = os.path.join(BASE_DIR, "data", "software_settings.json")
-    if os.path.abspath(legacy_file) == os.path.abspath(APP_SOFTWARE_SETTINGS_FILE):
+    if PRESERVE_EXISTING_DATA_ON_STARTUP:
         return
-    if os.path.exists(APP_SOFTWARE_SETTINGS_FILE) or not os.path.isfile(legacy_file):
+    if os.path.isfile(SOFTWARE_SETTINGS_FILE):
+        return
+    candidates = (
+        RUNTIME_PATHS.data_root / "data" / "software_settings.json",
+        APPDATA_ROOT / "Hstar" / "data" / "software_settings.json",
+        PROGRAM_ROOT / "data" / "software_settings.json",
+    )
+    for legacy_file in candidates:
+        if not legacy_file.is_file():
+            continue
+        try:
+            Path(SOFTWARE_SETTINGS_FILE).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_file, SOFTWARE_SETTINGS_FILE)
+            return
+        except OSError:
+            continue
+
+
+def bootstrap_legacy_api_env() -> None:
+    if EDITION.startswith("test") or PRESERVE_EXISTING_DATA_ON_STARTUP:
         return
     try:
-        os.makedirs(os.path.dirname(APP_SOFTWARE_SETTINGS_FILE), exist_ok=True)
-        shutil.copy2(legacy_file, APP_SOFTWARE_SETTINGS_FILE)
-    except Exception:
-        pass
+        migrate_legacy_env_sources(
+            [Path(LEGACY_API_ENV_FILE), TRANSITIONAL_API_ENV_FILE],
+            CREDENTIAL_STORE,
+            RUNTIME_PATHS.backup_dir / "api",
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        logging.exception("API 凭据迁移失败，原明文配置已保留")
 
 bootstrap_app_software_settings()
+bootstrap_legacy_api_env()
 
-def runtime_paths_for_storage_root(storage_root: str, software_settings_file: str) -> Dict[str, str]:
-    storage_root = os.path.abspath(storage_root)
-    data_dir = os.path.join(storage_root, "data")
-    assets_dir = os.path.join(storage_root, "assets")
-    return {
-        "storage_root": storage_root,
-        "data_dir": data_dir,
-        "conversation_dir": os.path.join(data_dir, "conversations"),
-        "canvas_dir": os.path.join(data_dir, "canvases"),
-        "openshop_data_dir": os.path.join(data_dir, "openshop"),
-        "media_preview_dir": os.path.join(data_dir, "media_previews"),
-        "asset_library_path": os.path.join(data_dir, "asset_library.json"),
-        "prompt_library_path": os.path.join(data_dir, "prompt_libraries.json"),
-        "api_providers_file": os.path.join(data_dir, "api_providers.json"),
-        "runninghub_workflow_store_file": os.path.join(data_dir, "runninghub_workflows.json"),
-        "shared_folders_file": os.path.join(data_dir, "shared_folders.json"),
-        "software_settings_file": os.path.abspath(software_settings_file),
-        "global_config_file": os.path.join(storage_root, "global_config.json"),
-        "history_file": os.path.join(storage_root, "history.json"),
-        "assets_dir": assets_dir,
-        "output_dir": os.path.join(storage_root, "output"),
-        "output_input_dir": os.path.join(assets_dir, "input"),
-        "output_output_dir": os.path.join(assets_dir, "output"),
-        "asset_library_dir": os.path.join(assets_dir, "library"),
-        "local_upload_dir": os.path.join(assets_dir, "uploads"),
-    }
+def runtime_paths_for_storage_root(
+    storage_root: str,
+    software_settings_file: str = "",
+) -> Dict[str, str]:
+    paths = build_runtime_paths(PROGRAM_ROOT, Path(storage_root), EDITION)
+    resolved = build_storage_path_map(paths)
+    return {key: str(value) for key, value in resolved.items()}
 
-def resolve_runtime_paths(base_dir: str, software_settings_file: str) -> Dict[str, str]:
-    storage_root = base_dir
-    try:
-        with open(software_settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-        configured_root = settings.get("storage_root") if isinstance(settings, dict) else ""
-        if isinstance(configured_root, str) and configured_root.strip():
-            storage_root = os.path.abspath(os.path.expandvars(os.path.expanduser(configured_root.strip().strip('"'))))
-    except Exception:
-        pass
-    return runtime_paths_for_storage_root(storage_root, software_settings_file)
+RUNTIME_STORAGE_PATHS = runtime_paths_for_storage_root(str(RUNTIME_PATHS.data_root))
+STORAGE_ROOT = RUNTIME_STORAGE_PATHS["storage_root"]
+OUTPUT_DIR = RUNTIME_STORAGE_PATHS["output_dir"]
+ASSETS_DIR = RUNTIME_STORAGE_PATHS["assets_dir"]
+OUTPUT_INPUT_DIR = RUNTIME_STORAGE_PATHS["output_input_dir"]
+OUTPUT_OUTPUT_DIR = RUNTIME_STORAGE_PATHS["output_output_dir"]
+ASSET_LIBRARY_DIR = RUNTIME_STORAGE_PATHS["asset_library_dir"]
+LOCAL_UPLOAD_DIR = RUNTIME_STORAGE_PATHS["local_upload_dir"]
+HISTORY_FILE = RUNTIME_STORAGE_PATHS["history_file"]
+DATA_DIR = RUNTIME_STORAGE_PATHS["data_dir"]
+CONVERSATION_DIR = RUNTIME_STORAGE_PATHS["conversation_dir"]
+CANVAS_DIR = RUNTIME_STORAGE_PATHS["canvas_dir"]
+OPENSHOP_DATA_DIR = RUNTIME_STORAGE_PATHS["openshop_data_dir"]
+MEDIA_PREVIEW_DIR = RUNTIME_STORAGE_PATHS["media_preview_dir"]
+ASSET_LIBRARY_PATH = RUNTIME_STORAGE_PATHS["asset_library_path"]
+PROMPT_LIBRARY_PATH = RUNTIME_STORAGE_PATHS["prompt_library_path"]
+API_PROVIDERS_FILE = RUNTIME_STORAGE_PATHS["api_providers_file"]
+RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_STORAGE_PATHS["runninghub_workflow_store_file"]
+SHARED_FOLDERS_FILE = RUNTIME_STORAGE_PATHS["shared_folders_file"]
+GLOBAL_CONFIG_FILE = RUNTIME_STORAGE_PATHS["global_config_file"]
+LEGACY_DATA_DIR = str(LEGACY_STORAGE_PATHS.get("data_dir") or "")
+LEGACY_CONVERSATION_DIR = str(LEGACY_STORAGE_PATHS.get("conversation_dir") or "")
+LEGACY_CANVAS_DIR = str(LEGACY_STORAGE_PATHS.get("canvas_dir") or "")
+LEGACY_OPENSHOP_DATA_DIR = str(LEGACY_STORAGE_PATHS.get("openshop_data_dir") or "")
+LEGACY_MEDIA_PREVIEW_DIR = str(LEGACY_STORAGE_PATHS.get("media_preview_dir") or "")
+LEGACY_ASSET_LIBRARY_PATH = str(LEGACY_STORAGE_PATHS.get("asset_library_path") or "")
+LEGACY_PROMPT_LIBRARY_PATH = str(LEGACY_STORAGE_PATHS.get("prompt_library_path") or "")
+LEGACY_API_PROVIDERS_FILE = str(LEGACY_STORAGE_PATHS.get("api_providers_file") or "")
+LEGACY_RUNNINGHUB_WORKFLOW_STORE_FILE = str(LEGACY_STORAGE_PATHS.get("runninghub_workflow_store_file") or "")
+LEGACY_SHARED_FOLDERS_FILE = str(LEGACY_STORAGE_PATHS.get("shared_folders_file") or "")
+LEGACY_SOFTWARE_SETTINGS_FILE = str(LEGACY_STORAGE_PATHS.get("software_settings_file") or "")
+LEGACY_GLOBAL_CONFIG_FILE = str(LEGACY_STORAGE_PATHS.get("global_config_file") or "")
+LEGACY_HISTORY_FILE = str(LEGACY_STORAGE_PATHS.get("history_file") or "")
+LEGACY_OUTPUT_DIR = str(LEGACY_STORAGE_PATHS.get("output_dir") or "")
 
-RUNTIME_PATHS = resolve_runtime_paths(APP_DATA_ROOT, APP_SOFTWARE_SETTINGS_FILE)
-STORAGE_ROOT = RUNTIME_PATHS["storage_root"]
-OUTPUT_DIR = RUNTIME_PATHS["output_dir"]
-ASSETS_DIR = RUNTIME_PATHS["assets_dir"]
-OUTPUT_INPUT_DIR = RUNTIME_PATHS["output_input_dir"]
-OUTPUT_OUTPUT_DIR = RUNTIME_PATHS["output_output_dir"]
-ASSET_LIBRARY_DIR = RUNTIME_PATHS["asset_library_dir"]
-LOCAL_UPLOAD_DIR = RUNTIME_PATHS["local_upload_dir"]
-HISTORY_FILE = RUNTIME_PATHS["history_file"]
-API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
-DATA_DIR = RUNTIME_PATHS["data_dir"]
-CONVERSATION_DIR = RUNTIME_PATHS["conversation_dir"]
-CANVAS_DIR = RUNTIME_PATHS["canvas_dir"]
-OPENSHOP_DATA_DIR = RUNTIME_PATHS["openshop_data_dir"]
-MEDIA_PREVIEW_DIR = RUNTIME_PATHS["media_preview_dir"]
-ASSET_LIBRARY_PATH = RUNTIME_PATHS["asset_library_path"]
-PROMPT_LIBRARY_PATH = RUNTIME_PATHS["prompt_library_path"]
-API_PROVIDERS_FILE = RUNTIME_PATHS["api_providers_file"]
-RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_PATHS["runninghub_workflow_store_file"]
-SHARED_FOLDERS_FILE = RUNTIME_PATHS["shared_folders_file"]
-SOFTWARE_SETTINGS_FILE = RUNTIME_PATHS["software_settings_file"]
-GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
-OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR)
+def storage_read_path(primary_path: str, legacy_path: str = "") -> str:
+    if primary_path and os.path.exists(primary_path):
+        return primary_path
+    if legacy_path and os.path.exists(legacy_path):
+        return legacy_path
+    return primary_path
+
+STORAGE_WRITE_BARRIER = StorageMutationBarrier()
+STORAGE_MIGRATIONS = MigrationManager(
+    BOOTSTRAP,
+    PROGRAM_ROOT,
+    switch_guard=STORAGE_WRITE_BARRIER.switch_to_read_only,
+)
+PRIMARY_OPENSHOP_STORE = OpenShopProjectStore(
+    OPENSHOP_DATA_DIR,
+    canvas_dir=CANVAS_DIR,
+    create_directories=MODERN_STORAGE_ACTIVE_ON_STARTUP,
+)
+LEGACY_OPENSHOP_STORE = (
+    OpenShopProjectStore(
+        LEGACY_OPENSHOP_DATA_DIR,
+        canvas_dir=LEGACY_CANVAS_DIR,
+        create_directories=False,
+        migrate_legacy_projects=False,
+    )
+    if LEGACY_OPENSHOP_DATA_DIR and LEGACY_CANVAS_DIR
+    else None
+)
+OPENSHOP_STORE = OpenShopStorageRouter(
+    PRIMARY_OPENSHOP_STORE,
+    LEGACY_OPENSHOP_STORE,
+    primary_canvas_dir=CANVAS_DIR,
+    legacy_canvas_dir=LEGACY_CANVAS_DIR,
+)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
+OPENSHOP_PROJECT_LIFECYCLE_LOCK = RLock()
+OPENSHOP_FONTS = OpenShopFontCatalog(
+    cache_path=os.path.join(DATA_DIR, "openshop-font-catalog-v1.json")
+)
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 LOCAL_IMAGE_IMPORT_MAX_BYTES = int(os.getenv("LOCAL_IMAGE_IMPORT_MAX_BYTES", str(50 * 1024 * 1024)))
 LOCAL_IMAGE_IMPORT_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -486,7 +685,7 @@ QUEUE_LOCK = Lock()
 HISTORY_LOCK = Lock()
 GLOBAL_CONFIG_LOCK = Lock()
 CONVERSATION_LOCK = Lock()
-CANVAS_LOCK = Lock()
+CANVAS_LOCK = RLock()
 LOAD_LOCK = Lock()
 RUNNINGHUB_WORKFLOW_LOCK = Lock()
 NEXT_TASK_ID = 1
@@ -697,33 +896,28 @@ RUNNINGHUB_DEFAULT_WORKFLOWS = [
 ]
 
 def ensure_runtime_config_files():
-    """首次运行时提前创建配置目录，避免第一次保存 API Key 时才创建目录/文件。"""
-    try:
-        os.makedirs(os.path.dirname(API_ENV_FILE), exist_ok=True)
-        os.makedirs(DATA_DIR, exist_ok=True)
-        if not os.path.exists(API_ENV_FILE):
-            with open(API_ENV_FILE, "a", encoding="utf-8"):
-                pass
-    except Exception as e:
-        print(f"初始化 API 配置目录失败: {e}")
-
-def load_env_file():
-    if not os.path.exists(API_ENV_FILE):
+    """Create writable configuration directories before the first save."""
+    if not MODERN_STORAGE_ACTIVE_ON_STARTUP:
         return
     try:
-        with open(API_ENV_FILE, 'r', encoding='utf-8-sig') as f:
-            for raw_line in f.read().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                os.environ.setdefault(key, value)
+        os.makedirs(RUNTIME_PATHS.secrets_dir, exist_ok=True)
+        os.makedirs(DATA_DIR, exist_ok=True)
     except Exception as e:
-        print(f"加载 API/.env 失败: {e}")
+        logging.error("初始化 API 配置目录失败: %s", e)
+
+CREDENTIAL_VALUES: Dict[str, str] = {}
+
+
+def load_credential_values():
+    try:
+        CREDENTIAL_VALUES.clear()
+        CREDENTIAL_VALUES.update(CREDENTIAL_STORE.load())
+        for key, value in CREDENTIAL_VALUES.items():
+            os.environ.setdefault(key, value)
+    except Exception as e:
+        logging.error("加载 API 凭据失败: %s", e)
 ensure_runtime_config_files()
-load_env_file()
+load_credential_values()
 
 COMFYUI_INSTANCES = [s.strip() for s in os.getenv("COMFYUI_INSTANCES", "127.0.0.1:8188").split(",") if s.strip()]
 COMFYUI_ADDRESS = COMFYUI_INSTANCES[0]
@@ -908,27 +1102,16 @@ def volcengine_access_key_env():
 def volcengine_secret_key_env():
     return "VOLCENGINE_SECRET_ACCESS_KEY"
 
-def read_api_env_value(key: str) -> str:
+def read_api_credential_value(key: str) -> str:
     key = str(key or "").strip()
-    if not key or not os.path.exists(API_ENV_FILE):
+    if not key:
         return ""
-    try:
-        with open(API_ENV_FILE, "r", encoding="utf-8-sig") as f:
-            for raw_line in f.read().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                env_key, value = line.split("=", 1)
-                if env_key.strip() == key:
-                    return value.strip().strip('"').strip("'")
-    except Exception:
-        return ""
-    return ""
+    return CREDENTIAL_VALUES.get(key, "")
 
 def provider_env_key_value(provider_id: str) -> str:
     provider_id = str(provider_id or "").strip().lower()
     env_key = provider_key_env(provider_id)
-    key = os.getenv(env_key, "") or read_api_env_value(env_key)
+    key = os.getenv(env_key, "") or read_api_credential_value(env_key)
     if key:
         return key
     if provider_id == "modelscope":
@@ -937,15 +1120,15 @@ def provider_env_key_value(provider_id: str) -> str:
 
 def runninghub_wallet_key_value() -> str:
     env_key = runninghub_wallet_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_access_key_value() -> str:
     env_key = volcengine_access_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_secret_key_value() -> str:
     env_key = volcengine_secret_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_provider_api_key(explicit_key: str = "") -> str:
     explicit_key = str(explicit_key or "").strip()
@@ -1026,6 +1209,17 @@ def default_api_providers():
             "volcengine_region": VOLCENGINE_DEFAULT_REGION,
         },
     ]
+
+
+def load_packaged_api_defaults():
+    if not PACKAGED_API_DEFAULTS_FILE.is_file():
+        return None
+    try:
+        document = json.loads(PACKAGED_API_DEFAULTS_FILE.read_text(encoding="utf-8-sig"))
+        return merge_api_defaults([], document)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        logging.error("加载内置 API 默认配置失败: %s", error)
+        return None
 
 def merge_default_api_providers(providers, inject_missing=True):
     merged = [dict(item) for item in providers]
@@ -1508,6 +1702,7 @@ def normalize_provider(item):
         "base_url": base_url,
         "protocol": protocol,
         "protocol_manual": protocol_manual,
+        "use_system_proxy": bool(item.get("use_system_proxy", True)),
         "image_request_mode": image_request_mode,
         "image_generation_endpoint": image_generation_endpoint,
         "image_edit_endpoint": image_edit_endpoint,
@@ -1526,11 +1721,14 @@ def normalize_provider(item):
     }
 
 def load_api_providers():
-    defaults = default_api_providers()
-    if not os.path.exists(API_PROVIDERS_FILE):
-        return merge_default_api_providers(defaults)
+    defaults = load_packaged_api_defaults() or default_api_providers()
+    path = storage_read_path(API_PROVIDERS_FILE, LEGACY_API_PROVIDERS_FILE)
+    if not os.path.exists(path):
+        providers = merge_default_api_providers(defaults)
+        save_api_providers(providers)
+        return providers
     try:
-        with open(API_PROVIDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         providers = [normalize_provider(item) for item in raw if isinstance(item, dict)]
         return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
@@ -1540,9 +1738,10 @@ def load_api_providers():
 
 def save_api_providers(providers):
     os.makedirs(DATA_DIR, exist_ok=True)
+    safe_providers = merge_api_defaults(providers, [])
+    payload = (json.dumps(safe_providers, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     with GLOBAL_CONFIG_LOCK:
-        with open(API_PROVIDERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(providers, f, ensure_ascii=False, indent=2)
+        atomic_write_bytes(Path(API_PROVIDERS_FILE), payload)
 
 def public_provider(provider):
     if provider.get("id") == "runninghub":
@@ -1606,6 +1805,11 @@ def get_api_provider(provider_id="comfly"):
         raise HTTPException(status_code=400, detail=f"API 平台已禁用：{provider.get('name') or target}")
     return provider
 
+def provider_uses_system_proxy(provider, default=True):
+    if not isinstance(provider, dict):
+        return bool(default)
+    return provider.get("use_system_proxy", default) is not False
+
 def get_api_provider_exact(provider_id: str):
     providers = load_api_providers()
     target = (provider_id or "").strip().lower()
@@ -1636,55 +1840,45 @@ def modelscope_api_root(provider=None):
 def modelscope_image_api_root():
     return MODELSCOPE_CHAT_BASE_URL.rstrip("/")
 
-def env_quote(value):
-    text = str(value or "")
-    if not text or re.search(r"\s|#|['\"]", text):
-        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
-    return text
-
 def update_env_values(updates):
-    os.makedirs(os.path.dirname(API_ENV_FILE), exist_ok=True)
-    lines = []
-    if os.path.exists(API_ENV_FILE):
-        with open(API_ENV_FILE, "r", encoding="utf-8-sig") as f:
-            lines = f.read().splitlines()
-    seen = set()
-    next_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in line:
-            next_lines.append(line)
-            continue
-        key = line.split("=", 1)[0].strip()
-        if key in updates:
-            next_lines.append(f"{key}={env_quote(updates[key])}")
-            os.environ[key] = str(updates[key] or "")
-            seen.add(key)
-        else:
-            next_lines.append(line)
-    for key, value in updates.items():
-        if key not in seen:
-            next_lines.append(f"{key}={env_quote(value)}")
-            os.environ[key] = str(value or "")
-    with open(API_ENV_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(next_lines).rstrip() + "\n")
+    normalized_updates = {
+        str(key): str(value or "")
+        for key, value in updates.items()
+    }
+    merged = CREDENTIAL_STORE.update(normalized_updates)
+    CREDENTIAL_VALUES.clear()
+    CREDENTIAL_VALUES.update(merged)
+    for key, value in normalized_updates.items():
+        os.environ[key] = value
 
 BACKEND_LOCAL_LOAD = {addr: 0 for addr in COMFYUI_INSTANCES}
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(ASSETS_DIR, exist_ok=True)
-os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
-os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
-os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
-os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
-os.makedirs(STATIC_DIR, exist_ok=True)
-os.makedirs(WORKFLOW_DIR, exist_ok=True)
-os.makedirs(CONVERSATION_DIR, exist_ok=True)
-os.makedirs(CANVAS_DIR, exist_ok=True)
+if MODERN_STORAGE_ACTIVE_ON_STARTUP:
+    for writable_path in RUNTIME_PATHS.writable_paths():
+        os.makedirs(writable_path, exist_ok=True)
+    os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
+    os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
+    os.makedirs(CONVERSATION_DIR, exist_ok=True)
+
+class StorageOverlayStaticFiles(StaticFiles):
+    def __init__(self, directories):
+        super().__init__(directory=None, check_dir=False)
+        self.all_directories = [str(path) for path in directories if path]
+
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
-app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+app.mount(
+    "/output",
+    StorageOverlayStaticFiles([OUTPUT_DIR, LEGACY_OUTPUT_DIR]),
+    name="output",
+)
+app.mount(
+    "/assets",
+    StorageOverlayStaticFiles([ASSETS_DIR]),
+    name="assets",
+)
 
 # --- Pydantic 模型 ---
 
@@ -1811,7 +2005,9 @@ def versioned_static_html(html: str) -> str:
     pattern = re.compile(r'(?P<prefix>(?:src|href)=["\']|@import\s+url\(["\'])(?P<url>/static/[^"\')?#]+(?:\.(?:js|css|html)))(?:\?v=[^"\')#]*)?', re.I)
     def replace(match):
         url = match.group("url")
-        cache_version = safe_version
+        cache_version = OPENSHOP_RUNTIME_REVISION if url in OPENSHOP_ENTRY_ASSET_URLS else safe_version
+        if url in OPENSHOP_ENTRY_ASSET_URLS:
+            return f"{match.group('prefix')}{url}?v={cache_version}"
         try:
             rel = urllib.parse.unquote(url[len("/static/"):]).replace("/", os.sep)
             path = os.path.abspath(os.path.join(STATIC_DIR, rel))
@@ -1823,6 +2019,18 @@ def versioned_static_html(html: str) -> str:
         return f"{match.group('prefix')}{url}?v={cache_version}"
     return pattern.sub(replace, html)
 
+def versioned_openshop_runtime_html(html: str) -> str:
+    pattern = re.compile(
+        r'(?P<prefix>(?:src|href)=["\']|@import\s+url\(["\'])'
+        r'(?P<url>\./(?:host|locales)/[^"\')?#]+\.(?:js|css))'
+        r'(?:\?v=[^"\')#]*)?',
+        re.I,
+    )
+    return pattern.sub(
+        lambda match: f"{match.group('prefix')}{match.group('url')}?v={OPENSHOP_RUNTIME_REVISION}",
+        html,
+    )
+
 def sync_static_html_versions():
     if EDITION != "development":
         return
@@ -1831,26 +2039,33 @@ def sync_static_html_versions():
         return
     safe_version = urllib.parse.quote(version, safe="._-")
     try:
-        for name in os.listdir(STATIC_DIR):
-            # 跳过 macOS 在外置硬盘(ExFAT/NTFS)生成的 ._* Apple Double 元数据文件，
-            # 这些是二进制文件，按 UTF-8 读取会抛 UnicodeDecodeError。
-            if name.startswith("._"):
-                continue
-            if not name.lower().endswith(".html"):
-                continue
-            path = os.path.join(STATIC_DIR, name)
-            if not os.path.isfile(path):
-                continue
+        html_paths = []
+        for directory, subdirectories, filenames in os.walk(STATIC_DIR):
+            subdirectories[:] = [name for name in subdirectories if name not in {"node_modules", "vendor"}]
+            for name in filenames:
+                # 跳过 macOS 在外置硬盘(ExFAT/NTFS)生成的 ._* Apple Double 元数据文件，
+                # 这些是二进制文件，按 UTF-8 读取会抛 UnicodeDecodeError。
+                if name.startswith("._") or not name.lower().endswith(".html"):
+                    continue
+                path = os.path.join(directory, name)
+                if os.path.isfile(path):
+                    html_paths.append(path)
+        shell_path = os.path.abspath(os.path.join(STATIC_DIR, "index.html"))
+        openshop_entry_path = os.path.abspath(os.path.join(STATIC_DIR, "openshop", "index.html"))
+        html_paths.sort(key=lambda path: (os.path.abspath(path) == shell_path, path.lower()))
+        for path in html_paths:
             # 单文件容错：某个文件读写失败不应中断整批同步。
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     old = f.read()
                 new = versioned_static_html(re.sub(r'([?&]v=)[^"\'`\s<>)]*', rf'\g<1>{safe_version}', old))
+                if os.path.abspath(path) == openshop_entry_path:
+                    new = versioned_openshop_runtime_html(new)
                 if new != old:
                     with open(path, "w", encoding="utf-8", newline="") as f:
                         f.write(new)
             except Exception as e:
-                print(f"同步静态页面版本号失败({name}): {e}")
+                print(f"同步静态页面版本号失败({os.path.relpath(path, STATIC_DIR)}): {e}")
     except Exception as e:
         print(f"同步静态页面版本号失败: {e}")
 
@@ -2216,7 +2431,7 @@ def github_bytes(url: str) -> bytes:
 def download_github_update_files(files: List[str], staging_root: str) -> None:
     staging_root_abs = os.path.abspath(staging_root)
     for rel in files:
-        safe_update_target(rel)
+        validate_update_file(rel)
         raw_url = f"{GITHUB_RAW_ROOT}/{urllib.parse.quote(rel, safe='/')}"
         data = github_bytes(raw_url)
         stage_path = os.path.abspath(os.path.join(staging_root_abs, *rel.split("/")))
@@ -2259,7 +2474,7 @@ def download_modelscope_update_files(staging_root: str) -> List[str]:
         raise RuntimeError("ModelScope 未返回 static 文件，已取消更新")
     staging_root_abs = os.path.abspath(staging_root)
     for rel in files:
-        safe_update_target(rel)
+        validate_update_file(rel)
         data = modelscope_file_bytes(rel)
         stage_path = os.path.abspath(os.path.join(staging_root_abs, *rel.split("/")))
         if os.path.commonpath([staging_root_abs, stage_path]) != staging_root_abs:
@@ -2269,97 +2484,11 @@ def download_modelscope_update_files(staging_root: str) -> List[str]:
             f.write(data)
     return files
 
-def safe_update_target(path: str) -> str:
+def validate_update_file(path: str) -> str:
     rel = str(path or "").replace("\\", "/").lstrip("/")
     if not update_allowed_file(rel):
         raise ValueError(f"更新文件不在允许范围：{rel}")
-    target = os.path.abspath(os.path.join(BASE_DIR, *rel.split("/")))
-    base = os.path.abspath(BASE_DIR)
-    if os.path.commonpath([base, target]) != base:
-        raise ValueError(f"更新路径不安全：{rel}")
-    return target
-
-def safe_static_dir() -> str:
-    target = os.path.abspath(STATIC_DIR)
-    expected = os.path.abspath(os.path.join(BASE_DIR, "static"))
-    base = os.path.abspath(BASE_DIR)
-    if target != expected or os.path.commonpath([base, target]) != base:
-        raise RuntimeError(f"static 路径不安全：{target}")
-    return target
-
-def schedule_self_restart(delay_seconds: int = 3) -> bool:
-    """派生脱离父进程的小脚本，等几秒后启动启动服务脚本，并干掉当前 PID。"""
-    delay = max(1, int(delay_seconds or 3))
-    pid = os.getpid()
-    try:
-        if os.name == "nt":
-            launcher = os.path.join(BASE_DIR, "启动服务.bat")
-            if not os.path.exists(launcher):
-                launcher = os.path.join(BASE_DIR, "start.bat")
-            bat_path = os.path.join(BASE_DIR, "_self_restart.bat")
-            log_path = os.path.join(BASE_DIR, "_self_restart.log")
-            script = (
-                "@echo off\r\n"
-                "chcp 65001 >nul\r\n"
-                "setlocal\r\n"
-                f"set \"APP_DIR={BASE_DIR}\"\r\n"
-                f"set \"LAUNCHER={launcher}\"\r\n"
-                f"set \"LOG_FILE={log_path}\"\r\n"
-                "echo [%date% %time%] restart scheduled >> \"%LOG_FILE%\"\r\n"
-                f"timeout /t {delay} /nobreak >nul\r\n"
-                "echo [%date% %time%] stopping old process >> \"%LOG_FILE%\"\r\n"
-                f"taskkill /F /PID {pid} >nul 2>&1\r\n"
-                "timeout /t 2 /nobreak >nul\r\n"
-                "cd /d \"%APP_DIR%\"\r\n"
-                "if exist \"%LAUNCHER%\" (\r\n"
-                "  echo [%date% %time%] starting launcher: %LAUNCHER% >> \"%LOG_FILE%\"\r\n"
-                "  start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k call \"%LAUNCHER%\"\r\n"
-                ") else (\r\n"
-                "  echo [%date% %time%] launcher missing, fallback to python main.py >> \"%LOG_FILE%\"\r\n"
-                "  if exist \"%APP_DIR%\\python\\python.exe\" (\r\n"
-                "    start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k \"\"%APP_DIR%\\python\\python.exe\" main.py\"\r\n"
-                "  ) else (\r\n"
-                "    start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k python main.py\r\n"
-                "  )\r\n"
-                ")\r\n"
-                "del \"%~f0\"\r\n"
-            )
-            with open(bat_path, "w", encoding="utf-8") as f:
-                f.write(script)
-            subprocess.Popen(
-                ["cmd", "/c", bat_path],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
-            )
-        else:
-            launcher = os.path.join(BASE_DIR, "mac-启动服务.command")
-            if not os.path.exists(launcher):
-                launcher = os.path.join(BASE_DIR, "start.sh")
-            sh_path = os.path.join(BASE_DIR, "_self_restart.sh")
-            script = (
-                "#!/bin/sh\n"
-                f"sleep {delay}\n"
-                f"kill -9 {pid} 2>/dev/null\n"
-                f"cd \"{BASE_DIR}\"\n"
-                f"if [ -x \"{launcher}\" ]; then nohup \"{launcher}\" >/dev/null 2>&1 &\n"
-                f"elif [ -f \"{launcher}\" ]; then nohup /bin/sh \"{launcher}\" >/dev/null 2>&1 &\n"
-                "fi\n"
-                "rm -- \"$0\"\n"
-            )
-            with open(sh_path, "w", encoding="utf-8") as f:
-                f.write(script)
-            os.chmod(sh_path, 0o755)
-            subprocess.Popen(
-                ["/bin/sh", sh_path],
-                start_new_session=True,
-                close_fds=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        return True
-    except Exception as exc:
-        logging.exception("schedule_self_restart failed: %s", exc)
-        return False
+    return rel
 
 class UpdateRequest(BaseModel):
     auto_restart: bool = False
@@ -2432,143 +2561,10 @@ def stage_update_from_source(source: str, staging_root: str) -> Tuple[List[str],
 
 @app.post("/api/update-from-github")
 def update_from_github(req: UpdateRequest = UpdateRequest()):
-    if not UPDATE_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="正在更新中，请稍后再试")
-    staging_root = ""
-    requested_source = normalize_update_source(req.source)
-    # 冗余设计：先用用户选择的源，失败后自动切换到另一个源兜底，全部失败才报错
-    source_order = [requested_source]
-    if req.fallback:
-        other = "modelscope" if requested_source == "github" else "github"
-        source_order.append(other)
-    try:
-        backup_root = os.path.join(DATA_DIR, "update_backups", time.strftime("%Y%m%d-%H%M%S"))
-
-        # 下载阶段（带兜底切换），任意源成功即停止
-        source = requested_source
-        root_files = static_files = files = None
-        download_errors: List[str] = []
-        fallback_used = False
-        for idx, candidate in enumerate(source_order):
-            attempt_staging = os.path.join(
-                DATA_DIR, "update_staging",
-                f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{candidate}",
-            )
-            if os.path.isdir(attempt_staging):
-                shutil.rmtree(attempt_staging, ignore_errors=True)
-            label = UPDATE_SOURCE_LABELS.get(candidate, candidate)
-            print(f"[update] 尝试下载源 [{idx + 1}/{len(source_order)}] {label}（{candidate}）→ {attempt_staging}")
-            try:
-                root_files, static_files, files = stage_update_from_source(candidate, attempt_staging)
-                source = candidate
-                staging_root = attempt_staging
-                fallback_used = idx > 0
-                print(f"[update] 下载源 {label} 成功，共 {len(files or [])} 个文件")
-                break
-            except Exception as exc:  # noqa: BLE001 — 记录后尝试下一个源
-                if os.path.isdir(attempt_staging):
-                    shutil.rmtree(attempt_staging, ignore_errors=True)
-                print(f"[update] 下载源 {label} 失败：{exc}")
-                traceback.print_exc()
-                download_errors.append(f"{label}：{exc}")
-        if not staging_root:
-            detail = "；".join(download_errors) or "未知错误"
-            print(f"[update] 所有下载源均失败 → {detail}")
-            raise HTTPException(status_code=502, detail=f"所有下载源均失败 → {detail}")
-
-        updated = []
-        for rel in root_files:
-            target = safe_update_target(rel)
-            if os.path.exists(target):
-                backup_path = os.path.join(backup_root, *rel.split("/"))
-                os.makedirs(os.path.dirname(backup_path), exist_ok=True)
-                shutil.copy2(target, backup_path)
-
-        staged_static_dir = os.path.join(staging_root, "static")
-        if not os.path.isdir(staged_static_dir):
-            raise RuntimeError("GitHub static 暂存目录不存在，已取消更新")
-        static_dir = safe_static_dir()
-        backup_static_dir = os.path.join(backup_root, "static")
-        if os.path.isdir(static_dir):
-            os.makedirs(os.path.dirname(backup_static_dir), exist_ok=True)
-            shutil.copytree(static_dir, backup_static_dir)
-            shutil.rmtree(static_dir)
-        try:
-            shutil.copytree(staged_static_dir, static_dir)
-        except Exception:
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir, ignore_errors=True)
-            if os.path.isdir(backup_static_dir):
-                shutil.copytree(backup_static_dir, static_dir)
-            raise
-        updated.extend(static_files)
-
-        replaced_root_files = []
-        try:
-            for rel in root_files:
-                target = safe_update_target(rel)
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                temp_path = f"{target}.update_tmp"
-                shutil.copy2(os.path.join(staging_root, *rel.split("/")), temp_path)
-                os.replace(temp_path, target)
-                replaced_root_files.append(rel)
-                updated.append(rel)
-        except Exception:
-            for rel in reversed(replaced_root_files):
-                backup_path = os.path.join(backup_root, *rel.split("/"))
-                target = safe_update_target(rel)
-                if os.path.exists(backup_path):
-                    temp_path = f"{target}.rollback_tmp"
-                    shutil.copy2(backup_path, temp_path)
-                    os.replace(temp_path, target)
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir, ignore_errors=True)
-            if os.path.isdir(backup_static_dir):
-                shutil.copytree(backup_static_dir, static_dir)
-            raise
-
-        restart_scheduled = False
-        if req.auto_restart and updated:
-            restart_scheduled = schedule_self_restart(req.restart_delay)
-        new_version = ""
-        try:
-            staged_version = os.path.join(staging_root, "VERSION")
-            if os.path.exists(staged_version):
-                with open(staged_version, "r", encoding="utf-8") as f:
-                    new_version = (f.read().strip().splitlines() or [""])[0].strip()
-        except Exception:
-            new_version = ""
-        notes_file = os.path.join(staging_root, "static", "update-notes.json")
-        update_notes = {}
-        try:
-            if os.path.exists(notes_file):
-                with open(notes_file, "r", encoding="utf-8") as f:
-                    update_notes = safe_update_notes(json.load(f), new_version)
-        except Exception:
-            update_notes = {}
-        return {
-            "ok": True,
-            "source": source,
-            "source_label": UPDATE_SOURCE_LABELS.get(source, source),
-            "requested_source": requested_source,
-            "fallback_used": fallback_used,
-            "download_errors": download_errors,
-            "updated": updated,
-            "count": len(updated),
-            "version": new_version,
-            "update_notes": update_notes,
-            "backup_dir": backup_root if os.path.exists(backup_root) else "",
-            "restart_required": True,
-            "restart_scheduled": restart_scheduled,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"更新失败：{exc}") from exc
-    finally:
-        if staging_root and os.path.isdir(staging_root):
-            shutil.rmtree(staging_root, ignore_errors=True)
-        UPDATE_LOCK.release()
+    raise HTTPException(
+        status_code=409,
+        detail="应用内覆盖更新已停用，请下载并运行新版 Hstar 安装包完成升级。",
+    )
 
 def list_update_backups() -> List[Dict[str, Any]]:
     root = os.path.join(DATA_DIR, "update_backups")
@@ -2604,71 +2600,10 @@ class RollbackRequest(BaseModel):
 
 @app.post("/api/update-rollback")
 def rollback_update(req: RollbackRequest):
-    if not req.name:
-        raise HTTPException(status_code=400, detail="缺少备份名称")
-    if not UPDATE_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="正在更新中，请稍后再试")
-    try:
-        backup_root_abs = os.path.abspath(os.path.join(DATA_DIR, "update_backups"))
-        backup_dir = os.path.abspath(os.path.join(backup_root_abs, req.name))
-        if os.path.commonpath([backup_root_abs, backup_dir]) != backup_root_abs:
-            raise HTTPException(status_code=400, detail="备份路径不安全")
-        if not os.path.isdir(backup_dir):
-            raise HTTPException(status_code=404, detail="备份不存在")
-        restored = []
-        skipped = []
-        backup_static_dir = os.path.join(backup_dir, "static")
-        if os.path.isdir(backup_static_dir):
-            static_dir = safe_static_dir()
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir)
-            try:
-                shutil.copytree(backup_static_dir, static_dir)
-            except Exception:
-                if os.path.isdir(static_dir):
-                    shutil.rmtree(static_dir, ignore_errors=True)
-                raise
-            for dirpath, _, filenames in os.walk(backup_static_dir):
-                for fn in filenames:
-                    src = os.path.join(dirpath, fn)
-                    restored.append(os.path.relpath(src, backup_dir).replace("\\", "/"))
-        for dirpath, _, filenames in os.walk(backup_dir):
-            for fn in filenames:
-                src = os.path.join(dirpath, fn)
-                rel = os.path.relpath(src, backup_dir).replace("\\", "/")
-                if rel.startswith("static/"):
-                    continue
-                if not update_allowed_file(rel):
-                    skipped.append(rel)
-                    continue
-                try:
-                    target = safe_update_target(rel)
-                except ValueError:
-                    skipped.append(rel)
-                    continue
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                temp_path = f"{target}.rollback_tmp"
-                with open(src, "rb") as fin, open(temp_path, "wb") as fout:
-                    shutil.copyfileobj(fin, fout)
-                os.replace(temp_path, target)
-                restored.append(rel)
-        restart_scheduled = False
-        if req.auto_restart and restored:
-            restart_scheduled = schedule_self_restart(req.restart_delay)
-        return {
-            "ok": True,
-            "restored": restored,
-            "skipped": skipped,
-            "count": len(restored),
-            "restart_required": True,
-            "restart_scheduled": restart_scheduled,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"回滚失败：{exc}") from exc
-    finally:
-        UPDATE_LOCK.release()
+    raise HTTPException(
+        status_code=410,
+        detail="应用内程序回滚已停用，请重新运行对应版本的 Hstar 安装包。",
+    )
 
 class GenerateRequest(BaseModel):
     prompt: str = ""
@@ -2815,6 +2750,7 @@ class ApiProviderPayload(BaseModel):
     base_url: str = ""
     protocol: str = "openai"
     protocol_manual: bool = False
+    use_system_proxy: bool = True
     image_request_mode: str = "openai"
     image_generation_endpoint: str = ""
     image_edit_endpoint: str = ""
@@ -2875,6 +2811,8 @@ class CanvasLLMRequest(BaseModel):
     messages: List[Dict[str, Any]] = []
     provider: str = "comfly"
     ms_model: str = ""
+    response_format: Literal["", "json_object"] = ""
+    stream_response: bool = False
     images: List[str] = []   # 可以是 /output/*.png、/assets/*.png 本地路径 或 http(s) URL 或 data URL
     videos: List[str] = []   # 可以是 /output/*.mp4、/assets/*.mp4 本地路径 或 http(s) URL 或 data URL
 
@@ -2882,6 +2820,7 @@ class ConversationCreateRequest(BaseModel):
     title: str = "新对话"
 
 class CanvasCreateRequest(BaseModel):
+    id: Optional[str] = None
     title: str = "未命名画布"
     icon: str = "🧩"
     kind: str = "classic"
@@ -2934,12 +2873,33 @@ class OpenShopProjectCloneRequest(BaseModel):
 class OpenShopAiTaskRequest(BaseModel):
     owner: Dict[str, Any]
     tool_id: str
+    client_request_id: str = ""
     source_asset_id: str
     mask_asset_id: str = ""
+    primary_reference_asset_id: str = ""
+    reference_assets: List[Dict[str, Any]] = Field(default_factory=list)
     provider_id: str
     model_id: str
     mode: str = "layer"
+    prompt: str = ""
+    size: str = "auto"
+    quality: str = "auto"
+    target_count: int = 1
+    reference_mode: str = "full"
+    source_layer_id: str = ""
+    source_layer_index: int = 0
+    document: Dict[str, Any] = Field(default_factory=dict)
+    selection: Dict[str, Any] = Field(default_factory=dict)
     options: Dict[str, Any] = Field(default_factory=dict)
+
+class OpenShopAiRetryRequest(BaseModel):
+    owner: Dict[str, Any]
+
+class OpenShopAssetImportRequest(BaseModel):
+    owner: Dict[str, Any]
+    library_id: str
+    category_id: str = ""
+    item_id: str
 
 class CanvasAssetCheckRequest(BaseModel):
     urls: List[str] = []
@@ -2982,9 +2942,47 @@ class SaveOutputAsRequest(BaseModel):
 class SoftwareStorageRequest(BaseModel):
     storage_root: str = ""
 
+class StorageMigrationRequest(BaseModel):
+    storage_root: str = Field(min_length=1, max_length=1024)
+
+class RuntimeRestartRequest(BaseModel):
+    expected_storage_root: str = Field(min_length=1, max_length=1024)
+
+class VoiceSettingsRequest(BaseModel):
+    enabled: bool = True
+    storage_mode: Literal["inherit", "custom"] = "inherit"
+    storage_root: str = ""
+    language: Literal["auto", "zh", "en", "ja"] = "auto"
+    input_device_id: str = "default"
+    shortcut: str = "Shift+Q"
+    prewarm_on_startup: bool = False
+
+class VoiceInstallRequest(BaseModel):
+    profile: Literal["auto", "cuda", "cpu"] = "auto"
+    revision: str = "master"
+
+class VoiceTaskRequest(BaseModel):
+    task_id: str
+
+class VoicePathRequest(BaseModel):
+    path: str = ""
+
+class VoiceMigrateRequest(BaseModel):
+    storage_root: str = ""
+
+class VoiceUninstallRequest(BaseModel):
+    delete_external_model: bool = False
+    confirmation_token: str = ""
+
+class VoiceServiceRequest(BaseModel):
+    device: Literal["auto", "cuda", "cpu"] = "auto"
+
 class NativeFolderRequest(BaseModel):
     initial_dir: str = ""
     purpose: str = ""
+
+class NativeOpenFileRequest(BaseModel):
+    kind: str = "image"
 
 class SaveOutputBatchRequest(BaseModel):
     items: List[Dict[str, Any]] = []
@@ -3375,19 +3373,34 @@ def comfy_class_is_debug_text(class_type):
     ct = str(class_type or "").lower()
     return bool(ct) and any(h in ct for h in COMFY_DEBUG_TEXT_CLASS_HINTS)
 
+def backup_corrupt_history(read_path: str, error: Exception) -> Path:
+    source = Path(read_path)
+    backup = (
+        Path(HISTORY_FILE).parent
+        / "corrupt"
+        / f"{source.name}.{uuid.uuid4().hex}.corrupt"
+    )
+    atomic_write_bytes(backup, source.read_bytes())
+    print(f"历史文件损坏，已保留原始副本 {backup}: {error}")
+    return backup
+
 def save_to_history(record):
     with HISTORY_LOCK:
         history = []
-        if os.path.exists(HISTORY_FILE):
+        read_path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+        if os.path.exists(read_path):
             try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-            except: pass
+                with open(read_path, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                if not isinstance(loaded, list) or any(not isinstance(item, dict) for item in loaded):
+                    raise ValueError("历史记录根节点必须是对象数组")
+                history = loaded
+            except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+                backup_corrupt_history(read_path, error)
         if "timestamp" not in record:
             record["timestamp"] = time.time()
         history.insert(0, record)
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history[:5000], f, ensure_ascii=False, indent=4)
+        atomic_write_json(Path(HISTORY_FILE), history[:5000])
 
 def get_comfy_history(comfy_address, prompt_id):
     try:
@@ -3405,16 +3418,51 @@ def safe_user_id(user_id, request: Request):
     candidate = re.sub(r"[^a-zA-Z0-9_.-]", "-", candidate)[:80].strip(".-")
     return candidate or "anonymous"
 
-def user_dir(user_id):
-    path = os.path.join(CONVERSATION_DIR, user_id)
-    os.makedirs(path, exist_ok=True)
-    return path
+def conversation_user_dir(root_dir, user_id):
+    return os.path.join(root_dir, user_id) if root_dir else ""
 
-def conversation_path(user_id, conversation_id):
+def primary_conversation_path(user_id, conversation_id):
+    return os.path.join(
+        conversation_user_dir(CONVERSATION_DIR, user_id),
+        f"{cleaned_conversation_id(conversation_id)}.json",
+    )
+
+def legacy_conversation_path(user_id, conversation_id):
+    if not LEGACY_CONVERSATION_DIR:
+        return ""
+    return os.path.join(
+        conversation_user_dir(LEGACY_CONVERSATION_DIR, user_id),
+        f"{cleaned_conversation_id(conversation_id)}.json",
+    )
+
+def cleaned_conversation_id(conversation_id):
     cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", conversation_id or "")
     if not cleaned:
         raise HTTPException(status_code=400, detail="无效的对话 ID")
-    return os.path.join(user_dir(user_id), f"{cleaned}.json")
+    return cleaned
+
+def conversation_path(user_id, conversation_id):
+    primary = primary_conversation_path(user_id, conversation_id)
+    if os.path.isfile(primary):
+        return primary
+    legacy = legacy_conversation_path(user_id, conversation_id)
+    if legacy and os.path.isfile(legacy):
+        return legacy
+    return primary
+
+def conversation_storage_files(user_id):
+    by_name = {}
+    directories = [
+        conversation_user_dir(LEGACY_CONVERSATION_DIR, user_id),
+        conversation_user_dir(CONVERSATION_DIR, user_id),
+    ]
+    for directory in directories:
+        if not directory or not os.path.isdir(directory):
+            continue
+        for filename in os.listdir(directory):
+            if filename.endswith(".json"):
+                by_name[filename] = os.path.join(directory, filename)
+    return [by_name[name] for name in sorted(by_name)]
 
 def now_ms():
     return int(time.time() * 1000)
@@ -3422,8 +3470,7 @@ def now_ms():
 def save_conversation(user_id, conversation):
     with CONVERSATION_LOCK:
         path = conversation_path(user_id, conversation["id"])
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(conversation, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(path), conversation)
 
 def new_conversation(user_id, title="新对话"):
     timestamp = now_ms()
@@ -3446,10 +3493,7 @@ def load_conversation(user_id, conversation_id):
 
 def list_conversations(user_id):
     records = []
-    for filename in os.listdir(user_dir(user_id)):
-        if not filename.endswith(".json"):
-            continue
-        path = os.path.join(user_dir(user_id), filename)
+    for path in conversation_storage_files(user_id):
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -3466,24 +3510,91 @@ def list_conversations(user_id):
         })
     return sorted(records, key=lambda item: item["updated_at"], reverse=True)
 
-def canvas_path(canvas_id):
-    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", canvas_id or "")
-    if not cleaned:
+def cleaned_canvas_id(canvas_id):
+    cleaned = str(canvas_id or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", cleaned):
         raise HTTPException(status_code=400, detail="无效的画布 ID")
-    return os.path.join(CANVAS_DIR, f"{cleaned}.json")
+    return cleaned
+
+def primary_canvas_path(canvas_id):
+    return os.path.join(CANVAS_DIR, f"{cleaned_canvas_id(canvas_id)}.json")
+
+def legacy_canvas_path(canvas_id):
+    if not LEGACY_CANVAS_DIR:
+        return ""
+    return os.path.join(LEGACY_CANVAS_DIR, f"{cleaned_canvas_id(canvas_id)}.json")
+
+def canvas_path(canvas_id):
+    primary = primary_canvas_path(canvas_id)
+    if os.path.isfile(primary):
+        return primary
+    legacy = legacy_canvas_path(canvas_id)
+    if legacy and os.path.isfile(legacy):
+        return legacy
+    return primary
+
+def canvas_storage_files(*, include_legacy=True):
+    by_name = {}
+    directories = []
+    if include_legacy and LEGACY_CANVAS_DIR:
+        directories.append(LEGACY_CANVAS_DIR)
+    directories.append(CANVAS_DIR)
+    for directory in directories:
+        if not os.path.isdir(directory):
+            continue
+        for filename in os.listdir(directory):
+            if filename.endswith(".json"):
+                by_name[filename] = os.path.join(directory, filename)
+    return [by_name[name] for name in sorted(by_name)]
 
 def save_canvas(canvas):
-    canvas["updated_at"] = now_ms()
+    previous_updated_at = int(canvas.get("updated_at") or 0)
+    canvas["updated_at"] = max(now_ms(), previous_updated_at + 1)
     with CANVAS_LOCK:
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(canvas_path(canvas["id"])), canvas)
+
+OPENSHOP_ASSET_URL_PREFIX = "/api/openshop/assets/"
+OPENSHOP_ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+
+def openshop_asset_refs_from_value(value):
+    refs = set()
+    if isinstance(value, dict):
+        for child in value.values():
+            refs.update(openshop_asset_refs_from_value(child))
+    elif isinstance(value, list):
+        for child in value:
+            refs.update(openshop_asset_refs_from_value(child))
+    elif isinstance(value, str):
+        path = urllib.parse.urlsplit(value.strip()).path
+        if path.startswith(OPENSHOP_ASSET_URL_PREFIX):
+            asset_id = path[len(OPENSHOP_ASSET_URL_PREFIX):].strip().lower()
+            if OPENSHOP_ASSET_ID_PATTERN.fullmatch(asset_id):
+                refs.add(asset_id)
+    return refs
+
+def openshop_canvas_asset_refs():
+    refs = set()
+    with CANVAS_LOCK:
+        for path in canvas_storage_files():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    refs.update(openshop_asset_refs_from_value(json.load(f)))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+    return refs
+
+def collect_openshop_garbage(*, include_legacy: bool = False):
+    return OPENSHOP_STORE.collect_garbage(
+        openshop_canvas_asset_refs(),
+        include_legacy=include_legacy,
+    )
 
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
 
 def openshop_project_owners(nodes):
     return {
-        str(node.get("projectId")): str(node.get("id"))
+        (str(node.get("id")), str(node.get("projectId")))
         for node in (nodes or [])
         if isinstance(node, dict)
         and node.get("type") == "openshop-layered"
@@ -3491,31 +3602,97 @@ def openshop_project_owners(nodes):
         and node.get("id")
     }
 
+def reconcile_openshop_canvas_projects(canvas):
+    canvas_type = normalize_canvas_kind(canvas.get("kind"))
+    canvas_id = str(canvas.get("id") or "")
+    project_owners = openshop_project_owners(canvas.get("nodes"))
+    removed_records = []
+    reconciliation_error = None
+    try:
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            try:
+                removed_records = OPENSHOP_STORE.reconcile_canvas_projects(
+                    canvas_type,
+                    canvas_id,
+                    project_owners,
+                )
+            except OpenShopReconciliationError as exc:
+                removed_records = exc.removed_records
+                reconciliation_error = exc
+            for record in removed_records:
+                OPENSHOP_AI_TASKS.cancel_project(record["projectId"], record["owner"])
+    finally:
+        if removed_records:
+            collect_openshop_garbage(include_legacy=True)
+    if reconciliation_error:
+        if reconciliation_error.__cause__ is not None:
+            raise reconciliation_error.__cause__
+        raise reconciliation_error
+    return removed_records
+
+def reconcile_saved_openshop_projects():
+    removed_records = []
+    try:
+        filenames = sorted(os.listdir(CANVAS_DIR))
+    except Exception:
+        logging.exception(
+            "OpenShop startup reconciliation could not list canvas directory %s",
+            CANVAS_DIR,
+        )
+        return removed_records
+
+    for filename in filenames:
+        if not filename.endswith(".json"):
+            continue
+        path = os.path.join(CANVAS_DIR, filename)
+        try:
+            with CANVAS_LOCK:
+                with open(path, "r", encoding="utf-8") as f:
+                    canvas = json.load(f)
+            if not isinstance(canvas, dict):
+                raise OpenShopValidationError("Invalid canvas record")
+            canvas_id = str(canvas.get("id") or os.path.splitext(filename)[0])
+            expected_path = os.path.normcase(os.path.abspath(canvas_path(canvas_id)))
+            if expected_path != os.path.normcase(os.path.abspath(path)):
+                raise OpenShopValidationError("Invalid canvas record path")
+            canvas["id"] = canvas_id
+            removed_records.extend(reconcile_openshop_canvas_projects(canvas))
+        except Exception:
+            logging.exception(
+                "OpenShop startup reconciliation failed for canvas file %s",
+                filename,
+            )
+    return removed_records
+
 def remove_openshop_projects(project_owners, canvas_type, canvas_id):
     removed = []
-    for project_id, node_id in (project_owners or {}).items():
+    for node_id, project_id in sorted(project_owners or set()):
         owner = {
             "canvasType": normalize_canvas_kind(canvas_type),
             "canvasId": str(canvas_id),
             "nodeId": str(node_id),
         }
         try:
-            if OPENSHOP_STORE.delete(project_id, owner):
-                OPENSHOP_AI_TASKS.cancel_project(project_id)
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                deleted = OPENSHOP_STORE.delete(project_id, owner)
+                OPENSHOP_AI_TASKS.cancel_project(project_id, owner)
+            if deleted:
                 removed.append(project_id)
         except OpenShopNotFound:
             continue
     if removed:
-        OPENSHOP_STORE.collect_garbage()
+        collect_openshop_garbage(include_legacy=True)
     return removed
 
 # ===== 项目（按项目分类管理画布）=====
 PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
+LEGACY_PROJECTS_PATH = os.path.join(LEGACY_DATA_DIR, "projects.json") if LEGACY_DATA_DIR else ""
 DEFAULT_PROJECT_ID = "default"
 
 def load_projects():
+    path = storage_read_path(PROJECTS_PATH, LEGACY_PROJECTS_PATH)
     try:
-        with open(PROJECTS_PATH, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         projects = data.get("projects") if isinstance(data, dict) else data
         if isinstance(projects, list):
@@ -3526,8 +3703,7 @@ def load_projects():
 
 def save_projects(projects):
     with CANVAS_LOCK:
-        with open(PROJECTS_PATH, 'w', encoding='utf-8') as f:
-            json.dump({"projects": projects}, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(PROJECTS_PATH), {"projects": projects})
 
 def project_record(p):
     return {
@@ -3538,7 +3714,7 @@ def project_record(p):
         "updated_at": p.get("updated_at", 0),
     }
 
-def ensure_default_project():
+def ensure_default_project(*, persist=True):
     """保证存在一个“默认项目”，并把没有归属项目的画布迁移进去（一次性、幂等）。"""
     projects = load_projects()
     changed = False
@@ -3546,7 +3722,7 @@ def ensure_default_project():
         ts = now_ms()
         projects.insert(0, {"id": DEFAULT_PROJECT_ID, "name": "默认项目", "order": 0, "created_at": ts, "updated_at": ts})
         changed = True
-    if changed:
+    if changed and persist:
         save_projects(projects)
     return projects
 
@@ -3561,7 +3737,7 @@ def new_project(name="新项目"):
     return proj
 
 def list_projects():
-    projects = ensure_default_project()
+    projects = ensure_default_project(persist=not PRESERVE_EXISTING_DATA_ON_STARTUP)
     counts = {}
     for rec in iter_canvas_records(include_deleted=False):
         pid = rec.get("project") or DEFAULT_PROJECT_ID
@@ -3573,11 +3749,26 @@ def list_projects():
         out.append(rec)
     return out
 
-def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None):
+def create_canvas_file(canvas):
+    if os.path.isfile(canvas_path(canvas["id"])):
+        raise FileExistsError(canvas["id"])
+    path = primary_canvas_path(canvas["id"])
+    atomic_create_json(Path(path), canvas)
+
+
+def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None, canvas_id=None):
     timestamp = now_ms()
     canvas_kind = normalize_canvas_kind(kind)
+    requested_id = str(canvas_id or "").strip()
+    if requested_id:
+        if len(requested_id) > 120 or not re.fullmatch(
+            r"codex-e2e-openshop-[A-Za-z0-9_-]+", requested_id
+        ):
+            raise HTTPException(status_code=400, detail="无效的画布 ID")
+    else:
+        requested_id = uuid.uuid4().hex
     canvas = {
-        "id": uuid.uuid4().hex,
+        "id": requested_id,
         "title": (title or ("智能画布" if canvas_kind == "smart" else "未命名画布"))[:80],
         "icon": (icon or ("sparkles" if canvas_kind == "smart" else "🧩"))[:32],
         "kind": canvas_kind,
@@ -3595,25 +3786,44 @@ def new_canvas(title="未命名画布", icon="layers", kind="classic", project=N
         canvas["board_x"] = float(board_x)
     if board_y is not None:
         canvas["board_y"] = float(board_y)
-    save_canvas(canvas)
+    with CANVAS_LOCK:
+        try:
+            create_canvas_file(canvas)
+        except FileExistsError:
+            raise HTTPException(status_code=409, detail="画布 ID 已存在") from None
     return canvas
 
 def load_canvas(canvas_id):
-    path = canvas_path(canvas_id)
+    normalized_id = cleaned_canvas_id(canvas_id)
+    path = canvas_path(normalized_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="画布不存在")
     with open(path, 'r', encoding='utf-8') as f:
         canvas = json.load(f)
+    if not isinstance(canvas, dict):
+        raise HTTPException(status_code=409, detail="画布记录格式无效")
+    stored_id = str(canvas.get("id") or "")
+    if stored_id and stored_id != normalized_id:
+        raise HTTPException(status_code=409, detail="画布记录 ID 与文件名不一致")
+    canvas.setdefault("id", normalized_id)
     if canvas.get("deleted_at"):
         raise HTTPException(status_code=404, detail="画布已在回收站")
     return canvas
 
 def load_canvas_any(canvas_id):
-    path = canvas_path(canvas_id)
+    normalized_id = cleaned_canvas_id(canvas_id)
+    path = canvas_path(normalized_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="画布不存在")
     with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        canvas = json.load(f)
+    if not isinstance(canvas, dict):
+        raise HTTPException(status_code=409, detail="画布记录格式无效")
+    stored_id = str(canvas.get("id") or "")
+    if stored_id and stored_id != normalized_id:
+        raise HTTPException(status_code=409, detail="画布记录 ID 与文件名不一致")
+    canvas.setdefault("id", normalized_id)
+    return canvas
 
 CANVAS_COLORS = {"", "red", "orange", "amber", "green", "teal", "blue", "violet", "pink", "slate"}
 
@@ -3640,6 +3850,8 @@ def canvas_record(data):
     }
 
 def cleanup_expired_canvas_trash():
+    if not os.path.isdir(CANVAS_DIR):
+        return
     cutoff = now_ms() - CANVAS_TRASH_RETENTION_MS
     removed_projects = False
     with CANVAS_LOCK:
@@ -3652,27 +3864,30 @@ def cleanup_expired_canvas_trash():
                     data = json.load(f)
                 deleted_at = int(data.get("deleted_at") or 0)
                 if deleted_at and deleted_at < cutoff:
-                    removed_ids = OPENSHOP_STORE.delete_canvas_projects(
-                        normalize_canvas_kind(data.get("kind")),
-                        str(data.get("id") or os.path.splitext(filename)[0]),
-                    )
-                    removed_projects = bool(removed_ids) or removed_projects
-                    for project_id in removed_ids:
-                        OPENSHOP_AI_TASKS.cancel_project(project_id)
+                    canvas_type = normalize_canvas_kind(data.get("kind"))
+                    canvas_id = str(data.get("id") or os.path.splitext(filename)[0])
+                    with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                        removed_records = OPENSHOP_STORE.delete_canvas_projects(
+                            canvas_type,
+                            canvas_id,
+                        )
+                        for record in removed_records:
+                            OPENSHOP_AI_TASKS.cancel_project(
+                                record["projectId"], record["owner"]
+                            )
+                    removed_projects = bool(removed_records) or removed_projects
                     os.remove(path)
             except Exception:
                 continue
     if removed_projects:
-        OPENSHOP_STORE.collect_garbage()
+        collect_openshop_garbage(include_legacy=True)
 
 def iter_canvas_records(include_deleted=False):
     cleanup_expired_canvas_trash()
     records = []
-    for filename in os.listdir(CANVAS_DIR):
-        if not filename.endswith(".json"):
-            continue
+    for path in canvas_storage_files():
         try:
-            with open(os.path.join(CANVAS_DIR, filename), 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception:
             continue
@@ -3695,6 +3910,28 @@ def list_canvases():
 def list_deleted_canvases():
     records = iter_canvas_records(include_deleted=True)
     return sorted(records, key=lambda item: item["deleted_at"], reverse=True)
+
+
+def purge_canvas_storage(canvas_id: str, *, require_deleted: bool = False) -> bool:
+    """Delete one canvas and every OpenShop resource owned by it."""
+    with CANVAS_LOCK:
+        path = canvas_path(canvas_id)
+        if not os.path.exists(path):
+            return False
+        canvas = load_canvas_any(canvas_id)
+        if require_deleted and not canvas.get("deleted_at"):
+            return False
+        canvas_type = normalize_canvas_kind(canvas.get("kind"))
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            removed = OPENSHOP_STORE.delete_canvas_projects(canvas_type, canvas_id)
+            for record in removed:
+                OPENSHOP_AI_TASKS.cancel_project(record["projectId"], record["owner"])
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                return False
+            collect_openshop_garbage(include_legacy=True)
+        return True
 
 def canvas_asset_url_value(value):
     if isinstance(value, str):
@@ -3806,11 +4043,9 @@ def canvas_assets_index():
     canvas_counts = {"all": 0, "smart": 0, "classic": 0}
     item_counts = {"all": 0, "smart": 0, "classic": 0}
     cleanup_expired_canvas_trash()
-    for filename in os.listdir(CANVAS_DIR):
-        if not filename.endswith(".json"):
-            continue
+    for path in canvas_storage_files():
         try:
-            with open(os.path.join(CANVAS_DIR, filename), "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 canvas = json.load(f)
         except Exception:
             continue
@@ -3912,7 +4147,7 @@ def api_headers(json_body=True, provider=None, model=""):
     else:
         api_key = AI_API_KEY
         if not api_key:
-            raise HTTPException(status_code=400, detail="未配置 COMFLY_API_KEY，请在 API/.env 中填写。")
+            raise HTTPException(status_code=400, detail="未配置 COMFLY_API_KEY，请在 API 设置中填写。")
     if provider and effective_protocol(provider, model) == "gemini" and not is_linapi_provider(provider):
         headers = {"Accept": "application/json", "x-goog-api-key": api_key}
     else:
@@ -4630,7 +4865,11 @@ async def generate_linapi_provider_image(prompt, size, model, reference_images=N
     if quality not in {"auto", "low", "medium", "high"}:
         quality = "auto"
     timeout = httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         if image_refs:
             files = []
             opened = []
@@ -4762,7 +5001,7 @@ def is_gemini_cli_provider(provider):
     return provider_protocol(provider) == "gemini-cli"
 
 def codex_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 def codex_cli_executable():
     configured = str(codex_env_value("CODEX_BIN") or "").strip()
@@ -5308,7 +5547,7 @@ async def codex_chat_text(payload, history_messages=None):
                 pass
 
 def gemini_cli_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 GEMINI_CLI_MODELS_TIMEOUT = 20
 GEMINI_CLI_STRING_CONTROL_ESCAPES = {"]", "P", "X", "^", "_"}
@@ -5900,7 +6139,7 @@ def provider_supports_avatar(provider) -> bool:
     return avatar_platform_for_provider(provider) in AVATAR_SUPPORTED_PLATFORMS
 
 def jimeng_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 def jimeng_use_wsl():
     value = str(jimeng_env_value("JIMENG_USE_WSL") or "").strip().lower()
@@ -6788,11 +7027,13 @@ async def wait_for_image_task(client, task_id, provider=None):
     raise HTTPException(status_code=504, detail=f"生图任务超时（已等待 {int(timeout)} 秒），task_id={task_id}{extra}")
 
 def output_storage(category="output"):
-    return (OUTPUT_INPUT_DIR, "input") if category == "input" else (OUTPUT_OUTPUT_DIR, "output")
+    if category == "input":
+        return OUTPUT_INPUT_DIR, "/assets/input"
+    return OUTPUT_OUTPUT_DIR, "/output/generated"
 
 def output_url_for(filename, category="output"):
-    _, subdir = output_storage(category)
-    return f"/assets/{subdir}/{filename}"
+    _, url_prefix = output_storage(category)
+    return f"{url_prefix}/{filename}"
 
 def output_path_for(filename, category="output"):
     folder, _ = output_storage(category)
@@ -6813,19 +7054,22 @@ def output_file_from_url(url):
         return None
     clean = urllib.parse.unquote(url.split("?", 1)[0]).replace("\\", "/")
     if clean.startswith("/assets/"):
-        root = ASSETS_DIR
+        roots = [ASSETS_DIR]
         rel = clean[len("/assets/"):]
     else:
-        root = OUTPUT_DIR
+        roots = [OUTPUT_DIR, LEGACY_OUTPUT_DIR]
         rel = clean[len("/output/"):]
     rel = rel.lstrip("/")
     if not rel:
         return None
-    path = os.path.abspath(os.path.join(root, rel))
-    output_root = os.path.abspath(root)
-    if os.path.commonpath([output_root, path]) != output_root or not os.path.exists(path):
-        return None
-    return path
+    for root in roots:
+        if not root:
+            continue
+        path = os.path.abspath(os.path.join(root, rel))
+        output_root = os.path.abspath(root)
+        if os.path.commonpath([output_root, path]) == output_root and os.path.exists(path):
+            return path
+    return None
 
 def image_has_alpha(img: Image.Image) -> bool:
     if img.mode in ("RGBA", "LA"):
@@ -6834,20 +7078,38 @@ def image_has_alpha(img: Image.Image) -> bool:
         return "transparency" in img.info
     return False
 
-def media_preview_cache_paths(path: str, width: int):
+def media_preview_cache_key(path: str, width: int, suffix: str = ""):
     stat = os.stat(path)
-    key = hashlib.sha1(
-        f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}".encode("utf-8", "ignore")
+    return hashlib.sha1(
+        f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}{suffix}".encode(
+            "utf-8", "ignore"
+        )
     ).hexdigest()
+
+def media_preview_cache_paths(path: str, width: int, root_dir: str = ""):
+    key = media_preview_cache_key(path, width)
+    cache_root = root_dir or MEDIA_PREVIEW_DIR
     return (
-        os.path.join(MEDIA_PREVIEW_DIR, f"{key}.webp"),
-        os.path.join(MEDIA_PREVIEW_DIR, f"{key}.png"),
+        os.path.join(cache_root, f"{key}.webp"),
+        os.path.join(cache_root, f"{key}.png"),
     )
+
+def media_preview_read_paths(path: str, width: int):
+    paths = [media_preview_cache_paths(path, width)]
+    if LEGACY_MEDIA_PREVIEW_DIR:
+        paths.append(
+            media_preview_cache_paths(path, width, LEGACY_MEDIA_PREVIEW_DIR)
+        )
+    return paths
 
 def remove_media_preview_cache(path: str, widths=(480,)):
     for width in widths:
         try:
-            cache_paths = media_preview_cache_paths(path, int(width))
+            cache_paths = [
+                candidate
+                for pair in media_preview_read_paths(path, int(width))
+                for candidate in pair
+            ]
         except OSError:
             continue
         for cache_path in cache_paths:
@@ -6896,12 +7158,13 @@ async def media_preview(url: str, w: int = 512):
         raise HTTPException(status_code=404, detail="媒体文件不存在")
 
     width = max(64, min(2048, int(w or 512)))
-    webp_path, png_path = media_preview_cache_paths(path, width)
+    for cached_webp_path, cached_png_path in media_preview_read_paths(path, width):
+        if os.path.exists(cached_webp_path):
+            return FileResponse(cached_webp_path, media_type="image/webp")
+        if os.path.exists(cached_png_path):
+            return FileResponse(cached_png_path, media_type="image/png")
 
-    if os.path.exists(webp_path):
-        return FileResponse(webp_path, media_type="image/webp")
-    if os.path.exists(png_path):
-        return FileResponse(png_path, media_type="image/png")
+    webp_path, png_path = media_preview_cache_paths(path, width)
 
     def _build_preview():
         # 同步 PIL 处理 + 落盘，放到线程里执行，避免阻塞事件循环（几十张首次生成会卡死整个 loop → 缩略图全空白）
@@ -6934,11 +7197,14 @@ async def image_jpeg(url: str, w: int = 0):
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="媒体文件不存在")
     width = max(0, min(4096, int(w or 0)))
-    stat = os.stat(path)
-    key = hashlib.sha1(f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}|jpg".encode("utf-8", "ignore")).hexdigest()
+    key = media_preview_cache_key(path, width, "|jpg")
     cache_path = os.path.join(MEDIA_PREVIEW_DIR, f"{key}.jpg")
-    if os.path.exists(cache_path):
-        return FileResponse(cache_path, media_type="image/jpeg")
+    read_paths = [cache_path]
+    if LEGACY_MEDIA_PREVIEW_DIR:
+        read_paths.append(os.path.join(LEGACY_MEDIA_PREVIEW_DIR, f"{key}.jpg"))
+    for read_path in read_paths:
+        if os.path.exists(read_path):
+            return FileResponse(read_path, media_type="image/jpeg")
 
     def _build():
         os.makedirs(MEDIA_PREVIEW_DIR, exist_ok=True)
@@ -6968,12 +7234,15 @@ def local_media_file_by_basename(name: str):
         return None
     roots = [
         OUTPUT_OUTPUT_DIR,
+        LEGACY_OUTPUT_DIR,
         OUTPUT_INPUT_DIR,
         os.path.join(ASSETS_DIR, "output"),
         os.path.join(ASSETS_DIR, "input"),
         os.path.join(ASSETS_DIR, "library"),
     ]
     for root in roots:
+        if not root:
+            continue
         path = os.path.abspath(os.path.join(root, safe))
         root_abs = os.path.abspath(root)
         if os.path.commonpath([root_abs, path]) == root_abs and os.path.isfile(path):
@@ -7203,12 +7472,13 @@ def migrate_asset_item_registrations(item):
         item.pop(key, None)
 
 def load_asset_library():
-    if not os.path.exists(ASSET_LIBRARY_PATH):
+    path = storage_read_path(ASSET_LIBRARY_PATH, LEGACY_ASSET_LIBRARY_PATH)
+    if not os.path.exists(path):
         lib = default_asset_library()
         save_asset_library(lib)
         return lib
     try:
-        with open(ASSET_LIBRARY_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             lib = json.load(f)
     except Exception:
         lib = default_asset_library()
@@ -7440,8 +7710,7 @@ def _read_local_upload_classification(filename):
 
 def _write_local_upload_classification(filename, classification):
     path = _local_upload_classification_path(filename)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(normalize_asset_classification(classification), f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(path), normalize_asset_classification(classification))
 
 def asset_classification_prompt(extra_prompt=""):
     extra = str(extra_prompt or "").strip()
@@ -7565,9 +7834,7 @@ def save_asset_library(lib):
     lib = normalize_asset_library(lib)
     sort_asset_library_items(lib)
     lib["updated_at"] = now_ms()
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(ASSET_LIBRARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(lib, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(ASSET_LIBRARY_PATH), lib)
     if GLOBAL_LOOP:
         asyncio.run_coroutine_threadsafe(manager.broadcast_asset_library_updated(int(lib["updated_at"])), GLOBAL_LOOP)
 
@@ -7613,8 +7880,9 @@ SHARED_SCAN_MAX_ENTRIES = 8000
 SHARED_FOLDERS_LOCK = Lock()
 
 def shared_folders_load():
+    path = storage_read_path(SHARED_FOLDERS_FILE, LEGACY_SHARED_FOLDERS_FILE)
     try:
-        with open(SHARED_FOLDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         data = {}
@@ -7626,9 +7894,7 @@ def shared_folders_load():
     return {"folders": [f for f in folders if isinstance(f, dict)]}
 
 def shared_folders_save(data):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SHARED_FOLDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(SHARED_FOLDERS_FILE), data)
 
 def shared_folder_by_id(folder_id):
     for entry in shared_folders_load().get("folders", []):
@@ -7878,27 +8144,32 @@ def normalize_prompt_libraries(data):
     return {"active_library_id": active, "libraries": libraries, "updated_at": int(data.get("updated_at") or now_ms())}
 
 def load_prompt_libraries():
-    if not os.path.exists(PROMPT_LIBRARY_PATH):
+    path = storage_read_path(PROMPT_LIBRARY_PATH, LEGACY_PROMPT_LIBRARY_PATH)
+    if not os.path.exists(path):
         data = default_prompt_libraries()
         return save_prompt_libraries(data)
     try:
-        with open(PROMPT_LIBRARY_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         data = default_prompt_libraries()
     if not isinstance(data, dict):
         data = default_prompt_libraries()
     normalized = normalize_prompt_libraries(data)
-    if normalized.get("active_library_id") != data.get("active_library_id") or normalized.get("libraries") != data.get("libraries"):
+    if (
+        path == PROMPT_LIBRARY_PATH
+        and (
+            normalized.get("active_library_id") != data.get("active_library_id")
+            or normalized.get("libraries") != data.get("libraries")
+        )
+    ):
         return save_prompt_libraries(normalized)
     return normalized
 
 def save_prompt_libraries(data):
     data = normalize_prompt_libraries(data)
     data["updated_at"] = now_ms()
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(PROMPT_LIBRARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(PROMPT_LIBRARY_PATH), data)
     return data
 
 def public_prompt_libraries(data=None):
@@ -8004,6 +8275,24 @@ def convert_output_to_jpg(url, quality=88):
     if ext.lower() in [".jpg", ".jpeg"]:
         return url
     jpg_path = f"{root}.jpg"
+    if LEGACY_OUTPUT_DIR:
+        legacy_root = os.path.abspath(LEGACY_OUTPUT_DIR)
+        source_path = os.path.abspath(path)
+        try:
+            is_legacy_output = (
+                os.path.commonpath([legacy_root, source_path]) == legacy_root
+            )
+        except ValueError:
+            is_legacy_output = False
+        if is_legacy_output:
+            os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
+            stem = sanitize_export_filename(os.path.basename(root), "converted")
+            source_key = hashlib.sha1(
+                source_path.encode("utf-8", "ignore")
+            ).hexdigest()[:12]
+            jpg_path = os.path.join(
+                OUTPUT_OUTPUT_DIR, f"{stem}-{source_key}.jpg"
+            )
     try:
         with Image.open(path) as img:
             if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
@@ -8542,13 +8831,12 @@ def apply_trusted_asset_prompt_index(prompt: str, image_count: int, video_count:
     return f"{text}\n{hint}" if text else hint
 
 def public_base_url() -> str:
-    # 实时读 API/.env 且文件优先：公网隧道重启后地址会变，隧道脚本只改 .env；
-    # 启动时 load_env_file 会把旧值复制进 os.environ，若 env 优先会永远读到过期地址
+    # Credential cache wins because process environment values may be stale.
     value = (
-        read_api_env_value("PUBLIC_MEDIA_BASE_URL") or
+        read_api_credential_value("PUBLIC_MEDIA_BASE_URL") or
         os.getenv("PUBLIC_MEDIA_BASE_URL") or
         PUBLIC_MEDIA_BASE_URL or
-        read_api_env_value("PUBLIC_BASE_URL") or
+        read_api_credential_value("PUBLIC_BASE_URL") or
         os.getenv("PUBLIC_BASE_URL") or
         PUBLIC_BASE_URL or
         ""
@@ -8623,7 +8911,7 @@ def apimart_video_reference_error(value: str) -> str:
             return "这是本地画布文件路径，但后端没有找到对应文件，请重新上传视频后再试。"
         return (
             "这是本地画布文件，APIMart 无法访问 127.0.0.1/局域网路径；"
-            "请在 API/.env 配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），"
+            "请在 API 设置中配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），"
             "或改用公网 http/https 视频 URL、审核后的 asset:// 地址。"
         )
     if text.startswith("data:") or text.startswith("blob:") or text.startswith("file:"):
@@ -9664,6 +9952,15 @@ def friendly_chat_error_detail(text, model="", provider=None):
     message_lc = message.lower()
     model_name = str(model or "").strip()
 
+    status = str(payload.get("status") or error.get("status") or "").strip()
+    error_code = str(payload.get("error_code") or error.get("error_code") or "").strip()
+    error_name = str(payload.get("error_name") or error.get("error_name") or "").strip().lower()
+    if status == "524" or error_code == "524" or error_name == "origin_response_timeout":
+        return (
+            "上游模型处理超过 120 秒，Cloudflare 已终止本次请求（524）。"
+            "本次不会自动重试；请再次点击文字提取，或选择响应更快的视觉模型。"
+        )
+
     if is_volcengine_provider(provider):
         if code_lc in {"invalidendpointormodel.notfound", "invalidendpointormodel.modelidaccessdisabled"}:
             provider_name = provider.get("name") or provider.get("id") or "火山方舟"
@@ -9715,7 +10012,10 @@ async def generate_modelscope_provider_image(prompt, size, model, reference_imag
         payload["image_url"] = refs
 
     api_root = modelscope_image_api_root()
-    async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(
+        timeout=AI_REQUEST_TIMEOUT,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         submit_res = await client.post(f"{api_root}/images/generations", headers=headers, json=payload)
         submit_res.raise_for_status()
         raw = submit_res.json()
@@ -9928,10 +10228,56 @@ def baofu_size_for_request(size):
         return "1024x1024"
     return size or "1024x1024"
 
+def qzz_compact_reference_data_url(value, max_size=384):
+    text = str(value or "").strip()
+    if not text.startswith("data:image/") or "," not in text:
+        return text
+    try:
+        header, encoded = text.split(",", 1)
+        if ";base64" not in header.lower():
+            raise ValueError("reference image is not base64 encoded")
+        content = base64.b64decode(encoded, validate=True)
+        if not content or len(content) > MAX_ART_FONT_COMPRESSED_BYTES:
+            raise ValueError("reference image exceeds the size limit")
+        with Image.open(BytesIO(content)) as source:
+            source.load()
+            image = ImageOps.exif_transpose(source).convert("RGBA")
+        limit = max(64, min(1024, int(max_size or 384)))
+        if max(image.size) > limit:
+            image.thumbnail((limit, limit), Image.Resampling.LANCZOS)
+        alpha = image.getchannel("A")
+        if alpha.getextrema()[0] < 255:
+            rgba = image.tobytes()
+            luminance_total = 0.0
+            visible_count = 0
+            for offset in range(0, len(rgba), 4):
+                if rgba[offset + 3] < 32:
+                    continue
+                luminance_total += (
+                    (0.2126 * rgba[offset])
+                    + (0.7152 * rgba[offset + 1])
+                    + (0.0722 * rgba[offset + 2])
+                )
+                visible_count += 1
+            luminance = luminance_total / visible_count if visible_count else 0
+            background = (16, 16, 16) if luminance >= 180 else (248, 248, 248)
+            flattened = Image.new("RGB", image.size, background)
+            flattened.paste(image, mask=alpha)
+        else:
+            flattened = image.convert("RGB")
+        buffer = BytesIO()
+        flattened.save(buffer, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"QZZ 参考图片转换失败：{exc}") from exc
+
+
 def qzz_reference_image_value(ref):
     text = str((ref or {}).get("url") or "").strip()
     if not text:
         return ""
+    if text.startswith("data:image/"):
+        return qzz_compact_reference_data_url(text)
     local_ref = text
     parsed = urllib.parse.urlsplit(text)
     host = (parsed.hostname or "").lower()
@@ -9939,29 +10285,104 @@ def qzz_reference_image_value(ref):
         if host not in {"127.0.0.1", "localhost", "::1"} and not re.match(r"^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)", host):
             return text
         local_ref = urllib.parse.unquote(parsed.path or "")
-    return reference_to_data_url({"url": local_ref}, max_size=384)
+    return qzz_compact_reference_data_url(
+        reference_to_data_url({"url": local_ref}, max_size=384)
+    )
+
+
+def qzz_image_error_detail(response, size="", model=""):
+    text = str(getattr(response, "text", "") or "").strip()
+    payload = parse_error_payload_text(text)
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    message = str(error.get("message") or payload.get("message") or "").strip()
+    friendly = friendly_image_error_detail(text, size, model)
+    raw_reason = message or text[:800] or str(getattr(response, "reason_phrase", "") or "上游拒绝请求")
+    raw_reason = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "sk-[已隐藏]", raw_reason)
+    raw_reason = re.sub(
+        r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?bearer\s+)[A-Za-z0-9._~-]+",
+        r"\1[已隐藏]",
+        raw_reason,
+    )
+    reason = friendly or raw_reason
+    if friendly and raw_reason and raw_reason not in friendly:
+        reason = f"{friendly} 上游原始信息：{raw_reason}"
+    return (
+        f"QZZ 生图接口错误（HTTP {getattr(response, 'status_code', 502)}）：{reason}。"
+        "本次请求已停止，不会自动重试。"
+    )
 
 async def generate_qzz_provider_image(prompt, size, model, reference_images=None, provider=None, quality=""):
     model_name = baofu_model_for_request(model)
     request_size = normalize_gpt_image_2_size(size)
     gen_url = provider_endpoint_url(provider, "image_generation_endpoint", "/v1/images/generations")
+    edit_url = provider_endpoint_url(provider, "image_edit_endpoint", "/v1/images/edits")
     refs = [ref for ref in (reference_images or []) if ref.get("url")]
-    image_refs = image_references(refs)
+    mask_refs = [
+        ref for ref in refs
+        if str(ref.get("role") or "").strip().lower() == "mask"
+        or str(ref.get("name") or "").lower().endswith("_mask.png")
+    ]
+    image_refs = [ref for ref in refs if ref not in mask_refs]
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True) as client:
-        body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
+    async with httpx.AsyncClient(
+        timeout=request_timeout,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         quality = str(quality or "").strip().lower()
-        if quality in {"low", "medium", "high"}:
-            body["quality"] = quality
         if image_refs:
-            image_payload = require_converted_image_refs(
-                image_refs[:1],
-                [qzz_reference_image_value(ref) for ref in image_refs[:1]],
-                "QZZ 图生图",
+            files = []
+            opened = []
+            temp_paths = []
+            try:
+                for ref in image_refs[:4]:
+                    path, created = await codex_prepare_local_media(ref.get("url", ""))
+                    temp_paths.extend(created)
+                    if not path:
+                        continue
+                    handle = open(path, "rb")
+                    opened.append(handle)
+                    files.append(("image", (os.path.basename(path), handle, content_type_for_path(path))))
+                if mask_refs:
+                    mask_path, created = await codex_prepare_local_media(mask_refs[0].get("url", ""))
+                    temp_paths.extend(created)
+                    if mask_path:
+                        handle = open(mask_path, "rb")
+                        opened.append(handle)
+                        files.append(("mask", (os.path.basename(mask_path), handle, content_type_for_path(mask_path))))
+                if not files:
+                    raise HTTPException(status_code=400, detail="QZZ 图生图需要可读取的参考图片文件")
+                data = {"model": model_name, "prompt": prompt, "size": request_size}
+                if quality in {"low", "medium", "high"}:
+                    data["quality"] = quality
+                response = await client.post(
+                    edit_url,
+                    headers=api_headers(json_body=False, provider=provider, model=model_name),
+                    data=data,
+                    files=files,
+                )
+            finally:
+                for handle in opened:
+                    handle.close()
+                for path in temp_paths:
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+        else:
+            body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
+            if quality in {"low", "medium", "high"}:
+                body["quality"] = quality
+            response = await client.post(
+                gen_url,
+                headers=api_headers(provider=provider, model=model_name),
+                json=body,
             )
-            body["image"] = image_payload
-        response = await client.post(gen_url, headers=api_headers(provider=provider, model=model_name), json=body)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=qzz_image_error_detail(response, request_size, model_name),
+            )
         raw = response.json()
         return extract_image(raw), raw
 
@@ -9972,7 +10393,10 @@ async def generate_baofu_provider_image(prompt, size, model, reference_images=No
     refs = [ref for ref in (reference_images or []) if ref.get("url")]
     image_urls = require_converted_image_refs(refs[:4], [reference_to_data_url(ref, max_size=1536) for ref in refs[:4]], "Baofu 图生图")
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=request_timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=request_timeout,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
         if image_urls:
             body["image_urls"] = image_urls
@@ -9999,7 +10423,11 @@ async def generate_bananarouter_provider_image(prompt, size, model, reference_im
     if quality not in {"low", "medium", "high"}:
         quality = ""
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=request_timeout,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         body = {"model": model_name, "prompt": prompt, "size": request_size, "response_format": "url", "n": 1}
         if quality:
             body["quality"] = quality
@@ -10190,7 +10618,10 @@ async def generate_moonly_provider_image(prompt, size, model, reference_images=N
     if quality_value in {"low", "medium", "high"}:
         body["quality"] = quality_value
     timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        trust_env=provider_uses_system_proxy(provider, default=False),
+    ) as client:
         response = await client.post(f"{moonly_base_url(provider)}/v1/images/generations", headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
         raw = response.json()
@@ -10230,7 +10661,11 @@ async def generate_toapis_provider_image(prompt, size, model, reference_images=N
     aspect_ratio = toapis_aspect_ratio(size)
     source_refs = [ref for ref in (reference_images or [])[:14] if ref.get("url")]
     refs = require_converted_image_refs(source_refs, [otuapi_reference_url(ref) for ref in source_refs], "ToAPIs 图生图")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         body = {
             "model": model_name,
             "prompt": prompt.strip(),
@@ -10278,7 +10713,11 @@ async def generate_otuapi_provider_image(prompt, size, model, reference_images=N
     base_url = otuapi_base_url(provider)
     source_refs = [ref for ref in (reference_images or [])[:14] if ref.get("url")]
     refs = require_converted_image_refs(source_refs, [otuapi_reference_url(ref) for ref in source_refs], "OtuAPI 图生图")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         if is_otuapi_async_image_model(model_name):
             body = {
                 "model": model_name,
@@ -10401,7 +10840,11 @@ async def generate_grsai_provider_image(prompt, size, model, reference_images=No
     else:
         body["aspectRatio"] = grsai_aspect_ratio(size)
         body["imageSize"] = grsai_resolution_from_size(size)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         response = await client.post(f"{grsai_base_url(provider)}/v1/api/generate", headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
         raw = response.json()
@@ -10447,9 +10890,10 @@ async def generate_gemini_provider_image(prompt, size, model, reference_images=N
                 "imageConfig": gemini_image_config(size),
             },
         }
-    client_kwargs = {"timeout": httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)}
-    if is_linapi_provider(provider):
-        client_kwargs["trust_env"] = False
+    client_kwargs = {
+        "timeout": httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        "trust_env": provider_uses_system_proxy(provider, default=not is_linapi_provider(provider)),
+    }
     async with httpx.AsyncClient(**client_kwargs) as client:
         response = await client.post(endpoint, headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
@@ -10478,7 +10922,10 @@ async def generate_volcengine_provider_image(prompt, size, model, reference_imag
     images = require_converted_image_refs(source_refs, [volcengine_image_payload(ref) for ref in source_refs], "火山引擎图生图")
     if images:
         body["image"] = images
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0),
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         response = await client.post(endpoint, headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
         raw = response.json()
@@ -10529,7 +10976,7 @@ def runninghub_local_asset_path(url):
     elif text.startswith("/assets/output/"):
         clean = urllib.parse.unquote(text.split("?", 1)[0]).replace("\\", "/")
         rel = clean[len("/assets/output/"):]
-        root = OUTPUT_OUTPUT_DIR
+        root = os.path.join(ASSETS_DIR, "output")
     elif text.startswith("/output/") or text.startswith("/assets/"):
         return output_file_from_url(text)
     else:
@@ -10773,7 +11220,11 @@ def runninghub_registry_model_from_id(model_id, output_type=""):
 async def fetch_runninghub_llm_models(provider=None):
     headers = runninghub_api_headers(provider)
     errors = []
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=20,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         for url in RUNNINGHUB_LLM_MODELS_URLS:
             try:
                 resp = await client.get(url, headers=headers)
@@ -10800,7 +11251,11 @@ async def fetch_runninghub_model_registry(provider=None, include_fallback=True, 
     errors = []
     source = ""
     items = []
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=30,
+        follow_redirects=True,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         for source_name, url in urls:
             try:
                 if source_name == "local":
@@ -11386,7 +11841,10 @@ async def generate_runninghub_entry_image(prompt, size, model, reference_images,
         if height and "height" in names:
             return height
         return None
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         source_refs = [ref for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX] if (ref.get("url") if isinstance(ref, dict) else ref)]
         uploaded = []
         for ref in source_refs:
@@ -11497,7 +11955,10 @@ async def generate_runninghub_provider_image(prompt, size, model, reference_imag
     quality_field = runninghub_schema_field(params, "quality")
     if quality_field:
         body["quality"] = runninghub_schema_value(quality_field, "medium")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0),
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         source_refs = [ref for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX] if ref.get("url")]
         image_urls = []
         for ref in source_refs:
@@ -11658,7 +12119,10 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     image_refs = [ref for ref in refs if ref not in mask_refs]
     image_request_mode = effective_image_request_mode(provider, model)
     request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0) if (is_gpt2 or is_apimart or image_request_mode in {"openai-json", "openai-video-proxy", "openai-responses"}) else AI_REQUEST_TIMEOUT
-    async with httpx.AsyncClient(timeout=request_timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=request_timeout,
+        trust_env=provider_uses_system_proxy(provider),
+    ) as client:
         response = None
         async def post_openai_edits(edit_files=None):
             data = {"model": model, "prompt": prompt, "size": size}
@@ -12106,6 +12570,8 @@ def backend_health():
         "ok": True,
         "edition": EDITION,
         "version": current_app_version(),
+        "instance_id": CLIENT_ID,
+        "active_storage_root": STORAGE_ROOT,
     }
 
 
@@ -12116,6 +12582,33 @@ def shell_health():
         "edition": EDITION,
         "version": current_app_version(),
     }
+
+
+@app.post("/api/runtime/restart", status_code=202)
+async def restart_development_runtime(payload: RuntimeRestartRequest, request: Request):
+    global DEVELOPMENT_RESTART_TARGET
+    if EDITION != "development" or not is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="当前环境不允许自动重启 Hstar")
+
+    target = Path(resolve_storage_root(payload.expected_storage_root)).resolve()
+    validate_storage_migration_target(Path(STORAGE_ROOT), target)
+    validate_storage_root_location(str(target))
+    try:
+        persisted = BOOTSTRAP.require().resolved_data_root()
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail="尚未保存可供重启的储存位置") from error
+    if os.path.normcase(str(target)) != os.path.normcase(str(persisted)):
+        raise HTTPException(status_code=409, detail="重启目录与已确认的储存位置不一致")
+
+    server = ACTIVE_UVICORN_SERVER
+    if server is None:
+        raise HTTPException(status_code=503, detail="Hstar 服务尚未进入可重启状态")
+    with DEVELOPMENT_RESTART_LOCK:
+        if DEVELOPMENT_RESTART_TARGET not in (None, target):
+            raise HTTPException(status_code=409, detail="已有其他储存位置正在等待重启")
+        DEVELOPMENT_RESTART_TARGET = target
+    asyncio.get_running_loop().call_soon(setattr, server, "should_exit", True)
+    return {"ok": True, "scheduled": True, "instance_id": CLIENT_ID}
 
 
 @app.post("/api/shell/shutdown")
@@ -12216,75 +12709,54 @@ def normalize_external_app_id(app: str) -> str:
     return value if value in EXTERNAL_APP_IDS else "custom"
 
 def load_software_settings() -> Dict[str, Any]:
-    if not os.path.exists(SOFTWARE_SETTINGS_FILE):
+    path = storage_read_path(SOFTWARE_SETTINGS_FILE, LEGACY_SOFTWARE_SETTINGS_FILE)
+    if not os.path.exists(path):
         return {"external_apps": {}}
     try:
-        with open(SOFTWARE_SETTINGS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {"external_apps": {}}
     except Exception:
         return {"external_apps": {}}
 
 def save_software_settings(settings: Dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(SOFTWARE_SETTINGS_FILE), exist_ok=True)
     safe = settings if isinstance(settings, dict) else {}
-    with open(SOFTWARE_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(safe, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(SOFTWARE_SETTINGS_FILE), safe)
 
-def copy_runtime_file_if_missing(source: str, target: str) -> bool:
-    if not os.path.isfile(source) or os.path.exists(target):
-        return False
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    shutil.copy2(source, target)
-    return True
-
-def copy_runtime_dir_if_missing(source: str, target: str) -> int:
-    if not os.path.isdir(source):
-        return 0
-    copied = 0
-    for root, _, files in os.walk(source):
-        rel_root = os.path.relpath(root, source)
-        dest_root = target if rel_root == "." else os.path.join(target, rel_root)
-        os.makedirs(dest_root, exist_ok=True)
-        for name in files:
-            src_file = os.path.join(root, name)
-            dest_file = os.path.join(dest_root, name)
-            if not os.path.exists(dest_file):
-                shutil.copy2(src_file, dest_file)
-                copied += 1
-    return copied
-
-def migrate_runtime_data_to_storage(storage_root: str) -> Dict[str, Any]:
-    target_paths = runtime_paths_for_storage_root(storage_root, SOFTWARE_SETTINGS_FILE)
-    source_paths = runtime_paths_for_storage_root(STORAGE_ROOT, SOFTWARE_SETTINGS_FILE)
-    copied_files = 0
-    for key in ("canvas_dir", "conversation_dir", "assets_dir", "output_dir"):
-        copied_files += copy_runtime_dir_if_missing(source_paths[key], target_paths[key])
-    for key in ("asset_library_path", "prompt_library_path", "api_providers_file", "runninghub_workflow_store_file", "shared_folders_file", "global_config_file", "history_file"):
-        if copy_runtime_file_if_missing(source_paths[key], target_paths[key]):
-            copied_files += 1
-    for key in ("data_dir", "canvas_dir", "conversation_dir", "assets_dir", "output_dir", "output_input_dir", "output_output_dir", "asset_library_dir", "local_upload_dir"):
-        os.makedirs(target_paths[key], exist_ok=True)
-    return {"copied_files": copied_files, "data_dir": target_paths["data_dir"], "assets_dir": target_paths["assets_dir"], "output_dir": target_paths["output_dir"]}
-
-def normalize_storage_root(value: str) -> str:
+def resolve_storage_root(value: str) -> str:
     raw = os.path.expandvars(os.path.expanduser(str(value or "").strip().strip('"')))
     if not raw:
         raise HTTPException(status_code=400, detail="Storage folder path is required")
-    folder = os.path.abspath(raw)
-    try:
-        os.makedirs(folder, exist_ok=True)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Storage folder cannot be created or opened: {exc}") from exc
-    if not os.path.isdir(folder):
-        raise HTTPException(status_code=400, detail="Storage path must be a folder")
-    for protected in (DATA_DIR, ASSETS_DIR, OUTPUT_DIR):
+    return os.path.abspath(raw)
+
+
+def validate_storage_root_location(folder: str) -> None:
+    for protected in (
+        DATA_DIR,
+        ASSETS_DIR,
+        OUTPUT_DIR,
+        LEGACY_DATA_DIR,
+        LEGACY_OUTPUT_DIR,
+    ):
+        if not protected:
+            continue
         protected_abs = os.path.abspath(protected)
         try:
             if folder != protected_abs and os.path.commonpath([protected_abs, folder]) == protected_abs:
                 raise HTTPException(status_code=400, detail="Storage folder cannot be inside Hstar runtime folders")
         except ValueError:
             continue
+
+
+def normalize_storage_root(value: str) -> str:
+    folder = resolve_storage_root(value)
+    validate_storage_root_location(folder)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Storage folder cannot be created or opened: {exc}") from exc
+    if not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="Storage path must be a folder")
     test_path = os.path.join(folder, ".hstar_write_test")
     try:
         with open(test_path, "w", encoding="utf-8") as f:
@@ -12293,6 +12765,15 @@ def normalize_storage_root(value: str) -> str:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Storage folder is not writable: {exc}") from exc
     return folder
+
+VOICE_ASSISTANT = VoiceAssistantManager(
+    app_data_root=APP_DATA_ROOT,
+    load_settings=load_software_settings,
+    save_settings=save_software_settings,
+    path_validator=normalize_storage_root,
+    python_executable=sys.executable,
+    test_mode=os.environ.get("HSTAR_VOICE_TEST_MODE") == "1",
+)
 
 def local_lan_ip() -> str:
     try:
@@ -12531,6 +13012,45 @@ def last_output_download_folder() -> str:
     folder = os.path.abspath(os.path.expanduser(os.path.expandvars(folder)))
     return folder if os.path.isdir(folder) else ""
 
+NATIVE_EXPORT_FILTERS = {
+    ".png": "PNG Image (*.png)|*.png",
+    ".jpg": "JPEG Image (*.jpg;*.jpeg)|*.jpg;*.jpeg",
+    ".jpeg": "JPEG Image (*.jpg;*.jpeg)|*.jpg;*.jpeg",
+    ".webp": "WebP Image (*.webp)|*.webp",
+    ".svg": "SVG Image (*.svg)|*.svg",
+    ".pdf": "PDF Document (*.pdf)|*.pdf",
+    ".psd": "Photoshop Document (*.psd)|*.psd",
+}
+
+def require_local_same_origin(request: Request) -> None:
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
+    if not is_gemini_cli_loopback_hostname(client_host):
+        raise HTTPException(status_code=403, detail="Native save is available to local requests only")
+    ensure_same_origin_request(request)
+
+def native_export_dialog_filter(suggested_name: str) -> str:
+    extension = os.path.splitext(str(suggested_name or ""))[1].lower()
+    specific = NATIVE_EXPORT_FILTERS.get(extension)
+    return f"{specific}|All Files (*.*)|*.*" if specific else "All Files (*.*)|*.*"
+
+def decode_output_item(item: Dict[str, Any], index: int) -> tuple[bytes, str]:
+    requested = str(item.get("name") or "").strip()
+    encoded = str(item.get("content_base64") or "").strip()
+    url = str(item.get("url") or "").strip()
+    if encoded:
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid file content encoding at item {index}") from exc
+        fallback = requested or f"output-{index}.bin"
+    elif url:
+        content, _content_type, source_name = media_bytes_from_url(url)
+        fallback = source_name or requested or f"output-{index}.png"
+    else:
+        raise HTTPException(status_code=400, detail=f"Missing file content at item {index}")
+    name = sanitize_export_filename(os.path.basename(requested) if requested else fallback, fallback)
+    return content, name
+
 def choose_save_output_path(suggested_name: str, initial_dir: str = "") -> tuple[str, str]:
     suggested_name = sanitize_export_filename(suggested_name or "output.png", "output.png")
     if os.name != "nt":
@@ -12542,6 +13062,7 @@ def choose_save_output_path(suggested_name: str, initial_dir: str = "") -> tuple
         initial_dir = last_output_download_folder()
     escaped_name = suggested_name.replace("'", "''")
     escaped_dir = initial_dir.replace("'", "''")
+    escaped_filter = native_export_dialog_filter(suggested_name).replace("'", "''")
     ps = f"""
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -12580,7 +13101,7 @@ $null = [HstarNativeWindow]::SetForegroundWindow($owner.Handle)
 $dialog = New-Object System.Windows.Forms.SaveFileDialog
 $dialog.Title = 'Save output'
 $dialog.FileName = '{escaped_name}'
-$dialog.Filter = 'Image Files (*.png;*.jpg;*.jpeg;*.webp;*.gif)|*.png;*.jpg;*.jpeg;*.webp;*.gif|ZIP Archive (*.zip)|*.zip|Video Files (*.mp4;*.webm;*.mov;*.m4v)|*.mp4;*.webm;*.mov;*.m4v|Audio Files (*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac)|*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac|Text Files (*.txt)|*.txt|All Files (*.*)|*.*'
+$dialog.Filter = '{escaped_filter}'
 $dialog.OverwritePrompt = $true
 $dialog.AddExtension = $true
 if ('{escaped_dir}') {{ $dialog.InitialDirectory = '{escaped_dir}' }}
@@ -12624,19 +13145,251 @@ def get_software_settings():
     settings = load_software_settings()
     return {"settings": {**settings, "active_storage_root": STORAGE_ROOT, "active_data_dir": DATA_DIR, "active_assets_dir": ASSETS_DIR, "active_output_dir": OUTPUT_DIR}}
 
+def validate_storage_migration_target(source: Path, target: Path) -> None:
+    resolved_source = source.expanduser().resolve()
+    resolved_target = target.expanduser().resolve()
+    if (
+        resolved_source == resolved_target
+        or resolved_source in resolved_target.parents
+        or resolved_target in resolved_source.parents
+    ):
+        raise HTTPException(status_code=400, detail="源目录与目标目录不能互相包含")
+    if resolved_target == PROGRAM_ROOT or PROGRAM_ROOT in resolved_target.parents:
+        raise HTTPException(status_code=400, detail="目标目录不能位于 Hstar 程序目录内")
+
+
+def is_loopback_request(request: Request) -> bool:
+    host = request.client.host if request.client else ""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+def storage_migration_payload(state: MigrationState, request: Request) -> Dict[str, Any]:
+    payload = state.as_dict()
+    payload["restart_required"] = state.status == "completed"
+    if not is_loopback_request(request):
+        payload.pop("source", None)
+    return payload
+
+@app.post("/api/storage-migrations", status_code=202)
+def start_storage_migration(payload: StorageMigrationRequest, request: Request):
+    source = Path(STORAGE_ROOT).expanduser().resolve()
+    target = Path(resolve_storage_root(payload.storage_root))
+    validate_storage_migration_target(source, target)
+    target = Path(normalize_storage_root(str(target)))
+    try:
+        task = STORAGE_MIGRATIONS.switch_storage(source, target)
+    except MigrationError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
+@app.get("/api/storage-migrations/{task_id}")
+def storage_migration_status(task_id: str, request: Request):
+    try:
+        task = STORAGE_MIGRATIONS.status(task_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="未找到数据迁移任务") from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
+@app.delete("/api/storage-migrations/{task_id}")
+def cancel_storage_migration(task_id: str, request: Request):
+    try:
+        task = STORAGE_MIGRATIONS.cancel(task_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="未找到数据迁移任务") from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
 @app.post("/api/software-settings/storage")
 def save_software_storage(payload: SoftwareStorageRequest):
-    settings = load_software_settings()
-    storage_root = normalize_storage_root(payload.storage_root)
-    settings["storage_root"] = storage_root
-    save_software_settings(settings)
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "message": "同步存储迁移接口已停用，请使用后台迁移任务。",
+            "endpoint": "/api/storage-migrations",
+        },
+    )
+
+def raise_voice_http_error(error: VoiceManagerError):
+    status_code = 404 if error.code == "VOICE_TASK_NOT_FOUND" else 409 if error.code == "VOICE_MIC_BUSY" else 400
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": error.code, "message": error.message},
+    ) from error
+
+@app.get("/api/voice-assistant/status")
+def voice_assistant_status():
+    return {"ok": True, "status": VOICE_ASSISTANT.status()}
+
+@app.get("/api/voice-assistant/settings")
+def get_voice_assistant_settings():
+    return {"ok": True, "settings": VOICE_ASSISTANT.status()["settings"]}
+
+@app.post("/api/voice-assistant/settings")
+async def save_voice_assistant_settings(payload: VoiceSettingsRequest):
+    try:
+        settings = await VOICE_ASSISTANT.update_settings(payload.model_dump())
+    except VoiceManagerError as error:
+        raise_voice_http_error(error)
+    return {"ok": True, "settings": settings, "status": VOICE_ASSISTANT.status()}
+
+@app.post("/api/voice-assistant/choose-folder")
+def choose_voice_assistant_folder(payload: VoicePathRequest):
+    initial_dir = payload.path or VOICE_ASSISTANT.settings.effective_root
     return {
-        "settings": {
-            **settings,
-            "restart_required": os.path.normcase(storage_root) != os.path.normcase(STORAGE_ROOT),
-            "message": "储存位置已保存，重启 Hstar 后开始使用新位置。",
-        }
+        "ok": True,
+        "path": choose_folder_path("选择语音模型数据储存文件夹", initial_dir),
     }
+
+@app.post("/api/voice-assistant/detect-model")
+async def detect_voice_assistant_model(payload: VoicePathRequest):
+    detection = await VOICE_ASSISTANT.detect_model(payload.path)
+    return {"ok": bool(detection.get("ready")), "model": detection}
+
+@app.post("/api/voice-assistant/install")
+def install_voice_assistant(payload: VoiceInstallRequest):
+    return {"ok": True, "task": VOICE_ASSISTANT.install(payload.profile)}
+
+@app.get("/api/voice-assistant/install/{task_id}")
+def voice_assistant_install_status(task_id: str):
+    try:
+        task = VOICE_ASSISTANT.task_status(task_id)
+    except VoiceManagerError as error:
+        raise_voice_http_error(error)
+    return {"ok": True, "task": task}
+
+@app.post("/api/voice-assistant/install/cancel")
+def cancel_voice_assistant_install(payload: VoiceTaskRequest):
+    try:
+        task = VOICE_ASSISTANT.cancel_install(payload.task_id)
+    except VoiceManagerError as error:
+        raise_voice_http_error(error)
+    return {"ok": True, "task": task}
+
+@app.post("/api/voice-assistant/repair")
+def repair_voice_assistant(payload: VoiceInstallRequest):
+    return {"ok": True, "task": VOICE_ASSISTANT.install(payload.profile)}
+
+@app.post("/api/voice-assistant/migrate")
+async def migrate_voice_assistant(payload: VoiceMigrateRequest):
+    try:
+        settings = await VOICE_ASSISTANT.migrate(payload.storage_root)
+    except VoiceManagerError as error:
+        raise_voice_http_error(error)
+    return {"ok": True, "settings": settings}
+
+@app.post("/api/voice-assistant/uninstall")
+async def uninstall_voice_assistant(payload: VoiceUninstallRequest):
+    deleted = await VOICE_ASSISTANT.uninstall(
+        delete_external_model=payload.delete_external_model,
+        confirmation_token=payload.confirmation_token,
+    )
+    return {"ok": True, "deleted": list(deleted), "status": VOICE_ASSISTANT.status()}
+
+@app.post("/api/voice-assistant/service/start")
+async def start_voice_assistant_service(payload: VoiceServiceRequest):
+    try:
+        status = await VOICE_ASSISTANT.start_service(payload.device)
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": getattr(error, "code", "VOICE_SERVICE_START_FAILED"), "message": str(error)},
+        ) from error
+    return {"ok": True, "service": status}
+
+@app.post("/api/voice-assistant/service/stop")
+async def stop_voice_assistant_service():
+    return {"ok": True, "service": await VOICE_ASSISTANT.stop_service()}
+
+def validate_voice_start(message: Dict[str, Any]) -> tuple[str, str]:
+    if message.get("type") != "start":
+        raise VoiceManagerError("VOICE_START_INVALID", "First message must start a session")
+    session_id = str(message.get("session_id") or "").strip()
+    if not session_id or len(session_id) > 128:
+        raise VoiceManagerError("VOICE_START_INVALID", "A valid session_id is required")
+    if int(message.get("sample_rate") or 0) != 16000:
+        raise VoiceManagerError("VOICE_START_INVALID", "Only 16000 Hz audio is supported")
+    language = str(message.get("language") or "auto").lower()
+    if language not in {"auto", "zh", "en", "ja"}:
+        raise VoiceManagerError("VOICE_START_INVALID", "Unsupported recognition language")
+    return session_id, language
+
+def voice_websocket_allowed(websocket: WebSocket) -> bool:
+    client_host = str(getattr(getattr(websocket, "client", None), "host", "") or "")
+    if not is_gemini_cli_loopback_hostname(client_host):
+        supplied = str(websocket.query_params.get("collab_key") or "")
+        if not supplied or not hmac.compare_digest(supplied, current_collaboration_key()):
+            return False
+    origin = origin_from_url(websocket.headers.get("origin", ""))
+    host = str(websocket.headers.get("host") or "").lower()
+    if origin and urllib.parse.urlsplit(origin).netloc.lower() != host:
+        return False
+    return True
+
+async def proxy_voice_session(websocket: WebSocket, connection, start: Dict[str, Any]):
+    await connection.send_json(start)
+
+    async def browser_to_child():
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            binary = message.get("bytes")
+            if binary is not None:
+                await connection.send_audio(binary)
+                continue
+            text = message.get("text")
+            if text:
+                control = json.loads(text)
+                if control.get("type") in {"stop", "cancel"}:
+                    await connection.send_json(control)
+
+    async def child_to_browser():
+        while True:
+            event = await connection.receive_event()
+            await websocket.send_json(event)
+            if event.get("type") == "stopped":
+                return
+
+    tasks = [asyncio.create_task(browser_to_child()), asyncio.create_task(child_to_browser())]
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    for task in done:
+        await task
+
+@app.websocket("/ws/voice-assistant/transcribe")
+async def voice_transcribe_socket(websocket: WebSocket):
+    if not voice_websocket_allowed(websocket):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    connection = None
+    try:
+        start = json.loads(await websocket.receive_text())
+        session_id, language = validate_voice_start(start)
+        start["language"] = language
+        connection = await VOICE_ASSISTANT.open_session(session_id)
+        await proxy_voice_session(websocket, connection, start)
+    except WebSocketDisconnect:
+        pass
+    except VoiceManagerError as error:
+        await websocket.send_json(error.as_event())
+    except Exception as error:
+        with contextlib.suppress(Exception):
+            await websocket.send_json({
+                "type": "error",
+                "code": getattr(error, "code", "VOICE_SERVICE_DISCONNECTED"),
+                "message": str(error),
+                "recoverable": True,
+            })
+    finally:
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                await connection.send_json({"type": "cancel", "reason": "browser-disconnected"})
+            await VOICE_ASSISTANT.close_session(connection)
 
 @app.get("/api/collaboration-link")
 def collaboration_link(request: Request):
@@ -12655,6 +13408,26 @@ def choose_external_executable(payload: ExternalAppSaveRequest):
     app_id = normalize_external_app_id(payload.app)
     found = choose_external_executable_path(app_id)
     return {"ok": True, "app": app_id, "path": found}
+
+@app.post("/api/native/open-local-file")
+def open_native_local_file(payload: NativeOpenFileRequest, request: Request):
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
+    if not is_gemini_cli_loopback_hostname(client_host):
+        raise HTTPException(status_code=403, detail="仅允许本机打开本地文件。")
+    ensure_same_origin_request(request)
+    try:
+        selected = choose_open_file_path(payload.kind)
+        if not selected:
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
+        metadata = selected_file_metadata(selected, payload.kind)
+    except NativeFilePickerError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+    headers = {
+        "X-Hstar-Filename": urllib.parse.quote(metadata["name"], safe=""),
+        "X-Hstar-File-Size": str(metadata["size"]),
+        "Cache-Control": "no-store",
+    }
+    return FileResponse(metadata["path"], media_type=metadata["mime"], headers=headers)
 
 @app.post("/api/open-external-image")
 def open_external_image(payload: ExternalImageOpenRequest):
@@ -12683,25 +13456,25 @@ def choose_native_folder(payload: NativeFolderRequest):
     return {"path": choose_folder_path("Select output folder", initial_dir)}
 
 @app.post("/api/native/save-output-batch")
-def save_output_batch(payload: SaveOutputBatchRequest):
-    items = [item for item in (payload.items or []) if isinstance(item, dict) and str(item.get("url") or "").strip()]
-    if not items:
-        raise HTTPException(status_code=400, detail="No images to save")
+def save_output_batch(payload: SaveOutputBatchRequest, request: Request):
+    require_local_same_origin(request)
+    prepared = [
+        decode_output_item(item, index)
+        for index, item in enumerate(payload.items or [], 1)
+        if isinstance(item, dict)
+    ]
+    if not prepared:
+        raise HTTPException(status_code=400, detail="No files to save")
     folder = choose_folder_path("Select output folder", payload.initial_dir or last_output_download_folder())
     if not folder:
         return {"ok": False, "cancelled": True, "count": 0}
     os.makedirs(folder, exist_ok=True)
     saved = []
     used = set()
-    for index, item in enumerate(items, 1):
-        url = str(item.get("url") or "")
-        requested = str(item.get("name") or "").strip()
-        content, _content_type, source_name = media_bytes_from_url(url)
-        fallback = source_name or f"output-{index}.png"
-        name = sanitize_export_filename(os.path.basename(requested) if requested else fallback, fallback)
+    for index, (content, name) in enumerate(prepared, 1):
         stem, ext = os.path.splitext(name)
         if not ext:
-            ext = os.path.splitext(fallback)[1] or ".png"
+            ext = ".bin"
         candidate = f"{stem or 'output'}{ext}"
         n = 2
         while candidate.lower() in used or os.path.exists(os.path.join(folder, candidate)):
@@ -12716,7 +13489,8 @@ def save_output_batch(payload: SaveOutputBatchRequest):
     return {"ok": True, "cancelled": False, "folder": folder, "count": len(saved), "files": saved}
 
 @app.post("/api/native/save-output-as")
-def save_output_as(payload: SaveOutputAsRequest):
+def save_output_as(payload: SaveOutputAsRequest, request: Request):
+    require_local_same_origin(request)
     if payload.content_base64:
         try:
             content = base64.b64decode(payload.content_base64, validate=True)
@@ -14390,9 +15164,10 @@ async def get_global_token():
     saved_token = modelscope_api_key()
     if saved_token:
         return {"token": saved_token}
-    if os.path.exists(GLOBAL_CONFIG_FILE):
+    path = storage_read_path(GLOBAL_CONFIG_FILE, LEGACY_GLOBAL_CONFIG_FILE)
+    if os.path.exists(path):
         try:
-            with open(GLOBAL_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 return {"token": config.get("modelscope_token", "")}
         except:
@@ -14407,6 +15182,7 @@ class TestConnectionPayload(BaseModel):
     provider_id: str = ""
     protocol: str = "openai"
     protocol_manual: bool = False
+    use_system_proxy: bool = True
     image_request_mode: str = "openai"
 
 def protocol_from_payload(payload):
@@ -14702,7 +15478,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
         raise HTTPException(status_code=400, detail=f"请先填写或保存 {key_name}")
     url = upstream_models_url(base_url, protocol)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, trust_env=payload.use_system_proxy) as client:
             resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("Location") or resp.headers.get("location") or ""
@@ -14749,7 +15525,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
     except httpx.HTTPError as e:
         if protocol == "volcengine":
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with httpx.AsyncClient(timeout=15, trust_env=payload.use_system_proxy) as client:
                     detected, probe = await probe_volcengine_auto_detect(client, base_url, api_key)
                     if detected:
                         message = f"{probe.get('message') or '方舟任务接口可达'}；但模型列表请求失败。请按实际方舟控制台模型名称手动填写视频模型。"
@@ -14789,7 +15565,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
         raise HTTPException(status_code=400, detail="请先填写或保存 API Key")
     if protocol == "volcengine":
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=15, trust_env=payload.use_system_proxy) as client:
                 task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
                 if task_ok:
                     return {
@@ -14820,7 +15596,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
     tasks_base = base_url if base_url.endswith("/v1") else f"{base_url}/v1"
     probe_url = f"{tasks_base}/tasks/healthcheck_probe_do_not_submit"
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, trust_env=payload.use_system_proxy) as client:
             resp = await client.get(probe_url, headers={"Authorization": bearer_auth_value(api_key), "Accept": "application/json"})
             try:
                 body = resp.json()
@@ -14904,7 +15680,13 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
-async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str = "openai", image_request_mode: str = "openai"):
+async def fetch_models_from_upstream(
+    base_url: str,
+    api_key: str,
+    protocol: str = "openai",
+    image_request_mode: str = "openai",
+    use_system_proxy: bool = True,
+):
     """从上游模型列表端点拉取模型，并按名称做轻量分类。"""
     protocol = protocol if protocol in SUPPORTED_PROVIDER_PROTOCOLS else "openai"
     if protocol == "codex":
@@ -14936,7 +15718,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
         raise HTTPException(status_code=400, detail=f"请先填写或保存 {key_name}")
     url = upstream_models_url(base_url, protocol)
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, trust_env=use_system_proxy) as client:
             resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
             endpoint_label = "/v1beta/models" if protocol == "gemini" else "/api/v3/models" if protocol == "volcengine" else "/openapi/v2/models" if protocol == "runninghub" else "/v1/models"
             if resp.status_code in (301, 302, 303, 307, 308):
@@ -15004,7 +15786,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
     except httpx.HTTPError as e:
         if protocol == "volcengine":
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with httpx.AsyncClient(timeout=15, trust_env=use_system_proxy) as client:
                     detected, probe = await probe_volcengine_auto_detect(client, base_url, api_key)
                     if detected:
                         payload = volcengine_default_model_payload(
@@ -15053,7 +15835,13 @@ async def fetch_upstream_models_from_payload(payload: TestConnectionPayload):
     """按页面当前表单值拉取模型，支持新增平台未保存时直接使用临时 Base URL / Key。"""
     protocol = protocol_from_payload(payload)
     api_key = api_key_from_payload(payload, protocol)
-    return await fetch_models_from_upstream(payload.base_url, api_key, protocol, payload.image_request_mode)
+    return await fetch_models_from_upstream(
+        payload.base_url,
+        api_key,
+        protocol,
+        payload.image_request_mode,
+        payload.use_system_proxy,
+    )
 
 @app.get("/api/providers/{provider_id}/fetch-models")
 async def fetch_upstream_models(provider_id: str):
@@ -15068,7 +15856,13 @@ async def fetch_upstream_models(provider_id: str):
         api_key = provider_env_key_value(provider["id"])
     if not api_key:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider_id} 未配置 API Key")
-    return await fetch_models_from_upstream(provider.get("base_url") or "", api_key, provider_protocol(provider), provider.get("image_request_mode") or "openai")
+    return await fetch_models_from_upstream(
+        provider.get("base_url") or "",
+        api_key,
+        provider_protocol(provider),
+        provider.get("image_request_mode") or "openai",
+        provider.get("use_system_proxy", True),
+    )
 
 async def build_online_image_result(payload: OnlineImageRequest):
     provider = get_api_provider(payload.provider_id)
@@ -15200,7 +15994,14 @@ async def query_image_task(payload: ImageTaskQueryRequest):
             raise HTTPException(status_code=502, detail=f"查询 RunningHub 任务失败：{exc}") from exc
     timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=not is_moonly_provider(provider)) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            trust_env=provider_uses_system_proxy(
+                provider,
+                default=not is_moonly_provider(provider),
+            ),
+        ) as client:
             raw = await fetch_image_task_payload(client, task_id, provider)
     except httpx.HTTPStatusError as exc:
         log_net_error(f"查询生图任务 HTTP状态错误 provider={provider.get('id')} task_id={task_id}", exc)
@@ -15317,7 +16118,7 @@ async def create_canvas_image_task(payload: OnlineImageRequest):
             "provider_id": payload.provider_id,
             "model": payload.model,
         }
-    asyncio.create_task(run_canvas_image_task(task_id, payload))
+    STORAGE_WRITE_BARRIER.create_task(run_canvas_image_task(task_id, payload))
     return {"task_id": task_id, "status": "queued"}
 
 @app.get("/api/canvas-image-tasks/{task_id}")
@@ -15369,7 +16170,7 @@ async def create_canvas_comfy_task(payload: GenerateRequest):
             "error": "",
             "workflow_json": payload.workflow_json,
         }
-    asyncio.create_task(run_canvas_comfy_task(task_id, payload))
+    STORAGE_WRITE_BARRIER.create_task(run_canvas_comfy_task(task_id, payload))
     return {"task_id": task_id, "status": "queued"}
 
 @app.get("/api/canvas-comfy-tasks/{task_id}")
@@ -16421,6 +17222,44 @@ async def canvas_video(payload: CanvasVideoRequest):
 
 # --- Canvas LLM ---
 
+
+async def collect_chat_completion_stream(client, url, headers, body):
+    stream_body = {**body, "stream": True}
+    async with client.stream("POST", url, headers=headers, json=stream_body) as response:
+        if response.status_code >= 400:
+            await response.aread()
+            response.raise_for_status()
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "text/event-stream" not in content_type:
+            content = await response.aread()
+            if not content:
+                raise HTTPException(status_code=502, detail="上游接口返回了空响应")
+            return json.loads(content)
+
+        content_parts = []
+        raw_usage = None
+        async for line in response.aiter_lines():
+            if not line:
+                continue
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if not line or line == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(chunk, dict) and chunk.get("usage"):
+                raw_usage = chunk.get("usage")
+            delta = text_delta_from_chat_chunk(chunk)
+            if delta:
+                content_parts.append(delta)
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "".join(content_parts)}}],
+            "usage": raw_usage,
+        }
+
+
 @app.post("/api/canvas-llm")
 async def canvas_llm(payload: CanvasLLMRequest):
     _provider = get_api_provider(payload.provider)
@@ -16437,7 +17276,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
         return {"text": text, "model": model, "raw_usage": None, "raw": raw}
     chat_base, chat_hdrs, model = resolve_chat_provider(payload.provider, payload.model, payload.ms_model)
     # 判断协议：APIMart 异步 vs 标准 OpenAI
-    _llm_provider = get_api_provider(payload.provider) if payload.provider not in ("modelscope",) else {}
+    _llm_provider = get_api_provider(payload.provider)
     _is_apimart = is_apimart_provider(_llm_provider)
     system_prompt = (payload.system_prompt or "").strip()
     upstream_messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
@@ -16482,24 +17321,43 @@ async def canvas_llm(payload: CanvasLLMRequest):
         upstream_messages.append({"role": "user", "content": payload.message})
     raw = None
     try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+        async with httpx.AsyncClient(
+            timeout=AI_REQUEST_TIMEOUT,
+            trust_env=_llm_provider.get("use_system_proxy", True),
+        ) as client:
             req_body = {"model": model, "messages": upstream_messages}
+            if payload.response_format == "json_object":
+                req_body["response_format"] = {"type": "json_object"}
             if _is_apimart:
                 req_body["stream"] = False   # APIMart 默认流式，强制关闭
-            response = await client.post(
-                f"{chat_base}/chat/completions",
-                headers=chat_hdrs,
-                json=req_body,
-            )
-            response.raise_for_status()
-            if not response.content:
-                raise HTTPException(status_code=502, detail="上游接口返回了空响应")
-            raw = response.json()
+            chat_url = f"{chat_base}/chat/completions"
+            if payload.stream_response:
+                raw = await collect_chat_completion_stream(
+                    client,
+                    chat_url,
+                    chat_hdrs,
+                    req_body,
+                )
+            else:
+                response = await client.post(
+                    chat_url,
+                    headers=chat_hdrs,
+                    json=req_body,
+                )
+                response.raise_for_status()
+                if not response.content:
+                    raise HTTPException(status_code=502, detail="上游接口返回了空响应")
+                raw = response.json()
     except httpx.HTTPStatusError as exc:
         body = exc.response.text or ""
         friendly = friendly_chat_error_detail(body, model, _llm_provider)
         raise HTTPException(status_code=exc.response.status_code, detail=friendly or f"上游接口错误：{body}") from exc
     except httpx.HTTPError as exc:
+        log_net_error(
+            f"画布 LLM 网络/TLS错误 provider={payload.provider} model={model}",
+            exc,
+            f"{chat_base}/chat/completions",
+        )
         raise HTTPException(status_code=502, detail=f"请求上游接口失败：{exc}") from exc
     except HTTPException:
         raise
@@ -16540,12 +17398,25 @@ async def delete_conversation(conversation_id: str, request: Request, x_user_id:
 
 # --- OpenShop node projects ---
 
+@app.get("/api/openshop/fonts")
+def get_openshop_fonts(refresh: bool = False):
+    return OPENSHOP_FONTS.get_catalog(refresh=refresh)
+
+
 def openshop_owner(canvas_type: str, canvas_id: str, node_id: str) -> Dict[str, str]:
     return {
         "canvasType": str(canvas_type or "").strip(),
         "canvasId": str(canvas_id or "").strip(),
         "nodeId": str(node_id or "").strip(),
     }
+
+def require_openshop_owner_canvas(owner):
+    canvas_id = str((owner or {}).get("canvasId") or "").strip()
+    canvas_type = str((owner or {}).get("canvasType") or "").strip()
+    canvas = load_canvas(canvas_id)
+    if normalize_canvas_kind(canvas.get("kind")) != canvas_type:
+        raise OpenShopOwnershipError("OpenShop canvas type does not match owner")
+    return canvas
 
 def raise_openshop_http_error(exc: OpenShopStoreError):
     if isinstance(exc, OpenShopNotFound):
@@ -16609,6 +17480,82 @@ def openshop_ai_provider(payload: OpenShopAiTaskRequest) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail=f"配置不可用：模型「{model}」未声明视觉布局识别能力。")
     return provider
 
+def openshop_generation_snapshot(payload: OpenShopAiTaskRequest) -> Dict[str, Any]:
+    try:
+        return normalize_generation_snapshot({
+            "toolId": payload.tool_id,
+            "sourceAssetId": payload.source_asset_id,
+            "maskAssetId": payload.mask_asset_id,
+            "primaryReferenceAssetId": payload.primary_reference_asset_id,
+            "references": payload.reference_assets,
+            "prompt": payload.prompt,
+            "size": payload.size,
+            "quality": payload.quality,
+            "targetCount": payload.target_count,
+            "referenceMode": payload.reference_mode,
+            "sourceLayerId": payload.source_layer_id,
+            "sourceLayerIndex": payload.source_layer_index,
+            "document": payload.document,
+            "selection": payload.selection,
+            "options": payload.options,
+        })
+    except OpenShopAiValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+def openshop_generation_model(
+    provider: Dict[str, Any],
+    tool_id: str,
+    model_id: str,
+) -> Dict[str, Any]:
+    probe_provider = {**provider, "has_key": True, "enabled": True}
+    catalog = build_capability_catalog([probe_provider], primary_provider_id=provider["id"])
+    tool = catalog["tools"].get(tool_id) or {}
+    for catalog_provider in tool.get("providers", []):
+        if catalog_provider.get("id") != provider.get("id"):
+            continue
+        for model in catalog_provider.get("models", []):
+            if model.get("id") == model_id:
+                return model
+    raise HTTPException(
+        status_code=400,
+        detail=f"配置不可用：模型「{model_id}」不支持 OpenShop {tool_id}。",
+    )
+
+def validate_openshop_generation_capabilities(
+    provider: Dict[str, Any],
+    model_id: str,
+    snapshot: Dict[str, Any],
+) -> None:
+    model = openshop_generation_model(provider, snapshot["toolId"], model_id)
+    capabilities = model.get("capabilities") or {}
+    if not capabilities.get("supportsImageInput"):
+        raise HTTPException(status_code=400, detail="当前模型不支持图生图")
+    if not capabilities.get("supportsMask"):
+        raise HTTPException(status_code=400, detail="当前模型不支持选区蒙版")
+    reference_count = len(snapshot["references"])
+    max_references = max(1, int(capabilities.get("maxReferenceImages") or 8))
+    if reference_count > max_references:
+        raise HTTPException(
+            status_code=400,
+            detail=f"当前模型最多支持 {max_references} 张参考图",
+        )
+    if reference_count > 1 and not capabilities.get("supportsMultiReference"):
+        raise HTTPException(status_code=400, detail="当前模型不支持多参考图")
+    max_outputs = max(1, int(capabilities.get("maxOutputs") or 8))
+    if snapshot["targetCount"] > max_outputs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"当前模型最多生成 {max_outputs} 张图片",
+        )
+    sizes = [str(item) for item in capabilities.get("sizes") or ["auto"]]
+    qualities = [str(item) for item in capabilities.get("qualities") or ["auto"]]
+    if snapshot["size"] not in sizes and not is_standard_generation_size(snapshot["size"]):
+        raise HTTPException(status_code=400, detail=f"当前模型不支持尺寸 {snapshot['size']}")
+    if snapshot["quality"] not in qualities and snapshot["quality"] not in {
+        "auto", "low", "medium", "high"
+    }:
+        raise HTTPException(status_code=400, detail=f"当前模型不支持质量 {snapshot['quality']}")
+
 def openshop_ai_asset(asset_id: str, max_size: int = 0) -> Tuple[str, Dict[str, Any], str]:
     try:
         path, metadata = OPENSHOP_STORE.asset_path(asset_id)
@@ -16616,18 +17563,717 @@ def openshop_ai_asset(asset_id: str, max_size: int = 0) -> Tuple[str, Dict[str, 
         raise_openshop_http_error(exc)
     return path, metadata, image_path_to_data_url(path, max_size=max_size)
 
-def openshop_text_remove_prompt(mode: str, extra: str = "") -> str:
-    scope = (
-        "Remove visible text only inside the supplied mask. Preserve every pixel outside the selected area exactly."
-        if mode == "selection"
-        else "Remove all visible text from the supplied source layer."
+
+OPENSHOP_ART_FONT_MAX_BYTES = MAX_ART_FONT_COMPRESSED_BYTES
+OPENSHOP_ART_FONT_MAX_REDIRECTS = 3
+OPENSHOP_ART_FONT_MAX_ADDRESS_ATTEMPTS = 2
+OPENSHOP_ART_FONT_DNS_TIMEOUT_SECONDS = 3.0
+OPENSHOP_ART_FONT_REMOTE_TIMEOUT_SECONDS = 30.0
+OPENSHOP_ART_FONT_WORKER_LIMIT = 2
+OPENSHOP_ART_FONT_PIPELINE_SEMAPHORE = asyncio.Semaphore(
+    OPENSHOP_ART_FONT_WORKER_LIMIT
+)
+OPENSHOP_ART_FONT_WORKER_SEMAPHORE = asyncio.Semaphore(
+    OPENSHOP_ART_FONT_WORKER_LIMIT
+)
+OPENSHOP_ART_FONT_DNS_SEMAPHORE = asyncio.Semaphore(
+    OPENSHOP_ART_FONT_WORKER_LIMIT
+)
+_OPENSHOP_ART_FONT_WORK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=OPENSHOP_ART_FONT_WORKER_LIMIT,
+    thread_name_prefix="openshop-art",
+)
+_OPENSHOP_ART_FONT_DNS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=OPENSHOP_ART_FONT_WORKER_LIMIT,
+    thread_name_prefix="openshop-art-dns",
+)
+
+
+async def _run_openshop_art_font_executor(
+    executor: ThreadPoolExecutor,
+    semaphore: asyncio.Semaphore,
+    function,
+    *args,
+    timeout: Optional[float] = None,
+):
+    retained_semaphore = semaphore
+    started_at = time.monotonic()
+    try:
+        if timeout is None:
+            await retained_semaphore.acquire()
+        else:
+            await asyncio.wait_for(
+                retained_semaphore.acquire(),
+                timeout=timeout,
+            )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="艺术字体远程图片请求超时",
+        ) from exc
+    remaining_timeout = None
+    if timeout is not None:
+        remaining_timeout = timeout - (time.monotonic() - started_at)
+        if remaining_timeout <= 0:
+            retained_semaphore.release()
+            raise HTTPException(
+                status_code=504,
+                detail="艺术字体远程图片请求超时",
+            )
+    loop = asyncio.get_running_loop()
+    try:
+        future = loop.run_in_executor(executor, functools.partial(function, *args))
+    except Exception:
+        retained_semaphore.release()
+        raise
+
+    def release_retained_slot(done_future):
+        try:
+            done_future.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
+        retained_semaphore.release()
+
+    future.add_done_callback(release_retained_slot)
+    shielded = asyncio.shield(future)
+    if remaining_timeout is None:
+        return await shielded
+    try:
+        return await asyncio.wait_for(shielded, timeout=remaining_timeout)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="艺术字体远程图片请求超时",
+        ) from exc
+
+
+async def _run_openshop_art_font_worker(
+    function,
+    *args,
+    timeout: Optional[float] = None,
+):
+    return await _run_openshop_art_font_executor(
+        _OPENSHOP_ART_FONT_WORK_EXECUTOR,
+        OPENSHOP_ART_FONT_WORKER_SEMAPHORE,
+        function,
+        *args,
+        timeout=timeout,
+    )
+
+
+def _openshop_art_font_deadline_remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise HTTPException(
+            status_code=504,
+            detail="艺术字体远程图片请求超时",
+        )
+    return remaining
+
+
+def _set_openshop_art_font_connection_deadline(
+    connection: http.client.HTTPConnection,
+    deadline: float,
+) -> None:
+    remaining = _openshop_art_font_deadline_remaining(deadline)
+    connection_socket = getattr(connection, "sock", None)
+    if connection_socket is not None and hasattr(connection_socket, "settimeout"):
+        connection_socket.settimeout(remaining)
+
+
+def _decode_openshop_art_font_base64(value: Any) -> bytes:
+    if not isinstance(value, str) or not value:
+        raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+    encoded_limit = 4 * ((OPENSHOP_ART_FONT_MAX_BYTES + 2) // 3)
+    if len(value) > encoded_limit:
+        raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+    try:
+        content = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="艺术字体模型返回了无效 Base64 图片") from exc
+    if not content:
+        raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+    if len(content) > OPENSHOP_ART_FONT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+    return content
+
+
+def _bounded_openshop_art_font_file(path: str) -> bytes:
+    resolved = os.path.realpath(path)
+    allowed_roots = tuple(
+        os.path.realpath(root)
+        for root in (ASSETS_DIR, OUTPUT_DIR, LEGACY_OUTPUT_DIR)
+        if root
+    )
+    try:
+        contained = any(
+            os.path.commonpath([resolved, root]) == root for root in allowed_roots
+        )
+    except ValueError:
+        contained = False
+    if not contained or not os.path.isfile(resolved):
+        raise HTTPException(status_code=403, detail="艺术字体本地输出路径不安全")
+    with open(resolved, "rb") as handle:
+        content = handle.read(OPENSHOP_ART_FONT_MAX_BYTES + 1)
+    if len(content) > OPENSHOP_ART_FONT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+    if not content:
+        raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+    return content
+
+
+async def _validate_openshop_art_font_remote_url(
+    value: str,
+    deadline: Optional[float] = None,
+) -> tuple[str, list[str]]:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="艺术字体远程图片 URL 无效") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise HTTPException(status_code=400, detail="艺术字体远程图片 URL 无效")
+    hostname = parsed.hostname.rstrip(".").lower()
+    addresses = []
+    try:
+        addresses.append(ipaddress.ip_address(hostname.split("%", 1)[0]))
+    except ValueError:
+        try:
+            dns_timeout = OPENSHOP_ART_FONT_DNS_TIMEOUT_SECONDS
+            if deadline is not None:
+                dns_timeout = min(
+                    dns_timeout,
+                    _openshop_art_font_deadline_remaining(deadline),
+                )
+            infos = await _run_openshop_art_font_executor(
+                _OPENSHOP_ART_FONT_DNS_EXECUTOR,
+                OPENSHOP_ART_FONT_DNS_SEMAPHORE,
+                socket.getaddrinfo,
+                hostname,
+                port or (443 if parsed.scheme.lower() == "https" else 80),
+                0,
+                socket.SOCK_STREAM,
+                0,
+                0,
+                timeout=dns_timeout,
+            )
+        except OSError as exc:
+            raise HTTPException(status_code=502, detail="艺术字体远程图片域名无法解析") from exc
+        for info in infos:
+            try:
+                addresses.append(ipaddress.ip_address(info[4][0].split("%", 1)[0]))
+            except (IndexError, ValueError):
+                continue
+    if not addresses or any(not address.is_global for address in addresses):
+        raise HTTPException(status_code=403, detail="艺术字体远程图片地址不安全")
+    unique_addresses = list(dict.fromkeys(str(address) for address in addresses))
+    return (
+        urllib.parse.urlunsplit(parsed),
+        unique_addresses[:OPENSHOP_ART_FONT_MAX_ADDRESS_ATTEMPTS],
+    )
+
+
+def _open_openshop_art_font_pinned_connection(
+    value: str,
+    target_ip: str,
+    deadline: Optional[float] = None,
+) -> tuple[http.client.HTTPConnection, str, str]:
+    parsed = urllib.parse.urlsplit(value)
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="艺术字体远程图片 URL 无效")
+    scheme = parsed.scheme.lower()
+    default_port = 443 if scheme == "https" else 80
+    port = parsed.port or default_port
+    connect_timeout = 20.0
+    if deadline is not None:
+        connect_timeout = min(
+            connect_timeout,
+            _openshop_art_font_deadline_remaining(deadline),
+        )
+    raw_socket = socket.create_connection((target_ip, port), timeout=connect_timeout)
+    try:
+        if scheme == "https":
+            raw_socket = ssl.create_default_context().wrap_socket(
+                raw_socket,
+                server_hostname=hostname,
+            )
+        connection_timeout = 120.0
+        if deadline is not None:
+            connection_timeout = min(
+                connection_timeout,
+                _openshop_art_font_deadline_remaining(deadline),
+            )
+            raw_socket.settimeout(connection_timeout)
+        connection = http.client.HTTPConnection(
+            hostname,
+            port,
+            timeout=connection_timeout,
+        )
+        connection.sock = raw_socket
+    except Exception:
+        raw_socket.close()
+        raise
+    target = parsed.path or "/"
+    if parsed.query:
+        target = f"{target}?{parsed.query}"
+    host_name = f"[{hostname}]" if ":" in hostname else hostname
+    host_header = host_name if port == default_port else f"{host_name}:{port}"
+    return connection, target, host_header
+
+
+def _fetch_openshop_art_font_pinned_hop(
+    value: str,
+    target_ip: str,
+    deadline: float,
+) -> tuple[int, dict[str, str], bytes]:
+    connection, target, host_header = _open_openshop_art_font_pinned_connection(
+        value,
+        target_ip,
+        deadline,
+    )
+    try:
+        _set_openshop_art_font_connection_deadline(connection, deadline)
+        connection.request(
+            "GET",
+            target,
+            headers={
+                "Host": host_header,
+                "Accept": "image/*",
+                "Connection": "close",
+            },
+        )
+        _set_openshop_art_font_connection_deadline(connection, deadline)
+        response = connection.getresponse()
+        _openshop_art_font_deadline_remaining(deadline)
+        headers = {key.lower(): item for key, item in response.getheaders()}
+        status = int(response.status)
+        if status in {301, 302, 303, 307, 308}:
+            return status, headers, b""
+        if status < 200 or status >= 300:
+            raise HTTPException(status_code=502, detail="艺术字体远程图片下载失败")
+        content_length = headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail="艺术字体远程图片 Content-Length 无效",
+                ) from exc
+            if declared_length < 0:
+                raise HTTPException(
+                    status_code=502,
+                    detail="艺术字体远程图片 Content-Length 无效",
+                )
+            if declared_length > OPENSHOP_ART_FONT_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="艺术字体模型图片超过压缩字节限制",
+                )
+        chunks = []
+        total = 0
+        while True:
+            _set_openshop_art_font_connection_deadline(connection, deadline)
+            chunk = response.read(
+                min(64 * 1024, OPENSHOP_ART_FONT_MAX_BYTES + 1 - total)
+            )
+            _openshop_art_font_deadline_remaining(deadline)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > OPENSHOP_ART_FONT_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="艺术字体模型图片超过压缩字节限制",
+                )
+            chunks.append(chunk)
+        content = b"".join(chunks)
+        if not content:
+            raise HTTPException(status_code=502, detail="艺术字体模型返回了空图片")
+        return status, headers, content
+    finally:
+        connection.close()
+
+
+async def _download_openshop_art_font_remote(value: str) -> bytes:
+    current_url = rewrite_runninghub_file_url(value)
+    deadline = time.monotonic() + OPENSHOP_ART_FONT_REMOTE_TIMEOUT_SECONDS
+    for redirect_count in range(OPENSHOP_ART_FONT_MAX_REDIRECTS + 1):
+        current_url, addresses = await _validate_openshop_art_font_remote_url(
+            current_url,
+            deadline,
+        )
+        last_error = None
+        response = None
+        for address in addresses:
+            try:
+                response = await _run_openshop_art_font_worker(
+                    _fetch_openshop_art_font_pinned_hop,
+                    current_url,
+                    address,
+                    deadline,
+                    timeout=_openshop_art_font_deadline_remaining(deadline),
+                )
+                break
+            except HTTPException:
+                raise
+            except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+                last_error = exc
+        if response is None:
+            _openshop_art_font_deadline_remaining(deadline)
+            raise HTTPException(
+                status_code=502,
+                detail="艺术字体远程图片下载失败",
+            ) from last_error
+        status, headers, content = response
+        if status in {301, 302, 303, 307, 308}:
+            location = headers.get("location")
+            if not location or redirect_count >= OPENSHOP_ART_FONT_MAX_REDIRECTS:
+                raise HTTPException(
+                    status_code=502,
+                    detail="艺术字体远程图片重定向过多或无效",
+                )
+            current_url = urllib.parse.urljoin(current_url, location)
+            continue
+        return content
+    raise HTTPException(status_code=502, detail="艺术字体远程图片重定向失败")
+
+
+async def materialize_openshop_ai_image(image_data: Any) -> bytes:
+    """Materialization uses bounded memory and creates no temporary files; local files stay provider-owned."""
+    if not isinstance(image_data, dict):
+        raise HTTPException(status_code=502, detail="艺术字体模型没有返回图片")
+    image_type = str(image_data.get("type") or "url").strip().lower()
+    value = image_data.get("value")
+    if image_type == "b64":
+        return _decode_openshop_art_font_base64(value)
+    if image_type != "url" or not isinstance(value, str) or not value:
+        raise HTTPException(status_code=502, detail="艺术字体模型没有返回图片")
+    if value.startswith("data:"):
+        encoded_limit = 4 * ((OPENSHOP_ART_FONT_MAX_BYTES + 2) // 3)
+        if len(value) > encoded_limit + 128:
+            raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+        header, separator, encoded = value.partition(",")
+        if (
+            not separator
+            or len(header) > 128
+            or not re.fullmatch(r"data:image/[A-Za-z0-9.+-]+;base64", header)
+        ):
+            raise HTTPException(status_code=502, detail="艺术字体模型返回了无效 Data URL")
+        if len(encoded) > encoded_limit:
+            raise HTTPException(status_code=413, detail="艺术字体模型图片超过压缩字节限制")
+        return _decode_openshop_art_font_base64(encoded)
+    local_path = output_file_from_url(value)
+    if local_path:
+        return await _run_openshop_art_font_worker(
+            _bounded_openshop_art_font_file,
+            local_path,
+        )
+    return await _download_openshop_art_font_remote(value)
+
+OPENSHOP_TEXT_REMOVE_RATIOS = {
+    "source",
+    "square",
+    "portrait",
+    "landscape",
+    "portrait43",
+    "landscape43",
+    "story",
+    "wide",
+    "ultrawide",
+    "ultratall",
+}
+
+
+def openshop_text_remove_prompt(mode: str, extra: str = "", output_ratio: str = "source") -> str:
+    ratio_key = str(output_ratio or "source").strip().lower()
+    ratio_requirement = (
+        "Preserve the complete source image without cropping or stretching it. Extend only the outer canvas "
+        "background as needed to reach the requested aspect ratio; do not duplicate or invent foreground elements. "
+        if ratio_key in OPENSHOP_TEXT_REMOVE_RATIOS - {"source"}
+        else "Keep the original aspect ratio and framing. Do not crop, resize, reframe, or stretch the source image. "
     )
     prompt = (
-        f"{scope} Inpaint removed text naturally while preserving the original composition, objects, colors, "
-        "lighting, texture, spacing, and image style. Do not add new text, letters, logos, captions, or labels."
+        "Perform a surgical text-only removal edit on the supplied source layer. Remove every visible text glyph and "
+        "punctuation mark in every language and orientation, including letters, numbers, CJK characters, captions, "
+        "labels, watermarks, poster copy, and text-based logos whose visual content is readable text. This is not a "
+        "layout cleanup, simplification, debranding, template reset, or redesign. Remove glyph outlines, strokes, "
+        "shadows, glows, and highlights only where they follow the contours of readable glyphs. Preserve outlines, "
+        "strokes, shadows, and highlights that belong to a container or independent graphic. Preserve every non-text "
+        "carrier or supporting graphic behind, around, beside, or overlapping text, including background plates, "
+        "colored blocks, panels, banners, ribbons, badges, buttons, tickets, speech bubbles, frames, borders, dividers, "
+        "underlines, curves, shapes, patterns, and decorations. A carrier surface is not text and must remain even when "
+        "its only purpose is to hold text. If a colored, outlined, or shaped area extends beyond the glyph contours, "
+        "treat the entire area as a protected non-text element. A non-text element remains protected even when text "
+        "touches, overlaps, sits inside, or is fully surrounded by it. Do not confuse a text container with the text "
+        "itself. Perform reconstruction only inside the areas previously covered by text glyph pixels and glyph-shaped "
+        "effects. Fill only the holes left by the removed glyph pixels, continuing the exact local color, gradient, "
+        "texture, material, edge, lighting, and pattern of the underlying carrier or background through those small "
+        "holes. Never erase, flatten, enlarge, shrink, simplify, or replace an entire container, colored region, badge, "
+        "card, banner, border, line, curve, icon, or decoration merely because it contains or is near text. Preserve all "
+        "non-text visual content exactly, especially lines, borders, dividers, arrows, icons, pictograms, geometric "
+        "shapes, purely graphical symbols, color blocks, patterns, illustrations, people, faces, facial expressions, "
+        "hands, objects, stickers, graphical logos, products, scenery, composition, perspective, colors, gradients, "
+        "lighting, shadows, texture, and image style. Do not erase, move, redraw, recolor, blur, or deform any non-text "
+        f"element. Do not restyle, resize, or otherwise alter any non-text element. {ratio_requirement}Before returning "
+        "the result, compare it with the "
+        "source and restore any non-text feature that was removed or changed. The only intentional visual difference "
+        "should be the absence of readable text glyphs and their glyph-shaped effects. Do not redesign the image. Do not "
+        "add, preserve, or introduce any readable text, pseudo-text, letters, numbers, punctuation, text-based logos, "
+        "captions, or labels. Return only the edited image."
     )
     extra = re.sub(r"[\x00-\x1f\x7f]", " ", str(extra or "")).strip()[:2000]
-    return f"{prompt}\nAdditional requirement: {extra}" if extra else prompt
+    return f"{prompt}\nAdditional requirement (must not conflict with the preservation rules above): {extra}" if extra else prompt
+
+
+OPENSHOP_TEXT_REMOVE_RESOLUTION_LONG_SIDE = {"1k": 1536, "2k": 2048, "4k": 3840}
+OPENSHOP_TEXT_REMOVE_RESOLUTION_PIXEL_LIMIT = {"1k": 1572864, "2k": 4194304, "4k": 8294400}
+OPENSHOP_TEXT_REMOVE_SIZE_MAP = {
+    "square": {"1k": "1024x1024", "2k": "2048x2048", "4k": "4096x4096"},
+    "portrait": {"1k": "1024x1536", "2k": "1360x2048", "4k": "2352x3520"},
+    "portrait43": {"1k": "1008x1344", "2k": "1536x2048", "4k": "2448x3264"},
+    "landscape43": {"1k": "1344x1008", "2k": "2048x1536", "4k": "3264x2448"},
+    "landscape": {"1k": "1536x1024", "2k": "2048x1360", "4k": "3520x2352"},
+    "story": {"1k": "720x1280", "2k": "1152x2048", "4k": "2160x3840"},
+    "wide": {"1k": "1280x720", "2k": "2048x1152", "4k": "3840x2160"},
+    "ultrawide": {"1k": "1280x544", "2k": "2048x880", "4k": "3840x1648"},
+    "ultratall": {"1k": "544x1280", "2k": "880x2048", "4k": "1648x3840"},
+}
+
+
+def openshop_text_remove_size(
+    width: int,
+    height: int,
+    resolution: str = "auto",
+    output_ratio: str = "source",
+) -> str:
+    source_width = max(1, int(width or 1))
+    source_height = max(1, int(height or 1))
+    resolution_key = str(resolution or "auto").strip().lower()
+    if resolution_key not in OPENSHOP_TEXT_REMOVE_RESOLUTION_LONG_SIDE:
+        return f"{source_width}x{source_height}"
+    ratio_key = str(output_ratio or "source").strip().lower()
+    preset_size = OPENSHOP_TEXT_REMOVE_SIZE_MAP.get(ratio_key, {}).get(resolution_key)
+    if preset_size:
+        return preset_size
+
+    ratio = source_width / source_height
+    long_side = OPENSHOP_TEXT_REMOVE_RESOLUTION_LONG_SIDE[resolution_key]
+    pixel_limit = OPENSHOP_TEXT_REMOVE_RESOLUTION_PIXEL_LIMIT[resolution_key]
+    if ratio >= 1:
+        raw_width = min(long_side, math.sqrt(pixel_limit * ratio))
+        raw_height = min(long_side / ratio, math.sqrt(pixel_limit / ratio))
+    else:
+        raw_width = min(long_side * ratio, math.sqrt(pixel_limit * ratio))
+        raw_height = min(long_side, math.sqrt(pixel_limit / ratio))
+
+    target_width = max(64, math.floor(raw_width / 16) * 16)
+    target_height = max(64, math.floor(raw_height / 16) * 16)
+    return f"{target_width}x{target_height}"
+
+
+def openshop_cached_ocr_layout(
+    project: Dict[str, Any],
+    source_asset_id: str,
+    width: int,
+    height: int,
+) -> Optional[Dict[str, Any]]:
+    records = project.get("aiTaskRecords") if isinstance(project, dict) else []
+    if not isinstance(records, list):
+        return None
+    candidates = sorted(
+        (record for record in records if isinstance(record, dict)),
+        key=lambda record: int(record.get("updatedAt") or record.get("createdAt") or 0),
+        reverse=True,
+    )
+    for record in candidates:
+        result = record.get("result")
+        if (
+            record.get("toolId") != "text-extract"
+            or record.get("status") != "succeeded"
+            or record.get("sourceAssetId") != source_asset_id
+            or not isinstance(result, dict)
+            or int(result.get("width") or 0) != int(width)
+            or int(result.get("height") or 0) != int(height)
+            or not isinstance(result.get("blocks"), list)
+            or not result["blocks"]
+        ):
+            continue
+        return deepcopy(result)
+    return None
+
+
+def openshop_text_extract_selection(project: Dict[str, Any]) -> Tuple[str, str]:
+    providers = public_api_providers()
+    catalog = build_capability_catalog(
+        providers,
+        primary_provider_id=get_primary_provider_id(providers),
+    )
+    available = catalog.get("tools", {}).get("text-extract", {}).get("providers", [])
+    preference = project.get("aiToolPreferences", {}).get("text-extract", {})
+    preference = preference if isinstance(preference, dict) else {}
+    if preference.get("mode") == "project":
+        provider_id = str(preference.get("apiConfigId") or "").strip()
+        model_id = str(preference.get("modelId") or "").strip()
+        provider = next(
+            (item for item in available if item.get("id") == provider_id),
+            None,
+        )
+        model = next(
+            (item for item in provider.get("models", []) if item.get("id") == model_id),
+            None,
+        ) if provider else None
+        if provider and model:
+            return provider_id, model_id
+        raise OpenShopAiValidationError("OpenShop 文字提取项目配置不可用")
+
+    primary_id = str(catalog.get("primaryProviderId") or "").strip()
+    provider = next(
+        (item for item in available if item.get("id") == primary_id),
+        None,
+    )
+    models = provider.get("models", []) if provider else []
+    if not provider or not models:
+        raise OpenShopAiValidationError("OpenShop 没有可用于自动文字定位的 OCR API 配置")
+    return str(provider["id"]), str(models[0]["id"])
+
+
+async def openshop_text_removal_layout(
+    project: Dict[str, Any],
+    source_asset_id: str,
+    source_url: str,
+    width: int,
+    height: int,
+) -> Dict[str, Any]:
+    cached = openshop_cached_ocr_layout(
+        project,
+        source_asset_id,
+        width,
+        height,
+    )
+    if cached:
+        return cached
+    provider_id, model_id = openshop_text_extract_selection(project)
+    return await request_openshop_ocr_layout(
+        prompt=build_ocr_prompt(width, height),
+        system_prompt="You are a strict multilingual OCR layout engine. Return JSON only.",
+        provider_id=provider_id,
+        model_id=model_id,
+        source_url=source_url,
+        width=width,
+        height=height,
+    )
+
+
+def read_openshop_text_removal_source(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        content = handle.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="OpenShop 去字原图超过 64 MiB 限制")
+    if not content:
+        raise HTTPException(status_code=502, detail="OpenShop 去字原图为空")
+    return content
+
+
+def _art_font_quad_aspect(
+    quad: List[Dict[str, Any]],
+    document: Dict[str, Any],
+    visual_profile: Optional[Dict[str, Any]] = None,
+) -> float:
+    width = int(document["width"])
+    height = int(document["height"])
+    points = [
+        (float(point["x"]) * width, float(point["y"]) * height)
+        for point in quad
+    ]
+    candidates = []
+    for first_edge, opposite_edge in (
+        ((0, 1), (3, 2)),
+        ((0, 3), (1, 2)),
+    ):
+        vectors = [
+            (
+                points[end][0] - points[start][0],
+                points[end][1] - points[start][1],
+            )
+            for start, end in (first_edge, opposite_edge)
+        ]
+        lengths = [math.hypot(x, y) for x, y in vectors]
+        average_length = sum(lengths) / 2.0
+        direction = math.degrees(
+            math.atan2(
+                vectors[0][1] + vectors[1][1],
+                vectors[0][0] + vectors[1][0],
+            )
+        )
+        candidates.append((average_length, direction))
+    if any(length < 1.0 for length, _direction in candidates):
+        raise OpenShopAiValidationError("Art font quad has no usable adjacent edges")
+
+    rotation = None
+    if isinstance(visual_profile, dict):
+        try:
+            candidate_rotation = float(visual_profile.get("rotation"))
+        except (TypeError, ValueError):
+            candidate_rotation = math.nan
+        if math.isfinite(candidate_rotation):
+            rotation = candidate_rotation
+
+    if rotation is None:
+        baseline_index = max(range(2), key=lambda index: candidates[index][0])
+    else:
+        def direction_distance(direction: float) -> float:
+            return abs((direction - rotation + 90.0) % 180.0 - 90.0)
+
+        distances = [direction_distance(direction) for _length, direction in candidates]
+        if abs(distances[0] - distances[1]) <= 1.0:
+            baseline_index = max(range(2), key=lambda index: candidates[index][0])
+        else:
+            baseline_index = min(range(2), key=lambda index: distances[index])
+    cross_index = 1 - baseline_index
+    return candidates[baseline_index][0] / candidates[cross_index][0]
+
+
+def _read_openshop_art_font_source(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        content = handle.read(OPENSHOP_ART_FONT_MAX_BYTES + 1)
+    if len(content) > OPENSHOP_ART_FONT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="艺术字体原图超过压缩字节限制")
+    if not content:
+        raise HTTPException(status_code=502, detail="艺术字体原图为空")
+    return content
+
+
+async def store_openshop_ai_png(
+    project_id: str,
+    owner: Dict[str, Any],
+    content: bytes,
+    role: str = "art-font-output",
+) -> Dict[str, Any]:
+    output_name = (
+        f"{project_id}-text-removed.png"
+        if role == "ai-output"
+        else f"{project_id}-art-font.png"
+    )
+    asset = await asyncio.to_thread(
+        OPENSHOP_STORE.store_image,
+        project_id,
+        owner,
+        content,
+        "image/png",
+        output_name,
+        role,
+    )
+    asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
+    return asset
+
 
 async def store_openshop_ai_output(
     project_id: str,
@@ -16663,6 +18309,276 @@ async def store_openshop_ai_output(
             except OSError:
                 pass
 
+OPENSHOP_GENERATION_SEMAPHORE = asyncio.Semaphore(3)
+
+async def openshop_generation_references(
+    snapshot: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Build provider inputs with the editable source in selection space."""
+    source_path, _source_metadata = await asyncio.to_thread(
+        OPENSHOP_STORE.asset_path, snapshot["sourceAssetId"]
+    )
+    mask_path, _mask_metadata = await asyncio.to_thread(
+        OPENSHOP_STORE.asset_path, snapshot["maskAssetId"]
+    )
+    with open(source_path, "rb") as source_handle, open(mask_path, "rb") as mask_handle:
+        source_bytes = source_handle.read()
+        mask_bytes = mask_handle.read()
+    local_source_bytes, local_mask_bytes = await asyncio.to_thread(
+        prepare_local_generation_inputs,
+        source_bytes,
+        mask_bytes,
+        snapshot["selection"],
+    )
+    local_source_url = (
+        "data:image/png;base64,"
+        + base64.b64encode(local_source_bytes).decode("ascii")
+    )
+    local_mask_url = (
+        "data:image/png;base64,"
+        + base64.b64encode(local_mask_bytes).decode("ascii")
+    )
+    ordered = [
+        (local_source_url, "editable-source", "selected-region-source.png"),
+        (local_mask_url, "mask", "selected-region-mask.png"),
+    ]
+    if snapshot["referenceMode"] == "full":
+        ordered.append(
+            (snapshot["sourceAssetId"], "full-context", "full-document-context.png")
+        )
+    ordered.extend(
+        (item["assetId"], item["sourceType"], item["alias"])
+        for item in snapshot["references"]
+        if item["assetId"] != snapshot["sourceAssetId"]
+    )
+    references = []
+    for asset_or_url, role, name in ordered:
+        if str(asset_or_url).startswith("data:image/"):
+            url = asset_or_url
+            mime = "image/png"
+        else:
+            path, metadata, url = await asyncio.to_thread(
+                openshop_ai_asset, asset_or_url, 0
+            )
+            name = name or os.path.basename(path)
+            mime = metadata["mime"]
+        references.append({
+            "url": url,
+            "name": name,
+            "role": role,
+            "kind": "image",
+            "mime": mime,
+        })
+    return references
+
+def openshop_generation_prompt(snapshot: Dict[str, Any]) -> str:
+    scope = (
+        "Fill only the selected region using the full visible image as context. "
+        "Preserve every pixel outside the supplied mask exactly."
+        if snapshot["toolId"] == "generative-fill"
+        else "Redraw only the selected region. Preserve every pixel outside the supplied mask exactly."
+    )
+    input_contract = (
+        "Provider image order: image 1 is the exact selected crop and defines the "
+        "required output framing; image 2 is its same-size selection mask. Return "
+        "only the edited crop in image 1 framing. Never recreate, miniaturize, or "
+        "return the full document."
+    )
+    system_reference_count = 2
+    mapping_parts = []
+    if snapshot["referenceMode"] == "full":
+        input_contract += (
+            " image 3 is full-document context only and must never define the output framing."
+        )
+        system_reference_count = 3
+        mapping_parts.extend(
+            f"@{item['alias']} is reference image 3"
+            for item in snapshot["references"]
+            if item["assetId"] == snapshot["sourceAssetId"]
+        )
+    user_reference_index = system_reference_count + 1
+    for item in snapshot["references"]:
+        if item["assetId"] == snapshot["sourceAssetId"]:
+            continue
+        mapping_parts.append(
+            f"@{item['alias']} is reference image {user_reference_index}"
+        )
+        user_reference_index += 1
+    mappings = ", ".join(mapping_parts)
+    prompt = snapshot["prompt"] or "Complete the selected region naturally."
+    parts = [scope, input_contract, f"User request: {prompt}"]
+    if mappings:
+        parts.append(f"Reference mapping: {mappings}")
+    return "\n".join(parts)
+
+async def generated_openshop_image_bytes(image_data: Dict[str, Any]) -> bytes:
+    output_url = await save_ai_image_to_output(image_data, prefix="openshop_generation_")
+    output_path = output_file_from_url(output_url)
+    if not output_path or not os.path.isfile(output_path):
+        raise HTTPException(status_code=502, detail="OpenShop 生图模型没有返回可读取的图片")
+    temporary = os.path.basename(output_path).startswith("openshop_generation_")
+    try:
+        with open(output_path, "rb") as handle:
+            content = handle.read(OPENSHOP_STORE.MAX_IMAGE_BYTES + 1)
+        if len(content) > OPENSHOP_STORE.MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="OpenShop 生图结果超过 64 MiB 限制")
+        return content
+    finally:
+        if temporary:
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+
+async def normalize_openshop_generation_result(
+    snapshot: Dict[str, Any],
+    image_data: Dict[str, Any],
+) -> bytes:
+    source_path, _source_metadata = await asyncio.to_thread(
+        OPENSHOP_STORE.asset_path, snapshot["sourceAssetId"]
+    )
+    mask_path, _mask_metadata = await asyncio.to_thread(
+        OPENSHOP_STORE.asset_path, snapshot["maskAssetId"]
+    )
+    with open(source_path, "rb") as source_handle, open(mask_path, "rb") as mask_handle:
+        source_bytes = source_handle.read()
+        mask_bytes_value = mask_handle.read()
+    generated_bytes = await generated_openshop_image_bytes(image_data)
+    return await asyncio.to_thread(
+        normalize_local_generation,
+        source_bytes,
+        mask_bytes_value,
+        generated_bytes,
+        snapshot["selection"],
+    )
+
+async def store_openshop_generation_output(
+    project_id: str,
+    owner: Dict[str, Any],
+    content: bytes,
+    child_id: str,
+) -> Dict[str, Any]:
+    asset = await asyncio.to_thread(
+        OPENSHOP_STORE.store_image,
+        project_id,
+        owner,
+        content,
+        "image/png",
+        f"{child_id}.png",
+        "ai-output",
+    )
+    asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
+    return asset
+
+def public_openshop_asset(asset: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: asset[key]
+        for key in ("assetId", "url", "name", "width", "height", "mime")
+    }
+
+async def run_openshop_generation_child(
+    parent_id: str,
+    child_id: str,
+    project_id: str,
+    owner: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    provider_id: str,
+    model_id: str,
+):
+    if not OPENSHOP_AI_TASKS.mark_child_running(parent_id, child_id):
+        return
+    try:
+        async with OPENSHOP_GENERATION_SEMAPHORE:
+            references = await openshop_generation_references(snapshot)
+            image_data, _raw = await generate_ai_image(
+                openshop_generation_prompt(snapshot),
+                snapshot["size"],
+                snapshot["quality"],
+                model_id,
+                references,
+                provider_id,
+            )
+        if not OPENSHOP_AI_TASKS.can_complete_child(parent_id, child_id):
+            return
+        normalized_png = await normalize_openshop_generation_result(snapshot, image_data)
+        asset = await store_openshop_generation_output(
+            project_id, owner, normalized_png, child_id
+        )
+        if not OPENSHOP_AI_TASKS.succeed_child(
+            parent_id, child_id, public_openshop_asset(asset)
+        ):
+            await asyncio.to_thread(collect_openshop_garbage)
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        OPENSHOP_AI_TASKS.fail_child(parent_id, child_id, detail)
+
+
+async def request_openshop_ocr_layout(
+    *,
+    prompt: str,
+    system_prompt: str,
+    provider_id: str,
+    model_id: str,
+    source_url: str,
+    width: int,
+    height: int,
+    allow_empty: bool = False,
+) -> Dict[str, Any]:
+    content_contract = (
+        "The client can read only assistant message.content and cannot read hidden reasoning_content. "
+        "You MUST put the complete final JSON object in assistant message.content. "
+        "Do not stop after planning or analysis. Never return empty content."
+    )
+    response = await canvas_llm(CanvasLLMRequest(
+        message=prompt,
+        system_prompt=f"{system_prompt.rstrip()} {content_contract}",
+        provider=provider_id,
+        model=model_id,
+        response_format="json_object",
+        stream_response=True,
+        images=[source_url],
+    ))
+    return normalize_ocr_layout(
+        response.get("text") if isinstance(response, dict) else "",
+        width,
+        height,
+        allow_empty=allow_empty,
+        repair_runs=True,
+    )
+
+
+def create_and_schedule_openshop_generation(
+    project_id: str,
+    owner: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    provider_id: str,
+    model_id: str,
+    retry_of_task_id: str = "",
+) -> Dict[str, Any]:
+    parent = OPENSHOP_AI_TASKS.create_parent(
+        project_id,
+        owner,
+        snapshot,
+        provider_id,
+        model_id,
+        retry_of_task_id=retry_of_task_id,
+    )
+    for index in snapshot["requestedIndexes"]:
+        child = OPENSHOP_AI_TASKS.create_child(parent["taskId"], index)
+        future = STORAGE_WRITE_BARRIER.create_task(run_openshop_generation_child(
+            parent["taskId"],
+            child["childTaskId"],
+            project_id,
+            owner,
+            deepcopy(snapshot),
+            provider_id,
+            model_id,
+        ))
+        OPENSHOP_AI_TASKS.bind_child(parent["taskId"], child["childTaskId"], future)
+    return OPENSHOP_AI_TASKS.get(parent["taskId"], project_id, owner)
+
 async def run_openshop_ai_task(
     task_id: str,
     project_id: str,
@@ -16671,7 +18587,99 @@ async def run_openshop_ai_task(
     if not OPENSHOP_AI_TASKS.mark_running(task_id):
         return
     owner = payload.owner
+    art_pipeline_semaphore = None
+    art_pipeline_acquired = False
     try:
+        if payload.tool_id == "art-font-restore":
+            art_pipeline_semaphore = OPENSHOP_ART_FONT_PIPELINE_SEMAPHORE
+            await art_pipeline_semaphore.acquire()
+            art_pipeline_acquired = True
+            task = OPENSHOP_AI_TASKS.get(task_id, project_id, owner)
+            snapshot = task["snapshot"]
+            source_path, source_metadata = await asyncio.to_thread(
+                OPENSHOP_STORE.asset_path,
+                task["sourceAssetId"],
+            )
+            if (
+                int(source_metadata.get("width") or 0) != snapshot["document"]["width"]
+                or int(source_metadata.get("height") or 0) != snapshot["document"]["height"]
+            ):
+                raise OpenShopAiValidationError(
+                    "OpenShop artistic-font source dimensions do not match the document"
+                )
+            source_bytes = await _run_openshop_art_font_worker(
+                _read_openshop_art_font_source,
+                source_path,
+            )
+            source_patch_png, edit_mask_png, placement_box = await _run_openshop_art_font_worker(
+                prepare_art_font_edit,
+                source_bytes,
+                snapshot["quad"],
+            )
+            source_patch_url = (
+                "data:image/png;base64,"
+                + base64.b64encode(source_patch_png).decode("ascii")
+            )
+            edit_mask_url = (
+                "data:image/png;base64,"
+                + base64.b64encode(edit_mask_png).decode("ascii")
+            )
+            image_data, _raw = await generate_ai_image(
+                build_art_font_prompt(snapshot),
+                f"{placement_box['width']}x{placement_box['height']}",
+                "high",
+                task["modelId"],
+                [
+                    {
+                        "url": source_patch_url,
+                        "name": "art-font-source.png",
+                        "role": "source",
+                        "kind": "image",
+                        "mime": "image/png",
+                    },
+                    {
+                        "url": edit_mask_url,
+                        "name": "art-font-mask.png",
+                        "role": "mask",
+                        "kind": "image",
+                        "mime": "image/png",
+                    },
+                ],
+                task["apiConfigId"],
+            )
+            generated_bytes = await materialize_openshop_ai_image(image_data)
+            normalized_png, geometry = await _run_openshop_art_font_worker(
+                normalize_art_font_patch_output,
+                generated_bytes,
+                source_patch_png,
+                edit_mask_png,
+                placement_box,
+            )
+            if not OPENSHOP_AI_TASKS.can_complete(task_id):
+                return
+            storage_task = STORAGE_WRITE_BARRIER.create_task(
+                store_openshop_ai_png(
+                    project_id,
+                    owner,
+                    normalized_png,
+                    "art-font-output",
+                )
+            )
+            try:
+                art_asset = await asyncio.shield(storage_task)
+            except asyncio.CancelledError:
+                art_asset = await storage_task
+                raise
+            result = {
+                "assetId": art_asset["assetId"],
+                "url": art_asset["url"],
+                "name": art_asset["name"],
+                "mime": "image/png",
+                **geometry,
+            }
+            OPENSHOP_AI_TASKS.succeed(task_id, result)
+            return
+
         source_path, source_metadata, source_url = await asyncio.to_thread(
             openshop_ai_asset,
             payload.source_asset_id,
@@ -16679,55 +18687,63 @@ async def run_openshop_ai_task(
         )
         if payload.tool_id == "text-extract":
             prompt = build_ocr_prompt(source_metadata["width"], source_metadata["height"])
-            response = await canvas_llm(CanvasLLMRequest(
-                message=prompt,
+            layout = await request_openshop_ocr_layout(
+                prompt=prompt,
                 system_prompt="You are a strict multilingual OCR layout engine. Return JSON only.",
-                provider=payload.provider_id,
-                model=payload.model_id,
-                images=[source_url],
-            ))
-            layout = normalize_ocr_layout(
-                response.get("text") if isinstance(response, dict) else "",
-                source_metadata["width"],
-                source_metadata["height"],
+                provider_id=payload.provider_id,
+                model_id=payload.model_id,
+                source_url=source_url,
+                width=source_metadata["width"],
+                height=source_metadata["height"],
             )
             OPENSHOP_AI_TASKS.succeed(task_id, layout)
             return
 
-        references = [{
-            "url": source_url,
-            "name": os.path.basename(source_path) or "source.png",
-            "role": "source",
-            "kind": "image",
-            "mime": source_metadata["mime"],
-        }]
-        if payload.mode == "selection":
-            _mask_path, mask_metadata, mask_url = await asyncio.to_thread(
-                openshop_ai_asset,
-                payload.mask_asset_id,
-                0,
-            )
-            references.append({
-                "url": mask_url,
-                "name": "selection_mask.png",
-                "role": "mask",
-                "kind": "image",
-                "mime": mask_metadata["mime"],
-            })
         quality = str(payload.options.get("quality") or "auto").strip().lower()
         if quality not in {"auto", "low", "medium", "high"}:
             quality = "auto"
+        resolution = str(payload.options.get("resolution") or "auto").strip().lower()
+        ratio = str(payload.options.get("ratio") or "source").strip().lower()
+        if ratio not in OPENSHOP_TEXT_REMOVE_RATIOS:
+            ratio = "source"
+        size = openshop_text_remove_size(
+            source_metadata["width"],
+            source_metadata["height"],
+            resolution,
+            ratio,
+        )
+        target_width, target_height = parse_size_pair(size)
+        references = [
+            {
+                "url": source_url,
+                "name": os.path.basename(source_path),
+                "role": "source",
+                "kind": "image",
+                "mime": source_metadata["mime"],
+            },
+        ]
         image_data, _raw = await generate_ai_image(
-            openshop_text_remove_prompt(payload.mode, payload.options.get("prompt")),
-            f"{source_metadata['width']}x{source_metadata['height']}",
+            openshop_text_remove_prompt(payload.mode, payload.options.get("prompt"), ratio),
+            size,
             quality,
             payload.model_id,
             references,
             payload.provider_id,
         )
+        generated_bytes = await generated_openshop_image_bytes(image_data)
+        normalized_png = await asyncio.to_thread(
+            normalize_generated_text_removal,
+            generated_bytes,
+            (target_width, target_height),
+        )
         if not OPENSHOP_AI_TASKS.can_complete(task_id):
             return
-        asset = await store_openshop_ai_output(project_id, owner, image_data)
+        asset = await store_openshop_ai_png(
+            project_id,
+            owner,
+            normalized_png,
+            "ai-output",
+        )
         if not OPENSHOP_AI_TASKS.succeed(task_id, {
             "assetId": asset["assetId"],
             "url": asset["url"],
@@ -16736,12 +18752,15 @@ async def run_openshop_ai_task(
             "height": asset["height"],
             "mime": asset["mime"],
         }):
-            await asyncio.to_thread(OPENSHOP_STORE.collect_garbage)
+            await asyncio.to_thread(collect_openshop_garbage)
     except asyncio.CancelledError:
         return
     except Exception as exc:
         detail = getattr(exc, "detail", None) or str(exc)
         OPENSHOP_AI_TASKS.fail(task_id, detail)
+    finally:
+        if art_pipeline_semaphore is not None and art_pipeline_acquired:
+            art_pipeline_semaphore.release()
 
 def raise_openshop_ai_task_error(exc: Exception):
     if isinstance(exc, OpenShopAiTaskOwnershipError):
@@ -16757,13 +18776,18 @@ async def initialize_openshop_project(
     project_id: str,
     payload: OpenShopProjectInitializeRequest,
 ):
+    def initialize_project():
+        with CANVAS_LOCK:
+            require_openshop_owner_canvas(payload.owner)
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                return OPENSHOP_STORE.initialize(
+                    project_id,
+                    payload.owner,
+                    payload.document,
+                )
+
     try:
-        project = await asyncio.to_thread(
-            OPENSHOP_STORE.initialize,
-            project_id,
-            payload.owner,
-            payload.document,
-        )
+        project = await asyncio.to_thread(initialize_project)
         return {"project": project}
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
@@ -16807,14 +18831,21 @@ async def clone_openshop_project(
     project_id: str,
     payload: OpenShopProjectCloneRequest,
 ):
+    def clone_project():
+        with CANVAS_LOCK:
+            if payload.source_owner is not None:
+                require_openshop_owner_canvas(payload.source_owner)
+            require_openshop_owner_canvas(payload.owner)
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                return OPENSHOP_STORE.clone(
+                    payload.source_project_id,
+                    payload.source_owner,
+                    project_id,
+                    payload.owner,
+                )
+
     try:
-        project = await asyncio.to_thread(
-            OPENSHOP_STORE.clone,
-            payload.source_project_id,
-            project_id,
-            payload.owner,
-            payload.source_owner,
-        )
+        project = await asyncio.to_thread(clone_project)
         return {"project": project}
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
@@ -16827,13 +18858,15 @@ async def delete_openshop_project(
     node_id: str,
 ):
     def delete_and_collect():
-        deleted = OPENSHOP_STORE.delete(
-            project_id,
-            openshop_owner(canvas_type, canvas_id, node_id),
-        )
+        owner = openshop_owner(canvas_type, canvas_id, node_id)
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            deleted = OPENSHOP_STORE.delete(
+                project_id,
+                owner,
+            )
+            OPENSHOP_AI_TASKS.cancel_project(project_id, owner)
         if deleted:
-            OPENSHOP_AI_TASKS.cancel_project(project_id)
-            OPENSHOP_STORE.collect_garbage()
+            collect_openshop_garbage(include_legacy=True)
         return deleted
 
     try:
@@ -16866,7 +18899,98 @@ async def upload_openshop_asset(
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
 
-@app.get("/api/openshop/assets/{asset_id}")
+def find_openshop_asset_library_item(
+    library: Dict[str, Any],
+    library_id: str,
+    category_id: str,
+    item_id: str,
+) -> Dict[str, Any]:
+    selected_library = next(
+        (
+            item
+            for item in library.get("libraries", [])
+            if str(item.get("id") or "") == str(library_id or "")
+        ),
+        None,
+    )
+    if not selected_library:
+        raise HTTPException(status_code=404, detail="素材库不存在")
+    selected_category = next(
+        (
+            item
+            for item in selected_library.get("categories", [])
+            if str(item.get("id") or "") == str(category_id or "")
+        ),
+        None,
+    )
+    if not selected_category:
+        raise HTTPException(status_code=404, detail="素材库分组不存在")
+    result = next(
+        (
+            item
+            for item in selected_category.get("items", [])
+            if str(item.get("id") or "") == str(item_id or "")
+        ),
+        None,
+    )
+    item_type = str((result or {}).get("type") or "image").strip().lower()
+    if not result or item_type not in {"image", "photo"}:
+        raise HTTPException(status_code=404, detail="素材库图片不存在")
+    return result
+
+def openshop_library_asset_path(item: Dict[str, Any]) -> str:
+    item_url = str(item.get("url") or "").strip()
+    if not item_url.startswith(("/assets/", "/output/")):
+        raise HTTPException(status_code=400, detail="素材库条目不是本地图片")
+    path = output_file_from_url(item_url)
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="素材库图片文件不存在")
+    resolved = os.path.realpath(path)
+    allowed_roots = [
+        os.path.realpath(root)
+        for root in (ASSETS_DIR, OUTPUT_DIR, LEGACY_OUTPUT_DIR)
+        if root
+    ]
+    if not any(
+        os.path.commonpath([resolved, root]) == root
+        for root in allowed_roots
+    ):
+        raise HTTPException(status_code=403, detail="素材库图片路径不安全")
+    return resolved
+
+@app.post("/api/openshop/projects/{project_id}/asset-imports")
+async def import_openshop_library_asset(
+    project_id: str,
+    payload: OpenShopAssetImportRequest,
+):
+    await ensure_openshop_project_owner(project_id, payload.owner)
+    item = find_openshop_asset_library_item(
+        load_asset_library(),
+        payload.library_id,
+        payload.category_id,
+        payload.item_id,
+    )
+    path = openshop_library_asset_path(item)
+    with open(path, "rb") as handle:
+        content = handle.read(OPENSHOP_STORE.MAX_IMAGE_BYTES + 1)
+    if len(content) > OPENSHOP_STORE.MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="素材库图片超过 OpenShop 限制")
+    try:
+        asset = await asyncio.to_thread(
+            OPENSHOP_STORE.store_image,
+            project_id,
+            payload.owner,
+            content,
+            content_type_for_path(path),
+            str(item.get("name") or os.path.basename(path)),
+            "ai-reference",
+        )
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+    asset["url"] = f"/api/openshop/assets/{asset['assetId']}"
+    return {"asset": asset}
+
+@app.api_route("/api/openshop/assets/{asset_id}", methods=["GET", "HEAD"])
 async def get_openshop_asset(asset_id: str):
     try:
         path, metadata = await asyncio.to_thread(OPENSHOP_STORE.asset_path, asset_id)
@@ -16880,31 +19004,163 @@ async def create_openshop_ai_task(
     payload: OpenShopAiTaskRequest,
 ):
     await ensure_openshop_project_owner(project_id, payload.owner)
-    if payload.tool_id not in {"text-extract", "text-remove"}:
+    if payload.tool_id not in {
+        "text-extract",
+        "text-remove",
+        "art-font-restore",
+        *OPENSHOP_GENERATIVE_TOOL_IDS,
+    }:
         raise HTTPException(status_code=400, detail="OpenShop AI 功能不存在")
-    openshop_ai_provider(payload)
+    if payload.tool_id == "text-remove":
+        payload.mode = "layer"
+        payload.mask_asset_id = ""
+    provider = openshop_ai_provider(payload)
+    if payload.tool_id == "art-font-restore":
+        model = openshop_generation_model(
+            provider,
+            payload.tool_id,
+            payload.model_id,
+        )
+        if not (model.get("capabilities") or {}).get("supportsImageInput"):
+            raise HTTPException(status_code=400, detail="当前模型不支持参考图片输入")
+        try:
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                OPENSHOP_STORE.load(project_id, payload.owner)
+                OPENSHOP_STORE.asset_path(payload.source_asset_id)
+                if not OPENSHOP_STORE.project_references_asset(
+                    project_id,
+                    payload.owner,
+                    payload.source_asset_id,
+                ):
+                    raise OpenShopNotFound(
+                        "OpenShop artistic-font source asset does not belong to this project"
+                    )
+                record, created = OPENSHOP_AI_TASKS.create_or_get(
+                    project_id=project_id,
+                    owner=payload.owner,
+                    tool_id=payload.tool_id,
+                    provider_id=payload.provider_id,
+                    model_id=payload.model_id,
+                    source_asset_id=payload.source_asset_id,
+                    source_layer_id=payload.source_layer_id,
+                    snapshot=payload.options.get("artFont"),
+                    client_request_id=payload.client_request_id,
+                )
+        except OpenShopStoreError as exc:
+            raise_openshop_http_error(exc)
+        except OpenShopAiValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if created:
+            future = STORAGE_WRITE_BARRIER.create_task(
+                run_openshop_ai_task(record["taskId"], project_id, payload)
+            )
+            OPENSHOP_AI_TASKS.bind(record["taskId"], future)
+        return {"task_id": record["taskId"], "status": record["status"], "task": record}
+    if payload.tool_id in OPENSHOP_GENERATIVE_TOOL_IDS:
+        snapshot = openshop_generation_snapshot(payload)
+        validate_openshop_generation_capabilities(provider, payload.model_id, snapshot)
+        try:
+            asset_ids = {
+                snapshot["sourceAssetId"],
+                snapshot["maskAssetId"],
+                snapshot["primaryReferenceAssetId"],
+                *(item["assetId"] for item in snapshot["references"]),
+            }
+            with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+                OPENSHOP_STORE.load(project_id, payload.owner)
+                for asset_id in sorted(asset_ids):
+                    OPENSHOP_STORE.asset_path(asset_id)
+                record = create_and_schedule_openshop_generation(
+                    project_id,
+                    payload.owner,
+                    snapshot,
+                    payload.provider_id,
+                    payload.model_id,
+                )
+        except OpenShopStoreError as exc:
+            raise_openshop_http_error(exc)
+        except OpenShopAiValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"task_id": record["taskId"], "status": record["status"], "task": record}
     try:
-        await asyncio.to_thread(OPENSHOP_STORE.asset_path, payload.source_asset_id)
         if payload.mode == "selection":
             if payload.tool_id != "text-remove" or not payload.mask_asset_id:
                 raise HTTPException(status_code=400, detail="选区去字需要有效的选区蒙版")
-            await asyncio.to_thread(OPENSHOP_STORE.asset_path, payload.mask_asset_id)
-        record = OPENSHOP_AI_TASKS.create(
-            project_id=project_id,
-            owner=payload.owner,
-            tool_id=payload.tool_id,
-            provider_id=payload.provider_id,
-            model_id=payload.model_id,
-            source_asset_id=payload.source_asset_id,
-            mask_asset_id=payload.mask_asset_id,
-            mode=payload.mode,
-        )
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            OPENSHOP_STORE.load(project_id, payload.owner)
+            OPENSHOP_STORE.asset_path(payload.source_asset_id)
+            if payload.mode == "selection":
+                OPENSHOP_STORE.asset_path(payload.mask_asset_id)
+            record = OPENSHOP_AI_TASKS.create(
+                project_id=project_id,
+                owner=payload.owner,
+                tool_id=payload.tool_id,
+                provider_id=payload.provider_id,
+                model_id=payload.model_id,
+                source_asset_id=payload.source_asset_id,
+                mask_asset_id=payload.mask_asset_id,
+                mode=payload.mode,
+            )
     except OpenShopStoreError as exc:
         raise_openshop_http_error(exc)
     except OpenShopAiValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    future = asyncio.create_task(run_openshop_ai_task(record["taskId"], project_id, payload))
+    future = STORAGE_WRITE_BARRIER.create_task(run_openshop_ai_task(record["taskId"], project_id, payload))
     OPENSHOP_AI_TASKS.bind(record["taskId"], future)
+    return {"task_id": record["taskId"], "status": record["status"], "task": record}
+
+@app.post("/api/openshop/projects/{project_id}/ai-tasks/{task_id}/retry-missing")
+async def retry_openshop_ai_task(
+    project_id: str,
+    task_id: str,
+    payload: OpenShopAiRetryRequest,
+):
+    await ensure_openshop_project_owner(project_id, payload.owner)
+    try:
+        previous = OPENSHOP_AI_TASKS.get(task_id, project_id, payload.owner)
+    except (OpenShopAiTaskNotFound, OpenShopAiTaskOwnershipError, OpenShopAiValidationError) as exc:
+        raise_openshop_ai_task_error(exc)
+    if previous.get("kind") != "parent" or previous["status"] not in {"partial", "failed"}:
+        raise HTTPException(status_code=409, detail="OpenShop 任务没有可补生成的结果")
+    missing_indexes = [
+        int(child["index"])
+        for child in previous["children"]
+        if child["status"] in {"failed", "cancelled"}
+    ]
+    if not missing_indexes:
+        raise HTTPException(status_code=409, detail="OpenShop 任务没有可补生成的结果")
+    snapshot = {
+        **deepcopy(previous["snapshot"]),
+        "targetCount": len(missing_indexes),
+        "originalTargetCount": int(
+            previous["snapshot"].get("originalTargetCount") or previous["targetCount"]
+        ),
+        "requestedIndexes": missing_indexes,
+    }
+    provider = get_api_provider_exact(previous["apiConfigId"])
+    configured_models = [
+        str(item or "").strip()
+        for item in provider.get("image_models", [])
+        if str(item or "").strip()
+    ]
+    if previous["modelId"] not in configured_models:
+        raise HTTPException(status_code=400, detail="配置不可用：原模型已被删除")
+    validate_openshop_generation_capabilities(provider, previous["modelId"], snapshot)
+    try:
+        with OPENSHOP_PROJECT_LIFECYCLE_LOCK:
+            OPENSHOP_STORE.load(project_id, payload.owner)
+            record = create_and_schedule_openshop_generation(
+                project_id,
+                payload.owner,
+                snapshot,
+                previous["apiConfigId"],
+                previous["modelId"],
+                retry_of_task_id=task_id,
+            )
+    except OpenShopStoreError as exc:
+        raise_openshop_http_error(exc)
+    except OpenShopAiValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"task_id": record["taskId"], "status": record["status"], "task": record}
 
 @app.get("/api/openshop/projects/{project_id}/ai-tasks/{task_id}")
@@ -16979,10 +19235,7 @@ async def delete_project(project_id: str):
     # 把该项目下的画布迁回默认项目
     moved = 0
     with CANVAS_LOCK:
-        for filename in os.listdir(CANVAS_DIR):
-            if not filename.endswith(".json"):
-                continue
-            path = os.path.join(CANVAS_DIR, filename)
+        for path in canvas_storage_files():
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -16990,8 +19243,7 @@ async def delete_project(project_id: str):
                 continue
             if str(data.get("project") or "") == project_id:
                 data["project"] = DEFAULT_PROJECT_ID
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(Path(path), data)
                 moved += 1
     return {"ok": True, "moved": moved}
 
@@ -16999,9 +19251,31 @@ async def delete_project(project_id: str):
 async def trashed_canvases():
     return {"canvases": list_deleted_canvases(), "retention_days": 30}
 
+
+@app.delete("/api/canvases/trash/purge-all")
+async def purge_all_trashed_canvases():
+    def purge_all():
+        deleted_ids = [record["id"] for record in list_deleted_canvases()]
+        return sum(
+            purge_canvas_storage(canvas_id, require_deleted=True)
+            for canvas_id in deleted_ids
+        )
+
+    purged = await asyncio.to_thread(purge_all)
+    return {"ok": True, "purged": purged}
+
+
 @app.post("/api/canvases")
 async def create_canvas(payload: CanvasCreateRequest):
-    return {"canvas": new_canvas(payload.title, payload.icon, payload.kind, payload.project, payload.board_x, payload.board_y)}
+    return {"canvas": new_canvas(
+        payload.title,
+        payload.icon,
+        payload.kind,
+        payload.project,
+        payload.board_x,
+        payload.board_y,
+        canvas_id=payload.id,
+    )}
 
 @app.get("/api/canvases/{canvas_id}/meta")
 async def get_canvas_meta(canvas_id: str):
@@ -17018,26 +19292,25 @@ async def get_canvas_meta(canvas_id: str):
 async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
     """更新画布的轻量元数据（标题/图标/负责人/颜色/置顶）。
     刻意不走 save_canvas（它会刷新 updated_at），以免打标签/置顶把画布顶到列表最前。"""
-    canvas = load_canvas(canvas_id)
-    if payload.title is not None:
-        canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
-    if payload.icon is not None:
-        canvas["icon"] = (payload.icon or "layers")[:32]
-    if payload.owner is not None:
-        canvas["owner"] = str(payload.owner).strip()[:40]
-    if payload.color is not None:
-        canvas["color"] = normalize_canvas_color(payload.color)
-    if payload.pinned is not None:
-        canvas["pinned"] = bool(payload.pinned)
-    if payload.project is not None:
-        canvas["project"] = str(payload.project).strip() or DEFAULT_PROJECT_ID
-    if payload.board_x is not None:
-        canvas["board_x"] = float(payload.board_x)
-    if payload.board_y is not None:
-        canvas["board_y"] = float(payload.board_y)
     with CANVAS_LOCK:
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        canvas = load_canvas(canvas_id)
+        if payload.title is not None:
+            canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
+        if payload.icon is not None:
+            canvas["icon"] = (payload.icon or "layers")[:32]
+        if payload.owner is not None:
+            canvas["owner"] = str(payload.owner).strip()[:40]
+        if payload.color is not None:
+            canvas["color"] = normalize_canvas_color(payload.color)
+        if payload.pinned is not None:
+            canvas["pinned"] = bool(payload.pinned)
+        if payload.project is not None:
+            canvas["project"] = str(payload.project).strip() or DEFAULT_PROJECT_ID
+        if payload.board_x is not None:
+            canvas["board_x"] = float(payload.board_x)
+        if payload.board_y is not None:
+            canvas["board_y"] = float(payload.board_y)
+        atomic_write_json(Path(canvas_path(canvas["id"])), canvas)
     return {"canvas": canvas_record(canvas)}
 
 @app.get("/api/canvases/{canvas_id}")
@@ -17046,9 +19319,14 @@ async def get_canvas(canvas_id: str):
 
 @app.post("/api/canvases/{canvas_id}/touch")
 async def touch_canvas(canvas_id: str):
-    canvas = load_canvas(canvas_id)
-    save_canvas(canvas)
-    return {"canvas": canvas_record(canvas), "updated_at": canvas.get("updated_at", 0)}
+    with CANVAS_LOCK:
+        canvas = load_canvas(canvas_id)
+        save_canvas(canvas)
+    return {
+        "canvas": canvas_record(canvas),
+        "full_canvas": canvas,
+        "updated_at": canvas.get("updated_at", 0),
+    }
 
 @app.get("/api/canvas-assets")
 async def list_canvas_assets():
@@ -18146,18 +20424,7 @@ async def batch_crop_asset_library_items(payload: AssetLibraryBatchCropRequest):
     save_asset_library(lib)
     return {"library": lib, "added": len(added), "items": added}
 
-@app.put("/api/canvases/{canvas_id}")
-async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
-    canvas = load_canvas(canvas_id)
-    current_updated_at = int(canvas.get("updated_at") or 0)
-    if payload.base_updated_at and current_updated_at and int(payload.base_updated_at) < current_updated_at:
-        raise HTTPException(status_code=409, detail={
-            "message": "画布已被其他页面更新，已拒绝旧版本覆盖。",
-            "canvas": canvas,
-            "updated_at": current_updated_at,
-        })
-    previous_openshop_projects = openshop_project_owners(canvas.get("nodes"))
-    next_openshop_projects = openshop_project_owners(payload.nodes)
+def apply_canvas_save_request(canvas, payload):
     canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
     canvas["icon"] = (payload.icon or canvas.get("icon") or "layers")[:32]
     canvas["kind"] = normalize_canvas_kind(canvas.get("kind"))
@@ -18169,55 +20436,84 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
         canvas["viewport"] = canvas.get("viewport") or {"x": 0, "y": 0, "scale": 1}
     canvas["logs"] = payload.logs[-500:]
     canvas["settings"] = payload.settings or {}
-    save_canvas(canvas)
-    removed_openshop_projects = {
-        project_id: node_id
-        for project_id, node_id in previous_openshop_projects.items()
-        if project_id not in next_openshop_projects
-    }
-    if removed_openshop_projects:
-        await asyncio.to_thread(
-            remove_openshop_projects,
-            removed_openshop_projects,
-            canvas["kind"],
-            canvas_id,
-        )
+    return canvas
+
+
+def canvas_save_request_matches(canvas, payload):
+    candidate = apply_canvas_save_request(deepcopy(canvas), payload)
+    persisted_fields = (
+        "title",
+        "icon",
+        "kind",
+        "nodes",
+        "connections",
+        "viewport",
+        "logs",
+        "settings",
+    )
+    return all(candidate.get(field) == canvas.get(field) for field in persisted_fields)
+
+
+def save_and_reconcile_canvas_request(canvas_id, payload):
+    with CANVAS_LOCK:
+        canvas = load_canvas(canvas_id)
+        previous_openshop_asset_refs = openshop_asset_refs_from_value(canvas)
+        current_updated_at = int(canvas.get("updated_at") or 0)
+        if (
+            payload.base_updated_at
+            and current_updated_at
+            and int(payload.base_updated_at) < current_updated_at
+        ):
+            if canvas_save_request_matches(canvas, payload):
+                reconcile_openshop_canvas_projects(canvas)
+                return canvas
+            raise HTTPException(status_code=409, detail={
+                "message": "画布已被其他页面更新，已拒绝旧版本覆盖。",
+                "canvas": canvas,
+                "updated_at": current_updated_at,
+            })
+        apply_canvas_save_request(canvas, payload)
+        save_canvas(canvas)
+        removed_openshop_projects = reconcile_openshop_canvas_projects(canvas)
+        if (
+            not removed_openshop_projects
+            and previous_openshop_asset_refs - openshop_asset_refs_from_value(canvas)
+        ):
+            collect_openshop_garbage()
+        return canvas
+
+
+@app.put("/api/canvases/{canvas_id}")
+async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
+    canvas = await asyncio.to_thread(
+        save_and_reconcile_canvas_request,
+        canvas_id,
+        payload,
+    )
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get("updated_at") or now_ms()), payload.client_id)
     return {"canvas": canvas}
 
 @app.delete("/api/canvases/{canvas_id}")
 async def delete_canvas(canvas_id: str):
-    canvas = load_canvas_any(canvas_id)
-    if not canvas.get("deleted_at"):
-        canvas["deleted_at"] = now_ms()
-        save_canvas(canvas)
+    with CANVAS_LOCK:
+        canvas = load_canvas_any(canvas_id)
+        if not canvas.get("deleted_at"):
+            canvas["deleted_at"] = now_ms()
+            save_canvas(canvas)
     return {"ok": True}
 
 @app.post("/api/canvases/{canvas_id}/restore")
 async def restore_canvas(canvas_id: str):
-    canvas = load_canvas_any(canvas_id)
-    if canvas.get("deleted_at"):
-        canvas.pop("deleted_at", None)
-        save_canvas(canvas)
+    with CANVAS_LOCK:
+        canvas = load_canvas_any(canvas_id)
+        if canvas.get("deleted_at"):
+            canvas.pop("deleted_at", None)
+            save_canvas(canvas)
     return {"canvas": canvas}
 
 @app.delete("/api/canvases/{canvas_id}/purge")
 async def purge_canvas(canvas_id: str):
-    path = canvas_path(canvas_id)
-    if os.path.exists(path):
-        canvas = load_canvas_any(canvas_id)
-        def delete_projects_and_collect():
-            removed = OPENSHOP_STORE.delete_canvas_projects(
-                normalize_canvas_kind(canvas.get("kind")),
-                canvas_id,
-            )
-            if removed:
-                for project_id in removed:
-                    OPENSHOP_AI_TASKS.cancel_project(project_id)
-                OPENSHOP_STORE.collect_garbage()
-            return removed
-        await asyncio.to_thread(delete_projects_and_collect)
-        os.remove(path)
+    await asyncio.to_thread(purge_canvas_storage, canvas_id)
     return {"ok": True}
 
 # --- GPT 对话 ---
@@ -18593,8 +20889,9 @@ async def get_history_api(type: str = None, paged: bool = False, offset: int = 0
     data = []
     try:
         with HISTORY_LOCK:
-            if os.path.exists(HISTORY_FILE):
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
         if type:
             data = [item for item in data if item.get("type", "zimage") == type]
@@ -18636,11 +20933,12 @@ async def get_queue_status(client_id: str):
 
 @app.post("/api/history/delete")
 async def delete_history(req: DeleteHistoryRequest):
-    if not os.path.exists(HISTORY_FILE):
+    read_path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+    if not os.path.exists(read_path):
         return {"success": False, "message": "History file not found"}
     try:
         with HISTORY_LOCK:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            with open(read_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
             target_record = None
             new_history = []
@@ -18657,8 +20955,7 @@ async def delete_history(req: DeleteHistoryRequest):
                 else:
                     new_history.append(item)
             if target_record:
-                with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(new_history, f, ensure_ascii=False, indent=4)
+                atomic_write_json(Path(HISTORY_FILE), new_history)
 
         if target_record:
             for img_url in target_record.get("images", []):
@@ -19089,9 +21386,7 @@ def generate(req: GenerateRequest):
                     except Exception as e:
                         print(f"Sync upload failed: {e}")
 
-        workflow_path = os.path.join(WORKFLOW_DIR, req.workflow_json)
-        if not os.path.exists(workflow_path) and req.workflow_json == "Z-Image.json":
-            workflow_path = WORKFLOW_PATH
+        workflow_path = workflow_path_from_name(req.workflow_json)
         if not os.path.exists(workflow_path):
             raise Exception(f"Workflow file not found: {req.workflow_json}")
 
@@ -19295,17 +21590,26 @@ class WorkflowRunRequest(BaseModel):
     config: WorkflowConfig
     client_id: str = ""
 
-def workflow_path_from_name(name: str) -> str:
+def workflow_path_in_root(root: str, name: str) -> str:
     if not WORKFLOW_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid workflow name")
-    path = os.path.abspath(os.path.join(WORKFLOW_DIR, *name.split("/")))
-    workflow_root = os.path.abspath(WORKFLOW_DIR)
+    workflow_root = os.path.abspath(root)
+    path = os.path.abspath(os.path.join(workflow_root, *name.split("/")))
     if os.path.commonpath([workflow_root, path]) != workflow_root:
         raise HTTPException(status_code=400, detail="Invalid workflow name")
     return path
 
-def workflow_config_path(name: str) -> str:
-    return workflow_path_from_name(name).replace(".json", ".config.json")
+def workflow_path_from_name(name: str, *, for_write: bool = False) -> str:
+    user_path = workflow_path_in_root(USER_WORKFLOW_DIR, name)
+    if for_write or os.path.exists(user_path):
+        return user_path
+    return workflow_path_in_root(BUILTIN_WORKFLOW_DIR, name)
+
+def workflow_config_path(name: str, *, for_write: bool = False) -> str:
+    user_config = workflow_path_in_root(USER_WORKFLOW_DIR, name).replace(".json", ".config.json")
+    if for_write or os.path.exists(user_config):
+        return user_config
+    return workflow_path_in_root(BUILTIN_WORKFLOW_DIR, name).replace(".json", ".config.json")
 
 def is_builtin_workflow(name: str) -> bool:
     return "/" not in name and os.path.basename(name) in BUILTIN_WORKFLOWS
@@ -19314,19 +21618,21 @@ def runninghub_workflow_store_path() -> str:
     return RUNNINGHUB_WORKFLOW_STORE_FILE
 
 def load_runninghub_workflow_store():
-    if not os.path.exists(RUNNINGHUB_WORKFLOW_STORE_FILE):
+    path = storage_read_path(
+        RUNNINGHUB_WORKFLOW_STORE_FILE,
+        LEGACY_RUNNINGHUB_WORKFLOW_STORE_FILE,
+    )
+    if not os.path.exists(path):
         return {}
     try:
-        with open(RUNNINGHUB_WORKFLOW_STORE_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 def save_runninghub_workflow_store(store):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(RUNNINGHUB_WORKFLOW_STORE_FILE, "w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(RUNNINGHUB_WORKFLOW_STORE_FILE), store)
 
 def runninghub_workflow_config_has_payload(cfg):
     if not isinstance(cfg, dict):
@@ -19384,10 +21690,11 @@ def runninghub_workflow_entry_from_config(cfg, fallback=None):
     }, "workflow")
 
 def runninghub_saved_hidden_workflow_ids():
-    if not os.path.exists(API_PROVIDERS_FILE):
+    path = storage_read_path(API_PROVIDERS_FILE, LEGACY_API_PROVIDERS_FILE)
+    if not os.path.exists(path):
         return set()
     try:
-        with open(API_PROVIDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except Exception:
         return set()
@@ -19743,32 +22050,36 @@ def save_comfyui_instances(payload: ComfyInstancesPayload):
 
 @app.get("/api/workflows")
 def list_workflows():
-    if not os.path.isdir(WORKFLOW_DIR):
-        return {"workflows": []}
-    items = []
-    for root, dirs, files in os.walk(WORKFLOW_DIR):
-        if os.path.abspath(root) == os.path.abspath(WORKFLOW_DIR):
-            dirs[:] = [d for d in dirs if d in {CUSTOM_WORKFLOW_FOLDER, LEGACY_CUSTOM_WORKFLOW_FOLDER}]
-        for fn in sorted(files):
-            if not fn.endswith(".json") or fn.endswith(".config.json"):
-                continue
-            rel = os.path.relpath(os.path.join(root, fn), WORKFLOW_DIR).replace("\\", "/")
-            if is_builtin_workflow(rel):
-                continue
-            cfg = {}
-            cfg_path = workflow_config_path(rel)
-            if os.path.exists(cfg_path):
-                try:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        cfg = json.load(f) or {}
-                except Exception:
-                    cfg = {}
-            items.append({
-                "name": rel,
-                "title": cfg.get("title") or fn.replace(".json", ""),
-                "builtin": False,
-                "field_count": len(cfg.get("fields") or []),
-            })
+    by_name = {}
+    for workflow_root, builtin in (
+        (BUILTIN_WORKFLOW_DIR, True),
+        (USER_WORKFLOW_DIR, False),
+    ):
+        if not os.path.isdir(workflow_root):
+            continue
+        for root, dirs, files in os.walk(workflow_root):
+            dirs[:] = [directory for directory in dirs if directory not in {"__pycache__", ".git"}]
+            for filename in sorted(files):
+                if not filename.endswith(".json") or filename.endswith(".config.json"):
+                    continue
+                rel = os.path.relpath(os.path.join(root, filename), workflow_root).replace("\\", "/")
+                if not WORKFLOW_NAME_RE.match(rel):
+                    continue
+                config = {}
+                config_path = workflow_config_path(rel)
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, "r", encoding="utf-8") as stream:
+                            config = json.load(stream) or {}
+                    except (OSError, json.JSONDecodeError):
+                        config = {}
+                by_name[rel] = {
+                    "name": rel,
+                    "title": config.get("title") or filename.replace(".json", ""),
+                    "builtin": builtin,
+                    "field_count": len(config.get("fields") or []),
+                }
+    items = list(by_name.values())
     items.sort(key=lambda item: (0 if item["name"].startswith(f"{CUSTOM_WORKFLOW_FOLDER}/") else 1, item["title"]))
     return {"workflows": items}
 
@@ -19804,12 +22115,11 @@ def upload_workflow(payload: WorkflowUploadRequest):
     sample = next(iter(payload.workflow.values()), None)
     if not isinstance(sample, dict) or "class_type" not in sample:
         raise HTTPException(status_code=400, detail="不是有效的 ComfyUI API 工作流 JSON（需包含 class_type）")
-    custom_dir = os.path.join(WORKFLOW_DIR, CUSTOM_WORKFLOW_FOLDER)
+    custom_dir = os.path.join(USER_WORKFLOW_DIR, CUSTOM_WORKFLOW_FOLDER)
     os.makedirs(custom_dir, exist_ok=True)
     stored_name = f"{CUSTOM_WORKFLOW_FOLDER}/{name}"
-    path = workflow_path_from_name(stored_name)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload.workflow, f, ensure_ascii=False, indent=2)
+    path = workflow_path_from_name(stored_name, for_write=True)
+    atomic_write_json(Path(path), payload.workflow)
     return {"name": stored_name}
 
 @app.put("/api/workflows/{name:path}/config")
@@ -19819,19 +22129,19 @@ def save_workflow_config(name: str, payload: WorkflowConfig):
     workflow_path = workflow_path_from_name(name)
     if not os.path.exists(workflow_path):
         raise HTTPException(status_code=404, detail="Workflow not found")
-    cfg_path = workflow_config_path(name)
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        json.dump(payload.dict(), f, ensure_ascii=False, indent=2)
+    cfg_path = workflow_config_path(name, for_write=True)
+    atomic_write_json(Path(cfg_path), payload.dict())
     return {"config": payload.dict()}
 
 @app.delete("/api/workflows/{name:path}")
 def delete_workflow(name: str):
     if not WORKFLOW_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid workflow name")
-    if is_builtin_workflow(name):
+    user_workflow_path = workflow_path_in_root(USER_WORKFLOW_DIR, name)
+    if is_builtin_workflow(name) and not os.path.exists(user_workflow_path):
         raise HTTPException(status_code=400, detail="内置工作流不可删除")
-    workflow_path = workflow_path_from_name(name)
-    cfg_path = workflow_config_path(name)
+    workflow_path = user_workflow_path
+    cfg_path = workflow_config_path(name, for_write=True)
     if not os.path.exists(workflow_path):
         raise HTTPException(status_code=404, detail="Workflow not found")
     os.remove(workflow_path)
@@ -19918,8 +22228,23 @@ def run_server():
     finally:
         ACTIVE_UVICORN_SERVER = None
 
+
+def exec_development_restart_if_scheduled() -> bool:
+    target = DEVELOPMENT_RESTART_TARGET
+    if target is None:
+        return False
+    os.environ["HSTAR_DATA_DIR"] = str(target)
+    os.environ["HSTAR_PROGRAM_DIR"] = str(PROGRAM_ROOT)
+    os.environ["HSTAR_EDITION"] = "development"
+    os.environ["HSTAR_HOST"] = resolve_server_host()
+    os.environ["HSTAR_PORT"] = str(resolve_server_port())
+    argv = [sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve())]
+    os.execv(sys.executable, argv)
+    return True
+
 if __name__ == "__main__":
     # 关闭服务端协议级 WebSocket ping：部分客户端（如 PS UXP 面板）不会自动回 pong，
     # 默认 20s ping/20s 超时会把这些连接每隔一会儿就踢掉造成"频繁断连"。
     # 客户端有自己的应用层心跳 + 断线重连兜底，这里禁用协议 ping 更稳。
     run_server()
+    exec_development_restart_if_scheduled()

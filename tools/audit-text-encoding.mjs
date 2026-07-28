@@ -4,12 +4,35 @@ import {encodingIssueKind} from './text-encoding-rules.mjs';
 
 const NULL = String.fromCharCode(0);
 const scanPathspecs = [
-  'main.py',
+  ':(glob)*.py',
+  ':(exclude)get-pip.py',
+  ':(glob)hstar_runtime/**/*.py',
+  ':(glob)voice_assistant/**/*.py',
+  ':(glob)desktop/**/*.cs',
+  ':(glob)desktop/**/*.xaml',
+  ':(exclude)desktop/**/bin/**',
+  ':(exclude)desktop/**/obj/**',
+  ':(glob)build/**/*.ps1',
+  ':(glob)build/**/*.iss',
+  ':(exclude)build/installer/stage/**',
+  'LICENSE',
+  'README.md',
+  'MAC-使用说明.md',
+  '运行说明.txt',
+  '新手运行与使用教程.md',
   ':(glob)static/**/*.html',
   ':(glob)static/**/*.js',
   ':(glob)static/**/*.css',
   ':(glob)static/**/*.json',
   ':(exclude)static/vendor/**',
+  ':(glob)integrations/openshop/**/*.html',
+  ':(glob)integrations/openshop/host/**/*.js',
+  ':(glob)integrations/openshop/host/**/*.css',
+  ':(glob)integrations/openshop/locales/**/*.js',
+  ':(exclude)integrations/openshop/vendor/**',
+  ':(glob)integrations/storyai-3d-director-desk/src/**/*.ts',
+  ':(glob)integrations/storyai-3d-director-desk/src/**/*.tsx',
+  ':(glob)integrations/storyai-3d-director-desk/src/**/*.css',
 ];
 
 const files = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...scanPathspecs], {
@@ -109,7 +132,7 @@ function reportRuleIssues(file, text) {
 
 for (const file of files) {
   const text = fs.readFileSync(file).toString('utf8').replace(/^\uFEFF/, '');
-  const isJavaScript = file.toLowerCase().endsWith('.js');
+  const isJavaScript = /\.(?:js|mjs|ts|tsx)$/i.test(file);
 
   if (file.toLowerCase().endsWith('.json')) {
     try {

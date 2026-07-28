@@ -476,6 +476,7 @@ let remoteSyncTimer = null;
 let remoteSyncInterval = null;
 let remoteSyncBusy = false;
 let lastCanvasUpdatedAt = 0;
+let lastSyncedCanvasState = null;
 let models = {gpt:'gpt-image-2', nano:'nano-banana-pro'};
 let imageModels = ['gpt-image-2', 'nano-banana-pro'];
 let chatModels = ['gpt-4o-mini'];
@@ -540,6 +541,7 @@ let hoveredConnectionId = '';
 let lastMouseBoard = {x: 0, y: 0};
 let undoStack = [];
 let redoStack = [];
+const permanentlyDeletedOpenShopNodeIds = new Set();
 const UNDO_MAX = 10;
 const cascadeRunningIds = new Set();
 const cascadeStopIds = new Set();
@@ -1639,6 +1641,30 @@ async function saveCanvas(){
             const data = await res.json().catch(() => ({}));
             const remote = data.detail?.canvas || data.canvas;
             if(localCanvasDirty || saveCanvasAgain){
+                if(remote){
+                    const merged = mergeClassicCanvasConflictState({
+                        nodes,
+                        connections,
+                        selectedIds:[...selected],
+                        logs:canvas.logs || [],
+                    }, remote, lastSyncedCanvasState || {});
+                    nodes = merged.nodes;
+                    connections = merged.connections;
+                    canvas = {
+                        ...remote,
+                        ...canvas,
+                        nodes,
+                        connections,
+                        logs:merged.logs || [],
+                        updated_at:Number(remote.updated_at || canvas.updated_at || 0),
+                    };
+                    selected = new Set(merged.selectedIds || []);
+                    lastSyncedCanvasState = captureClassicCanvasSyncState(
+                        filterPermanentlyDeletedOpenShopHistoryState(remote)
+                    );
+                    sanitizeConnections();
+                    render();
+                }
                 lastCanvasUpdatedAt = Number(data.detail?.updated_at || data.updated_at || remote?.updated_at || lastCanvasUpdatedAt || 0);
                 saveCanvasAgain = true;
                 setStatus('Saving...');
@@ -1651,7 +1677,11 @@ async function saveCanvas(){
         if(!res.ok) throw new Error('save failed');
         const data = await res.json().catch(() => ({}));
         const localViewport = {...viewport};
-        if(data.canvas) canvas = {...canvas, ...data.canvas, viewport:localViewport};
+        const currentLogs = canvas.logs || [];
+        if(data.canvas){
+            lastSyncedCanvasState = captureClassicCanvasSyncState(data.canvas);
+            canvas = {...canvas, ...data.canvas, viewport:localViewport, logs:currentLogs};
+        }
         viewport = localViewport;
         canvas.updated_at = Number(canvas.updated_at || Date.now());
         lastCanvasUpdatedAt = canvas.updated_at;
@@ -1857,7 +1887,7 @@ async function touchCanvasOpened(id, {renderList=true}={}){
         if(!res.ok) return null;
         const data = await res.json();
         if(data.canvas) updateCanvasListRecord(data.canvas);
-        return data.canvas || data;
+        return data.full_canvas || data.canvas || data;
     } catch(e) {
         console.warn('touch canvas failed', e);
         return null;
@@ -2002,7 +2032,7 @@ function renderCanvasMetaPopover(){
     pop.innerHTML = `
         <div class="canvas-meta-section">
             <div class="canvas-meta-label">${tr('canvas.ownerLabel') || '负责人 / 项目'}</div>
-            <input class="canvas-owner-input" type="text" maxlength="40" value="${escapeAttr(owner)}" placeholder="${escapeAttr(tr('canvas.ownerPlaceholder') || '如：张三 / 双十一项目')}">
+        <input class="canvas-owner-input" type="text" maxlength="40" value="${escapeAttr(owner)}" placeholder="${escapeAttr(tr('canvas.ownerPlaceholder') || '如：张三 / 双十一项目')}" data-voice-input="on" data-voice-label="画布所有者">
         </div>
         <div class="canvas-meta-section">
             <div class="canvas-meta-label">${tr('canvas.colorLabel') || '颜色标记'}</div>
@@ -2085,6 +2115,7 @@ async function createCanvas(){
         canvas.logs = canvas.logs || [];
         nodes = canvas.nodes || [];
         connections = canvas.connections || [];
+        lastSyncedCanvasState = captureClassicCanvasSyncState({nodes, connections});
         viewport = localViewportForCanvas(canvas.id, canvas.viewport || {x:0, y:0, scale:1});
         canvas.viewport = {...viewport};
         resetTransientRunState(nodes);
@@ -2224,10 +2255,12 @@ async function openCanvas(id){
         if(!res.ok) throw new Error(tr('canvas.openFailed'));
         const data = await res.json();
         resetCascadeRuntimeState();
+        resetCanvasHistory();
         canvas = data.canvas;
         rememberCanvasListProject(canvas.project || 'default');
         const touched = await touchCanvasOpened(canvas.id, {renderList:false});
-        if(touched?.updated_at) canvas.updated_at = Number(touched.updated_at);
+        if(touched?.nodes) canvas = touched;
+        else if(touched?.updated_at) canvas.updated_at = Number(touched.updated_at);
         if((canvas.kind || 'classic') === 'smart'){
             openSmartCanvasPage(canvas.id);
             return;
@@ -2235,6 +2268,7 @@ async function openCanvas(id){
         canvas.logs = canvas.logs || [];
         nodes = canvas.nodes || [];
         connections = canvas.connections || [];
+        lastSyncedCanvasState = captureClassicCanvasSyncState(canvas);
         viewport = localViewportForCanvas(canvas.id, canvas.viewport || {x:0, y:0, scale:1});
         canvas.viewport = {...viewport};
         lastCanvasUpdatedAt = Number(canvas.updated_at || 0);
@@ -2267,18 +2301,28 @@ function applyRemoteCanvasData(remote){
         remoteSyncTimer = setTimeout(syncRemoteCanvasNow, 1000);
         return;
     }
+    let blockedPermanentlyDeletedOpenShopNode = false;
     applyingRemoteCanvas = true;
     try {
         resetCascadeRuntimeState();
         const localViewport = localViewportForCanvas(canvas.id, viewport || remote.viewport || {x:0, y:0, scale:1});
         const localSelectedIds = new Set(selected);
-        canvas = remote;
+        const remoteNodeIds = new Set((remote.nodes || []).map(node => node.id));
+        const remotelyDeletedOpenShopNodeIds = nodes
+            .filter(node => node?.type === 'openshop-layered' && !remoteNodeIds.has(node.id))
+            .map(node => node.id);
+        remotelyDeletedOpenShopNodeIds.forEach(id => permanentlyDeletedOpenShopNodeIds.add(id));
+        const safeRemote = filterPermanentlyDeletedOpenShopHistoryState(remote);
+        blockedPermanentlyDeletedOpenShopNode = remotelyDeletedOpenShopNodeIds.length > 0
+            || safeRemote.nodes.length < (remote.nodes || []).length;
+        canvas = {...remote, nodes:safeRemote.nodes, connections:safeRemote.connections};
         canvas.logs = canvas.logs || [];
         nodes = canvas.nodes || [];
         connections = canvas.connections || [];
         viewport = localViewport;
         canvas.viewport = {...viewport};
         lastCanvasUpdatedAt = Number(canvas.updated_at || Date.now());
+        lastSyncedCanvasState = captureClassicCanvasSyncState(safeRemote);
         localCanvasDirty = false;
         resetTransientRunState(nodes);
         sanitizeConnections();
@@ -2294,6 +2338,7 @@ function applyRemoteCanvasData(remote){
     } finally {
         applyingRemoteCanvas = false;
     }
+    if(blockedPermanentlyDeletedOpenShopNode) scheduleSave();
 }
 function resetTransientRunState(list=nodes){
     (list || []).forEach(node => {
@@ -2945,7 +2990,7 @@ function renderMsGenBody(node){
                     <div class="gen-count-row">
                         <div class="gen-stepper">
                             <button class="gen-step-btn" data-ms-step="-1" type="button" title="${tr('canvas.decrease')}" aria-label="${tr('canvas.decreaseCount')}"><i data-lucide="chevron-left" class="w-3.5 h-3.5"></i></button>
-                            <input class="gen-count-input ms-count-input" type="text" inputmode="numeric" pattern="[0-9]*" value="${msCount}">
+                    <input class="gen-count-input ms-count-input" type="text" inputmode="numeric" pattern="[0-9]*" value="${msCount}" data-voice-input="off">
                             <button class="gen-step-btn" data-ms-step="1" type="button" title="${tr('canvas.increase')}" aria-label="${tr('canvas.increaseCount')}"><i data-lucide="chevron-right" class="w-3.5 h-3.5"></i></button>
                         </div>
                     </div>
@@ -2953,21 +2998,21 @@ function renderMsGenBody(node){
                 <div class="gen-settings-row ms-custom-ratio-row" style="display:none">
                     <label class="field">
                         <div class="setting-title">${tr('canvas.ratioWidth')}</div>
-                        <input class="setting-input ms-custom-ratio-w-input" type="number" min="1" step="1" value="${escapeHtml(node.msCustomRatioWidth || '')}" placeholder="4">
+                            <input class="setting-input ms-custom-ratio-w-input" type="number" min="1" step="1" value="${escapeHtml(node.msCustomRatioWidth || '')}" placeholder="4" data-voice-input="off">
                     </label>
                     <label class="field">
                         <div class="setting-title">${tr('canvas.ratioHeight')}</div>
-                        <input class="setting-input ms-custom-ratio-h-input" type="number" min="1" step="1" value="${escapeHtml(node.msCustomRatioHeight || '')}" placeholder="3">
+                            <input class="setting-input ms-custom-ratio-h-input" type="number" min="1" step="1" value="${escapeHtml(node.msCustomRatioHeight || '')}" placeholder="3" data-voice-input="off">
                     </label>
                 </div>
                 <div class="gen-settings-row ms-custom-size-row" style="display:none">
                     <label class="field">
                         <div class="setting-title">${tr('canvas.width')}</div>
-                        <input class="setting-input ms-custom-w-input" type="number" min="64" step="64" value="${escapeHtml(node.msCustomWidth || '')}" placeholder="Auto">
+                            <input class="setting-input ms-custom-w-input" type="number" min="64" step="64" value="${escapeHtml(node.msCustomWidth || '')}" placeholder="Auto" data-voice-input="off">
                     </label>
                     <label class="field">
                         <div class="setting-title">${tr('canvas.height')}</div>
-                        <input class="setting-input ms-custom-h-input" type="number" min="64" step="64" value="${escapeHtml(node.msCustomHeight || '')}" placeholder="Auto">
+                            <input class="setting-input ms-custom-h-input" type="number" min="64" step="64" value="${escapeHtml(node.msCustomHeight || '')}" placeholder="Auto" data-voice-input="off">
                     </label>
                     <button class="secondary-btn ms-fit-size-btn" type="button" style="height:32px;align-self:flex-end;padding:0 10px;font-size:11px">${tr('canvas.fitImageSize')}</button>
                 </div>
@@ -3397,6 +3442,52 @@ function openDirector3DNode(nodeId){
 function importDirector3DCaptures(payload){
     return window.HstarClassicDirectorAdapter?.importDirectorCaptures?.(payload);
 }
+function recordOpenShopAiTaskLog(log, sourceNode){
+    if(!canvas || !log?.taskId) return false;
+    canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+    const openshopTaskId = String(log.taskId);
+    if(canvas.logs.some(entry => entry?.request?.openshopTaskId === openshopTaskId)) return false;
+    const toolId = String(log.toolId || '');
+    const toolLabel = ({
+        'art-font-restore':'艺术字体处理',
+        'generative-fill':'生成式填充',
+        'local-redraw':'局部重绘',
+    })[toolId] || 'OpenShop AI';
+    const rawOutputs = [
+        ...(Array.isArray(log.outputs) ? log.outputs : []),
+        ...(log.output ? [log.output] : []),
+    ].filter(output => output?.url);
+    const outputs = [...new Map(rawOutputs.map(output => [String(output.assetId || output.url), {
+        ...output, kind:'image',
+    }])).values()];
+    const error = ['failed', 'partial'].includes(log.status)
+        ? String(log.error || `${toolLabel}${log.status === 'partial' ? '部分生成失败' : '失败'}`)
+        : '';
+    canvas.logs = [{
+        id:uid('log'),
+        createdAt:Date.now(),
+        status:log.status === 'partial' ? 'partial' : (error ? 'failed' : 'success'),
+        platform:'OpenShop',
+        nodeId:sourceNode?.id || '',
+        nodeType:'openshop-layered',
+        model:String(log.modelId || toolLabel),
+        request:{
+            openshopTaskId,
+            task_id:openshopTaskId,
+            provider_id:String(log.apiConfigId || ''),
+            tool_id:String(log.toolId || ''),
+            generated_layer_id:String(log.generatedLayerId || ''),
+        },
+        prompt:String(log.prompt || ''),
+        outputs,
+        refs:[],
+        runMs:Math.max(0, Number(log.runMs || 0)),
+        error,
+    }, ...canvas.logs].slice(0, 500);
+    renderCanvasLog();
+    scheduleSave();
+    return true;
+}
 window.HstarClassicOpenShopHooks = Object.freeze({
     uid,
     getCanvasId:() => canvas?.id || new URLSearchParams(window.location.search).get('id') || '',
@@ -3404,23 +3495,50 @@ window.HstarClassicOpenShopHooks = Object.freeze({
     getConnections:() => connections,
     mediaRefsFromNode,
     mediaKindForRef,
+    sourceSizeForNode:openShopLayeredInputNaturalSize,
     displayMediaUrl:canvasDisplayMediaUrl,
     t:tr,
     addNode:node => { nodes.push(node); return node; },
     addConnection:connection => { connections.push(connection); return connection; },
+    rollbackImageOutput:id => {
+        const nodeIndex = nodes.findIndex(node => node.id === id);
+        if(nodeIndex >= 0) nodes.splice(nodeIndex, 1);
+        for(let index = connections.length - 1; index >= 0; index -= 1){
+            if(connections[index].from === id || connections[index].to === id) connections.splice(index, 1);
+        }
+        selected.delete(id);
+    },
     pushUndo,
     render,
     scheduleSave,
     saveCanvas,
+    recordAiTaskLog:recordOpenShopAiTaskLog,
     selectOnly:id => { selected.clear(); selected.add(id); },
 });
+function positionCanvasMenu(menu, clientX, clientY){
+    if(!menu) return;
+    const margin = 12;
+    menu.classList.add('open');
+    const offsetParent = menu.offsetParent;
+    const parentRect = offsetParent?.getBoundingClientRect?.() || {left:0, top:0};
+    menu.style.left = `${clientX - parentRect.left}px`;
+    menu.style.top = `${clientY - parentRect.top}px`;
+    const rect = menu.getBoundingClientRect();
+    const marginX = Math.min(margin, Math.max(0, (window.innerWidth - rect.width) / 2));
+    const marginY = Math.min(margin, Math.max(0, (window.innerHeight - rect.height) / 2));
+    const maxLeft = Math.max(marginX, window.innerWidth - marginX - rect.width);
+    const maxTop = Math.max(marginY, window.innerHeight - marginY - rect.height);
+    const left = Math.min(Math.max(marginX, clientX), maxLeft);
+    const top = Math.min(Math.max(marginY, clientY), maxTop);
+    menu.style.left = `${left - parentRect.left}px`;
+    menu.style.top = `${top - parentRect.top}px`;
+}
 function openCreateMenu(clientX, clientY){
     menuPoint = screenToWorld(clientX, clientY);
     closeLinkCreateMenu();
-    createMenu.style.left = `${clientX}px`;
-    createMenu.style.top = `${clientY}px`;
-    createMenu.classList.add('open');
+    positionCanvasMenu(createMenu, clientX, clientY);
     refreshIcons();
+    positionCanvasMenu(createMenu, clientX, clientY);
 }
 function closeCreateMenu(){
     createMenu.classList.remove('open');
@@ -3433,8 +3551,8 @@ function linkCreateOptions(state){
     if(state.originKind === 'out'){
         if(['image','prompt','controller','loop','group','promptGroup','llm','output'].includes(node.type)){
             return [
-                ...(['image','group','output'].includes(node.type) ? [{type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'}] : []),
                 {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
+                {type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'},
                 {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
                 {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
                 {type:'rh', label:tr('canvas.rhGenerate'), icon:'workflow'},
@@ -3450,6 +3568,7 @@ function linkCreateOptions(state){
         return [
             {type:'image', label:tr('canvas.imageCard'), icon:'image-plus'},
             {type:'prompt', label:tr('canvas.prompt'), icon:'text-cursor-input'},
+            {type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'},
             {type:'controller', label:'综合控制器', icon:'sliders-horizontal'},
             {type:'loop', label:tr('canvas.loopNode'), icon:'repeat-2'},
             {type:'group', label:tr('canvas.group'), icon:'group'},
@@ -3465,9 +3584,7 @@ function openLinkCreateMenu(originId, originKind, clientX, clientY){
     linkCreateState = state;
     createMenu.classList.remove('open');
     linkCreateMenu.innerHTML = options.map(opt => `<button class="menu-btn" data-link-create="${escapeAttr(opt.type)}"><i data-lucide="${escapeAttr(opt.icon)}" class="w-4 h-4"></i><span>${escapeHtml(opt.label)}</span></button>`).join('');
-    linkCreateMenu.style.left = `${clientX}px`;
-    linkCreateMenu.style.top = `${clientY}px`;
-    linkCreateMenu.classList.add('open');
+    positionCanvasMenu(linkCreateMenu, clientX, clientY);
     linkCreateMenu.querySelectorAll('[data-link-create]').forEach(btn => {
         btn.onclick = e => {
             e.stopPropagation();
@@ -3475,7 +3592,21 @@ function openLinkCreateMenu(originId, originKind, clientX, clientY){
         };
     });
     refreshIcons();
+    positionCanvasMenu(linkCreateMenu, clientX, clientY);
     return true;
+}
+function generatorNodeOutputOptions(node){
+    return [
+        {type:'output', label:'Output', icon:'circle-dot'},
+        ...(CANVAS_IMAGE_OUTPUT_TYPES.includes(node.type) ? [
+            {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
+            {type:'openshop-layered', label:tr('canvas.openshopLayered'), icon:'layers-3'},
+            {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
+            {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
+            {type:'ltxDirector', label:tr('canvas.ltxDirector'), icon:'film'},
+            {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'}
+        ] : [])
+    ];
 }
 function openGeneratorNodeMenu(nodeId, clientX, clientY){
     const node = nodes.find(n => n.id === nodeId);
@@ -3484,16 +3615,7 @@ function openGeneratorNodeMenu(nodeId, clientX, clientY){
     const rect = el?.getBoundingClientRect();
     const point = screenToWorld(clientX, clientY);
     const inputOptions = linkCreateOptions({originId:nodeId, originKind:'in', point});
-    const outputOptions = [
-        {type:'output', label:'Output', icon:'circle-dot'},
-        ...(CANVAS_IMAGE_OUTPUT_TYPES.includes(node.type) ? [
-            {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
-            {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
-            {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
-            {type:'ltxDirector', label:tr('canvas.ltxDirector'), icon:'film'},
-            {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'}
-        ] : [])
-    ];
+    const outputOptions = generatorNodeOutputOptions(node);
     const buttonsHtml = (options, kind) => `<div class="node-port-menu-grid">${options.map(opt => `<button class="menu-btn" data-link-create="${escapeAttr(opt.type)}" data-link-kind="${kind}" title="${escapeAttr(opt.label)}"><i data-lucide="${escapeAttr(opt.icon)}"></i><span>${escapeHtml(opt.label.replace('生成', ''))}</span></button>`).join('')}</div>`;
     linkCreateState = {originId:nodeId, originKind:'in', point};
     createMenu.classList.remove('open');
@@ -3505,12 +3627,8 @@ function openGeneratorNodeMenu(nodeId, clientX, clientY){
     const inputLeft = Math.max(10, (rect?.left || clientX) - 158);
     const outputLeft = Math.min(window.innerWidth - 158, (rect?.right || clientX) + 10);
     const menuTop = Math.max(10, Math.min(window.innerHeight - 260, (rect?.top || clientY) + 36));
-    nodeInputMenu.style.left = `${inputLeft}px`;
-    nodeInputMenu.style.top = `${menuTop}px`;
-    nodeOutputMenu.style.left = `${outputLeft}px`;
-    nodeOutputMenu.style.top = `${menuTop}px`;
-    nodeInputMenu.classList.add('open');
-    nodeOutputMenu.classList.add('open');
+    positionCanvasMenu(nodeInputMenu, inputLeft, menuTop);
+    positionCanvasMenu(nodeOutputMenu, outputLeft, menuTop);
     [nodeInputMenu, nodeOutputMenu].forEach(menu => menu.querySelectorAll('[data-link-create]').forEach(btn => {
         btn.onclick = e => {
             e.stopPropagation();
@@ -3544,9 +3662,7 @@ function openImageNodeMenu(nodeId, clientX, clientY){
         ${canEdit ? `<button class="menu-btn" data-image-edit="${escapeAttr(nodeId)}"><i data-lucide="pencil" class="w-4 h-4"></i><span>编辑</span></button>` : ''}
         <button class="menu-btn" data-image-replace="${escapeAttr(nodeId)}"><i data-lucide="image-plus" class="w-4 h-4"></i><span>替换</span></button>
     `;
-    imageNodeMenu.style.left = `${clientX}px`;
-    imageNodeMenu.style.top = `${clientY}px`;
-    imageNodeMenu.classList.add('open');
+    positionCanvasMenu(imageNodeMenu, clientX, clientY);
     const previewBtn = imageNodeMenu.querySelector('[data-image-preview]');
     if(previewBtn){
         previewBtn.onclick = e => {
@@ -3569,6 +3685,7 @@ function openImageNodeMenu(nodeId, clientX, clientY){
         pickImageForNode(nodeId);
     };
     refreshIcons();
+    positionCanvasMenu(imageNodeMenu, clientX, clientY);
 }
 function openImageNodePreview(nodeId){
     const node = nodes.find(n => n.id === nodeId);
@@ -3592,10 +3709,7 @@ function openOutputNodeMenu(nodeId, clientX, clientY){
         <div class="menu-section-title">${tr('canvas.outputFileActions')}</div>
         <button class="menu-btn" data-output-download="${escapeAttr(nodeId)}" ${downloadableCount ? '' : 'disabled'}><i data-lucide="download" class="w-4 h-4"></i><span>${tr('canvas.outputDownloadAllImages')}</span></button>
     `;
-    const menuWidth = 260;
-    imageNodeMenu.style.left = `${Math.max(10, Math.min(window.innerWidth - menuWidth - 10, clientX))}px`;
-    imageNodeMenu.style.top = `${clientY}px`;
-    imageNodeMenu.classList.add('open');
+    positionCanvasMenu(imageNodeMenu, clientX, clientY);
     const convertBtn = imageNodeMenu.querySelector('[data-output-convert]');
     if(convertBtn){
         convertBtn.onclick = e => {
@@ -3798,6 +3912,7 @@ function createLinkedNode(type){
     const toId = state.originKind === 'out' ? created.id : origin.id;
     if(canConnect(fromId, toId) && !connections.some(c => c.from === fromId && c.to === toId)){
         connections.push({id:uid('c'), from:fromId, to:toId});
+        syncOpenShopLayeredConnectionTarget(toId);
         syncLatestGeneratedOutputToConnection(fromId, toId);
         syncGeneratorInputs();
         scheduleSave();
@@ -6144,9 +6259,163 @@ function measureCanvasOriginalImageNodes(root=nodesEl){
             if(!size || node.natural_w || node.natural_h) return;
             node.natural_w = size.w;
             node.natural_h = size.h;
+            if(syncOpenShopLayeredNodesForSource(node.id)) render();
             scheduleSave();
         });
     });
+}
+
+function strictCanvasNaturalImageSize(value){
+    const width = Number(
+        value?.natural_w || value?.naturalWidth
+        || value?.original_w || value?.originalWidth
+        || value?.source_w || value?.sourceWidth
+        || value?.asset_w || value?.assetWidth
+        || value?.image_w || value?.imageWidth
+        || value?.intrinsic_w || value?.intrinsicWidth
+        || value?.metadata?.width || value?.meta?.width
+        || 0
+    );
+    const height = Number(
+        value?.natural_h || value?.naturalHeight
+        || value?.original_h || value?.originalHeight
+        || value?.source_h || value?.sourceHeight
+        || value?.asset_h || value?.assetHeight
+        || value?.image_h || value?.imageHeight
+        || value?.intrinsic_h || value?.intrinsicHeight
+        || value?.metadata?.height || value?.meta?.height
+        || 0
+    );
+    return width > 0 && height > 0
+        ? {width:Math.round(width), height:Math.round(height)}
+        : null;
+}
+
+function openShopLayeredSourceImageRecord(sourceNode){
+    if(!sourceNode || sourceNode.type === 'openshop-layered') return null;
+    if(sourceNode.type === 'image' && sourceNode.url && mediaKindForNode(sourceNode) === 'image'){
+        return {sourceNode, target:sourceNode, ref:sourceNode, url:sourceNode.url};
+    }
+    if(sourceNode.type === 'group'){
+        const child = (sourceNode.items || [])
+            .map(id => nodes.find(candidate => candidate.id === id))
+            .find(candidate => candidate?.type === 'image' && candidate.url && mediaKindForNode(candidate) === 'image');
+        if(child) return {sourceNode, target:child, ref:child, url:child.url};
+    }
+    const items = sourceNode.type === 'output'
+        ? (sourceNode.images || [])
+        : CANVAS_MEDIA_OUTPUT_TYPES.includes(sourceNode.type)
+            ? (sourceNode.generatedOutputs || [])
+            : [];
+    const item = items.find(candidate => outputUrlValue(candidate) && mediaKindForOutputItem(candidate) === 'image');
+    if(item){
+        const url = outputUrlValue(item);
+        return {sourceNode, target:typeof item === 'object' ? item : null, ref:item, url};
+    }
+    const ref = mediaRefsFromNode(sourceNode).find(candidate => candidate?.url && mediaKindForRef(candidate) === 'image');
+    return ref ? {sourceNode, target:ref, ref, url:ref.url} : null;
+}
+
+function openShopLayeredInputImageRecords(node){
+    if(!node || node.type !== 'openshop-layered') return [];
+    return connections
+        .map((connection, index) => ({connection, index}))
+        .filter(entry => entry.connection?.to === node.id)
+        .sort((left, right) => left.index - right.index || String(left.connection?.id || '').localeCompare(String(right.connection?.id || '')))
+        .map(entry => openShopLayeredSourceImageRecord(nodes.find(candidate => candidate.id === entry.connection.from)))
+        .filter(Boolean);
+}
+
+function cachedOpenShopNaturalSize(record){
+    const direct = strictCanvasNaturalImageSize(record?.target) || strictCanvasNaturalImageSize(record?.ref);
+    if(direct) return direct;
+    return strictCanvasNaturalImageSize(record?.sourceNode?._openShopNaturalSizes?.[record?.url]);
+}
+
+function openShopLayeredInputNaturalSize(node){
+    const primary = openShopLayeredInputImageRecords(node)[0];
+    return primary ? cachedOpenShopNaturalSize(primary) : null;
+}
+
+function rememberOpenShopNaturalSize(record, size){
+    if(!record?.sourceNode || !record.url || !(size?.w > 0 && size?.h > 0)) return false;
+    const natural = {natural_w:Math.round(size.w), natural_h:Math.round(size.h)};
+    if(record.target && typeof record.target === 'object') Object.assign(record.target, natural);
+    record.sourceNode._openShopNaturalSizes = {
+        ...(record.sourceNode._openShopNaturalSizes || {}),
+        [record.url]:natural,
+    };
+    return true;
+}
+
+function syncOpenShopLayeredNodeFromInputs(node){
+    if(!node || node.type !== 'openshop-layered') return false;
+    const size = openShopLayeredInputNaturalSize(node);
+    if(!(size?.width > 0 && size?.height > 0)) return false;
+    let changed = false;
+    if(Number(node.documentWidth || 0) !== size.width){
+        node.documentWidth = size.width;
+        changed = true;
+    }
+    if(Number(node.documentHeight || 0) !== size.height){
+        node.documentHeight = size.height;
+        changed = true;
+    }
+    return changed;
+}
+
+function downstreamOpenShopLayeredNodesForSource(sourceNodeId){
+    if(!sourceNodeId) return [];
+    const ids = new Set(connections.filter(connection => connection.from === sourceNodeId).map(connection => connection.to));
+    return [...ids]
+        .map(id => nodes.find(node => node.id === id && node.type === 'openshop-layered'))
+        .filter(Boolean);
+}
+
+function syncOpenShopLayeredNodesForSource(sourceNodeId){
+    let changed = false;
+    downstreamOpenShopLayeredNodesForSource(sourceNodeId).forEach(node => {
+        if(syncOpenShopLayeredNodeFromInputs(node)) changed = true;
+    });
+    return changed;
+}
+
+function ensureOpenShopLayeredInputNaturalSizes(targetNode=null){
+    const targets = (targetNode ? [targetNode] : nodes).filter(node => node?.type === 'openshop-layered');
+    let immediateChange = false;
+    targets.forEach(node => {
+        if(syncOpenShopLayeredNodeFromInputs(node)) immediateChange = true;
+        const record = openShopLayeredInputImageRecords(node)[0];
+        if(!record?.url || cachedOpenShopNaturalSize(record)) return;
+        const loading = record.sourceNode._openShopNaturalSizeLoading || {};
+        if(loading[record.url]) return;
+        record.sourceNode._openShopNaturalSizeLoading = {...loading, [record.url]:true};
+        loadCanvasOriginalImageDimensions(canvasDisplayMediaUrl(record.url)).then(size => {
+            const nextLoading = {...(record.sourceNode._openShopNaturalSizeLoading || {})};
+            delete nextLoading[record.url];
+            if(Object.keys(nextLoading).length) record.sourceNode._openShopNaturalSizeLoading = nextLoading;
+            else delete record.sourceNode._openShopNaturalSizeLoading;
+            if(!size || cachedOpenShopNaturalSize(record)) return;
+            rememberOpenShopNaturalSize(record, size);
+            syncOpenShopLayeredNodesForSource(record.sourceNode.id);
+            render();
+            scheduleSave();
+        });
+    });
+    if(immediateChange){
+        requestAnimationFrame(() => {
+            render();
+            scheduleSave();
+        });
+    }
+}
+
+function syncOpenShopLayeredConnectionTarget(toId){
+    const to = nodes.find(node => node.id === toId && node.type === 'openshop-layered');
+    if(!to) return false;
+    syncOpenShopLayeredNodeFromInputs(to);
+    ensureOpenShopLayeredInputNaturalSizes(to);
+    return true;
 }
 
 function render(){
@@ -6184,6 +6453,7 @@ function render(){
     bindCanvasPreviewImageFallbacks(nodesEl);
     syncCanvasSelectedImageResolution(nodesEl);
     measureCanvasOriginalImageNodes(nodesEl);
+    ensureOpenShopLayeredInputNaturalSizes();
     refreshOutputTimer();
     refreshControllerEffectBadges();
 }
@@ -6450,7 +6720,7 @@ function renderImageMarkers(){
     panel.innerHTML = markers.length ? markers.map(marker => `<div class="image-marker-row ${escapeAttr(marker.status || '')}" data-marker-id="${escapeAttr(marker.id || '')}">
             ${marker.thumbnail ? `<img class="image-marker-thumb" src="${escapeAttr(marker.thumbnail)}" alt="">` : '<div class="image-marker-thumb"></div>'}
             <div class="image-marker-number"><span>${marker.number}</span></div>
-            <input class="image-marker-name" value="${escapeAttr(markerInputDisplayValue(marker))}" placeholder="标记名称" maxlength="18" data-marker-name="${escapeAttr(marker.id || '')}" ${marker.status === 'identifying' ? 'readonly' : ''}>
+                <input class="image-marker-name" value="${escapeAttr(markerInputDisplayValue(marker))}" placeholder="标记名称" maxlength="18" data-marker-name="${escapeAttr(marker.id || '')}" data-voice-input="on" data-voice-label="图片标记名称" ${marker.status === 'identifying' ? 'readonly' : ''}>
             <button class="image-marker-refresh-one" type="button" data-marker-refresh="${escapeAttr(marker.id || '')}" title="重新识别"><i data-lucide="refresh-cw" class="w-3 h-3"></i></button>
             <button class="image-marker-delete-one" type="button" data-marker-delete="${escapeAttr(marker.id || '')}" title="删除标记"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
             <div class="image-marker-status">${marker.status === 'identifying' ? '识别中' : marker.status === 'failed' ? '识别失败' : marker.objectName ? '已识别' : '待填写'}</div>
@@ -7950,7 +8220,7 @@ function materialPanelHtml(node){
             <div class="material-cats" data-zone="material-cats">${MATERIAL_CATEGORIES.map(cat => `<button type="button" class="material-cat ${cat.id === material.category ? 'active' : ''}" data-material-category="${cat.id}">${cat.label}</button>`).join('')}</div>
             <div>
                 ${materialMarkerTargetHtml(node, material)}
-                <input class="material-search" data-material-search value="${escapeAttr(material.query || '')}" placeholder="搜索：木、金属、玻璃、反光、粗糙、透明...">
+        <input class="material-search" data-material-search value="${escapeAttr(material.query || '')}" placeholder="搜索：木、金属、玻璃、反光、粗糙、透明..." data-voice-input="on" data-voice-label="材质搜索">
                 <div class="material-grid" data-zone="material-grid">${addCard}${filtered.map(item => `<button type="button" class="material-card ${(material.selected || []).includes(item.id) ? 'active' : ''}" data-material-id="${item.id}" style="--mat-tone:${item.tone};--mat-hue:${matHue}deg;--mat-display-hue:${materialHueToDisplayHue(Number(material.colorHue || 0))};--mat-sat:${matSat};--mat-lit:${matLit}">${item.custom ? `<span class="material-delete-btn" data-material-delete="${item.id}">×</span>` : ''}<span class="material-ball"></span><span class="material-label">${escapeHtml(item.label)}</span></button>`).join('')}</div>
                 <div class="material-hsl-panel ${hslOn ? 'enabled' : ''}" style="--mat-hue-value:${Number(material.colorHue || 0)};--mat-display-hue:${materialHueToDisplayHue(Number(material.colorHue || 0))};--mat-sat-value:${Number(material.colorSaturation || 100)}%;--mat-light-value:${Number(material.colorLightness || 50)}%">
                     <div class="material-hsl-head"><span class="material-hsl-title">HSL染色</span><button type="button" class="material-hsl-toggle ${hslOn ? 'active' : ''}" data-material-hsl-toggle>${hslOn ? '开启' : '关闭'}</button></div>
@@ -8001,7 +8271,7 @@ function materialDetailPanelHtml(material){
                 <label class="material-field"><span>凹凸强度</span><input type="range" min="0" max="200" step="1" value="${num('bumpStrength',0)}" data-material-config="bumpStrength"></label>
                 <label class="material-field"><span>纹理缩放</span><input type="range" min="10" max="400" step="10" value="${num('textureScale',100)}" data-material-config="textureScale"></label>
                 ${categoryFieldHtml}
-                <label class="material-field"><span>补充描述</span><input data-material-config="note" value="${escapeAttr(cfg.note || '')}" placeholder="例如：细密木纹、磨砂、旧化边缘"></label>
+                <label class="material-field"><span>补充描述</span><input data-material-config="note" value="${escapeAttr(cfg.note || '')}" placeholder="例如：细密木纹、磨砂、旧化边缘" data-voice-input="on" data-voice-label="材质说明"></label>
             </div>
             <div class="material-detail-actions">
                 <button type="button" class="controller-chip" data-material-config-reset>重置本材质</button>
@@ -8893,13 +9163,18 @@ function renderNode(node){
     normalizeApiNodeLayout(node);
     if(node.type === 'rh' && Number(node.h) === 560) delete node.h;
     const el = document.createElement('div');
-    const size = defaultNodeSize(node.type);
-    const hasFixedSize = Boolean(node.h || size.h);
+    const openShopLayout = node.type === 'openshop-layered'
+        ? window.HstarClassicOpenShopAdapter?.layoutForNode?.(node)
+        : null;
+    const size = openShopLayout || defaultNodeSize(node.type);
+    const renderedWidth = openShopLayout?.width || node.w || size.w;
+    const renderedHeight = openShopLayout?.height || node.h || size.h;
+    const hasFixedSize = Boolean(renderedHeight);
     el.className = `node ${node.type}-node ${node.url ? 'has-image' : ''} ${hasFixedSize ? 'sized' : ''} ${selected.has(node.id) ? 'selected' : ''}`;
     el.style.left = `${node.x}px`;
     el.style.top = `${node.y}px`;
-    el.style.width = `${node.w || size.w}px`;
-    if(node.h || size.h) el.style.height = `${node.h || size.h}px`;
+    el.style.width = `${renderedWidth}px`;
+    if(renderedHeight) el.style.height = `${renderedHeight}px`;
     el.dataset.id = node.id;
     el.onclick = (e) => {
         e.stopPropagation();
@@ -8926,7 +9201,10 @@ function renderNode(node){
         const label = { queued:'排队中', running:'运行中', done:'完成', failed:'失败' }[node.runStatus] || '';
         return `<span class="node-run-status ${node.runStatus}"><span class="dot"></span>${escapeHtml(label)}${node._cascadeIdx?' '+node._cascadeIdx:''}</span>`;
     })() : '';
-    el.innerHTML = `<div class="node-head"><span class="node-title">${displayTitle}</span><div style="display:flex;align-items:center;gap:8px">${statusHtml}<button onclick="deleteNodeFromButton('${node.id}', event)" class="text-gray-300 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button></div></div>`;
+    const deleteButton = node.type === 'openshop-layered'
+        ? `<button onclick="deleteNodeFromButton('${node.id}', event)" class="node-delete" type="button" title="${escapeAttr(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
+        : `<button onclick="deleteNodeFromButton('${node.id}', event)" class="text-gray-300 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button>`;
+    el.innerHTML = `<div class="node-head"><span class="node-title">${displayTitle}</span><div style="display:flex;align-items:center;gap:8px">${statusHtml}${node.type === 'openshop-layered' ? '' : deleteButton}</div></div>${node.type === 'openshop-layered' ? `<div class="openshop-layered-actions">${deleteButton}</div>` : ''}`;
     const body = document.createElement('div');
     body.className = 'node-body';
     if(node.type === 'controller') body.appendChild(renderControllerBody(node));
@@ -10475,13 +10753,13 @@ function renderPromptTemplateModal(){
             ${editMode ? `
                 <div class="prompt-template-edit-fields">
                     <label>${escapeHtml(tr('smart.tplName'))}</label>
-                    <input data-template-edit-name value="${escapeAttr(canvasPromptTemplateName(selected) || '')}" placeholder="${escapeAttr(tr('smart.tplName'))}">
+                    <input data-template-edit-name value="${escapeAttr(canvasPromptTemplateName(selected) || '')}" placeholder="${escapeAttr(tr('smart.tplName'))}" data-voice-input="on" data-voice-label="提示词模板名称">
                     <label>${escapeHtml(tr('smart.tplGroup'))}</label>
                     <select data-template-edit-category>
                         ${promptTemplateGroups.map(group => `<option value="${escapeAttr(group.id)}" ${group.id === (selected.category || 'mine') ? 'selected' : ''}>${escapeHtml(canvasPromptTemplateCategoryLabel(group.id))}</option>`).join('')}
                     </select>
                     <label>${escapeHtml(tr('smart.tplContent'))}</label>
-                    <textarea data-template-edit-text placeholder="${escapeAttr(tr('smart.tplContent'))}">${escapeHtml(selected.positive || '')}</textarea>
+                    <textarea data-template-edit-text placeholder="${escapeAttr(tr('smart.tplContent'))}" data-voice-input="on" data-voice-label="提示词模板内容">${escapeHtml(selected.positive || '')}</textarea>
                 </div>
             ` : `
                 <div class="prompt-template-preview-content">
@@ -10799,7 +11077,7 @@ function renderLLMBody(node){
             <button class="llm-sys-toggle ${node.showSystem ? 'active' : ''}" type="button">System</button>
         </div>
         ${imgBadge}
-        ${node.showSystem ? `<textarea class="llm-system" placeholder="${tr('canvas.systemPrompt')}">${escapeHtml(node.systemPrompt || '')}</textarea>` : ''}
+        ${node.showSystem ? `<textarea class="llm-system" placeholder="${tr('canvas.systemPrompt')}" data-voice-input="on" data-voice-label="LLM 系统提示词">${escapeHtml(node.systemPrompt || '')}</textarea>` : ''}
         <div class="llm-node-pane"></div>
         <div class="llm-chat-pane"></div>
     `;
@@ -10853,7 +11131,7 @@ function renderLLMNodePane(container, node){
     const inputPlaceholder = langIsEn() ? 'Type input, or connect a Prompt node…' : '直接输入，或连接提示词节点…';
     container.innerHTML = `
         <div class="llm-pane-label">Input${isReadonly ? ' <span style="font-size:9px;opacity:.5;font-weight:600;text-transform:none;letter-spacing:0">(来自连接)</span>' : ''}</div>
-        <textarea class="llm-input-area llm-input-output" style="height:${inputHeight}px; flex:0 0 ${inputHeight}px;" ${isReadonly ? 'readonly' : ''} placeholder="${inputPlaceholder}">${escapeHtml(inputValue)}</textarea>
+        <textarea class="llm-input-area llm-input-output" style="height:${inputHeight}px; flex:0 0 ${inputHeight}px;" ${isReadonly ? 'readonly' : ''} placeholder="${inputPlaceholder}" data-voice-input="on" data-voice-label="LLM 输入">${escapeHtml(inputValue)}</textarea>
         <div class="llm-pane-resizer" title="${tr('canvas.resizePanes')}"></div>
         <div class="llm-pane-label">Output</div>
         <div class="llm-output-wrap" style="height:${outputHeight}px; flex:0 0 ${outputHeight}px;">
@@ -10893,7 +11171,7 @@ function renderLLMChatPane(container, node){
     const messages = node.messages || [];
     container.innerHTML = `
         <div class="llm-chat-log">${messages.length ? messages.map((msg, mi) => `<div class="llm-bubble ${msg.role === 'user' ? 'user' : 'assistant'}" data-msg-idx="${mi}">${escapeHtml(msg.content || '')}${msg.role === 'assistant' ? `<button class="llm-bubble-copy" type="button" title="复制"><i data-lucide="copy" style="width:11px;height:11px;display:inline-block;vertical-align:middle"></i></button>` : ''}</div>`).join('') : `<div class="text-[11px] text-gray-300">${tr('canvas.startChat')}</div>`}</div>
-        <textarea class="llm-chat-input mt-2" rows="2" placeholder="${tr('canvas.chatInput')}">${escapeHtml(node.chatInput || '')}</textarea>
+        <textarea class="llm-chat-input mt-2" rows="2" placeholder="${tr('canvas.chatInput')}" data-voice-input="on" data-voice-label="LLM 对话输入">${escapeHtml(node.chatInput || '')}</textarea>
         <button class="llm-run mt-2" ${node.running ? 'disabled' : ''}><i data-lucide="send" class="w-4 h-4"></i>${node.running ? tr('canvas.sending') : 'Send'}</button>
     `;
     bindScrollableText(container.querySelector('.llm-chat-log'));
@@ -11108,7 +11386,7 @@ function renderGeneratorBody(node){
                 <div class="gen-count-row">
                     <div class="gen-stepper">
                         <button class="gen-step-btn" data-step="-1" type="button" title="${tr('canvas.decrease')}" aria-label="${tr('canvas.decreaseCount')}"><i data-lucide="chevron-left" class="w-3.5 h-3.5"></i></button>
-                        <input class="gen-count-input" type="text" inputmode="numeric" pattern="[0-9]*" value="${Math.max(1, Math.min(8, Number(node.count || 1)))}">
+                    <input class="gen-count-input" type="text" inputmode="numeric" pattern="[0-9]*" value="${Math.max(1, Math.min(8, Number(node.count || 1)))}" data-voice-input="off">
                         <button class="gen-step-btn" data-step="1" type="button" title="${tr('canvas.increase')}" aria-label="${tr('canvas.increaseCount')}"><i data-lucide="chevron-right" class="w-3.5 h-3.5"></i></button>
                     </div>
                 </div>
@@ -11116,21 +11394,21 @@ function renderGeneratorBody(node){
             <div class="gen-settings-row custom-ratio-row" style="display:none">
                 <label class="field">
                     <div class="setting-title">${tr('canvas.ratioWidth')}</div>
-                    <input class="setting-input custom-ratio-w-input" type="number" min="1" step="1" value="${escapeHtml(node.customRatioWidth || '')}" placeholder="4">
+                            <input class="setting-input custom-ratio-w-input" type="number" min="1" step="1" value="${escapeHtml(node.customRatioWidth || '')}" placeholder="4" data-voice-input="off">
                 </label>
                 <label class="field">
                     <div class="setting-title">${tr('canvas.ratioHeight')}</div>
-                    <input class="setting-input custom-ratio-h-input" type="number" min="1" step="1" value="${escapeHtml(node.customRatioHeight || '')}" placeholder="3">
+                            <input class="setting-input custom-ratio-h-input" type="number" min="1" step="1" value="${escapeHtml(node.customRatioHeight || '')}" placeholder="3" data-voice-input="off">
                 </label>
             </div>
             <div class="gen-settings-row custom-size-row" style="display:none">
                 <label class="field">
                     <div class="setting-title">${tr('canvas.width')}</div>
-                    <input class="setting-input custom-w-input" type="number" min="64" step="64" value="${escapeHtml(node.customWidth || '')}" placeholder="Auto">
+                            <input class="setting-input custom-w-input" type="number" min="64" step="64" value="${escapeHtml(node.customWidth || '')}" placeholder="Auto" data-voice-input="off">
                 </label>
                 <label class="field">
                     <div class="setting-title">${tr('canvas.height')}</div>
-                    <input class="setting-input custom-h-input" type="number" min="64" step="64" value="${escapeHtml(node.customHeight || '')}" placeholder="Auto">
+                            <input class="setting-input custom-h-input" type="number" min="64" step="64" value="${escapeHtml(node.customHeight || '')}" placeholder="Auto" data-voice-input="off">
                 </label>
                 <button class="secondary-btn fit-size-btn" type="button" style="height:32px;align-self:flex-end;padding:0 10px;font-size:11px">${tr('canvas.fitImageSize')}</button>
             </div>
@@ -11410,7 +11688,7 @@ function renderVideoBody(node){
             <div class="gen-settings-row">
                 <label class="field" style="flex:1">
                     <div class="setting-title">${tr('canvas.videoDuration')}</div>
-                    <input class="setting-input video-duration" type="number" min="1" max="60" step="1" value="${Number(node.duration || 5)}">
+                    <input class="setting-input video-duration" type="number" min="1" max="60" step="1" value="${Number(node.duration || 5)}" data-voice-input="off">
                 </label>
                 <label class="field" style="flex:1">
                     <div class="setting-title">${tr('canvas.videoAspect')}</div>
@@ -12484,7 +12762,7 @@ function renderRhBody(node){
         node.instanceType = e.target.value === 'plus' ? 'plus' : '';
         scheduleSave();
     };
-    if(mode === 'model') renderPromptPreview(wrap.querySelector('.rh-prompt-list'), media.visiblePromptInputsForNode(sources));
+    if(mode === 'model') renderPromptPreview(wrap.querySelector('.rh-prompt-list'), visiblePromptInputsForNode(media.sources));
     else renderRhPromptFields(wrap.querySelector('.rh-prompt-list'), node, fields);
     renderRhInputs(wrap.querySelector('.rh-input-list'), node, media);
     renderRhParams(wrap.querySelector('.rh-param-list'), node, fields, media);
@@ -12634,7 +12912,7 @@ function renderRhPromptFields(container, node, fields){
         const value = rhFieldValue(node, field, rhMediaSources(node));
         return `<label class="field rh-prompt-field">
             <div class="setting-title">${escapeHtml(label)}</div>
-            <textarea class="setting-input rh-param-input" data-rh-param="${escapeAttr(key)}" data-rh-role="prompt">${escapeHtml(value)}</textarea>
+            <textarea class="setting-input rh-param-input" data-rh-param="${escapeAttr(key)}" data-rh-role="prompt" data-voice-input="on" data-voice-label="${escapeAttr(label)}">${escapeHtml(value)}</textarea>
         </label>`;
     }).join('');
     bindRhParamControls(container, node);
@@ -12677,7 +12955,7 @@ function renderRhSettingField(node, field, key, kind, label, value, options, wid
         return `<div class="gen-settings-row rh-param-row ${wide ? 'wide' : ''}">
             <label class="field" style="flex:1">
                 <div class="setting-title" style="display:flex;justify-content:space-between"><span>${safeLabel}</span><span class="rh-param-val">${escapeHtml(numericValue)}</span></div>
-                <input type="range" class="canvas-range rh-param-input" data-rh-param="${escapeAttr(key)}" data-rh-type="slider" min="${escapeAttr(min)}" max="${escapeAttr(max)}" step="${escapeAttr(step)}" value="${escapeAttr(numericValue)}">
+                <input type="range" class="canvas-range rh-param-input" data-rh-param="${escapeAttr(key)}" data-rh-type="slider" min="${escapeAttr(min)}" max="${escapeAttr(max)}" step="${escapeAttr(step)}" value="${escapeAttr(numericValue)}" data-voice-input="off">
             </label>
         </div>`;
     }
@@ -12690,14 +12968,14 @@ function renderRhSettingField(node, field, key, kind, label, value, options, wid
         const active = rhRandomActive(node, key);
         return `<div class="gen-settings-row rh-param-row ${wide ? 'wide' : ''}">
             <div class="comfy-random-field">
-                <label class="field"><div class="setting-title">${safeLabel}</div><input class="setting-input rh-param-input" type="number" data-rh-param="${escapeAttr(key)}" data-rh-type="number" value="${escapeAttr(value)}" ${active ? 'disabled' : ''}></label>
+                <label class="field"><div class="setting-title">${safeLabel}</div><input class="setting-input rh-param-input" type="number" data-rh-param="${escapeAttr(key)}" data-rh-type="number" value="${escapeAttr(value)}" data-voice-input="off" ${active ? 'disabled' : ''}></label>
                 <button class="tool-btn comfy-random-btn ${active ? 'active' : ''}" type="button" data-rh-random="${escapeAttr(key)}" title="${active ? '随机已开启，点击关闭' : '随机已关闭，点击开启'}"><i data-lucide="dice-5" class="w-4 h-4"></i></button>
             </div>
         </div>`;
     }
     const inputType = kind === 'number' ? 'number' : 'text';
     return `<div class="gen-settings-row rh-param-row ${wide ? 'wide' : ''}">
-        <label class="field"><div class="setting-title">${safeLabel}</div><input class="setting-input rh-param-input" type="${inputType}" data-rh-param="${escapeAttr(key)}" data-rh-type="${escapeAttr(kind)}" value="${escapeAttr(value)}"></label>
+        <label class="field"><div class="setting-title">${safeLabel}</div><input class="setting-input rh-param-input" type="${inputType}" data-rh-param="${escapeAttr(key)}" data-rh-type="${escapeAttr(kind)}" value="${escapeAttr(value)}" data-voice-input="off"></label>
     </div>`;
 }
 function bindRhParamControls(container, node){
@@ -13201,7 +13479,7 @@ function renderComfyCustomField(node, f){
     }
     if(f.type === 'textarea'){
         return `<div class="gen-settings-row">
-            <label class="field" style="flex:1"><div class="setting-title">${label}</div><textarea class="setting-input" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="textarea" style="height:66px;padding-top:8px;resize:vertical">${escapeHtml(value)}</textarea></label>
+            <label class="field" style="flex:1"><div class="setting-title">${label}</div><textarea class="setting-input" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="textarea" style="height:66px;padding-top:8px;resize:vertical" data-voice-input="on" data-voice-label="${escapeAttr(f.name || f.input || '工作流文本')}">${escapeHtml(value)}</textarea></label>
         </div>`;
     }
     const type = f.type === 'number' ? 'number' : 'text';
@@ -13209,13 +13487,13 @@ function renderComfyCustomField(node, f){
         const active = comfyRandomActive(node, f.id);
         return `<div class="gen-settings-row">
             <div class="comfy-random-field">
-                <label class="field"><div class="setting-title">${label}</div><input class="setting-input" type="number" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="number" value="${escapeHtml(value)}"></label>
+                <label class="field"><div class="setting-title">${label}</div><input class="setting-input" type="number" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="number" value="${escapeHtml(value)}" data-voice-input="off"></label>
                 <button class="tool-btn comfy-random-btn ${active ? 'active' : ''}" type="button" data-comfy-random="${escapeHtml(f.id)}" title="${active ? '随机已开启，点击关闭' : '随机已关闭，点击开启'}" aria-label="${active ? '随机已开启，点击关闭' : '随机已关闭，点击开启'}"><i data-lucide="dice-5" class="w-4 h-4"></i></button>
             </div>
         </div>`;
     }
     return `<div class="gen-settings-row">
-        <label class="field" style="flex:1"><div class="setting-title">${label}</div><input class="setting-input" type="${type}" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="${escapeHtml(f.type || 'text')}" value="${escapeHtml(value)}"></label>
+        <label class="field" style="flex:1"><div class="setting-title">${label}</div><input class="setting-input" type="${type}" data-comfy-param="${escapeHtml(f.id)}" data-comfy-type="${escapeHtml(f.type || 'text')}" value="${escapeHtml(value)}" data-voice-input="off"></label>
     </div>`;
 }
 function updateComfyField(node, input, event){
@@ -13355,6 +13633,14 @@ function mediaRefsFromNode(node){
         const kind = mediaKindForNode(node);
         return [imageRefWithMarkers(node, {kind})];
     }
+    if(node.type === 'openshop-layered' && node.previewUrl){
+        return [{
+            url:node.previewUrl,
+            name:node.projectName || tr('canvas.openshopLayered'),
+            kind:'image',
+            nodeId:node.id,
+        }];
+    }
     if(node.type === 'group'){
         return (node.items || [])
             .map(id => nodes.find(x => x.id === id))
@@ -13395,6 +13681,19 @@ function generatorSources(gen){
                     refs:[ref],
                     prompt:''
                 }));
+            }
+        }
+        if(n.type === 'openshop-layered'){
+            const refs = mediaRefsFromNode(n);
+            if(refs.length){
+                return {
+                    id:n.id,
+                    type:'openshopImage',
+                    label:n.projectName || tr('canvas.openshopLayered'),
+                    preview:refs[0].url,
+                    refs,
+                    prompt:''
+                };
             }
         }
         if(n.type === 'image' && n.url) {
@@ -13515,7 +13814,7 @@ function refreshGeneratorInputViews(){
         if(gen.type === 'video') renderVideoImageInputs(el.querySelector('.video-img-list'), gen, imageInputs);
         if(gen.type === 'rh'){
             const media = rhMediaSources(gen);
-            if(rhCurrentKind(gen) === 'model') renderPromptPreview(el.querySelector('.rh-prompt-list'), media.visiblePromptInputsForNode(sources));
+            if(rhCurrentKind(gen) === 'model') renderPromptPreview(el.querySelector('.rh-prompt-list'), visiblePromptInputsForNode(media.sources));
             else renderRhPromptFields(el.querySelector('.rh-prompt-list'), gen, rhActiveFields(gen));
             renderRhInputs(el.querySelector('.rh-input-list'), gen, media);
             renderRhParams(el.querySelector('.rh-param-list'), gen, rhActiveFields(gen), media);
@@ -15186,6 +15485,8 @@ function deleteNode(id, event){
     event?.stopPropagation();
     pushUndo();
     const node = nodes.find(n => n.id === id);
+    trackPermanentlyDeletedOpenShopNodes([node]);
+    window.HstarClassicOpenShopAdapter?.disposeNode?.(node);
     removeDirectorSceneStorageForNode(node);
     destroyLTXEditor(node);
     nodes = nodes.filter(n => n.id !== id);
@@ -15330,7 +15631,7 @@ function showExternalAppFallback(app='custom', appLabel='自定义软件'){
     externalAppFallback.innerHTML = `
         <div class="external-app-title">绑定${escapeHtml(appLabel)}</div>
         <div class="external-app-hint">如果系统选择窗口没有弹出，可以在这里手动输入或粘贴软件 .exe 的完整路径。</div>
-        <input class="external-app-path" placeholder="例如：D:\\Tools\\app.exe" spellcheck="false">
+            <input class="external-app-path" placeholder="例如：D:\\Tools\\app.exe" spellcheck="false" data-voice-input="off">
         <div class="external-app-actions">
             <button type="button" class="external-app-primary" data-external-app-save>保存并打开</button>
             <button type="button" class="external-app-secondary" data-external-app-picker>自动查找软件</button>
@@ -17063,6 +17364,190 @@ function connectSelectionToGenerator(kind, genId){
 function resetCanvasHistory(){
     undoStack = [];
     redoStack = [];
+    permanentlyDeletedOpenShopNodeIds.clear();
+    lastSyncedCanvasState = null;
+}
+function trackPermanentlyDeletedOpenShopNodes(items){
+    (items || []).forEach(node => {
+        if(node?.type === 'openshop-layered' && node.id){
+            permanentlyDeletedOpenShopNodeIds.add(node.id);
+        }
+    });
+}
+function filterPermanentlyDeletedOpenShopHistoryState(state){
+    const nextNodes = (state?.nodes || [])
+        .filter(node => !permanentlyDeletedOpenShopNodeIds.has(node?.id))
+        .map(node => {
+            let nextNode = node;
+            if(Array.isArray(node?.inputNodeIds)){
+                nextNode = {...nextNode, inputNodeIds:node.inputNodeIds.filter(id => !permanentlyDeletedOpenShopNodeIds.has(id))};
+            }
+            if(Array.isArray(node?.items)){
+                nextNode = {...nextNode, items:node.items.filter(id => !permanentlyDeletedOpenShopNodeIds.has(id))};
+            }
+            return nextNode;
+        });
+    const nodeIds = new Set(nextNodes.map(node => node.id));
+    const next = {
+        ...state,
+        nodes:nextNodes,
+        connections:(state?.connections || []).filter(connection => nodeIds.has(connection.from) && nodeIds.has(connection.to)),
+    };
+    if(Array.isArray(state?.selectedIds)){
+        next.selectedIds = state.selectedIds.filter(id => nodeIds.has(id));
+    }
+    if(next.selectedId && !nodeIds.has(next.selectedId)) next.selectedId = '';
+    if(next.selectedImage?.nodeId && !nodeIds.has(next.selectedImage.nodeId)){
+        next.selectedImage = {nodeId:'', index:-1};
+    }
+    return next;
+}
+function mergeClassicCanvasConflictState(localState, remoteState, baseState){
+    baseState = baseState || {};
+    const localNodes = Array.isArray(localState?.nodes) ? localState.nodes : [];
+    const remoteNodes = Array.isArray(remoteState?.nodes) ? remoteState.nodes : [];
+    const baseNodes = Array.isArray(baseState?.nodes) ? baseState.nodes : [];
+    const localById = new Map(localNodes.map(node => [node.id, node]));
+    const remoteById = new Map(remoteNodes.map(node => [node.id, node]));
+    const baseById = new Map(baseNodes.map(node => [node.id, node]));
+    const sameValue = (left, right) => {
+        if(left === right) return true;
+        if(left == null || right == null || typeof left !== typeof right) return false;
+        try { return JSON.stringify(left) === JSON.stringify(right); }
+        catch(e) { return false; }
+    };
+    const mergeArrayValues = (localItems, remoteItems, baseItems=[]) => {
+        const itemKey = item => {
+            let key;
+            if(item && typeof item === 'object'){
+                key = item.id || item.url || item.assetId || item.taskId;
+            }
+            if(!key){
+                try { key = JSON.stringify(item); }
+                catch(e) { key = String(item); }
+            }
+            return key;
+        };
+        const localByKey = new Map((localItems || []).map(item => [itemKey(item), item]));
+        const remoteByKey = new Map((remoteItems || []).map(item => [itemKey(item), item]));
+        const baseByKey = new Map((baseItems || []).map(item => [itemKey(item), item]));
+        const order = [];
+        const seen = new Set();
+        [...(remoteItems || []), ...(localItems || [])].forEach(item => {
+            const key = itemKey(item);
+            if(seen.has(key)) return;
+            seen.add(key);
+            order.push(key);
+        });
+        return order.map(key => {
+            const hasLocal = localByKey.has(key);
+            const hasRemote = remoteByKey.has(key);
+            const hasBase = baseByKey.has(key);
+            if(hasBase && (!hasLocal || !hasRemote)) return null;
+            const localItem = localByKey.get(key);
+            const remoteItem = remoteByKey.get(key);
+            const baseItem = baseByKey.get(key);
+            if(hasLocal && hasRemote){
+                if(sameValue(localItem, baseItem)) return remoteItem;
+                if(sameValue(remoteItem, baseItem)) return localItem;
+                if(
+                    localItem && remoteItem
+                    && typeof localItem === 'object' && typeof remoteItem === 'object'
+                ){
+                    return {...remoteItem, ...localItem};
+                }
+                return localItem;
+            }
+            return localItem || remoteItem;
+        }).filter(item => item !== null && item !== undefined);
+    };
+    const mergeNode = (localNode, remoteNode, baseNode) => {
+        if(!baseNode) return {...remoteNode, ...localNode};
+        const merged = {};
+        const keys = new Set([...Object.keys(baseNode), ...Object.keys(remoteNode), ...Object.keys(localNode)]);
+        keys.forEach(key => {
+            const localValue = localNode[key];
+            const remoteValue = remoteNode[key];
+            const baseValue = baseNode[key];
+            let value;
+            if(sameValue(localValue, remoteValue)) value = localValue;
+            else if(sameValue(localValue, baseValue)) value = remoteValue;
+            else if(sameValue(remoteValue, baseValue)) value = localValue;
+            else if(['images','generatedOutputs'].includes(key) && Array.isArray(localValue) && Array.isArray(remoteValue)){
+                value = mergeArrayValues(localValue, remoteValue, Array.isArray(baseValue) ? baseValue : []);
+            } else if(
+                localValue && remoteValue
+                && typeof localValue === 'object' && typeof remoteValue === 'object'
+                && !Array.isArray(localValue) && !Array.isArray(remoteValue)
+            ){
+                value = {...remoteValue, ...localValue};
+            } else {
+                value = localValue;
+            }
+            if(value !== undefined) merged[key] = value;
+        });
+        return merged;
+    };
+    localNodes.forEach(node => {
+        if(
+            node?.type === 'openshop-layered'
+            && baseById.has(node.id)
+            && !remoteById.has(node.id)
+        ){
+            permanentlyDeletedOpenShopNodeIds.add(node.id);
+        }
+    });
+    const order = [];
+    const seenNodeIds = new Set();
+    [...remoteNodes, ...localNodes].forEach(node => {
+        if(!node?.id || seenNodeIds.has(node.id)) return;
+        seenNodeIds.add(node.id);
+        order.push(node.id);
+    });
+    const mergedNodes = order.map(id => {
+        const localNode = localById.get(id);
+        const remoteNode = remoteById.get(id);
+        const baseNode = baseById.get(id);
+        if(localNode && remoteNode) return mergeNode(localNode, remoteNode, baseNode);
+        if(localNode) return baseNode ? null : localNode;
+        if(remoteNode) return baseNode ? null : remoteNode;
+        return null;
+    }).filter(Boolean);
+    const mergedConnections = [];
+    const connectionKey = connection => connection?.id || `${connection?.from}->${connection?.to}`;
+    const localConnections = new Map((localState?.connections || []).map(connection => [connectionKey(connection), connection]));
+    const remoteConnections = new Map((remoteState?.connections || []).map(connection => [connectionKey(connection), connection]));
+    const baseConnections = new Map((baseState?.connections || []).map(connection => [connectionKey(connection), connection]));
+    const connectionOrder = [];
+    const seenConnections = new Set();
+    [...(remoteState?.connections || []), ...(localState?.connections || [])].forEach(connection => {
+        const key = connectionKey(connection);
+        if(!connection || seenConnections.has(key)) return;
+        seenConnections.add(key);
+        connectionOrder.push(key);
+    });
+    connectionOrder.forEach(key => {
+        const localConnection = localConnections.get(key);
+        const remoteConnection = remoteConnections.get(key);
+        const baseConnection = baseConnections.get(key);
+        if(localConnection && remoteConnection) mergedConnections.push(localConnection);
+        else if(localConnection && !baseConnection) mergedConnections.push(localConnection);
+        else if(remoteConnection && !baseConnection) mergedConnections.push(remoteConnection);
+    });
+    return filterPermanentlyDeletedOpenShopHistoryState({
+        ...remoteState,
+        ...localState,
+        nodes:mergedNodes,
+        connections:mergedConnections,
+        logs:mergeArrayValues(localState?.logs || [], remoteState?.logs || [], baseState?.logs || []),
+    });
+}
+function captureClassicCanvasSyncState(state){
+    return JSON.parse(JSON.stringify({
+        nodes:(state?.nodes || []).map(serializableCanvasNode),
+        connections:state?.connections || [],
+        logs:state?.logs || [],
+    }));
 }
 function canvasHistorySnapshot(){
     return {
@@ -17080,13 +17565,14 @@ function pushHistorySnapshot(stack, state){
 }
 function applyCanvasHistoryState(state){
     if(!canvas || !state || state.canvasId !== canvas?.id) return false;
-    nodes = JSON.parse(JSON.stringify(state.nodes || []));
-    connections = JSON.parse(JSON.stringify(state.connections || []));
-    viewport = {...(state.viewport || viewport || {x:0, y:0, scale:1})};
+    const safeState = filterPermanentlyDeletedOpenShopHistoryState(state);
+    nodes = JSON.parse(JSON.stringify(safeState.nodes || []));
+    connections = JSON.parse(JSON.stringify(safeState.connections || []));
+    viewport = {...(safeState.viewport || viewport || {x:0, y:0, scale:1})};
     canvas.nodes = nodes;
     canvas.connections = connections;
     canvas.viewport = {...viewport};
-    selected = new Set((state.selectedIds || []).filter(id => nodes.some(node => node.id === id)));
+    selected = new Set((safeState.selectedIds || []).filter(id => nodes.some(node => node.id === id)));
     sanitizeConnections();
     applyViewport();
     render();
@@ -17204,8 +17690,15 @@ function copySelectedNodes(){
     if(!toCopy.length) return;
     const ids = new Set(toCopy.map(n => n.id));
     const pickedConnections = (connections || []).filter(c => ids.has(c.from) && ids.has(c.to)).map(c => ({...c}));
+    const serializedNodes = toCopy.map(node => {
+        const copy = serializableCanvasNode(node);
+        if(node.type === 'openshop-layered'){
+            window.HstarClassicOpenShopAdapter?.captureCloneSource?.(node, copy);
+        }
+        return copy;
+    });
     clipboard = {
-        nodes:JSON.parse(JSON.stringify(serializableCanvasNodes(toCopy))),
+        nodes:JSON.parse(JSON.stringify(serializedNodes)),
         connections:JSON.parse(JSON.stringify(pickedConnections))
     };
 }
@@ -17556,15 +18049,21 @@ function startNodeResize(e, node){
 function onNodeResize(e){
     if(!resizeNode) return;
     const min = defaultNodeSize(resizeNode.node.type);
-    const nextW = Math.max(Math.min(min.w, 220), resizeNode.sw + (e.clientX - resizeNode.sx) / viewport.scale);
+    const isOpenShop = resizeNode.node.type === 'openshop-layered';
+    const nextW = Math.max(isOpenShop ? 240 : Math.min(min.w, 220), resizeNode.sw + (e.clientX - resizeNode.sx) / viewport.scale);
     const nextH = Math.max(96, resizeNode.sh + (e.clientY - resizeNode.sy) / viewport.scale);
     resizeNode.node.w = Math.round(nextW);
-    resizeNode.node.h = Math.round(nextH);
+    resizeNode.node.h = isOpenShop
+        ? window.HstarClassicOpenShopAdapter?.layoutForNode?.(resizeNode.node)?.height || Math.round(nextH)
+        : Math.round(nextH);
+    const openShopLayout = isOpenShop
+        ? window.HstarClassicOpenShopAdapter?.layoutForNode?.(resizeNode.node)
+        : null;
     const el = nodesEl.querySelector(`.node[data-id="${resizeNode.node.id}"]`);
     if(el){
         el.classList.add('sized');
-        el.style.width = `${resizeNode.node.w}px`;
-        el.style.height = `${resizeNode.node.h}px`;
+        el.style.width = `${openShopLayout?.width || resizeNode.node.w}px`;
+        el.style.height = `${openShopLayout?.height || resizeNode.node.h}px`;
     }
     scheduleLinksRender();
     renderSelectionHub();
@@ -17594,6 +18093,7 @@ function startLink(e, originId, originKind){
                 if(!connections.some(c => c.from === fromId && c.to === toId)){
                     pushUndo();
                     connections.push({id:uid('c'), from:fromId, to:toId});
+                    syncOpenShopLayeredConnectionTarget(toId);
                     syncLatestGeneratedOutputToConnection(fromId, toId);
                 }
                 syncGeneratorInputs();
@@ -17707,7 +18207,8 @@ function endDrag(event=null){
     knifeActive = false;
     knifePoint = null;
     knifeTrail = [];
-    const shouldRenderKnife = knifeNeedsRender;
+    const shouldRenderInteraction = knifeNeedsRender || Boolean(tempLink);
+    tempLink = null;
     knifeChanged = false;
     knifeNeedsRender = false;
     if(!event?.shiftKey) setKnifeMode(false);
@@ -17715,7 +18216,7 @@ function endDrag(event=null){
     document.body.classList.remove('canvas-node-drag', 'canvas-node-resize', 'canvas-selecting', 'canvas-board-pan');
     window.onmousemove = null;
     window.onmouseup = null;
-    if(shouldRenderKnife) render();
+    if(shouldRenderInteraction) render();
     scheduleMinimapRender();
     if(hadContentDrag) scheduleSave();
     else if(hadViewportDrag) scheduleViewportSave();
@@ -18317,6 +18818,7 @@ board.addEventListener('mousedown', e => {
 board.addEventListener('mouseup', handleCanvasClickZoomGesture);
 board.onwheel = e => {
     if(!canvas) return;
+    if(e.target.closest?.('.create-menu')) return;
     e.preventDefault();
     const before = screenToWorld(e.clientX, e.clientY);
     viewport.scale = viewport.scale * (e.deltaY > 0 ? .92 : 1.08);
@@ -18467,15 +18969,15 @@ window.addEventListener('keyup', e => {
     if(String(e.key || '').toLowerCase() === 'r') isRKeyDown = false;
     if(e.key === 'Shift') setKnifeMode(false);
 });
-window.addEventListener('blur', () => { isRKeyDown = false; setKnifeMode(false); });
 window.addEventListener('blur', () => {
+    isRKeyDown = false;
+    setKnifeMode(false);
     if(selectDrag){
         selectionBox.style.display = 'none';
         selectDrag = null;
         document.body.classList.remove('canvas-selecting');
-        window.onmousemove = null;
-        window.onmouseup = null;
     }
+    endDrag();
 });
 function deleteSelectedNodes(){
     if(!canvas || selected.size === 0) return;
@@ -18491,7 +18993,12 @@ function deleteSelectedNodes(){
         }
     };
     selected.forEach(collect);
-    toDelete.forEach(id => destroyLTXEditor(nodes.find(n => n.id === id)));
+    const deletingNodes = [...toDelete].map(id => nodes.find(node => node.id === id)).filter(Boolean);
+    trackPermanentlyDeletedOpenShopNodes(deletingNodes);
+    deletingNodes.forEach(node => {
+        window.HstarClassicOpenShopAdapter?.disposeNode?.(node);
+        destroyLTXEditor(node);
+    });
     nodes = nodes.filter(n => !toDelete.has(n.id));
     connections = connections.filter(c => !toDelete.has(c.from) && !toDelete.has(c.to));
     selected.clear();

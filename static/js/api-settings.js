@@ -6,6 +6,7 @@ const statusEl = document.getElementById('status');
 const nameInput = document.getElementById('nameInput');
 const idInput = document.getElementById('idInput');
 const baseInput = document.getElementById('baseInput');
+const systemProxyInput = document.getElementById('systemProxyInput');
 const protocolInput = document.getElementById('protocolInput');
 const imageRequestModeInput = document.getElementById('imageRequestModeInput');
 const imageEditRouteInput = document.getElementById('imageEditRouteInput');
@@ -390,7 +391,7 @@ function findRhAppFieldCard(key){
 function normalizeId(value){
     return String(value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '').replace(/-+/g, '-').slice(0, 40);
 }
-// 平台 Key 按 ID 写入 API/.env；ID 一旦创建就保持稳定，避免改名或中文名称导致 Key 看起来丢失。
+// 平台 Key 按稳定 ID 写入加密凭据存储，避免改名后看起来像是丢失了 Key。
 function deriveIdFromName(name, existingId){
     if(existingId) return existingId;
     let id = normalizeId(name);
@@ -583,17 +584,17 @@ function rhEditorSortedFields(fields){
     });
 }
 function rhFreeKeyHintText(item){
-    return item?.has_key ? `${tr('api.rhCoinKeySaved')}${item.key_env || 'API/.env'} ${item.key_preview || ''}` : tr('api.rhNoCoinKey');
+    return item?.has_key ? `${tr('api.rhCoinKeySaved')}${item.key_env || '加密凭据存储'} ${item.key_preview || ''}` : tr('api.rhNoCoinKey');
 }
 function rhWalletKeyHintText(item){
-    return item?.has_wallet_key ? `${tr('api.rhWalletKeySaved')}${item.wallet_key_env || 'API/.env'} ${item.wallet_key_preview || ''}` : tr('api.rhNoWalletKey');
+    return item?.has_wallet_key ? `${tr('api.rhWalletKeySaved')}${item.wallet_key_env || '加密凭据存储'} ${item.wallet_key_preview || ''}` : tr('api.rhNoWalletKey');
 }
 function volcengineArkKeyHintText(item){
-    return item?.has_key ? `方舟 API Key 已保存：${item.key_env || 'API/.env'} ${item.key_preview || ''}` : '还没有保存方舟 API Key。';
+    return item?.has_key ? `方舟 API Key 已保存：${item.key_env || '加密凭据存储'} ${item.key_preview || ''}` : '还没有保存方舟 API Key。';
 }
 function volcengineAssetKeyHintText(item){
-    const ak = item?.has_volcengine_access_key ? `AK 已保存：${item.volcengine_access_key_env || 'API/.env'} ${item.volcengine_access_key_preview || ''}` : 'AK 未保存';
-    const sk = item?.has_volcengine_secret_key ? `SK 已保存：${item.volcengine_secret_key_env || 'API/.env'} ${item.volcengine_secret_key_preview || ''}` : 'SK 未保存';
+    const ak = item?.has_volcengine_access_key ? `AK 已保存：${item.volcengine_access_key_env || '加密凭据存储'} ${item.volcengine_access_key_preview || ''}` : 'AK 未保存';
+    const sk = item?.has_volcengine_secret_key ? `SK 已保存：${item.volcengine_secret_key_env || '加密凭据存储'} ${item.volcengine_secret_key_preview || ''}` : 'SK 未保存';
     return `${ak} · ${sk}`;
 }
 function isNewUserProvider(item){
@@ -797,6 +798,7 @@ function syncEditor(){
         ? 'volcengine'
         : (protocolInput?.value || 'openai');
     item.base_url = CLI_PROTOCOLS.has(selectedProtocol) ? '' : baseInput.value.trim();
+    if(systemProxyInput) item.use_system_proxy = systemProxyInput.checked;
     // 固定平台不从协议下拉读取
     item.protocol = selectedProtocol;
     item.image_request_mode = normalizeImageRequestMode(
@@ -2492,6 +2494,7 @@ function renderEditor(){
     clearVerifyResult();
     baseInput.placeholder = EXAMPLE_BASE_URL;
     baseInput.value = item.base_url || '';
+    if(systemProxyInput) systemProxyInput.checked = item.use_system_proxy !== false;
     const lockedApi = lockedRecommendedApi(item);
     if(lockedApi) applyLockedRecommendedProtocol(item);
     if(protocolInput){
@@ -2510,7 +2513,7 @@ function renderEditor(){
     }
     keyInput.value = '';
     keyInput.placeholder = item.has_key ? `${tr('api.keepCurrentKey')} ${item.key_preview || ''}` : tr('api.enterKey');
-    keyHint.textContent = item.has_key ? `${tr('api.keySaved')}${item.key_env || 'API/.env'}` : tr('api.noKey');
+    keyHint.textContent = item.has_key ? `${tr('api.keySaved')}${item.key_env || '加密凭据存储'}` : tr('api.noKey');
     const isModelScope = item.id === 'modelscope';
     const isRunningHub = item.id === 'runninghub';
     const isVolcengine = item.id === 'volcengine' || String(protocolInput?.value || item.protocol || '').toLowerCase() === 'volcengine';
@@ -2998,6 +3001,7 @@ async function probeAsync(){
                     api_key:apiKey,
                 provider_id:'runninghub',
                 protocol:'runninghub',
+                use_system_proxy:systemProxyInput?.checked !== false,
                 image_request_mode:'openai'
             })
             }).then(r => readApiJsonResponse(r, '请求失败'));
@@ -3014,6 +3018,7 @@ async function probeAsync(){
                 api_key: apiKey,
                 provider_id: item.id,
                 protocol: currentProtocol,
+                use_system_proxy:systemProxyInput?.checked !== false,
                 image_request_mode: imageRequestModeInput?.value || item.image_request_mode || 'openai'
             })
         }).then(r => readApiJsonResponse(r, '请求失败'));
@@ -3077,6 +3082,7 @@ async function testConnection(){
                 api_key: apiKey,
                 provider_id: runninghubContext ? 'runninghub' : item.id,
                 protocol: runninghubContext ? 'runninghub' : (protocolInput?.value || 'openai'),
+                use_system_proxy:systemProxyInput?.checked !== false,
                 image_request_mode: imageRequestModeInput?.value || item.image_request_mode || 'openai'
             })
         }).then(r => readApiJsonResponse(r, tr('api.urlInvalid') || '验证失败'));
@@ -3194,6 +3200,7 @@ async function fetchModels(){
                 api_key:apiKey,
                 provider_id:runninghubContext ? 'runninghub' : item.id,
                 protocol:runninghubContext ? 'runninghub' : (protocolInput?.value || 'openai'),
+                use_system_proxy:systemProxyInput?.checked !== false,
                 image_request_mode:imageRequestModeInput?.value || item.image_request_mode || 'openai'
             })
         }).then(r => readApiJsonResponse(r, tr('api.urlInvalid') || '拉取失败'));
@@ -3580,7 +3587,7 @@ function addProvider(){
     let id = 'custom-api';
     let index = 2;
     while(providers.some(item => item.id === id)) id = `custom-api-${index++}`;
-    providers.push({id, name:'API', base_url:'', protocol:'openai', image_request_mode:'openai', image_edit_route:'general', image_generation_endpoint:'', image_edit_endpoint:'', enabled:true, primary:false, image_models:[], chat_models:[], video_models:[], has_key:false, key_preview:''});
+    providers.push({id, name:'API', base_url:'', protocol:'openai', use_system_proxy:true, image_request_mode:'openai', image_edit_route:'general', image_generation_endpoint:'', image_edit_endpoint:'', enabled:true, primary:false, image_models:[], chat_models:[], video_models:[], has_key:false, key_preview:''});
     selectedId = id;
     renderEditor();
 }
@@ -3833,6 +3840,7 @@ async function saveProviders(){
                 chat_models:item.chat_models || [],
                 video_models:item.video_models || [],
                 protocol_manual:item.protocol_manual === true,
+                use_system_proxy:item.use_system_proxy !== false,
                 model_protocols:(item.model_protocols && typeof item.model_protocols === 'object') ? item.model_protocols : {},
                 ms_loras:item.id === 'modelscope' ? (item.ms_loras || []) : [],
                 ms_defaults_version:item.id === 'modelscope' ? (item.ms_defaults_version || 1) : 0,

@@ -15,8 +15,8 @@ assert.match(py, /client\.post\(f"\{moonly_base_url\(provider\)\}\/v1\/images\/g
 assert.match(py, /quality_value = str\(quality or ""\)\.strip\(\)\.lower\(\)[\s\S]*body\["quality"\] = quality_value/, 'MoonlyAI generation should send the user-selected quality when it is low/medium/high');
 assert.match(py, /task_url = f"\{moonly_base_url\(provider\)\}\/v1\/images\/generations\/\{task_id\}"[\s\S]*client\.get\(task_url/, 'MoonlyAI polling should query /v1/images/generations/{task_id}');
 assert.match(py, /def image_task_url_for_provider\(provider, task_id\):[\s\S]*if is_moonly_provider\(provider\):[\s\S]*\/v1\/images\/generations\/\{task_id\}/, 'MoonlyAI task queries should use /v1/images/generations/{task_id} instead of the generic /v1/images/tasks path');
-assert.match(py, /httpx\.AsyncClient\(timeout=timeout, follow_redirects=True, trust_env=not is_moonly_provider\(provider\)\)/, 'MoonlyAI task queries should bypass system proxy settings');
-assert.match(py, /httpx\.AsyncClient\(timeout=timeout, trust_env=False\)/, 'MoonlyAI generation and polling should bypass system proxy settings so local proxies cannot synthesize 429 responses');
+assert.match(py, /trust_env=provider_uses_system_proxy\(\s*provider,\s*default=not is_moonly_provider\(provider\),?\s*\)/, 'MoonlyAI task queries should share the saved provider proxy preference');
+assert.match(py, /async def generate_moonly_provider_image[\s\S]*trust_env=provider_uses_system_proxy\(provider, default=False\)/, 'MoonlyAI generation should bypass system proxies by default while honoring the saved provider preference');
 assert.doesNotMatch(py, /async def wait_for_moonly_image_task[\s\S]*\/v1\/images\/tasks/, 'MoonlyAI adapter must not use the generic /v1/images/tasks polling path');
 assert.doesNotMatch(py, /if protocol == "moonly":[\s\S]{0,500}moonly_default_model_payload/, 'MoonlyAI validation/fetch should not short-circuit to built-in models');
 assert.match(apiSettings, /'moonly'/, 'API settings protocol list should include MoonlyAI');

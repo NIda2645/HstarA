@@ -10,6 +10,7 @@
     listener: null,
     dirtyListener: null,
     apiSettingsListener: null,
+    pageHideListener: null,
     editor: null,
     protocol: null,
     projectAdapter: null,
@@ -23,6 +24,8 @@
     saving: false,
     saveAgain: false,
     dirty: false,
+    dirtyRevision: 0,
+    savedRevision: 0,
     applying: false,
     saveTimer: null,
     pendingSave: null,
@@ -92,6 +95,8 @@
     cancelPendingSave();
     state.saveAgain = false;
     state.dirty = false;
+    state.dirtyRevision = 0;
+    state.savedRevision = 0;
     state.queuedSaveOptions = null;
   }
 
@@ -251,9 +256,15 @@
     };
   }
 
-  function markDirty(reason = 'editor-change'){
+  function markDirty(reason = 'editor-change', {notify = true} = {}){
     if(!state.started || !state.activeSession || state.applying) return;
+    state.dirtyRevision += 1;
     state.dirty = true;
+    if(notify){
+      post(state.protocol.TYPES.PROJECT_CHANGED, {
+        payload:{reason, revision:state.dirtyRevision},
+      });
+    }
     if(state.saving){
       state.saveAgain = true;
       state.queuedSaveOptions = mergeSaveOptions(state.queuedSaveOptions, {reason:'autosave'});
@@ -290,6 +301,7 @@
     const pending = {
       requestId: '',
       session,
+      revision: state.dirtyRevision,
       promise,
       resolve:resolvePromise,
       reject:rejectPromise,
@@ -349,12 +361,14 @@
     if(confirmedProject.previewAssetId){
       state.editor.__hstarPreviewAssetId = String(confirmedProject.previewAssetId);
     }
-    const saveAgain = state.saveAgain || state.dirty;
+    state.savedRevision = Math.max(state.savedRevision, Number(pending.revision || 0));
+    const newerRevision = state.dirtyRevision > state.savedRevision;
+    const saveAgain = state.saveAgain || state.dirty || newerRevision;
     const queuedOptions = state.queuedSaveOptions || {reason:'autosave', closeAfter:false};
     state.pendingSave = null;
     state.saving = false;
     state.saveAgain = false;
-    state.dirty = false;
+    state.dirty = newerRevision;
     state.queuedSaveOptions = null;
     pending.resolve(confirmedProject);
     if(saveAgain){
@@ -503,7 +517,7 @@
       }));
       if(state.entryMode === 'workspace' || sources.length > 0) revealEditorWorkspace();
       reason = 'sources-synchronized';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else if(envelope.type === types.RESOLVE_SOURCE_UPDATE){
       await whileApplying(() => state.projectAdapter.resolveSourceUpdate({
         editor: state.editor,
@@ -512,7 +526,7 @@
         imageLoader: state.imageLoader || undefined,
       }));
       reason = 'source-update-resolved';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else if(envelope.type === types.ADD_IMAGE_LAYER){
       await whileApplying(() => state.projectAdapter.queueSourceImageLayer({
         editor: state.editor,
@@ -521,7 +535,7 @@
       }));
       revealEditorWorkspace();
       reason = 'source-image-added';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else {
       return;
     }
@@ -529,6 +543,7 @@
     post(types.PROJECT_CHANGED, {
       payload: {
         reason,
+        revision:state.dirtyRevision,
         project: currentProject(),
         requestId: envelope.requestId,
       },
@@ -591,6 +606,7 @@
     if(state.listener) root.removeEventListener('message', state.listener);
     if(state.dirtyListener) root.removeEventListener('openshop:project-dirty', state.dirtyListener);
     if(state.apiSettingsListener) root.removeEventListener('openshop:open-api-settings', state.apiSettingsListener);
+    if(state.pageHideListener) root.removeEventListener('pagehide', state.pageHideListener);
     resetSaveState();
     state.activeSession = null;
     state.processedRequestIds.clear();
@@ -598,6 +614,7 @@
     state.listener = null;
     state.dirtyListener = null;
     state.apiSettingsListener = null;
+    state.pageHideListener = null;
     state.editor = null;
     state.protocol = null;
     state.projectAdapter = null;
@@ -660,10 +677,17 @@
       if(!state.activeSession) return;
       post(state.protocol.TYPES.OPEN_API_SETTINGS, {payload:{}});
     };
+    state.pageHideListener = () => {
+      if(!state.activeSession || state.applying || (!state.dirty && !state.saving)) return;
+      void requestSave({reason:'pagehide'}).catch(error => {
+        root.console?.error?.('[HstarOpenShopRuntime] pagehide save failed', error);
+      });
+    };
     state.started = true;
     root.addEventListener('message', state.listener);
     root.addEventListener('openshop:project-dirty', state.dirtyListener);
     root.addEventListener('openshop:open-api-settings', state.apiSettingsListener);
+    root.addEventListener('pagehide', state.pageHideListener);
   }
 
   function requestClose(){
@@ -682,6 +706,8 @@
       saving: state.saving,
       saveAgain: state.saveAgain,
       dirty: state.dirty,
+      dirtyRevision: state.dirtyRevision,
+      savedRevision: state.savedRevision,
       applying: state.applying,
       autosaveVersion: Number(state.editor?.__hstarAutosaveVersion || 0),
       pendingSaveRequestId: state.pendingSave?.requestId || '',

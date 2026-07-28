@@ -14,20 +14,60 @@ class OpenShopAiValidationError(ValueError):
     pass
 
 
-OPENSHOP_AI_TOOL_IDS = ("text-extract", "text-remove")
+class OpenShopAiStructuredResponseError(OpenShopAiValidationError):
+    pass
+
+
+OPENSHOP_GENERATIVE_TOOL_IDS = ("generative-fill", "local-redraw")
+OPENSHOP_AI_TOOL_IDS = (
+    "text-extract",
+    "text-remove",
+    "art-font-restore",
+    *OPENSHOP_GENERATIVE_TOOL_IDS,
+)
 OPENSHOP_AI_TASK_STATES = (
     "queued",
     "running",
+    "partial",
     "succeeded",
     "failed",
     "cancelled",
 )
-OPENSHOP_AI_TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
+OPENSHOP_AI_TERMINAL_STATES = {"partial", "succeeded", "failed", "cancelled"}
+OPENSHOP_AI_CHILD_STATES = {"queued", "running", "succeeded", "failed", "cancelled"}
+OPENSHOP_REFERENCE_SOURCE_TYPES = {"primary", "selection", "layer", "library", "local"}
+OPENSHOP_DEFAULT_MAX_REFERENCES = 8
+OPENSHOP_DEFAULT_MAX_OUTPUTS = 8
+OPENSHOP_HARD_MAX_OUTPUTS = 64
+OPENSHOP_OCR_MAX_BLOCKS = 500
+OPENSHOP_OCR_MAX_WARNINGS = 50
 
 _CLI_PROTOCOLS = {"codex", "gemini-cli"}
 _ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
-_HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+_HEX_COLOR_PATTERN = re.compile(r"^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+_GENERATION_SIZE_PATTERN = re.compile(r"^(\d{2,4})x(\d{2,4})$", re.IGNORECASE)
+_CJK_PATTERN = re.compile(r"[\u3400-\u9fff]")
+_LATIN_PATTERN = re.compile(r"[A-Za-z]")
+_TRADITIONAL_MARKERS = frozenset(
+    "體臺灣萬與專業東絲兩嚴個豐臨為麗舉麼義烏樂喬習鄉書買亂爭於虧雲亞產親億僅從"
+    "倉儀們價眾優會傳倫偉側偵傑傾僕償儲兒兌黨蘭關興養獸內岡冊寫軍農馮凍淨準涼"
+    "減湊凱別刪則剛創劃劇劉劍劑勁動務勛勝勞勢勵勸區醫華協單賣盧衛卻廠廳歷厲壓"
+    "厭廁廂廈廚廢廣莊慶廬庫應廟龐開異棄張彌彎彙後徑徹恆戀惡惱懷態總慣愛憂戲戶"
+    "撲執擴掃揚擾撫拋搶護報擔擬攏揀擁擇擊擋據擲攝攜擺搖敗敘敵數齋斂斃斷無時曆"
+    "曉暫曄會朧術樸機殺雜權條來楊極構槍標樞樣樹橋檔檢樓橫櫃欄歡歐殘殼毀畢氈氣"
+    "漢湯溝滅滬淚澆濁測濟瀏渾濃塗濤澗潤漲漸澀淵漁滲溫灣濕滿滾滯濫濱灘靈災爐點"
+    "煉煙煩燒燭熱燈獎獨獲獻現環瓊畫當疇療瘋癰發皺盜監盤睏睜瞞矚礦碼磚禮禍離種"
+    "積穩窮竄竅窩競筆築篩簡簽簾籃類糧糾紀紡紋納紐純紗紙級紛細組終紹經結繞繪給"
+    "絡絕統綠維綱網緊緒線練縣縮繳罷羅職聯聰肅腸膚膠膽臉臘舊艦藝節華萊萬葉蒼蓋"
+    "蓮蔥蔣藍虛蟲蝕蠶衆衝補裝裡製複見觀規覓視覺覽觸訂計訊記講許論設訪證評識詐"
+    "訴詞話該詳語誠誤說請諸諾讀課誰調談謀謝譜貝負財貢貧貨販貪貫責貴貸費貼貿賀"
+    "賓賜賞賠賢賬賴賺購贈趕趙跡踐車軌軒轉輪軟轟輕載較輔輛輝輩邊遼達遷過邁運還"
+    "這進遠違連遲適選遺郵鄰鄭釋鑒針釣鈔鈴鉅銀銅銘銷鋪錄錢錦錯鍋鍵鎖鎮鏡鐵鑄鑽"
+    "長門閃閉開閑間閣閥閱隊陽陰陣階際陸陳險隨隱隸難雛雙雞電霧靜韋韓頁頂頃項順"
+    "須頑頓頗領頭頻題額顏風飛飯飲飾餅餓館馬馳駁駐騎騙驅驗驚髮鬥魚鮮鳥鳴鴨鷹麥"
+    "黃齊齒龍龜"
+)
 _NON_VISUAL_MODEL_MARKERS = (
     "embedding",
     "rerank",
@@ -58,9 +98,29 @@ _VISUAL_MODEL_MARKERS = (
 )
 
 
+def is_standard_generation_size(value: Any) -> bool:
+    match = _GENERATION_SIZE_PATTERN.fullmatch(str(value or "").strip())
+    if not match:
+        return False
+    width, height = (int(part) for part in match.groups())
+    return (
+        64 <= width <= 4096
+        and 64 <= height <= 4096
+        and width % 16 == 0
+        and height % 16 == 0
+    )
+
+
 def _clean_text(value: Any, limit: int, fallback: str = "") -> str:
     text = re.sub(r"[\x00-\x1f\x7f]", "", str(value or "")).strip()
     return text[:limit] or fallback
+
+
+def _normalize_ocr_text(value: Any, limit: int = 4000) -> str:
+    text = str(value if value is not None else "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
+    return text[:limit]
 
 
 def _unique_texts(values: Any, limit: int = 120, max_items: int = 64) -> list[str]:
@@ -97,14 +157,54 @@ def _looks_like_visual_chat_model(model: str) -> bool:
     return any(marker in value for marker in _VISUAL_MODEL_MARKERS)
 
 
-def _catalog_provider(provider: dict[str, Any], models: list[str]) -> dict[str, Any]:
+def _bounded_integer(value: Any, fallback: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return max(minimum, min(maximum, number))
+
+
+def _image_model_capabilities(provider: dict[str, Any], model: str) -> dict[str, Any]:
+    configured = provider.get("image_model_capabilities")
+    raw = configured.get(model, {}) if isinstance(configured, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "supportsImageInput": raw.get("supportsImageInput", True) is not False,
+        "supportsMask": raw.get("supportsMask", True) is not False,
+        "supportsMultiReference": raw.get("supportsMultiReference", True) is not False,
+        "maxReferenceImages": _bounded_integer(
+            raw.get("maxReferenceImages"), OPENSHOP_DEFAULT_MAX_REFERENCES, 1, 64
+        ),
+        "maxOutputs": _bounded_integer(
+            raw.get("maxOutputs"), OPENSHOP_DEFAULT_MAX_OUTPUTS, 1, OPENSHOP_HARD_MAX_OUTPUTS
+        ),
+        "supportsBatchOutput": bool(raw.get("supportsBatchOutput", False)),
+        "sizes": _unique_texts(raw.get("sizes"), limit=40, max_items=32) or ["auto"],
+        "qualities": _unique_texts(raw.get("qualities"), limit=40, max_items=16)
+        or ["auto", "low", "medium", "high"],
+    }
+
+
+def _catalog_provider(
+    provider: dict[str, Any],
+    models: list[str],
+    include_image_capabilities: bool = False,
+) -> dict[str, Any]:
+    catalog_models = []
+    for value in models:
+        model = {"id": value, "name": value, "available": True}
+        if include_image_capabilities:
+            model["capabilities"] = _image_model_capabilities(provider, value)
+        catalog_models.append(model)
     return {
         "id": _clean_text(provider.get("id"), 96),
         "name": _clean_text(provider.get("name"), 120, _clean_text(provider.get("id"), 96)),
         "protocol": _clean_text(provider.get("protocol"), 40, "openai").lower(),
         "primary": bool(provider.get("primary")),
         "available": True,
-        "models": [{"id": value, "name": value, "available": True} for value in models],
+        "models": catalog_models,
     }
 
 
@@ -129,7 +229,9 @@ def build_capability_catalog(
         if chat_models:
             extract_providers.append(_catalog_provider(raw, chat_models))
         if image_models:
-            remove_providers.append(_catalog_provider(raw, image_models))
+            remove_providers.append(
+                _catalog_provider(raw, image_models, include_image_capabilities=True)
+            )
 
     requested_primary = _clean_text(primary_provider_id, 96)
     all_provider_ids = {
@@ -164,6 +266,24 @@ def build_capability_catalog(
                 "capability": "image-edit",
                 "providers": remove_providers,
             },
+            "art-font-restore": {
+                "id": "art-font-restore",
+                "label": "艺术字体处理",
+                "capability": "masked-local-redraw",
+                "providers": deepcopy(remove_providers),
+            },
+            "generative-fill": {
+                "id": "generative-fill",
+                "label": "生成式填充",
+                "capability": "masked-image-generation",
+                "providers": deepcopy(remove_providers),
+            },
+            "local-redraw": {
+                "id": "local-redraw",
+                "label": "局部重绘",
+                "capability": "multi-reference-masked-image-generation",
+                "providers": deepcopy(remove_providers),
+            },
         },
     }
 
@@ -172,13 +292,63 @@ def build_ocr_prompt(width: int, height: int) -> str:
     width = _positive_dimension(width, "width")
     height = _positive_dimension(height, "height")
     return (
-        f"Read every visible Chinese, English, and mixed-language text block in this {width}x{height} image. "
-        "Return JSON only with a top-level blocks array. Every block must contain text, quad, language, "
-        "confidence, font, color, align, rotation, paragraphId, and lineIndex. quad must contain four "
-        "clockwise points with normalized x and y values from 0 to 1. Preserve punctuation, whitespace, "
-        "line order, and the original 中文/English spelling. font must contain familyCandidates, size, "
-        "weight, and style. Do not return markdown or image descriptions. If reliable text positions "
-        "cannot be determined, return {\"blocks\":[]}."
+        f"Read every visible Chinese, English, and mixed-language text line in this {width}x{height} image. "
+        "Before writing the response, build an exhaustive whole-image text inventory by scanning the image in "
+        "spatial bands from top to bottom and, within each band, from left to right. Include small, low-contrast, isolated "
+        "text as well as headings, captions, labels, and numeric text; decorative placement is never a reason to omit "
+        "legible text. After the inventory, perform a final omission audit over the entire image and add every missing "
+        "visible line before returning JSON. Return JSON only with a top-level blocks array in spatial scan order. "
+        "Return exactly one block for "
+        "one visible text line; never split a line because its typography changes and never merge separate lines. "
+        "Every block must contain text, quad, runs, language, script (zh-hans, zh-hant, en, or mixed), dominantScript, "
+        "confidence, align, writingMode, rotation, paragraphId, and lineIndex. "
+        "writingMode must be horizontal or vertical and describes text flow independently from rotation; "
+        "rotation=90 does not imply vertical writing. quad must contain four clockwise points around the tight visible "
+        "glyph bounds, ordered top-left, top-right, bottom-right, bottom-left in the text block's local "
+        "unrotated coordinate system, with normalized x and y values from 0 to 1. Preserve punctuation, whitespace, "
+        "line order, and the original 中文/English spelling. runs must completely and without overlap cover text using "
+        "zero-based, left-closed and right-open Unicode code-point indexes named start and end. Every run script must "
+        "be zh-hans, zh-hant, or en; split mixed-language text at script boundaries. Every run must contain script, "
+        "ordered familyCandidates, size, weight, style, artistic, styleDescription, color, letterSpacing, "
+        "lineHeight, strokeColor, strokeWidth, and shadow. shadow must contain color, blur, offsetX, and offsetY. "
+        "Define letterSpacing as thousandths of an em and lineHeight as a ratio. Report each run size in source-image "
+        "pixels and each glyph fill as a #RRGGBB color, or #RRGGBBAA when alpha is present. Define strokeWidth, "
+        "shadow blur, offsetX, and offsetY in source-image pixels. Return color, strokeColor, and shadow color as "
+        "normalized #RRGGBB or #RRGGBBAA values. Estimate every run independently from its own visible glyphs; "
+        "never reuse one run's typography, font size, weight, spacing, line height, family, style, color, stroke, "
+        "or shadow as a default for another run. Preserve alignment and rotation. Do not return markdown or image "
+        "descriptions. If reliable text positions cannot be determined, return {\"blocks\":[]}."
+    )
+
+
+def build_ocr_audit_prompt(
+    width: int,
+    height: int,
+    recognized_lines: Any,
+) -> str:
+    lines: list[str] = []
+    seen: set[str] = set()
+    serialized_length = 2
+    for raw_line in recognized_lines if isinstance(recognized_lines, list) else []:
+        line = _normalize_ocr_text(raw_line, 240).strip()
+        key = re.sub(r"\s+", " ", line).casefold()
+        if not key or key in seen:
+            continue
+        encoded = json.dumps(line, ensure_ascii=False)
+        if serialized_length + len(encoded) + 1 > 12000:
+            break
+        seen.add(key)
+        lines.append(line)
+        serialized_length += len(encoded) + 1
+    return (
+        build_ocr_prompt(width, height)
+        + " This is a dedicated omission audit after an initial OCR pass. The initial pass already returned these "
+        "lines: "
+        + json.dumps(lines, ensure_ascii=False, separators=(",", ":"))
+        + ". Reinspect the entire source image from top to bottom and left to right. For this audit response, return "
+        "blocks ONLY for visible text lines missing from that initial list. Do not repeat listed lines. A nearby larger "
+        "heading does not replace a separate smaller heading. Return {\"blocks\":[]} only if every visible line is "
+        "already listed."
     )
 
 
@@ -198,20 +368,40 @@ def _json_from_text(raw_text: Any) -> dict[str, Any]:
     text = str(raw_text or "").strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
     if not text:
-        raise OpenShopAiValidationError("OCR response is empty")
+        raise OpenShopAiStructuredResponseError("OCR 返回内容为空")
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            raise OpenShopAiValidationError("OCR response does not contain structured JSON")
-        try:
-            value = json.loads(text[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise OpenShopAiValidationError("OCR response is not valid JSON") from exc
+        decoder = json.JSONDecoder()
+        candidates: list[dict[str, Any]] = []
+        cursor = 0
+        while cursor < len(text):
+            start = text.find("{", cursor)
+            if start < 0:
+                break
+            try:
+                candidate, end = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                cursor = start + 1
+                continue
+            if isinstance(candidate, dict):
+                candidates.append(candidate)
+            cursor = max(end, start + 1)
+        if not candidates:
+            if "{" not in text:
+                raise OpenShopAiStructuredResponseError("OCR 返回内容不包含结构化 JSON")
+            raise OpenShopAiStructuredResponseError("OCR 返回内容不是有效 JSON")
+
+        def candidate_score(candidate: dict[str, Any]) -> int:
+            blocks = candidate.get("blocks")
+            return len(blocks) if isinstance(blocks, list) else -1
+
+        value = max(
+            enumerate(candidates),
+            key=lambda item: (candidate_score(item[1]), item[0]),
+        )[1]
     if not isinstance(value, dict):
-        raise OpenShopAiValidationError("OCR response must be an object")
+        raise OpenShopAiStructuredResponseError("OCR 返回的 JSON 顶层必须是对象")
     return value
 
 
@@ -225,6 +415,222 @@ def _finite_number(value: Any, label: str) -> float:
     if not math.isfinite(number):
         raise OpenShopAiValidationError(f"Invalid OCR {label}")
     return number
+
+
+def _bounded_finite(
+    value: Any,
+    fallback: float,
+    minimum: float,
+    maximum: float,
+    precision: int = 3,
+) -> float:
+    if isinstance(value, bool):
+        return fallback
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(number):
+        return fallback
+    return round(max(minimum, min(maximum, number)), precision)
+
+
+def _normalize_color(value: Any, fallback: str) -> str:
+    color = str(value or "").strip()
+    return color.lower() if _HEX_COLOR_PATTERN.fullmatch(color) else fallback
+
+
+def _script_alias(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "zh": "zh-hans",
+        "zh-cn": "zh-hans",
+        "zh-sg": "zh-hans",
+        "simplified": "zh-hans",
+        "zh-hans": "zh-hans",
+        "zh-tw": "zh-hant",
+        "zh-hk": "zh-hant",
+        "zh-mo": "zh-hant",
+        "traditional": "zh-hant",
+        "zh-hant": "zh-hant",
+        "en": "en",
+        "english": "en",
+        "mixed": "mixed",
+    }
+    return aliases.get(normalized, "")
+
+
+def _infer_legacy_script(text: str, language: Any) -> str:
+    language_script = _script_alias(language)
+    if language_script in {"en", "mixed", "zh-hant"}:
+        return language_script
+    has_cjk = bool(_CJK_PATTERN.search(text))
+    has_latin = bool(_LATIN_PATTERN.search(text))
+    if has_cjk and has_latin:
+        return "mixed"
+    if has_cjk:
+        return "zh-hant" if any(char in _TRADITIONAL_MARKERS for char in text) else "zh-hans"
+    if has_latin:
+        return "en"
+    return language_script or "mixed"
+
+
+def _normalize_script(value: Any, text: str, language: Any) -> str:
+    if value is None or not str(value).strip():
+        return _infer_legacy_script(text, language)
+    return _script_alias(value) or "mixed"
+
+
+def _normalize_ocr_run(value: Any, text: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("OCR run must be an object")
+
+    def run_index(name: str) -> int:
+        raw = value.get(name)
+        if isinstance(raw, bool):
+            raise OpenShopAiValidationError("OCR runs must use Unicode code-point indexes")
+        try:
+            number = int(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise OpenShopAiValidationError(
+                "OCR runs must use Unicode code-point indexes"
+            ) from exc
+        if isinstance(raw, float) and not raw.is_integer():
+            raise OpenShopAiValidationError(
+                "OCR runs must use Unicode code-point indexes"
+            )
+        return number
+
+    start = run_index("start")
+    end = run_index("end")
+    codepoints = list(text)
+    if start < 0 or end <= start or end > len(codepoints):
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    run_text = "".join(codepoints[start:end])
+    font = _normalize_font(value)
+    return {
+        "start": start,
+        "end": end,
+        "script": _normalize_script(
+            value.get("script"), run_text, value.get("language")
+        ),
+        "familyCandidates": font["familyCandidates"],
+        "size": font["size"],
+        "weight": font["weight"],
+        "style": font["style"],
+        "artistic": font["artistic"],
+        "styleDescription": font["styleDescription"],
+        "color": _normalize_color(value.get("color", value.get("fill")), "#ffffff"),
+        "letterSpacing": font["letterSpacing"],
+        "lineHeight": font["lineHeight"],
+        "strokeColor": font["strokeColor"],
+        "strokeWidth": font["strokeWidth"],
+        "shadow": font["shadow"],
+    }
+
+
+def _split_mixed_ocr_run(run: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    if run["script"] != "mixed":
+        return [run]
+    codepoints = list(text)
+    run_text = codepoints[run["start"] : run["end"]]
+    cjk_script = (
+        "zh-hant"
+        if any(character in _TRADITIONAL_MARKERS for character in run_text)
+        else "zh-hans"
+    )
+    scripts = [
+        cjk_script
+        if _CJK_PATTERN.fullmatch(character)
+        else "en"
+        if _LATIN_PATTERN.fullmatch(character) or character.isdigit()
+        else ""
+        for character in run_text
+    ]
+    detected = {script for script in scripts if script}
+    if not detected:
+        return [{**run, "script": "zh-hans"}]
+    if len(detected) == 1:
+        return [{**run, "script": next(iter(detected))}]
+
+    previous = ""
+    for index, script in enumerate(scripts):
+        if script:
+            previous = script
+        elif previous:
+            scripts[index] = previous
+    following = ""
+    for index in range(len(scripts) - 1, -1, -1):
+        if scripts[index]:
+            following = scripts[index]
+        elif following:
+            scripts[index] = following
+
+    result: list[dict[str, Any]] = []
+    segment_start = 0
+    for index in range(1, len(scripts) + 1):
+        if index < len(scripts) and scripts[index] == scripts[segment_start]:
+            continue
+        result.append(
+            {
+                **run,
+                "start": run["start"] + segment_start,
+                "end": run["start"] + index,
+                "script": scripts[segment_start],
+            }
+        )
+        segment_start = index
+    return result
+
+
+def _normalize_ocr_runs(value: Any, text: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    normalized = [_normalize_ocr_run(run, text) for run in value]
+    normalized.sort(key=lambda run: (run["start"], run["end"]))
+    cursor = 0
+    for run in normalized:
+        if run["start"] != cursor:
+            raise OpenShopAiValidationError("OCR runs must completely cover text")
+        cursor = run["end"]
+    if cursor != len(list(text)):
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    return [
+        segment
+        for run in normalized
+        for segment in _split_mixed_ocr_run(run, text)
+    ]
+
+
+def _repair_ocr_run_ranges(value: Any, text: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value or not text:
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    codepoint_count = len(list(text))
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for raw_run in value:
+        if not isinstance(raw_run, dict):
+            continue
+        try:
+            start = int(raw_run.get("start", 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        start = max(0, min(codepoint_count - 1, start))
+        if candidates and start <= candidates[-1][0]:
+            continue
+        candidates.append((start, raw_run))
+    if not candidates:
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    if candidates[0][0] != 0:
+        candidates[0] = (0, candidates[0][1])
+    repaired = []
+    for index, (start, raw_run) in enumerate(candidates):
+        end = candidates[index + 1][0] if index + 1 < len(candidates) else codepoint_count
+        if end <= start:
+            continue
+        repaired.append({**raw_run, "start": start, "end": end})
+    if not repaired:
+        raise OpenShopAiValidationError("OCR runs must completely cover text")
+    return repaired
 
 
 def _normalize_points(points: Any, width: int, height: int) -> list[dict[str, float]]:
@@ -257,7 +663,7 @@ def _normalize_points(points: Any, width: int, height: int) -> list[dict[str, fl
 
 def _quad_from_bbox(bbox: Any, width: int, height: int) -> list[dict[str, float]]:
     if not isinstance(bbox, dict):
-        raise OpenShopAiValidationError("OCR block has no reliable position")
+        raise OpenShopAiValidationError("OCR 文字块没有可靠位置")
     x = _finite_number(bbox.get("x", bbox.get("left")), "bbox x")
     y = _finite_number(bbox.get("y", bbox.get("top")), "bbox y")
     w = _finite_number(bbox.get("width", bbox.get("w")), "bbox width")
@@ -282,21 +688,72 @@ def _normalize_font(value: Any) -> dict[str, Any]:
         font.get("familyCandidates") or font.get("families") or [],
         max_items=8,
     )
-    size = _finite_number(font.get("size", 0), "font size")
-    weight = int(round(_finite_number(font.get("weight", 400), "font weight") / 100) * 100)
+    size = _bounded_finite(font.get("size"), 0.0, 0.0, 2000.0, 2)
+    raw_weight = _bounded_finite(font.get("weight"), 400.0, 100.0, 900.0)
+    weight = int(math.floor(raw_weight / 100 + 0.5) * 100)
+    style = str(font.get("style") or "").strip().lower()
+    shadow = font.get("shadow") if isinstance(font.get("shadow"), dict) else {}
     return {
+        "artistic": font.get("artistic") is True,
         "familyCandidates": candidates,
-        "size": max(0.0, min(2000.0, round(size, 2))),
+        "size": size,
         "weight": max(100, min(900, weight)),
-        "style": "italic" if str(font.get("style") or "").lower() == "italic" else "normal",
+        "style": "italic" if style in {"italic", "oblique"} else "normal",
+        "styleDescription": _clean_text(font.get("styleDescription"), 500),
+        "letterSpacing": _bounded_finite(font.get("letterSpacing"), 0.0, -1000.0, 10000.0),
+        "lineHeight": _bounded_finite(font.get("lineHeight"), 1.16, 0.1, 10.0),
+        "strokeColor": _normalize_color(font.get("strokeColor"), "#00000000"),
+        "strokeWidth": _bounded_finite(font.get("strokeWidth"), 0.0, 0.0, 200.0),
+        "shadow": {
+            "color": _normalize_color(shadow.get("color"), "#00000000"),
+            "blur": _bounded_finite(shadow.get("blur"), 0.0, 0.0, 500.0),
+            "offsetX": _bounded_finite(shadow.get("offsetX"), 0.0, -2000.0, 2000.0),
+            "offsetY": _bounded_finite(shadow.get("offsetY"), 0.0, -2000.0, 2000.0),
+        },
     }
 
 
-def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[str, Any]:
+def _normalize_writing_mode(
+    value: Any,
+    quad: list[dict[str, float]],
+    image_width: int,
+    image_height: int,
+) -> str:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        points = [
+            (point["x"] * image_width, point["y"] * image_height)
+            for point in quad
+        ]
+
+        def edge_length(first: int, second: int) -> float:
+            return math.hypot(
+                points[second][0] - points[first][0],
+                points[second][1] - points[first][1],
+            )
+
+        local_width = (edge_length(0, 1) + edge_length(2, 3)) / 2
+        local_height = (edge_length(1, 2) + edge_length(3, 0)) / 2
+        return "vertical" if local_height > local_width * 1.5 else "horizontal"
+    normalized = str(value).strip().lower().replace("_", "-")
+    if normalized in {"horizontal", "horizontal-tb"}:
+        return "horizontal"
+    if normalized in {"vertical", "vertical-rl", "vertical-lr"}:
+        return "vertical"
+    return "horizontal"
+
+
+def _normalize_block(
+    value: Any,
+    index: int,
+    width: int,
+    height: int,
+    *,
+    repair_runs: bool = False,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OpenShopAiValidationError("OCR block must be an object")
-    text = _clean_text(value.get("text"), 4000)
-    if not text:
+    text = _normalize_ocr_text(value.get("text"))
+    if not text.strip():
         raise OpenShopAiValidationError("OCR block text is empty")
     quad = _normalize_points(value.get("quad"), width, height) if value.get("quad") is not None else _quad_from_bbox(value.get("bbox"), width, height)
     confidence = max(0.0, min(1.0, _finite_number(value.get("confidence", 0), "confidence")))
@@ -306,44 +763,213 @@ def _normalize_block(value: Any, index: int, width: int, height: int) -> dict[st
     align = str(value.get("align") or "left").strip().lower()
     if align not in {"left", "center", "right", "justify"}:
         align = "left"
-    color = str(value.get("color") or "#ffffff").strip()
-    if not _HEX_COLOR_PATTERN.fullmatch(color):
-        color = "#ffffff"
+    script = _normalize_script(value.get("script"), text, language)
+    dominant_script = _script_alias(value.get("dominantScript"))
+    color = _normalize_color(value.get("color", value.get("fill")), "#ffffff")
     rotation = _finite_number(value.get("rotation", 0), "rotation")
     line_index = value.get("lineIndex", index)
     try:
         line_index = max(0, int(line_index))
     except (TypeError, ValueError):
         line_index = index
-    return {
+    raw_runs = value.get("runs")
+    try:
+        runs = _normalize_ocr_runs(raw_runs, text)
+    except OpenShopAiValidationError:
+        if not repair_runs:
+            raise
+        runs = _normalize_ocr_runs(_repair_ocr_run_ranges(raw_runs, text), text)
+    block = {
         "id": _clean_text(value.get("id"), 96, f"ocr-{index + 1}"),
         "text": text,
         "quad": quad,
         "language": language,
+        "script": script,
         "confidence": round(confidence, 4),
         "lowConfidence": confidence < 0.7,
-        "font": _normalize_font(value.get("font")),
-        "color": color.lower(),
+        "runs": runs,
+        "color": color,
         "align": align,
+        "writingMode": _normalize_writing_mode(
+            value.get("writingMode"), quad, width, height
+        ),
         "rotation": max(-360.0, min(360.0, round(rotation, 3))),
         "paragraphId": _clean_text(value.get("paragraphId"), 96, f"paragraph-{index + 1}"),
         "lineIndex": line_index,
     }
+    if script == "mixed" and dominant_script in {"zh-hans", "zh-hant", "en"}:
+        block["dominantScript"] = dominant_script
+    return block
 
 
-def normalize_ocr_layout(raw_text: Any, width: int, height: int) -> dict[str, Any]:
+def _ocr_warning_code(error: Exception) -> str:
+    message = str(error).lower()
+    if "run" in message:
+        return "invalid_runs"
+    if "confidence" in message:
+        return "invalid_confidence"
+    if "text" in message:
+        return "invalid_text"
+    if "quad" in message or "bbox" in message or "position" in message:
+        return "invalid_geometry"
+    return "invalid_block"
+
+
+def normalize_ocr_layout(
+    raw_text: Any,
+    width: int,
+    height: int,
+    *,
+    allow_empty: bool = False,
+    repair_runs: bool = False,
+) -> dict[str, Any]:
     width = _positive_dimension(width, "width")
     height = _positive_dimension(height, "height")
     payload = _json_from_text(raw_text)
     values = payload.get("blocks")
-    if not isinstance(values, list) or not values:
-        raise OpenShopAiValidationError("OCR model did not return reliable text positions")
-    blocks = [_normalize_block(value, index, width, height) for index, value in enumerate(values[:500])]
+    if not isinstance(values, list) or (not values and not allow_empty):
+        raise OpenShopAiValidationError("OCR 模型没有返回可靠的文字位置")
+    blocks: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    invalid_block_count = 0
+    for index, value in enumerate(values[:OPENSHOP_OCR_MAX_BLOCKS]):
+        try:
+            blocks.append(
+                _normalize_block(
+                    value,
+                    index,
+                    width,
+                    height,
+                    repair_runs=repair_runs,
+                )
+            )
+        except (OpenShopAiValidationError, TypeError, ValueError, OverflowError) as exc:
+            invalid_block_count += 1
+            if len(warnings) < OPENSHOP_OCR_MAX_WARNINGS - 1:
+                warnings.append({
+                    "blockIndex": index,
+                    "code": _ocr_warning_code(exc),
+                })
+    if not blocks and not (allow_empty and not values):
+        raise OpenShopAiValidationError("OCR 模型没有返回可靠的文字位置")
+    if invalid_block_count > OPENSHOP_OCR_MAX_WARNINGS - 1:
+        warnings.append({
+            "code": "additional_invalid_blocks",
+            "count": invalid_block_count - (OPENSHOP_OCR_MAX_WARNINGS - 1),
+        })
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 5,
         "width": width,
         "height": height,
         "blocks": blocks,
+        "warnings": warnings,
+    }
+
+
+def _normalize_ocr_warnings(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    warnings: list[dict[str, Any]] = []
+    valid_codes = {
+        "invalid_block",
+        "invalid_confidence",
+        "invalid_geometry",
+        "invalid_runs",
+        "invalid_text",
+    }
+    for raw_warning in value:
+        if not isinstance(raw_warning, dict):
+            continue
+        code = str(raw_warning.get("code") or "").strip()
+        if code == "additional_invalid_blocks":
+            try:
+                count = int(raw_warning.get("count"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if count < 1:
+                continue
+            warnings.append({
+                "code": code,
+                "count": min(OPENSHOP_OCR_MAX_BLOCKS, count),
+            })
+        elif code in valid_codes:
+            try:
+                block_index = int(raw_warning.get("blockIndex"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if block_index < 0 or block_index >= OPENSHOP_OCR_MAX_BLOCKS:
+                continue
+            warnings.append({"blockIndex": block_index, "code": code})
+        if len(warnings) >= OPENSHOP_OCR_MAX_WARNINGS:
+            break
+    return warnings
+
+
+def _ocr_block_bounds(block: dict[str, Any]) -> tuple[float, float, float, float]:
+    quad = block.get("quad") if isinstance(block, dict) else None
+    if not isinstance(quad, list) or len(quad) != 4:
+        return (0.0, 0.0, 0.0, 0.0)
+    xs = [float(point.get("x", 0.0)) for point in quad if isinstance(point, dict)]
+    ys = [float(point.get("y", 0.0)) for point in quad if isinstance(point, dict)]
+    if len(xs) != 4 or len(ys) != 4:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _ocr_blocks_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_box = _ocr_block_bounds(left)
+    right_box = _ocr_block_bounds(right)
+    intersection_width = max(0.0, min(left_box[2], right_box[2]) - max(left_box[0], right_box[0]))
+    intersection_height = max(0.0, min(left_box[3], right_box[3]) - max(left_box[1], right_box[1]))
+    intersection = intersection_width * intersection_height
+    left_area = max(0.0, left_box[2] - left_box[0]) * max(0.0, left_box[3] - left_box[1])
+    right_area = max(0.0, right_box[2] - right_box[0]) * max(0.0, right_box[3] - right_box[1])
+    smaller_area = min(left_area, right_area)
+    return smaller_area > 0 and intersection / smaller_area >= 0.6
+
+
+def _ocr_text_key(block: dict[str, Any]) -> str:
+    return re.sub(r"\s+", " ", str(block.get("text") or "")).strip().casefold()
+
+
+def merge_ocr_layouts(
+    primary: dict[str, Any],
+    audit: dict[str, Any],
+) -> dict[str, Any]:
+    width = _positive_dimension(primary.get("width"), "width")
+    height = _positive_dimension(primary.get("height"), "height")
+    if int(audit.get("width") or 0) != width or int(audit.get("height") or 0) != height:
+        raise OpenShopAiValidationError("OCR audit dimensions do not match the primary layout")
+    blocks = [
+        deepcopy(block)
+        for block in primary.get("blocks", [])
+        if isinstance(block, dict)
+    ]
+    for candidate in audit.get("blocks", []):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_key = _ocr_text_key(candidate)
+        duplicate = any(
+            candidate_key
+            and candidate_key == _ocr_text_key(existing)
+            and _ocr_blocks_overlap(candidate, existing)
+            for existing in blocks
+        )
+        if not duplicate:
+            blocks.append(deepcopy(candidate))
+    blocks.sort(key=lambda block: (_ocr_block_bounds(block)[1], _ocr_block_bounds(block)[0]))
+    for index, block in enumerate(blocks, start=1):
+        block["id"] = f"ocr-{index}"
+    warnings = [
+        *_normalize_ocr_warnings(primary.get("warnings")),
+        *_normalize_ocr_warnings(audit.get("warnings")),
+    ][:OPENSHOP_OCR_MAX_WARNINGS]
+    return {
+        "schemaVersion": 5,
+        "width": width,
+        "height": height,
+        "blocks": blocks[:OPENSHOP_OCR_MAX_BLOCKS],
+        "warnings": warnings,
     }
 
 
@@ -352,6 +978,499 @@ def _task_asset_id(value: Any, label: str) -> str:
     if normalized and not _ASSET_ID_PATTERN.fullmatch(normalized):
         raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
     return normalized
+
+
+def _task_safe_id(value: Any, label: str, required: bool = True) -> str:
+    normalized = _clean_text(value, 160)
+    if (required and not normalized) or (normalized and not _SAFE_ID_PATTERN.fullmatch(normalized)):
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    return normalized
+
+
+def _positive_int(value: Any, label: str, maximum: int = 16384) -> int:
+    if isinstance(value, bool):
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}") from exc
+    if number < 1 or number > maximum:
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    return number
+
+
+def _art_font_text(value: Any, label: str, require_visible: bool = False) -> str:
+    if not isinstance(value, str) or len(value) > 4000:
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    if any(ord(char) < 32 and char not in "\t\r\n" for char in value) or "\x7f" in value:
+        raise OpenShopAiValidationError(f"Invalid OpenShop AI {label}")
+    if require_visible and not value.strip():
+        raise OpenShopAiValidationError("Art font currentText is empty")
+    return value
+
+
+def _art_font_quad(
+    value: Any,
+    width: int,
+    height: int,
+) -> list[dict[str, float]]:
+    if not isinstance(value, list) or len(value) != 4:
+        raise OpenShopAiValidationError("Art font quad must contain four normalized points")
+    points: list[tuple[float, float]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise OpenShopAiValidationError("Art font quad point is invalid")
+        x = _finite_number(item.get("x"), "art font quad x")
+        y = _finite_number(item.get("y"), "art font quad y")
+        if not 0.0 <= x <= 1.0 or not 0.0 <= y <= 1.0:
+            raise OpenShopAiValidationError("Art font quad must use normalized coordinates")
+        points.append((x, y))
+
+    source_points = [(x * width, y * height) for x, y in points]
+    for index, point in enumerate(source_points):
+        following = source_points[(index + 1) % 4]
+        if math.hypot(following[0] - point[0], following[1] - point[1]) < 1.0:
+            raise OpenShopAiValidationError("Art font quad has an unusable edge")
+
+    def orientation(
+        first: tuple[float, float],
+        second: tuple[float, float],
+        third: tuple[float, float],
+    ) -> float:
+        return (
+            (second[0] - first[0]) * (third[1] - first[1])
+            - (second[1] - first[1]) * (third[0] - first[0])
+        )
+
+    def on_segment(
+        first: tuple[float, float],
+        second: tuple[float, float],
+        point: tuple[float, float],
+    ) -> bool:
+        epsilon = 1e-9
+        return (
+            min(first[0], second[0]) - epsilon <= point[0] <= max(first[0], second[0]) + epsilon
+            and min(first[1], second[1]) - epsilon
+            <= point[1]
+            <= max(first[1], second[1]) + epsilon
+        )
+
+    def segments_intersect(
+        first: tuple[float, float],
+        second: tuple[float, float],
+        third: tuple[float, float],
+        fourth: tuple[float, float],
+    ) -> bool:
+        epsilon = 1e-9
+        values = (
+            orientation(first, second, third),
+            orientation(first, second, fourth),
+            orientation(third, fourth, first),
+            orientation(third, fourth, second),
+        )
+        if values[0] * values[1] < -epsilon and values[2] * values[3] < -epsilon:
+            return True
+        return (
+            (abs(values[0]) <= epsilon and on_segment(first, second, third))
+            or (abs(values[1]) <= epsilon and on_segment(first, second, fourth))
+            or (abs(values[2]) <= epsilon and on_segment(third, fourth, first))
+            or (abs(values[3]) <= epsilon and on_segment(third, fourth, second))
+        )
+
+    turns = [
+        orientation(
+            source_points[index],
+            source_points[(index + 1) % 4],
+            source_points[(index + 2) % 4],
+        )
+        for index in range(4)
+    ]
+    if any(abs(turn) <= 1e-9 for turn in turns) or not (
+        all(turn > 0 for turn in turns) or all(turn < 0 for turn in turns)
+    ):
+        raise OpenShopAiValidationError("Art font quad must be strictly convex")
+    if segments_intersect(*source_points[0:2], *source_points[2:4]) or segments_intersect(
+        source_points[1], source_points[2], source_points[3], source_points[0]
+    ):
+        raise OpenShopAiValidationError("Art font quad is self-intersecting")
+    doubled_area = abs(
+        sum(
+            point[0] * source_points[(index + 1) % 4][1]
+            - source_points[(index + 1) % 4][0] * point[1]
+            for index, point in enumerate(source_points)
+        )
+    )
+    if doubled_area < 2.0:
+        raise OpenShopAiValidationError("Art font quad has no usable area")
+    return [{"x": round(x, 6), "y": round(y, 6)} for x, y in points]
+
+
+def _normalize_art_font_profile(value: Any, current_text: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("Art font visualProfile must be an object")
+    script = _normalize_script(value.get("script"), current_text, value.get("language"))
+    dominant_script = _script_alias(value.get("dominantScript"))
+    alignment = str(value.get("alignment", value.get("align", "left"))).strip().lower()
+    if alignment not in {"left", "center", "right", "justify"}:
+        alignment = "left"
+    writing_mode = str(value.get("writingMode") or "").strip().lower().replace("_", "-")
+    if writing_mode in {"vertical", "vertical-rl", "vertical-lr"}:
+        writing_mode = "vertical"
+    else:
+        writing_mode = "horizontal"
+    profile = {
+        "writingMode": writing_mode,
+        "script": script,
+        "fill": _normalize_color(value.get("fill", value.get("color")), "#ffffff"),
+        "alignment": alignment,
+        "rotation": max(
+            -360.0,
+            min(360.0, round(_finite_number(value.get("rotation", 0), "art font rotation"), 3)),
+        ),
+        **_normalize_font(value),
+    }
+    if script == "mixed" and dominant_script in {"zh-hans", "zh-hant", "en"}:
+        profile["dominantScript"] = dominant_script
+        return {
+            "script": profile.pop("script"),
+            "dominantScript": profile.pop("dominantScript"),
+            **profile,
+        }
+    return profile
+
+
+def normalize_art_font_snapshot(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("Art font snapshot must be an object")
+    document_value = value.get("document")
+    if not isinstance(document_value, dict):
+        raise OpenShopAiValidationError("Art font document must be an object")
+    width = _positive_dimension(document_value.get("width"), "art font document width")
+    height = _positive_dimension(document_value.get("height"), "art font document height")
+    if type(value.get("requestGeneration")) is not int:
+        raise OpenShopAiValidationError("Invalid OpenShop AI requestGeneration")
+    generation = _positive_int(
+        value.get("requestGeneration"), "requestGeneration", 2147483647
+    )
+    current_text = _art_font_text(
+        value.get("currentText"), "currentText", require_visible=True
+    )
+    original_text = _art_font_text(value.get("originalText"), "originalText")
+    return {
+        "textLayerId": _task_safe_id(value.get("textLayerId"), "textLayerId"),
+        "ocrBlockId": _task_safe_id(value.get("ocrBlockId"), "ocrBlockId"),
+        "originalText": original_text,
+        "currentText": current_text,
+        "requestGeneration": generation,
+        "document": {"width": width, "height": height},
+        "quad": _art_font_quad(value.get("quad"), width, height),
+        "visualProfile": _normalize_art_font_profile(
+            value.get("visualProfile"), current_text
+        ),
+    }
+
+
+def build_art_font_prompt(snapshot: dict[str, Any]) -> str:
+    profile = snapshot["visualProfile"]
+    exact_text = json.dumps(snapshot["currentText"], ensure_ascii=False)
+    return (
+        f"Render exactly this edited text once: {exact_text}. The first supplied image is the source patch. "
+        "The second supplied image is the inverse-alpha edit mask: the transparent mask region is editable and the opaque "
+        "protected mask region must remain visually unchanged. Replace only the original lettering inside the transparent "
+        "mask region. The reference text content is style-only; never copy or restore its original characters. Match the "
+        f"original lettering's exact visible position, apparent size, weight {profile['weight']}, color {profile['fill']}, "
+        f"angle {profile['rotation']}, and writing direction {profile['writingMode']} independent from rotation. Match its "
+        "character spacing, line spacing, alignment, stroke, shadow, texture, material, and artistic structure. Preserve the "
+        "background and every non-lettering detail. Return the complete edited source patch at the same pixel dimensions as "
+        "the first image. Add no extra characters, duplicate words, logos, or decorations; use no glow, halo, aura, color wash, "
+        "colored haze, background tint, or unintended outline. Keep glyphs at natural proportions with no compression, stretch, or "
+        "distortion."
+    )
+
+
+def normalize_art_font_result(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("Art font result must be an object")
+    width = value.get("width")
+    height = value.get("height")
+    if type(width) is not int or width < 1 or width > 16384:
+        raise OpenShopAiValidationError("Invalid art font result width")
+    if type(height) is not int or height < 1 or height > 16384:
+        raise OpenShopAiValidationError("Invalid art font result height")
+    raw_box = value.get("placementBox")
+    if not isinstance(raw_box, dict):
+        raise OpenShopAiValidationError("Art font placementBox is invalid")
+    if any(type(raw_box.get(key)) is not int for key in ("x", "y", "width", "height")):
+        raise OpenShopAiValidationError("Art font placementBox is invalid")
+    box = {key: raw_box[key] for key in ("x", "y", "width", "height")}
+    if (
+        box["x"] < 0
+        or box["y"] < 0
+        or box["width"] < 1
+        or box["height"] < 1
+        or box["width"] != width
+        or box["height"] != height
+    ):
+        raise OpenShopAiValidationError("Art font placementBox is invalid")
+    asset_id = _task_asset_id(value.get("assetId"), "art font result assetId")
+    mime = _clean_text(value.get("mime"), 80).lower()
+    if not asset_id or mime != "image/png":
+        raise OpenShopAiValidationError("Art font result must reference a PNG asset")
+    return {
+        "assetId": asset_id,
+        "url": _clean_text(value.get("url"), 500),
+        "name": _clean_text(value.get("name"), 240, "art-font.png"),
+        "mime": mime,
+        "width": width,
+        "height": height,
+        "placementBox": box,
+    }
+
+
+def _reject_seed_keys(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).strip().lower() == "seed":
+                raise OpenShopAiValidationError("OpenShop generation does not support seed")
+            _reject_seed_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_seed_keys(child)
+
+
+def normalize_reference_record(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("OpenShop reference must be an object")
+    source_type = _clean_text(value.get("sourceType"), 32).lower()
+    if source_type not in OPENSHOP_REFERENCE_SOURCE_TYPES:
+        raise OpenShopAiValidationError("Invalid OpenShop reference sourceType")
+    alias = _clean_text(value.get("alias"), 40)
+    prefix = "选区" if source_type == "selection" else "参考图"
+    if not re.fullmatch(rf"{prefix}[1-9][0-9]*", alias):
+        raise OpenShopAiValidationError("Invalid OpenShop reference alias")
+    return {
+        "assetId": _task_asset_id(value.get("assetId"), "reference assetId"),
+        "alias": alias,
+        "mention": f"@{alias}",
+        "sourceType": source_type,
+        "order": max(0, int(value.get("order") or 0)),
+        "width": max(0, int(value.get("width") or 0)),
+        "height": max(0, int(value.get("height") or 0)),
+    }
+
+
+def normalize_generation_snapshot(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("OpenShop generation snapshot must be an object")
+    _reject_seed_keys(value)
+    tool_id = _clean_text(value.get("toolId"), 40)
+    if tool_id not in OPENSHOP_GENERATIVE_TOOL_IDS:
+        raise OpenShopAiValidationError("Invalid OpenShop generative toolId")
+    prompt = _clean_text(value.get("prompt"), 8000)
+    if tool_id == "local-redraw" and not prompt:
+        raise OpenShopAiValidationError("局部重绘需要填写修改要求")
+
+    source_asset_id = _task_asset_id(value.get("sourceAssetId"), "sourceAssetId")
+    mask_asset_id = _task_asset_id(value.get("maskAssetId"), "maskAssetId")
+    primary_asset_id = _task_asset_id(
+        value.get("primaryReferenceAssetId"), "primaryReferenceAssetId"
+    )
+    if not source_asset_id or not mask_asset_id or not primary_asset_id:
+        raise OpenShopAiValidationError("OpenShop generation assets are incomplete")
+
+    references_value = value.get("references")
+    if not isinstance(references_value, list):
+        raise OpenShopAiValidationError("OpenShop generation references must be an array")
+    references = sorted(
+        (normalize_reference_record(item) for item in references_value),
+        key=lambda item: item["order"],
+    )
+    if len(references) > 64:
+        raise OpenShopAiValidationError("OpenShop generation references exceed the 64 item limit")
+    if len({item["alias"] for item in references}) != len(references):
+        raise OpenShopAiValidationError("OpenShop reference aliases must be unique")
+    if [item["order"] for item in references] != list(range(len(references))):
+        raise OpenShopAiValidationError("OpenShop reference order must be contiguous")
+
+    target_count = _bounded_integer(
+        value.get("targetCount"), 1, 1, OPENSHOP_HARD_MAX_OUTPUTS
+    )
+    original_target_count = _bounded_integer(
+        value.get("originalTargetCount"), target_count, target_count, OPENSHOP_HARD_MAX_OUTPUTS
+    )
+    requested_indexes = value.get("requestedIndexes")
+    if not isinstance(requested_indexes, list):
+        requested_indexes = list(range(target_count))
+    try:
+        requested_indexes = [int(index) for index in requested_indexes]
+    except (TypeError, ValueError) as exc:
+        raise OpenShopAiValidationError("Invalid OpenShop requested output indexes") from exc
+    if (
+        len(requested_indexes) != target_count
+        or len(set(requested_indexes)) != target_count
+        or any(index < 0 or index >= original_target_count for index in requested_indexes)
+    ):
+        raise OpenShopAiValidationError("Invalid OpenShop requested output indexes")
+
+    document_value = value.get("document")
+    selection_value = value.get("selection")
+    if not isinstance(document_value, dict) or not isinstance(selection_value, dict):
+        raise OpenShopAiValidationError("OpenShop generation geometry is incomplete")
+    document = {
+        "width": _positive_int(document_value.get("width"), "document width"),
+        "height": _positive_int(document_value.get("height"), "document height"),
+        "layerVersion": max(0, int(document_value.get("layerVersion") or 0)),
+        "visibleCompositeVersion": max(
+            0, int(document_value.get("visibleCompositeVersion") or 0)
+        ),
+    }
+    selection = {
+        "x": max(0, int(selection_value.get("x") or 0)),
+        "y": max(0, int(selection_value.get("y") or 0)),
+        "width": _positive_int(selection_value.get("width"), "selection width"),
+        "height": _positive_int(selection_value.get("height"), "selection height"),
+        "feather": max(0, int(selection_value.get("feather") or 0)),
+    }
+    if (
+        selection["x"] + selection["width"] > document["width"]
+        or selection["y"] + selection["height"] > document["height"]
+    ):
+        raise OpenShopAiValidationError("OpenShop selection is outside the document")
+
+    reference_mode = (
+        "full"
+        if tool_id == "generative-fill"
+        else "selection" if value.get("referenceMode") == "selection" else "full"
+    )
+    if tool_id == "generative-fill" and len(references) > 1:
+        raise OpenShopAiValidationError("生成式填充不接受额外参考图")
+    if tool_id == "local-redraw":
+        if not references:
+            raise OpenShopAiValidationError("局部重绘需要主参考图")
+        if references[0]["assetId"] != primary_asset_id:
+            raise OpenShopAiValidationError("局部重绘主参考图与引用顺序不一致")
+
+    return {
+        "toolId": tool_id,
+        "sourceAssetId": source_asset_id,
+        "maskAssetId": mask_asset_id,
+        "primaryReferenceAssetId": primary_asset_id,
+        "references": references,
+        "prompt": prompt,
+        "size": _clean_text(value.get("size"), 40, "auto"),
+        "quality": _clean_text(value.get("quality"), 40, "auto"),
+        "targetCount": target_count,
+        "originalTargetCount": original_target_count,
+        "requestedIndexes": requested_indexes,
+        "referenceMode": reference_mode,
+        "sourceLayerId": _task_safe_id(value.get("sourceLayerId"), "sourceLayerId"),
+        "sourceLayerIndex": max(0, int(value.get("sourceLayerIndex") or 0)),
+        "document": document,
+        "selection": selection,
+    }
+
+
+def _normalize_child_record(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OpenShopAiValidationError("OpenShop AI child task must be an object")
+    status = _clean_text(value.get("status"), 20).lower()
+    if status not in OPENSHOP_AI_CHILD_STATES:
+        raise OpenShopAiValidationError("Invalid OpenShop AI child task status")
+    result = value.get("result") if isinstance(value.get("result"), dict) else None
+    output_asset_id = _task_asset_id(
+        value.get("outputAssetId") or (result or {}).get("assetId"),
+        "child outputAssetId",
+    )
+    child = {
+        "childTaskId": _task_safe_id(value.get("childTaskId"), "childTaskId"),
+        "index": max(0, int(value.get("index") or 0)),
+        "status": status,
+        "outputAssetId": output_asset_id,
+        "error": _clean_text(value.get("error"), 500),
+        "createdAt": max(0, int(value.get("createdAt") or 0)),
+        "updatedAt": max(0, int(value.get("updatedAt") or 0)),
+        "completedAt": max(0, int(value.get("completedAt") or 0)),
+    }
+    if result:
+        child["result"] = deepcopy(result)
+    return child
+
+
+def _normalize_reconciliation_scope(value: Any) -> tuple[dict[str, str], dict[str, str]]:
+    context_value = value.get("context")
+    owner_value = value.get("owner")
+    if not isinstance(context_value, dict) or not isinstance(owner_value, dict):
+        raise OpenShopAiValidationError("OpenShop AI reconciliation scope is incomplete")
+    owner = {
+        "canvasType": _task_safe_id(owner_value.get("canvasType"), "owner canvasType"),
+        "canvasId": _task_safe_id(owner_value.get("canvasId"), "owner canvasId"),
+        "nodeId": _task_safe_id(owner_value.get("nodeId"), "owner nodeId"),
+    }
+    context = {
+        "canvasType": _task_safe_id(context_value.get("canvasType"), "context canvasType"),
+        "canvasId": _task_safe_id(context_value.get("canvasId"), "context canvasId"),
+        "nodeId": _task_safe_id(context_value.get("nodeId"), "context nodeId"),
+        "projectId": _task_safe_id(context_value.get("projectId"), "context projectId"),
+    }
+    if any(context[key] != owner[key] for key in owner):
+        raise OpenShopAiValidationError("OpenShop AI reconciliation owner does not match context")
+    return context, owner
+
+
+def _migrate_legacy_ocr_result(value: dict[str, Any]) -> dict[str, Any]:
+    try:
+        schema_version = int(value.get("schemaVersion") or 0)
+    except (TypeError, ValueError, OverflowError):
+        schema_version = 0
+    if schema_version >= 5:
+        return value
+
+    migrated = deepcopy(value)
+    for block in migrated.get("blocks", []):
+        if not isinstance(block, dict) or block.get("runs"):
+            continue
+        text = _normalize_ocr_text(block.get("text"))
+        if not text:
+            continue
+        block["text"] = text
+        legacy_font = block.get("font") if isinstance(block.get("font"), dict) else {}
+        block["runs"] = [{
+            **legacy_font,
+            "start": 0,
+            "end": len(list(text)),
+            "script": block.get("script"),
+            "language": block.get("language"),
+            "color": block.get("color", block.get("fill")),
+        }]
+    return migrated
+
+
+def _migrate_legacy_art_font_result(
+    value: dict[str, Any], status: str, reconcile_state: str
+) -> dict[str, Any]:
+    """Convert the pre-placementBox shape only for already-applied results.
+
+    Legacy contentBox coordinates describe glyph bounds inside the generated
+    image, not the image's document placement. Reusing them as placement would
+    move or crop old outputs, so use the complete generated image rectangle as
+    save-safe metadata.
+    """
+    if (
+        status != "succeeded"
+        or reconcile_state != "applied"
+        or "placementBox" in value
+        or not isinstance(value.get("contentBox"), dict)
+    ):
+        return value
+    migrated = deepcopy(value)
+    migrated["placementBox"] = {
+        "x": 0,
+        "y": 0,
+        "width": value.get("width"),
+        "height": value.get("height"),
+    }
+    migrated.pop("contentBox", None)
+    return migrated
 
 
 def normalize_ai_task_record(value: Any) -> dict[str, Any]:
@@ -366,13 +1485,51 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
     status = str(value.get("status") or "").strip().lower()
     if status not in OPENSHOP_AI_TASK_STATES:
         raise OpenShopAiValidationError("Invalid OpenShop AI task status")
+    kind = "parent" if value.get("kind") == "parent" else "single"
+    if kind == "parent":
+        if tool_id not in OPENSHOP_GENERATIVE_TOOL_IDS:
+            raise OpenShopAiValidationError("OpenShop parent task must use a generative tool")
+        snapshot = normalize_generation_snapshot(value.get("snapshot"))
+        children_value = value.get("children")
+        if not isinstance(children_value, list) or len(children_value) > OPENSHOP_HARD_MAX_OUTPUTS:
+            raise OpenShopAiValidationError("OpenShop parent task children are invalid")
+        children = [_normalize_child_record(item) for item in children_value]
+        if len({item["childTaskId"] for item in children}) != len(children):
+            raise OpenShopAiValidationError("OpenShop child task IDs must be unique")
+        completed_count = sum(item["status"] == "succeeded" for item in children)
+        failed_count = sum(item["status"] == "failed" for item in children)
+        return {
+            "taskId": task_id,
+            "kind": "parent",
+            "toolId": tool_id,
+            "apiConfigId": _clean_text(value.get("apiConfigId"), 96),
+            "modelId": _clean_text(value.get("modelId"), 240),
+            "status": status,
+            "targetCount": snapshot["targetCount"],
+            "originalTargetCount": snapshot["originalTargetCount"],
+            "completedCount": completed_count,
+            "failedCount": failed_count,
+            "retryOfTaskId": _task_safe_id(
+                value.get("retryOfTaskId"), "retryOfTaskId", required=False
+            ),
+            "snapshot": snapshot,
+            "children": children,
+            "createdAt": max(0, int(value.get("createdAt") or 0)),
+            "updatedAt": max(0, int(value.get("updatedAt") or 0)),
+            "completedAt": max(0, int(value.get("completedAt") or 0)),
+            "error": _clean_text(value.get("error"), 500),
+        }
+    if status == "partial":
+        raise OpenShopAiValidationError("OpenShop single task cannot be partial")
     record: dict[str, Any] = {
         "taskId": task_id,
+        "kind": "single",
         "toolId": tool_id,
         "apiConfigId": _clean_text(value.get("apiConfigId"), 96),
         "modelId": _clean_text(value.get("modelId"), 240),
         "status": status,
         "mode": "selection" if str(value.get("mode") or "").lower() == "selection" else "layer",
+        "sourceLayerId": _clean_text(value.get("sourceLayerId"), 160),
         "sourceAssetId": _task_asset_id(value.get("sourceAssetId"), "sourceAssetId"),
         "maskAssetId": _task_asset_id(value.get("maskAssetId"), "maskAssetId"),
         "outputAssetId": _task_asset_id(value.get("outputAssetId"), "outputAssetId"),
@@ -383,10 +1540,69 @@ def normalize_ai_task_record(value: Any) -> dict[str, Any]:
         "error": _clean_text(value.get("error"), 500),
     }
     result = value.get("result")
-    if isinstance(result, dict) and isinstance(result.get("blocks"), list):
+    if tool_id == "art-font-restore":
+        record["sourceLayerId"] = _task_safe_id(
+            value.get("sourceLayerId"), "sourceLayerId"
+        )
+        record["snapshot"] = normalize_art_font_snapshot(value.get("snapshot"))
+        client_request_id = _task_safe_id(
+            value.get("clientRequestId"), "clientRequestId", required=False
+        )
+        creation_state = _clean_text(value.get("creationState"), 20).lower()
+        if client_request_id or creation_state:
+            if not client_request_id:
+                raise OpenShopAiValidationError("OpenShop AI clientRequestId is required")
+            if not creation_state:
+                creation_state = (
+                    "provisional"
+                    if task_id == f"provisional:{client_request_id}"
+                    else "created"
+                )
+            if creation_state not in {"provisional", "created"}:
+                raise OpenShopAiValidationError("Invalid OpenShop AI creationState")
+            if creation_state == "provisional" and (
+                task_id != f"provisional:{client_request_id}" or status != "queued"
+            ):
+                raise OpenShopAiValidationError("Invalid provisional OpenShop AI task identity")
+            record["clientRequestId"] = client_request_id
+            record["creationState"] = creation_state
+        if isinstance(result, dict):
+            migrated_result = _migrate_legacy_art_font_result(
+                result,
+                status,
+                _clean_text(value.get("reconcileState"), 20).lower(),
+            )
+            record["result"] = normalize_art_font_result(migrated_result)
+        reconciliation_keys = {
+            "context", "reconcileState", "reconcileReason", "generatedLayerId",
+            "staleAt", "discardedAt",
+        }
+        if any(key in value for key in reconciliation_keys):
+            context, owner = _normalize_reconciliation_scope(value)
+            reconcile_state = _clean_text(value.get("reconcileState"), 20).lower()
+            if reconcile_state not in {"pending", "applied", "stale", "discarded"}:
+                raise OpenShopAiValidationError("Invalid OpenShop AI reconcileState")
+            record.update({
+                "context": context,
+                "owner": owner,
+                "reconcileState": reconcile_state,
+                "reconcileReason": _clean_text(value.get("reconcileReason"), 160),
+                "generatedLayerId": _task_safe_id(
+                    value.get("generatedLayerId"), "generatedLayerId", required=False
+                ),
+                "staleAt": max(0, int(value.get("staleAt") or 0)),
+                "discardedAt": max(0, int(value.get("discardedAt") or 0)),
+            })
+    elif isinstance(result, dict) and isinstance(result.get("blocks"), list):
         width = _positive_dimension(result.get("width"), "result width")
         height = _positive_dimension(result.get("height"), "result height")
-        record["result"] = normalize_ocr_layout(json.dumps(result), width, height)
+        normalized_result = normalize_ocr_layout(
+            json.dumps(_migrate_legacy_ocr_result(result)), width, height
+        )
+        normalized_warnings = _normalize_ocr_warnings(result.get("warnings"))
+        if normalized_warnings:
+            normalized_result["warnings"] = normalized_warnings
+        record["result"] = normalized_result
     return record
 
 
@@ -422,6 +1638,41 @@ class OpenShopAiTaskRegistry:
     def _public(record: dict[str, Any]) -> dict[str, Any]:
         return deepcopy(record)
 
+    @staticmethod
+    def _summarize_parent(record: dict[str, Any]) -> None:
+        children = record.get("children", [])
+        completed = sum(child["status"] == "succeeded" for child in children)
+        failed = sum(child["status"] == "failed" for child in children)
+        cancelled = sum(child["status"] == "cancelled" for child in children)
+        record["completedCount"] = completed
+        record["failedCount"] = failed
+        if record.get("status") == "cancelled":
+            return
+        terminal_count = completed + failed + cancelled
+        if len(children) < record["targetCount"] or terminal_count < record["targetCount"]:
+            record["status"] = (
+                "running"
+                if terminal_count or any(child["status"] == "running" for child in children)
+                else "queued"
+            )
+            record["completedAt"] = 0
+        elif completed == record["targetCount"]:
+            record["status"] = "succeeded"
+        elif completed:
+            record["status"] = "partial"
+        else:
+            record["status"] = "failed"
+        if record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+            record["completedAt"] = int(time.time() * 1000)
+
+    @staticmethod
+    def _child(record: dict[str, Any], child_task_id: str) -> dict[str, Any] | None:
+        normalized = str(child_task_id or "").strip()
+        return next(
+            (child for child in record.get("children", []) if child["childTaskId"] == normalized),
+            None,
+        )
+
     def create(
         self,
         project_id: str,
@@ -432,7 +1683,39 @@ class OpenShopAiTaskRegistry:
         source_asset_id: str,
         mask_asset_id: str = "",
         mode: str = "layer",
+        source_layer_id: str = "",
+        snapshot: Any = None,
+        client_request_id: str = "",
     ) -> dict[str, Any]:
+        record, _created = self.create_or_get(
+            project_id,
+            owner,
+            tool_id,
+            provider_id,
+            model_id,
+            source_asset_id,
+            mask_asset_id=mask_asset_id,
+            mode=mode,
+            source_layer_id=source_layer_id,
+            snapshot=snapshot,
+            client_request_id=client_request_id,
+        )
+        return record
+
+    def create_or_get(
+        self,
+        project_id: str,
+        owner: dict[str, Any],
+        tool_id: str,
+        provider_id: str,
+        model_id: str,
+        source_asset_id: str,
+        mask_asset_id: str = "",
+        mode: str = "layer",
+        source_layer_id: str = "",
+        snapshot: Any = None,
+        client_request_id: str = "",
+    ) -> tuple[dict[str, Any], bool]:
         self.cleanup()
         normalized_project_id = _clean_text(project_id, 96)
         if not normalized_project_id:
@@ -440,6 +1723,9 @@ class OpenShopAiTaskRegistry:
         normalized_owner = self._owner(owner)
         if tool_id not in OPENSHOP_AI_TOOL_IDS:
             raise OpenShopAiValidationError("OpenShop AI toolId is invalid")
+        normalized_client_request_id = _task_safe_id(
+            client_request_id, "clientRequestId", required=False
+        )
         timestamp = int(time.time() * 1000)
         task_id = f"openshop_ai_{uuid.uuid4().hex}"
         record = {
@@ -460,9 +1746,187 @@ class OpenShopAiTaskRegistry:
             "updatedAt": timestamp,
             "completedAt": 0,
         }
+        if tool_id == "art-font-restore":
+            record["sourceLayerId"] = _task_safe_id(
+                source_layer_id, "sourceLayerId"
+            )
+            record["snapshot"] = normalize_art_font_snapshot(snapshot)
+        if normalized_client_request_id:
+            record["clientRequestId"] = normalized_client_request_id
+            record["creationState"] = "created"
+        with self._lock:
+            if normalized_client_request_id:
+                existing = next((
+                    existing_record
+                    for existing_record in self._records.values()
+                    if existing_record.get("projectId") == normalized_project_id
+                    and existing_record.get("owner") == normalized_owner
+                    and existing_record.get("toolId") == tool_id
+                    and existing_record.get("clientRequestId") == normalized_client_request_id
+                ), None)
+                if existing is not None:
+                    return self._public(existing), False
+            self._records[task_id] = record
+        return self._public(record), True
+
+    def create_parent(
+        self,
+        project_id: str,
+        owner: dict[str, Any],
+        snapshot: dict[str, Any],
+        provider_id: str,
+        model_id: str,
+        retry_of_task_id: str = "",
+    ) -> dict[str, Any]:
+        self.cleanup()
+        normalized_project_id = _clean_text(project_id, 96)
+        if not normalized_project_id:
+            raise OpenShopAiValidationError("OpenShop AI projectId is invalid")
+        normalized_snapshot = normalize_generation_snapshot(snapshot)
+        timestamp = int(time.time() * 1000)
+        task_id = f"openshop_ai_{uuid.uuid4().hex}"
+        record = {
+            "taskId": task_id,
+            "kind": "parent",
+            "projectId": normalized_project_id,
+            "owner": self._owner(owner),
+            "toolId": normalized_snapshot["toolId"],
+            "apiConfigId": _clean_text(provider_id, 96),
+            "modelId": _clean_text(model_id, 240),
+            "status": "queued",
+            "targetCount": normalized_snapshot["targetCount"],
+            "originalTargetCount": normalized_snapshot["originalTargetCount"],
+            "completedCount": 0,
+            "failedCount": 0,
+            "retryOfTaskId": _task_safe_id(
+                retry_of_task_id, "retryOfTaskId", required=False
+            ),
+            "snapshot": normalized_snapshot,
+            "children": [],
+            "error": "",
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "completedAt": 0,
+        }
         with self._lock:
             self._records[task_id] = record
         return self._public(record)
+
+    def create_child(self, task_id: str, index: int) -> dict[str, Any]:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record:
+                raise OpenShopAiTaskNotFound(task_id)
+            if record.get("kind") != "parent" or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                raise OpenShopAiValidationError("OpenShop parent task cannot accept children")
+            normalized_index = int(index)
+            if normalized_index not in record["snapshot"]["requestedIndexes"]:
+                raise OpenShopAiValidationError("OpenShop child output index was not requested")
+            if any(child["index"] == normalized_index for child in record["children"]):
+                raise OpenShopAiValidationError("OpenShop child output index already exists")
+            timestamp = int(time.time() * 1000)
+            child = {
+                "childTaskId": f"openshop_ai_child_{uuid.uuid4().hex}",
+                "index": normalized_index,
+                "status": "queued",
+                "outputAssetId": "",
+                "result": None,
+                "error": "",
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+                "completedAt": 0,
+            }
+            record["children"].append(child)
+            record["children"].sort(key=lambda item: item["index"])
+            record["updatedAt"] = timestamp
+            self._summarize_parent(record)
+            return self._public(child)
+
+    def bind_child(self, task_id: str, child_task_id: str, future: Any) -> None:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record:
+                raise OpenShopAiTaskNotFound(task_id)
+            child = self._child(record, child_task_id)
+            if not child:
+                raise OpenShopAiTaskNotFound(child_task_id)
+            if record["status"] == "cancelled" or child["status"] == "cancelled":
+                future.cancel()
+                return
+            if child["status"] in {"succeeded", "failed"}:
+                return
+            self._futures[child_task_id] = future
+
+    def mark_child_running(self, task_id: str, child_task_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            child = self._child(record, child_task_id)
+            if not child or child["status"] != "queued":
+                return False
+            timestamp = int(time.time() * 1000)
+            child["status"] = "running"
+            child["updatedAt"] = timestamp
+            record["updatedAt"] = timestamp
+            self._summarize_parent(record)
+            return True
+
+    def can_complete_child(self, task_id: str, child_task_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            child = self._child(record, child_task_id)
+            return bool(child and child["status"] in {"queued", "running"})
+
+    def succeed_child(
+        self,
+        task_id: str,
+        child_task_id: str,
+        result: dict[str, Any],
+    ) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            child = self._child(record, child_task_id)
+            if not child or child["status"] in {"succeeded", "failed", "cancelled"}:
+                return False
+            timestamp = int(time.time() * 1000)
+            child["status"] = "succeeded"
+            child["result"] = deepcopy(result)
+            child["outputAssetId"] = _task_asset_id(
+                result.get("assetId") if isinstance(result, dict) else "",
+                "child outputAssetId",
+            )
+            child["error"] = ""
+            child["updatedAt"] = timestamp
+            child["completedAt"] = timestamp
+            record["updatedAt"] = timestamp
+            self._futures.pop(child_task_id, None)
+            self._summarize_parent(record)
+            return True
+
+    def fail_child(self, task_id: str, child_task_id: str, error: Any) -> bool:
+        with self._lock:
+            record = self._records.get(task_id)
+            if not record or record["status"] in OPENSHOP_AI_TERMINAL_STATES:
+                return False
+            child = self._child(record, child_task_id)
+            if not child or child["status"] in {"succeeded", "failed", "cancelled"}:
+                return False
+            timestamp = int(time.time() * 1000)
+            child["status"] = "failed"
+            child["result"] = None
+            child["outputAssetId"] = ""
+            child["error"] = _clean_text(error, 500, "OpenShop AI child task failed")
+            child["updatedAt"] = timestamp
+            child["completedAt"] = timestamp
+            record["updatedAt"] = timestamp
+            self._futures.pop(child_task_id, None)
+            self._summarize_parent(record)
+            return True
 
     def bind(self, task_id: str, future: Any) -> None:
         with self._lock:
@@ -474,6 +1938,25 @@ class OpenShopAiTaskRegistry:
                     future.cancel()
                 return
             self._futures[task_id] = future
+
+    @staticmethod
+    def _cancel_future_if_pending(future: Any) -> None:
+        if not future.done():
+            future.cancel()
+
+    @classmethod
+    def _cancel_future(cls, future: Any) -> None:
+        if future.done():
+            return
+        get_loop = getattr(future, "get_loop", None)
+        if callable(get_loop):
+            try:
+                loop = get_loop()
+                loop.call_soon_threadsafe(cls._cancel_future_if_pending, future)
+                return
+            except (AttributeError, RuntimeError):
+                pass
+        future.cancel()
 
     def _assert_scope(
         self,
@@ -552,7 +2035,7 @@ class OpenShopAiTaskRegistry:
         project_id: str | None = None,
         owner: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        future = None
+        futures: list[Any] = []
         with self._lock:
             record = self._records.get(task_id)
             if not record:
@@ -566,23 +2049,45 @@ class OpenShopAiTaskRegistry:
                 record["error"] = ""
                 record["updatedAt"] = timestamp
                 record["completedAt"] = timestamp
+                for child in record.get("children", []):
+                    if child["status"] not in {"succeeded", "failed", "cancelled"}:
+                        child["status"] = "cancelled"
+                        child["result"] = None
+                        child["outputAssetId"] = ""
+                        child["error"] = ""
+                        child["updatedAt"] = timestamp
+                        child["completedAt"] = timestamp
             future = self._futures.pop(task_id, None)
+            if future:
+                futures.append(future)
+            for child in record.get("children", []):
+                future = self._futures.pop(child["childTaskId"], None)
+                if future:
+                    futures.append(future)
             public = self._public(record)
-        if future and not future.done():
-            future.cancel()
+        for future in futures:
+            self._cancel_future(future)
         return public
 
-    def cancel_project(self, project_id: str) -> list[str]:
-        normalized = str(project_id or "").strip()
+    def cancel_project(
+        self,
+        project_id: str,
+        owner: dict[str, Any],
+    ) -> list[str]:
+        normalized = _clean_text(project_id, 96)
+        if not normalized:
+            raise OpenShopAiValidationError("OpenShop AI projectId is invalid")
+        normalized_owner = self._owner(owner)
         with self._lock:
             task_ids = [
                 task_id
                 for task_id, record in self._records.items()
                 if record.get("projectId") == normalized
+                and record.get("owner") == normalized_owner
                 and record.get("status") not in OPENSHOP_AI_TERMINAL_STATES
             ]
         for task_id in task_ids:
-            self.cancel(task_id)
+            self.cancel(task_id, normalized, normalized_owner)
         return task_ids
 
     def active_for_project(self, project_id: str) -> int:
@@ -605,6 +2110,8 @@ class OpenShopAiTaskRegistry:
                 and int(record.get("updatedAt") or 0) < cutoff
             ]
             for task_id in expired:
-                self._records.pop(task_id, None)
+                record = self._records.pop(task_id, None)
                 self._futures.pop(task_id, None)
+                for child in (record or {}).get("children", []):
+                    self._futures.pop(child["childTaskId"], None)
         return expired

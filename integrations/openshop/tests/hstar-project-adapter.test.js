@@ -48,15 +48,14 @@ function createEditor() {
       }),
       getObjects: vi.fn(() => canvasObjects),
       renderAll: vi.fn(),
-      toJSON: vi.fn(() => ({
+      toJSON: vi.fn((properties=[]) => ({
         objects: canvasObjects.map(object => ({
           type: object.type,
           name: object.name,
           src: object.src,
-          hstarAssetId: object.hstarAssetId,
-          hstarEdgeId: object.hstarEdgeId,
-          hstarSourceNodeId: object.hstarSourceNodeId,
-          hstarLayerId: object.hstarLayerId
+          ...Object.fromEntries(properties
+            .filter(property => property in object)
+            .map(property => [property, object[property]])),
         }))
       }))
     },
@@ -72,7 +71,12 @@ function createEditor() {
       editor.activeLayerIdx = index;
     }),
     updateLayersPanel: vi.fn(),
-    saveHistory: vi.fn()
+    saveHistory: vi.fn(),
+    zoomFit: vi.fn(),
+    _createCheckerBoundary: vi.fn((width, height) => ({
+      type:'rect', name:'__boundary__', width, height, left:0, top:0,
+      selectable:false, evented:false, set(values) { Object.assign(this, values); },
+    }))
   };
   return editor;
 }
@@ -115,6 +119,150 @@ describe('Hstar OpenShop project adapter', () => {
     });
     expect(project.createdAt).toBe(1000);
     expect(project.updatedAt).toBe(1000);
+  });
+
+  it('does not serialize ephemeral desktop layer selection state', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor._selectedLayers = new Set(editor.layers);
+    editor._layerSelectionAnchor = editor.layers[0];
+    editor._keyboardContext = 'layers';
+
+    const project = adapter.serializeProject({editor, context, now:() => 2000});
+    const serialized = JSON.stringify(project);
+
+    expect(serialized).not.toContain('_selectedLayers');
+    expect(serialized).not.toContain('_layerSelectionAnchor');
+    expect(serialized).not.toContain('_keyboardContext');
+  });
+
+  it('centers a newly connected source image in the OpenShop document', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const image = createImage({url:'/api/openshop/assets/asset-centered'});
+    Object.assign(image, {
+      width:640,
+      height:360,
+      scaleX:1,
+      scaleY:1,
+      setCoords:vi.fn(),
+    });
+
+    await adapter.queueSourceImageLayer({
+      editor,
+      imageLoader:async () => image,
+      source:{
+        assetId:'asset-centered', edgeId:'edge-centered', sourceNodeId:'image-centered',
+        name:'居中来源.png', url:'/api/openshop/assets/asset-centered', sequence:0,
+      },
+    });
+
+    expect(image).toMatchObject({left:640, top:360, scaleX:1, scaleY:1});
+    expect(image.setCoords).toHaveBeenCalledTimes(1);
+  });
+
+  it('adopts the first connected source image dimensions for a blank project', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const image = createImage({url:'/api/openshop/assets/source-4k'});
+    Object.assign(image, {width:3840, height:2160, scaleX:1, scaleY:1, setCoords:vi.fn()});
+
+    await adapter.reconcileSources({
+      editor,
+      imageLoader:async () => image,
+      sources:[{
+        assetId:'source-4k', edgeId:'edge-4k', sourceNodeId:'image-4k',
+        name:'source-4k.png', url:'/api/openshop/assets/source-4k', sequence:0,
+      }],
+    });
+
+    expect({width:editor.canvasW, height:editor.canvasH}).toEqual({width:3840, height:2160});
+    expect(image).toMatchObject({left:0, top:0, scaleX:1, scaleY:1});
+    expect(image).toMatchObject({selectable:true, evented:true});
+    expect(editor.layers).toHaveLength(2);
+    expect(editor.layers[0]).toMatchObject({name:'Background', locked:true});
+    expect(editor.layers[0].objects[0]).toMatchObject({
+      name:'__boundary__', width:3840, height:2160, selectable:false, evented:false,
+    });
+    expect(editor.layers[1]).toMatchObject({locked:false});
+    expect(editor.layers[1].sourceBinding).toMatchObject({assetId:'source-4k'});
+    expect(editor.zoomFit).toHaveBeenCalled();
+    const project = adapter.serializeProject({editor, context});
+    expect(project.document).toMatchObject({width:3840, height:2160});
+    expect(project.layers[0]).toMatchObject({locked:true});
+    expect(project.layers[1]).toMatchObject({locked:false});
+  });
+
+  it('keeps a user-created template size when the first source is connected', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvasW = 2048;
+    editor.canvasH = 2048;
+    const boundary = {name:'__boundary__', width:2048, height:2048, set:vi.fn()};
+    editor.canvas.add(boundary);
+    editor.layers = [
+      {name:'Background', visible:true, locked:true, opacity:100, blend:'source-over', objects:[boundary]},
+      {name:'Layer 1', visible:true, opacity:100, blend:'source-over', objects:[]},
+    ];
+    const image = createImage({url:'/api/openshop/assets/source-4k'});
+    Object.assign(image, {width:3840, height:2160, scaleX:1, scaleY:1});
+
+    await adapter.reconcileSources({
+      editor,
+      imageLoader:async () => image,
+      sources:[{
+        assetId:'source-4k', edgeId:'edge-template', sourceNodeId:'image-template',
+        name:'source-4k.png', url:'/api/openshop/assets/source-4k', sequence:0,
+      }],
+    });
+
+    expect({width:editor.canvasW, height:editor.canvasH}).toEqual({width:2048, height:2048});
+    expect(boundary.set).not.toHaveBeenCalled();
+  });
+
+  it('repairs a legacy source-only project that was saved at the default size', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => editor.canvas.add({...object}));
+      callback();
+    });
+    editor.rebuildLayersFromCanvas = vi.fn(() => {
+      editor.layers = [{
+        layerId:'source-layer', name:'source-4k.png', visible:true, opacity:100, blend:'source-over',
+        objects:[...editor.canvas.getObjects()],
+      }];
+    });
+    const project = {
+      schemaVersion:1,
+      projectId:'project-1',
+      owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
+      document:{width:1920, height:1080},
+      editor:{objects:[{
+        type:'image', assetRef:'source-4k', width:3840, height:2160,
+        scaleX:1, scaleY:1, left:-960, top:-540, hstarAssetRole:'source',
+        hstarAssetId:'source-4k', hstarEdgeId:'edge-legacy', hstarLayerId:'source-layer',
+      }]},
+      layers:[{
+        layerId:'source-layer', name:'source-4k.png', visible:true, opacity:100, blend:'source-over',
+        sourceBinding:{
+          assetId:'source-4k', edgeId:'edge-legacy', sourceNodeId:'image-legacy',
+          assetVersion:'v1', sequence:0, state:'bound',
+        },
+      }],
+      sourceBindings:[], previewAssetId:'', autosaveVersion:2, createdAt:1000,
+    };
+
+    await adapter.restoreProject({
+      editor,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+
+    expect({width:editor.canvasW, height:editor.canvasH}).toEqual({width:3840, height:2160});
+    expect(editor.layers[0]).toMatchObject({name:'Background', locked:true});
+    expect(editor.layers[0].objects[0]).toMatchObject({name:'__boundary__', width:3840, height:2160});
+    expect(editor.layers[1].objects[0]).toMatchObject({left:0, top:0});
   });
 
   it('keeps source layer order when images resolve out of order', async () => {
@@ -214,6 +362,20 @@ describe('Hstar OpenShop project adapter', () => {
     })).toThrow('inline image data without an asset id');
   });
 
+  it('removes inline checker pattern bytes from the stored project', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvas.toJSON.mockReturnValue({objects:[{
+      type:'rect', name:'__boundary__', width:1600, height:900,
+      fill:{type:'pattern', repeat:'repeat', source:'data:image/png;base64,CHECKER_BYTES'},
+    }]});
+
+    const project = adapter.serializeProject({editor, context});
+
+    expect(project.editor.objects[0]).toMatchObject({name:'__boundary__', fill:null});
+    expect(JSON.stringify(project)).not.toContain('data:image/');
+  });
+
   it('persists local image objects before serializing the project', async () => {
     const adapter = window.HstarOpenShopProjectAdapter;
     const editor = createEditor();
@@ -291,6 +453,323 @@ describe('Hstar OpenShop project adapter', () => {
     expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
     restored.__hstarAiTaskRecords[0].status = 'failed';
     expect(project.aiTaskRecords[0].status).toBe('succeeded');
+  });
+
+  it('round-trips the complete artistic-font reconciliation record and correlated layer metadata', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceAssetId = 'd'.repeat(64);
+    const outputAssetId = 'e'.repeat(64);
+    const generation = {
+      taskId:'task-art-1', textLayerId:'text-layer-1', requestGeneration:4, outputAssetId,
+      toolId:'art-font-restore', contentBox:{x:8,y:4,width:320,height:100},
+    };
+    const image = {type:'image', name:'art-font.png', hstarAssetId:outputAssetId, hstarAiGeneration:generation};
+    editor.canvas.add(image);
+    editor.layers[0].layerId = 'generated-layer-1';
+    editor.layers[0].objects.push(image);
+    editor.layers[0].hstarAiGeneration = generation;
+    editor.__hstarAiToolPreferences = {
+      'art-font-restore':{
+        toolId:'art-font-restore', mode:'project', apiConfigId:'image-api', modelId:'image-model',
+      },
+    };
+    editor.__hstarAiTaskRecords = [{
+      taskId:'task-art-1', toolId:'art-font-restore', apiConfigId:'image-api', modelId:'image-model',
+      clientRequestId:'art-font-request.project-1.node-1.text-layer-1.4', creationState:'created',
+      status:'succeeded', reconcileState:'applied', reconcileReason:'', mode:'layer',
+      context:{...context}, owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
+      sourceLayerId:'source-layer-1', sourceAssetId, maskAssetId:'', outputAssetId,
+      snapshot:{
+        textLayerId:'text-layer-1', ocrBlockId:'ocr-title', originalText:'Original', currentText:'Edited',
+        requestGeneration:4, document:{width:1920,height:1080},
+        quad:[{x:.1,y:.2},{x:.4,y:.2},{x:.4,y:.3},{x:.1,y:.3}],
+        visualProfile:{
+          script:'en', fill:'#112233', alignment:'left', rotation:0, artistic:false,
+          familyCandidates:['Arial'], size:40, weight:700, style:'normal', styleDescription:'painted',
+          letterSpacing:0, lineHeight:1.2, strokeColor:'#00000000', strokeWidth:0,
+          shadow:{color:'#00000000',blur:0,offsetX:0,offsetY:0},
+        },
+      },
+      generatedLayerId:'generated-layer-1', createdAt:1, updatedAt:2, completedAt:2,
+      appliedAt:3, staleAt:0, discardedAt:0, error:'',
+    }];
+
+    const project = adapter.serializeProject({editor, context, now:() => 4000});
+
+    expect(project.aiToolPreferences['art-font-restore']).toEqual(editor.__hstarAiToolPreferences['art-font-restore']);
+    expect(project.aiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(project.layers[0].hstarAiGeneration).toEqual(generation);
+    expect(project.editor.objects[0].hstarAiGeneration).toEqual(generation);
+    expect(project.assetRefs).toEqual([sourceAssetId, outputAssetId].sort());
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((_json, callback) => callback());
+    await adapter.restoreProject({
+      editor:restored, project, assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+    expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(restored.__hstarAiToolPreferences).toEqual(editor.__hstarAiToolPreferences);
+  });
+
+  it('never evicts active artistic-font records when enforcing retention', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const active = Array.from({length:100}, (_, index) => ({
+      taskId:`task-active-${index}`, toolId:'art-font-restore', status:index % 2 ? 'running' : 'queued',
+      reconcileState:'pending', createdAt:index + 1, updatedAt:index + 1,
+    }));
+    editor.__hstarAiTaskRecords = [active[0], {
+      taskId:'task-old-terminal', toolId:'text-remove', status:'failed', createdAt:0, updatedAt:0,
+    }, ...active.slice(1)];
+
+    const project = adapter.serializeProject({editor, context, now:() => 5000});
+
+    expect(project.aiTaskRecords).toHaveLength(100);
+    expect(project.aiTaskRecords.map(record => record.taskId)).toEqual(active.map(record => record.taskId));
+  });
+
+  it('persists the text kerning mode with the Fabric text object', () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const text = {type:'i-text', text:'Kerning', hstarKerningMode:'metrics'};
+    editor.canvas.add(text);
+    editor.layers[0].objects.push(text);
+
+    const project = adapter.serializeProject({editor, context, now:() => 3000});
+
+    expect(project.editor.objects[0]).toMatchObject({
+      type:'i-text',
+      hstarKerningMode:'metrics',
+    });
+  });
+
+  it('round-trips complete OCR provenance and discovers its source asset from editor JSON alone', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceAssetId = 'f'.repeat(64);
+    const visualProfile = {
+      script:'zh-hans', dominantScript:'', fill:'#7b3f12', alignment:'center', rotation:0,
+      artistic:true, familyCandidates:['Alibaba PuHuiTi', 'Microsoft YaHei UI'], size:48,
+      weight:700, style:'normal', styleDescription:'painted title', letterSpacing:125,
+      lineHeight:1.4, strokeColor:'#12345678', strokeWidth:3.5,
+      shadow:{color:'#10203080', blur:6, offsetX:2, offsetY:-3},
+    };
+    const text = {
+      type:'i-text', text:'经典奶茶',
+      hstarOcrSourceAssetId:sourceAssetId,
+      hstarOcrSourceLayerId:'layer-source',
+      hstarOcrBlockId:'ocr-title',
+      hstarOcrQuad:[{x:0.1,y:0.2},{x:0.4,y:0.2},{x:0.4,y:0.3},{x:0.1,y:0.3}],
+      hstarOcrVisualProfile:visualProfile,
+      hstarOcrOriginalText:'经典奶茶',
+      hstarArtFontRequestGeneration:0,
+      hstarOcrConfidence:0.98,
+      hstarOcrLanguage:'zh',
+      hstarOcrFontCandidates:['Alibaba PuHuiTi', 'Microsoft YaHei UI'],
+    };
+    editor.canvas.add(text);
+    editor.layers[0].objects.push(text);
+
+    const project = adapter.serializeProject({editor, context, now:() => 3000});
+
+    expect(project.editor.objects[0]).toMatchObject({
+      type:'i-text',
+      hstarOcrSourceAssetId:sourceAssetId,
+      hstarOcrSourceLayerId:'layer-source',
+      hstarOcrBlockId:'ocr-title',
+      hstarOcrQuad:text.hstarOcrQuad,
+      hstarOcrVisualProfile:visualProfile,
+      hstarOcrOriginalText:'经典奶茶',
+      hstarArtFontRequestGeneration:0,
+      hstarOcrConfidence:0.98,
+      hstarOcrLanguage:'zh',
+      hstarOcrFontCandidates:['Alibaba PuHuiTi', 'Microsoft YaHei UI'],
+    });
+    expect(project.assetRefs).toEqual([sourceAssetId]);
+    expect(project.aiTaskRecords).toEqual([]);
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => restored.canvas.add({...object}));
+      callback();
+    });
+    await adapter.restoreProject({
+      editor:restored,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+    expect(restored.canvas.getObjects()[0]).toMatchObject({
+      hstarOcrSourceAssetId:sourceAssetId,
+      hstarOcrSourceLayerId:'layer-source',
+      hstarOcrBlockId:'ocr-title',
+      hstarOcrQuad:text.hstarOcrQuad,
+      hstarOcrVisualProfile:visualProfile,
+      hstarOcrOriginalText:'经典奶茶',
+      hstarArtFontRequestGeneration:0,
+    });
+  });
+
+  it('round-trips exported canvas assets and keeps them referenced', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const outputAssetId = 'd'.repeat(64);
+
+    const record = adapter.recordExport({
+      editor,
+      output:{assetId:outputAssetId, name:'图文分层输出.png'},
+      now:() => 4000,
+    });
+    const project = adapter.serializeProject({editor, context, now:() => 5000});
+
+    expect(record).toEqual({
+      assetId:outputAssetId,
+      name:'图文分层输出.png',
+      width:1920,
+      height:1080,
+      createdAt:4000,
+    });
+    expect(project.exportRecords).toEqual([record]);
+    expect(project.assetRefs).toContain(outputAssetId);
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((_json, callback) => callback());
+    await adapter.restoreProject({
+      editor:restored,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+    expect(restored.__hstarExportRecords).toEqual([record]);
+  });
+
+  it('round-trips generative references, pending results and layer provenance', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    const sourceAssetId = 'a'.repeat(64);
+    const maskAssetId = 'b'.repeat(64);
+    const referenceAssetId = 'c'.repeat(64);
+    const outputAssetId = 'd'.repeat(64);
+    const pendingAssetId = 'e'.repeat(64);
+    editor.layers[0].layerId = 'generated-layer';
+    editor.layers[0].hstarAiGeneration = {
+      taskId:'parent-1', childTaskId:'child-1', retryOfTaskId:'', toolId:'local-redraw',
+      prompt:'修改天空', apiConfigId:'image-api', modelId:'image-model',
+      size:'2048x2048', quality:'high', referenceMode:'full',
+      references:[{assetId:referenceAssetId, alias:'参考图1', sourceType:'primary', order:0}],
+      sourceLayerId:'source-layer', selection:{x:10, y:20, width:300, height:200, feather:0},
+    };
+    const image = createImage({url:`/api/openshop/assets/${outputAssetId}`});
+    image.hstarAssetId = outputAssetId;
+    image.hstarLayerId = 'generated-layer';
+    image.hstarSnapAnchor = {
+      type:'selection', x:10, y:20, width:300, height:200,
+      documentWidth:1920, documentHeight:1080,
+    };
+    editor.layers[0].objects.push(image);
+    editor.canvas.add(image);
+    editor.__hstarAiReferenceRecords = [{
+      assetId:referenceAssetId, alias:'参考图1', mention:'@参考图1', sourceType:'primary', order:0,
+    }];
+    editor.__hstarAiTaskRecords = [{
+      taskId:'parent-1', kind:'parent', status:'partial', toolId:'local-redraw',
+      sourceAssetId, maskAssetId,
+      snapshot:{
+        sourceAssetId, maskAssetId, primaryReferenceAssetId:referenceAssetId,
+        references:[{assetId:referenceAssetId, alias:'参考图1', sourceType:'primary', order:0}],
+      },
+      children:[{childTaskId:'child-1', status:'succeeded', outputAssetId}],
+    }];
+    editor.__hstarAiPendingResults = [{
+      task:{taskId:'parent-2', snapshot:{sourceLayerId:'source-layer'}},
+      child:{childTaskId:'child-pending', status:'succeeded', outputAssetId:pendingAssetId},
+    }];
+
+    const project = adapter.serializeProject({editor, context, now:() => 4000});
+
+    expect(project.aiReferenceRecords).toEqual(editor.__hstarAiReferenceRecords);
+    expect(project.aiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(project.aiPendingResults).toEqual(editor.__hstarAiPendingResults);
+    expect(project.layers[0].hstarAiGeneration).toEqual(editor.layers[0].hstarAiGeneration);
+    expect(project.editor.objects[0].hstarSnapAnchor).toEqual(image.hstarSnapAnchor);
+    expect(project.assetRefs).toEqual([
+      maskAssetId, outputAssetId, pendingAssetId, referenceAssetId, sourceAssetId,
+    ].sort());
+    expect(JSON.stringify(project)).not.toMatch(/data:image\/|blob:|seed/i);
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => restored.canvas.add({...object}));
+      callback();
+    });
+    restored.rebuildLayersFromCanvas = vi.fn(() => {
+      restored.layers = [{
+        layerId:'generated-layer', name:'临时图层', visible:true, opacity:100,
+        blend:'source-over', objects:restored.canvas.getObjects(),
+      }];
+    });
+    await adapter.restoreProject({
+      editor:restored,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+    });
+
+    expect(restored.__hstarAiReferenceRecords).toEqual(editor.__hstarAiReferenceRecords);
+    expect(restored.__hstarAiTaskRecords).toEqual(editor.__hstarAiTaskRecords);
+    expect(restored.__hstarAiPendingResults).toEqual(editor.__hstarAiPendingResults);
+    expect(restored.layers[0].hstarAiGeneration).toEqual(editor.layers[0].hstarAiGeneration);
+    expect(restored.layers[0].objects[0].hstarSnapAnchor).toEqual(image.hstarSnapAnchor);
+    restored.__hstarAiPendingResults[0].child.status = 'failed';
+    expect(project.aiPendingResults[0].child.status).toBe('succeeded');
+  });
+
+  it('resumes unfinished generation records and reapplies pending children after restore', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const editor = createEditor();
+    editor.canvas.loadFromJSON = vi.fn((_json, callback) => callback());
+    const running = {
+      taskId:'parent-running', kind:'parent', toolId:'local-redraw', status:'running',
+      snapshot:{sourceLayerId:'source-layer'}, children:[],
+    };
+    const completed = {...running, status:'succeeded', completedCount:1, failedCount:0, children:[{
+      childTaskId:'child-completed', index:0, status:'succeeded', outputAssetId:'f'.repeat(64),
+    }]};
+    const pending = {
+      task:{taskId:'parent-pending', kind:'parent', toolId:'local-redraw', status:'succeeded', snapshot:{sourceLayerId:'source-layer'}},
+      child:{childTaskId:'child-pending', index:0, status:'succeeded', outputAssetId:'e'.repeat(64)},
+    };
+    const project = {
+      schemaVersion:1,
+      projectId:'project-1',
+      owner:{canvasType:'classic', canvasId:'canvas-1', nodeId:'node-1'},
+      document:{width:1920, height:1080},
+      editor:{objects:[]},
+      layers:[],
+      aiTaskRecords:[running],
+      aiPendingResults:[pending],
+      createdAt:1000,
+    };
+    const generativeClient = {
+      restoreTasks:vi.fn(async (_records, options) => {
+        options.onUpdate(completed);
+        return [completed];
+      }),
+    };
+    const applyTaskResults = vi.fn(async () => []);
+
+    await adapter.restoreProject({
+      editor,
+      project,
+      assetResolver:async assetId => `/api/openshop/assets/${assetId}`,
+      generativeClient,
+      applyTaskResults,
+    });
+
+    expect(generativeClient.restoreTasks).toHaveBeenCalledWith([running], expect.objectContaining({onUpdate:expect.any(Function)}));
+    expect(editor.__hstarAiTaskRecords).toEqual([completed]);
+    expect(applyTaskResults).toHaveBeenCalledWith(completed);
+    expect(applyTaskResults).toHaveBeenCalledWith(expect.objectContaining({
+      taskId:'parent-pending', children:[pending.child],
+    }));
   });
 
   it('persists image assets nested inside Fabric groups', async () => {
@@ -578,8 +1057,8 @@ describe('Hstar OpenShop project adapter', () => {
     editor.rebuildLayersFromCanvas = vi.fn(() => {
       const objects = editor.canvas.getObjects();
       editor.layers = [
-        {name: 'temporary-a', visible: true, opacity: 100, blend: 'source-over', objects: [objects[1]]},
-        {name: 'temporary-b', visible: true, opacity: 100, blend: 'source-over', objects: [objects[0]]},
+        {type: 'raster', name: 'temporary-a', visible: true, opacity: 100, blend: 'source-over', objects: [objects[1]]},
+        {type: 'image', name: 'temporary-b', visible: true, opacity: 100, blend: 'source-over', objects: [objects[0]]},
       ];
     });
     const project = {
@@ -592,8 +1071,9 @@ describe('Hstar OpenShop project adapter', () => {
         {type: 'image', assetRef: 'asset-a', hstarLayerId: 'layer-a'},
       ]},
       layers: [
-        {layerId: 'layer-a', name: '图层 A', visible: true, opacity: 90, blend: 'source-over'},
+        {layerId: 'layer-a', name: '图层 A', visible: true, locked: true, opacity: 90, blend: 'source-over'},
         {layerId: 'layer-b', name: '图层 B', visible: false, opacity: 70, blend: 'multiply'},
+        {layerId: 'layer-empty-legacy', name: 'Legacy empty', visible: true, opacity: 100, blend: 'source-over'},
       ],
       previewAssetId: 'asset-a',
       autosaveVersion: 9,
@@ -607,9 +1087,142 @@ describe('Hstar OpenShop project adapter', () => {
     });
 
     const byId = Object.fromEntries(editor.layers.map(layer => [layer.layerId, layer]));
-    expect(byId['layer-a']).toMatchObject({name: '图层 A', opacity: 90, visible: true});
-    expect(byId['layer-b']).toMatchObject({name: '图层 B', opacity: 70, visible: false, blend: 'multiply'});
+    expect(byId['layer-a']).toMatchObject({type: 'raster', name: '图层 A', opacity: 90, visible: true, locked: true});
+    expect(byId['layer-a'].objects[0]).toMatchObject({selectable:false, evented:false});
+    expect(byId['layer-b']).toMatchObject({type: 'image', name: '图层 B', opacity: 70, visible: false, blend: 'multiply'});
+    expect(byId['layer-empty-legacy']).toMatchObject({type: 'normal', name: 'Legacy empty', objects: []});
     expect(editor.__hstarPreviewAssetId).toBe('asset-a');
     expect(editor.__hstarAutosaveVersion).toBe(9);
+  });
+
+  it('restores empty layers around an object-backed layer in exact project order', async () => {
+    const adapter = window.HstarOpenShopProjectAdapter;
+    const original = createEditor();
+    const text = {
+      type: 'i-text',
+      name: 'Independent text',
+      hstarLayerId: 'layer-content',
+    };
+    const marker = {
+      type: 'rect',
+      name: 'Text marker',
+      hstarLayerId: 'layer-content',
+    };
+    original.layers = [
+      {
+        layerId: 'layer-empty-before', type: 'empty', name: 'Empty before', visible: false,
+        locked: true, opacity: 37, blend: 'screen', objects: [],
+        sourceBinding: {
+          assetId: 'asset-empty-before', edgeId: 'edge-empty-before', sourceNodeId: 'node-empty-before',
+          assetVersion: 'v3', sequence: 2, state: 'detached', ignoredAssetVersion: 'v4',
+        },
+      },
+      {
+        layerId: 'layer-content', type: 'raster', name: 'Independent content', visible: true,
+        locked: true, opacity: 82, blend: 'multiply', objects: [text, marker],
+      },
+      {
+        layerId: 'layer-empty-after', type: 'generated-placeholder', name: 'Empty after',
+        visible: true, locked: false, opacity: 64, blend: 'overlay', objects: [],
+        hstarAiGeneration: {
+          taskId: 'parent-empty', childTaskId: 'child-empty', toolId: 'local-redraw',
+          sourceLayerId: 'layer-content',
+        },
+      },
+    ];
+    original.canvas.add(text);
+    original.canvas.add(marker);
+
+    const project = adapter.serializeProject({editor: original, context, now: () => 5000});
+    expect(project.layers).toEqual([
+      {
+        layerId: 'layer-empty-before', type: 'empty', name: 'Empty before', visible: false,
+        locked: true, opacity: 37, blend: 'screen',
+        sourceBinding: {
+          layerId: 'layer-empty-before', edgeId: 'edge-empty-before', sourceNodeId: 'node-empty-before',
+          assetId: 'asset-empty-before', assetVersion: 'v3', sequence: 2, state: 'detached',
+          pendingAssetId: '', pendingAssetVersion: '', ignoredAssetVersion: 'v4',
+        },
+        hstarAiGeneration: null,
+      },
+      {
+        layerId: 'layer-content', type: 'raster', name: 'Independent content', visible: true,
+        locked: true, opacity: 82, blend: 'multiply', sourceBinding: null, hstarAiGeneration: null,
+      },
+      {
+        layerId: 'layer-empty-after', type: 'generated-placeholder', name: 'Empty after',
+        visible: true, locked: false, opacity: 64, blend: 'overlay', sourceBinding: null,
+        hstarAiGeneration: {
+          taskId: 'parent-empty', childTaskId: 'child-empty', toolId: 'local-redraw',
+          sourceLayerId: 'layer-content',
+        },
+      },
+    ]);
+
+    const restored = createEditor();
+    restored.canvas.loadFromJSON = vi.fn((json, callback) => {
+      json.objects.forEach(object => restored.canvas.add({...object}));
+      callback();
+    });
+    restored.rebuildLayersFromCanvas = vi.fn(() => {
+      const objects = restored.canvas.getObjects();
+      restored.layers = [{
+        layerId: 'layer-content', type: 'image', name: 'temporary content', visible: true,
+        locked: false, opacity: 100, blend: 'source-over', objects: [...objects],
+      }];
+    });
+
+    await adapter.restoreProject({editor: restored, project});
+
+    expect(restored.layers.map(layer => ({
+      layerId: layer.layerId,
+      type: layer.type,
+      name: layer.name,
+      visible: layer.visible,
+      locked: layer.locked,
+      opacity: layer.opacity,
+      blend: layer.blend,
+      sourceBinding: layer.sourceBinding,
+      hstarAiGeneration: layer.hstarAiGeneration,
+      objectTypes: layer.objects.map(object => object.type),
+      objectNames: layer.objects.map(object => object.name),
+      objectLayerIds: layer.objects.map(object => object.hstarLayerId),
+    }))).toEqual([
+      {
+        layerId: 'layer-empty-before', type: 'empty', name: 'Empty before', visible: false,
+        locked: true, opacity: 37, blend: 'screen',
+        sourceBinding: {
+          layerId: 'layer-empty-before', edgeId: 'edge-empty-before', sourceNodeId: 'node-empty-before',
+          assetId: 'asset-empty-before', assetVersion: 'v3', sequence: 2, state: 'detached',
+          pendingAssetId: '', pendingAssetVersion: '', ignoredAssetVersion: 'v4',
+        },
+        hstarAiGeneration: null, objectTypes: [], objectNames: [], objectLayerIds: [],
+      },
+      {
+        layerId: 'layer-content', type: 'raster', name: 'Independent content', visible: true,
+        locked: true, opacity: 82, blend: 'multiply', sourceBinding: null,
+        hstarAiGeneration: null, objectTypes: ['i-text', 'rect'],
+        objectNames: ['Independent text', 'Text marker'],
+        objectLayerIds: ['layer-content', 'layer-content'],
+      },
+      {
+        layerId: 'layer-empty-after', type: 'generated-placeholder', name: 'Empty after',
+        visible: true, locked: false, opacity: 64, blend: 'overlay', sourceBinding: null,
+        hstarAiGeneration: {
+          taskId: 'parent-empty', childTaskId: 'child-empty', toolId: 'local-redraw',
+          sourceLayerId: 'layer-content',
+        },
+        objectTypes: [], objectNames: [], objectLayerIds: [],
+      },
+    ]);
+    const canvasObjects = restored.canvas.getObjects();
+    expect(canvasObjects).toHaveLength(2);
+    expect(canvasObjects.map(object => object.name)).toEqual(['Independent text', 'Text marker']);
+    expect(restored.layers[1].objects[0]).toBe(canvasObjects[0]);
+    expect(restored.layers[1].objects[1]).toBe(canvasObjects[1]);
+    expect(canvasObjects).toEqual([
+      expect.objectContaining({selectable: false, evented: false}),
+      expect.objectContaining({selectable: false, evented: false}),
+    ]);
   });
 });

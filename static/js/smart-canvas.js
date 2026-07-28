@@ -209,6 +209,8 @@ let suppressNodeClickUntil = 0;
 let textSelectionGuard = null;
 const UNDO_LIMIT = 40;
 const undoStack = [];
+const permanentlyDeletedOpenShopNodeIds = new Set();
+let lastSyncedSmartOpenShopNodeIds = new Set();
 let undoSuppressed = false;
 let pendingUndoSnapshot = null;
 let runningHubWorkflowCache = {};
@@ -252,6 +254,48 @@ function commitPendingUndo(){
     }
 }
 function discardPendingUndo(){ pendingUndoSnapshot = null; }
+function trackPermanentlyDeletedOpenShopNodes(items){
+    (items || []).forEach(node => {
+        if(node?.type === 'openshop-layered' && node.id){
+            permanentlyDeletedOpenShopNodeIds.add(node.id);
+        }
+    });
+}
+function rememberSyncedSmartOpenShopNodes(items){
+    lastSyncedSmartOpenShopNodeIds = new Set(
+        (items || [])
+            .filter(node => node?.type === 'openshop-layered' && node.id)
+            .map(node => String(node.id))
+    );
+}
+function filterPermanentlyDeletedOpenShopHistoryState(state){
+    const nextNodes = (state?.nodes || [])
+        .filter(node => !permanentlyDeletedOpenShopNodeIds.has(node?.id))
+        .map(node => {
+            let nextNode = node;
+            if(Array.isArray(node?.inputNodeIds)){
+                nextNode = {...nextNode, inputNodeIds:node.inputNodeIds.filter(id => !permanentlyDeletedOpenShopNodeIds.has(id))};
+            }
+            if(Array.isArray(node?.items)){
+                nextNode = {...nextNode, items:node.items.filter(id => !permanentlyDeletedOpenShopNodeIds.has(id))};
+            }
+            return nextNode;
+        });
+    const nodeIds = new Set(nextNodes.map(node => node.id));
+    const next = {
+        ...state,
+        nodes:nextNodes,
+        connections:(state?.connections || []).filter(connection => nodeIds.has(connection.from) && nodeIds.has(connection.to)),
+    };
+    if(Array.isArray(state?.selectedIds)){
+        next.selectedIds = state.selectedIds.filter(id => nodeIds.has(id));
+    }
+    if(next.selectedId && !nodeIds.has(next.selectedId)) next.selectedId = '';
+    if(next.selectedImage?.nodeId && !nodeIds.has(next.selectedImage.nodeId)){
+        next.selectedImage = {nodeId:'', index:-1};
+    }
+    return next;
+}
 function snapshotForUndo(){
     return {
         nodes: JSON.parse(JSON.stringify(nodes)),
@@ -269,7 +313,7 @@ function pushUndo(){
 }
 function performUndo(){
     if(!undoStack.length){ toast(tr('smart.toastNoUndo')); return; }
-    const snap = undoStack.pop();
+    const snap = filterPermanentlyDeletedOpenShopHistoryState(undoStack.pop());
     undoSuppressed = true;
     nodes = snap.nodes;
     if(canvas) canvas.connections = snap.connections;
@@ -2808,7 +2852,7 @@ function renderVideoDurationControl(){
             </div>
             <label class="duration-custom">
                 <span>${escapeHtml(tr('smart.custom'))}</span>
-                <input type="number" min="1" max="60" step="1" data-param="videoDuration" value="${v}">
+                <input type="number" min="1" max="60" step="1" data-param="videoDuration" value="${v}" data-voice-input="off">
             </label>
         </div>
     </div>`;
@@ -2890,9 +2934,28 @@ function apiImageSize(ratioValue, resolutionValue, customRatioValue='', customSi
         const parsed = parseRatioValue(customRatioValue);
         const longSide = RES_LONG_SIDE[resolutionKey] || 1024;
         if(parsed){
+            const presetRatios = {
+                square:1,
+                portrait:2 / 3,
+                landscape:3 / 2,
+                portrait43:3 / 4,
+                landscape43:4 / 3,
+                story:9 / 16,
+                wide:16 / 9,
+                ultrawide:21 / 9,
+                ultratall:9 / 21
+            };
+            const matchingPreset = Object.entries(presetRatios)
+                .find(([, value]) => Math.abs(value - parsed) < 0.000001)?.[0];
+            if(matchingPreset && SIZE_MAP[matchingPreset]?.[resolutionKey]){
+                return SIZE_MAP[matchingPreset][resolutionKey];
+            }
             const pixelLimit = RES_PIXEL_LIMIT[resolutionKey] || (longSide * longSide);
-            const rawWidth = parsed >= 1 ? longSide : Math.min(longSide * parsed, Math.sqrt(pixelLimit * parsed));
-            const rawHeight = parsed >= 1 ? Math.min(longSide / parsed, Math.sqrt(pixelLimit / parsed)) : longSide;
+            let rawWidth = parsed >= 1 ? longSide : longSide * parsed;
+            let rawHeight = parsed >= 1 ? longSide / parsed : longSide;
+            const pixelScale = Math.min(1, Math.sqrt(pixelLimit / (rawWidth * rawHeight)));
+            rawWidth *= pixelScale;
+            rawHeight *= pixelScale;
             const width = Math.floor(rawWidth / 16) * 16;
             const height = Math.floor(rawHeight / 16) * 16;
             return `${Math.max(64, width)}x${Math.max(64, height)}`;
@@ -3029,7 +3092,7 @@ function renderDynamicParams(){
     persistActiveSmartSettings();
     if(window.lucide) lucide.createIcons();
 }
-function renderApiParams(){
+function renderApiParams(target=dynamicParams){
     const providers = imageProviders();
     if(!settings.provider_id || !providers.some(p => p.id === settings.provider_id)) settings.provider_id = providers[0]?.id || '';
     const models = filterJimengImageModels(providerImageModels(settings.provider_id));
@@ -3037,7 +3100,7 @@ function renderApiParams(){
     // 切换平台/模型时保留用户已选的分辨率（记忆），normalizeApiSizeSettings 只会修正非法的 auto。
     normalizeApiSizeSettings('');
     const outpaintLocked = settings.outpaintResolutionLocked === true;
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         ${renderProviderControl(providers)}
         ${renderModelControl(models)}
         ${renderSizePickerControl('', true)}
@@ -3066,7 +3129,7 @@ function renderApiVideoParams(){
         ${settings.videoProvider === 'jimeng' ? '' : renderVideoTrustedAssetControl()}
     `;
 }
-function renderVolcengineParams(){
+function renderVolcengineParams(target=dynamicParams){
     const provider = volcengineProvider();
     const providers = [provider];
     const models = providerImageModels('volcengine');
@@ -3074,7 +3137,7 @@ function renderVolcengineParams(){
     if(!settings.model || !models.includes(settings.model)) settings.model = models[0] || '';
     normalizeApiSizeSettings('');
     const outpaintLocked = settings.outpaintResolutionLocked === true;
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         ${renderProviderControl(providers)}
         ${renderModelControl(models)}
         ${renderSizePickerControl('', true)}
@@ -3104,21 +3167,21 @@ function renderVolcengineVideoParams(){
         ${renderVideoTrustedAssetControl()}
     `;
 }
-function renderRunningHubParams(){
+function renderRunningHubParams(target=dynamicParams){
     const ref = selectedRunningHubRef();
     const fields = rhActiveFields();
     settings.rhPayment = settings.rhPayment === 'wallet' ? 'wallet' : 'free';
     settings.rhParams = settings.rhParams || {};
     settings.rhRandomActive = settings.rhRandomActive || {};
     if(!ref){
-        dynamicParams.innerHTML = `<div class="muted-note">${escapeHtml(tr('smart.rhNeedConfig'))}</div>`;
+        target.innerHTML = `<div class="muted-note">${escapeHtml(tr('smart.rhNeedConfig'))}</div>`;
         return;
     }
     if(ref.kind === 'model'){
         settings.provider_id = 'runninghub';
         settings.model = ref.id;
         normalizeApiSizeSettings('');
-        dynamicParams.innerHTML = `
+        target.innerHTML = `
             ${renderRhConfigControl(ref)}
             ${renderSizePickerControl('', true)}
             ${renderQualityControl()}
@@ -3128,7 +3191,7 @@ function renderRunningHubParams(){
     }
     const mediaFields = fields.filter(f => ['image','video','audio'].includes(rhFieldRole(f))).length;
     const promptFields = fields.filter(f => rhFieldRole(f) === 'prompt').length;
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         ${renderRhConfigControl(ref)}
         ${renderRhPaymentControl()}
         ${renderRhMachineControl()}
@@ -3186,18 +3249,18 @@ function renderRhMachineControl(){
         </div>
     </div>`;
 }
-function renderMsParams(){
+function renderMsParams(target=dynamicParams){
     settings.msgenModel = MS_GEN_MODELS[settings.msgenModel] ? settings.msgenModel : 'zimage';
     if(!settings.msCustomModel) settings.msCustomModel = modelscopeImageModels()[0] || 'Tongyi-MAI/Z-Image-Turbo';
     normalizeApiSizeSettings('ms');
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         ${renderMsFunctionControl()}
         ${renderMsCustomModelPill()}
         ${renderSizePickerControl('ms', false)}
         ${renderCountVisualControl()}
     `;
 }
-function renderComfyParams(){
+function renderComfyParams(target=dynamicParams, onWorkflowReady=renderDynamicParams){
     settings.comfyMode = ['text','enhance','edit','custom'].includes(settings.comfyMode) ? settings.comfyMode : 'text';
     const modeOptions = [
         ['text', tr('canvas.comfyModeText') || '文生图'],
@@ -3207,12 +3270,12 @@ function renderComfyParams(){
     ];
     if(settings.comfyMode === 'custom'){
         if(!settings.comfyWorkflow || !comfyWorkflows.some(w => w.name === settings.comfyWorkflow)) settings.comfyWorkflow = comfyWorkflows[0]?.name || '';
-        if(settings.comfyWorkflow && !comfyWorkflowCache[settings.comfyWorkflow]) ensureComfyWorkflow(settings.comfyWorkflow).then(renderDynamicParams);
+        if(settings.comfyWorkflow && !comfyWorkflowCache[settings.comfyWorkflow]) ensureComfyWorkflow(settings.comfyWorkflow).then(onWorkflowReady);
     }
     let html = '';
     if(settings.comfyMode === 'text'){
-        html += `<div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.width'))}</span><input type="number" data-param="width" value="${Number(settings.width || 1024)}"></div>
-            <div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.height'))}</span><input type="number" data-param="height" value="${Number(settings.height || 1024)}"></div>`;
+        html += `<div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.width'))}</span><input type="number" data-param="width" value="${Number(settings.width || 1024)}" data-voice-input="off"></div>
+            <div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.height'))}</span><input type="number" data-param="height" value="${Number(settings.height || 1024)}" data-voice-input="off"></div>`;
     } else if(settings.comfyMode === 'enhance'){
         html += `<div class="num-compact"><span class="num-label">${escapeHtml(tr('smart.strength'))}</span><input type="number" min="0.1" max="1" step="0.05" data-param="enhanceStrength" value="${Number(settings.enhanceStrength ?? 0.5)}"></div>
             <button type="button" class="setting-check ${settings.enhanceUpscale ? 'active' : ''}" data-toggle-param="enhanceUpscale"><span class="check-box"></span><span>${escapeHtml(tr('smart.superResolution'))}</span></button>
@@ -3226,7 +3289,7 @@ function renderComfyParams(){
         html += renderComfyWorkflowControl();
         html += fields.length ? fields.map(renderComfySettingField).join('') : (settings.comfyWorkflow ? '' : `<div class="muted-note">${escapeHtml(tr('smart.noWorkflow'))}</div>`);
     }
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         <div class="smart-control comfy-mode-control">
             <button class="smart-pill" type="button"><i data-lucide="workflow"></i><span>${escapeHtml(modeOptions.find(([v]) => v === settings.comfyMode)?.[1] || 'ComfyUI')}</span></button>
             <div class="smart-popover compact-popover">
@@ -3285,7 +3348,7 @@ function renderSizeControls(prefix='', includeSource=false){
 function ratioLabel(prefix=''){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const customKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
-    const sourceLabel = sourceImageRatioLabel(prefix) || tr('smart.imageRatio');
+    const sourceLabel = settings[customKey] || sourceImageRatioLabel(prefix) || tr('smart.imageRatio');
     const map = {square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4', landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21', source:sourceLabel, custom:settings[customKey] || tr('smart.custom')};
     return map[settings[ratioKey] || 'square'] || '1:1';
 }
@@ -3578,16 +3641,16 @@ function renderCustomRatioControls(prefix=''){
     const wKey = prefix ? `${prefix}CustomRatioWidth` : 'customRatioWidth';
     const hKey = prefix ? `${prefix}CustomRatioHeight` : 'customRatioHeight';
     const disabled = settings[ratioKey] === 'source' ? 'disabled' : '';
-    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="比例宽" ${disabled}>
-            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="比例高" ${disabled}>`;
+    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="比例宽" data-voice-input="off" ${disabled}>
+            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="比例高" data-voice-input="off" ${disabled}>`;
 }
 function renderCustomSizeControls(prefix=''){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     if(settings[resKey] !== 'custom') return '';
     const wKey = prefix ? `${prefix}CustomWidth` : 'customWidth';
     const hKey = prefix ? `${prefix}CustomHeight` : 'customHeight';
-    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="宽度">
-            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="高度">`;
+    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="宽度" data-voice-input="off">
+            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="高度" data-voice-input="off">`;
 }
 function renderComfySettingField(field){
     const value = comfyParamValue(field);
@@ -3606,13 +3669,13 @@ function renderComfySettingField(field){
             </div>
         </div>`;
     }
-    if(field.type === 'textarea') return `<textarea class="wide" data-comfy-param="${escapeHtml(field.id)}" placeholder="${escapeHtml(label)}" style="width:160px">${escapeHtml(value)}</textarea>`;
+    if(field.type === 'textarea') return `<textarea class="wide" data-comfy-param="${escapeHtml(field.id)}" placeholder="${escapeHtml(label)}" style="width:160px" data-voice-input="on" data-voice-label="${escapeHtml(label)}">${escapeHtml(value)}</textarea>`;
     const type = (field.type === 'number' || field.type === 'slider') ? 'number' : 'text';
     const min = field.min !== undefined ? ` min="${escapeHtml(field.min)}"` : '';
     const max = field.max !== undefined ? ` max="${escapeHtml(field.max)}"` : '';
     const step = field.step !== undefined ? ` step="${escapeHtml(field.step)}"` : '';
     const isNumeric = type === 'number';
-    const inputHtml = `<input type="${type}" data-comfy-param="${escapeHtml(field.id)}" value="${escapeHtml(value)}"${min}${max}${step}>`;
+    const inputHtml = `<input type="${type}" data-comfy-param="${escapeHtml(field.id)}" value="${escapeHtml(value)}"${min}${max}${step} data-voice-input="off">`;
     if(isNumeric && comfyRandomEnabledField(field)){
         const active = smartComfyRandomActive(field.id);
         return `<div class="num-with-dice" title="${escapeHtml(label)}">
@@ -4070,7 +4133,7 @@ function renderRhSettingField(field){
             <button class="smart-pill" type="button"><span class="sub">${escapeHtml(label)}</span><span class="rh-slider-pill-value">${escapeHtml(numericValue)}</span></button>
             <div class="smart-popover compact-popover rh-picker-popover rh-param-popover rh-slider-popover">
                 <div class="smart-popover-title"><span>${escapeHtml(label)}</span><span class="rh-slider-value">${escapeHtml(numericValue)}</span></div>
-                <input type="range" class="smart-range rh-slider-input" data-rh-param="${escapeHtml(key)}" data-rh-type="slider" min="${escapeHtml(min)}" max="${escapeHtml(max)}" step="${escapeHtml(step)}" value="${escapeHtml(numericValue)}">
+                <input type="range" class="smart-range rh-slider-input" data-rh-param="${escapeHtml(key)}" data-rh-type="slider" min="${escapeHtml(min)}" max="${escapeHtml(max)}" step="${escapeHtml(step)}" value="${escapeHtml(numericValue)}" data-voice-input="off">
             </div>
         </div>`;
     }
@@ -4087,7 +4150,7 @@ function renderRhSettingField(field){
         </div>`;
     }
     const type = kind === 'number' ? 'number' : 'text';
-    const inputHtml = `<input type="${type}" data-rh-param="${escapeHtml(key)}" value="${escapeHtml(value)}">`;
+    const inputHtml = `<input type="${type}" data-rh-param="${escapeHtml(key)}" value="${escapeHtml(value)}" data-voice-input="off">`;
     if(kind === 'number' && rhRandomEnabled(field)){
         const active = smartRhRandomActive(key);
         return `<div class="num-with-dice" title="${escapeHtml(label)}">
@@ -4810,13 +4873,13 @@ function renderPromptTemplatePanel(options={}){
             ${editMode ? `
                 <div class="prompt-template-edit-fields">
                     <label>${escapeHtml(tr('smart.tplName'))}</label>
-                    <input data-template-edit-name value="${escapeAttr(selectedPreset.name || '')}" placeholder="${escapeAttr(tr('smart.tplName'))}">
+                    <input data-template-edit-name value="${escapeAttr(selectedPreset.name || '')}" placeholder="${escapeAttr(tr('smart.tplName'))}" data-voice-input="on" data-voice-label="提示词模板名称">
                     <label>${escapeHtml(tr('smart.tplGroup'))}</label>
                     <select data-template-edit-category>
                         ${activeGroups.map(group => `<option value="${escapeAttr(group.id)}" ${group.id === (selectedPreset.category || selected?.category || 'mine') ? 'selected' : ''}>${escapeHtml(promptTemplateCategoryLabel(group.id))}</option>`).join('')}
                     </select>
                     <label>${escapeHtml(tr('smart.tplContent'))}</label>
-                    <textarea data-template-edit-text placeholder="${escapeAttr(tr('smart.tplContent'))}">${escapeHtml(selectedPreset.text || '')}</textarea>
+                    <textarea data-template-edit-text placeholder="${escapeAttr(tr('smart.tplContent'))}" data-voice-input="on" data-voice-label="提示词模板内容">${escapeHtml(selectedPreset.text || '')}</textarea>
                 </div>
             ` : `
                 <div class="prompt-template-preview-content">
@@ -5477,10 +5540,22 @@ function mergeSmartNodeLists(localNodes, remoteNodes, options={}){
     return order.map(id => {
         const local = localById.get(id);
         const remote = remoteById.get(id);
-        if(local && !remote) return local;     // 仅本地存在：保留（我新建的节点；对方删了也宁可复活也不丢结果）
+        if(local && !remote) return deletedNodeIds.has(String(id)) ? null : local;
         if(remote && !local) return deletedNodeIds.has(String(id)) ? null : remote;     // 本地已删的节点不从旧快照复活
         return mergeSmartNode(local, remote, options);
     }).filter(Boolean);
+}
+function smartRemoteDeletedOpenShopNodeIds(localNodes, remoteNodes, syncedIds){
+    const remoteIds = new Set((remoteNodes || []).map(node => String(node?.id || '')));
+    const baselineIds = syncedIds instanceof Set ? syncedIds : new Set(syncedIds || []);
+    return new Set(
+        (localNodes || [])
+            .filter(node => {
+                const id = String(node?.id || '');
+                return node?.type === 'openshop-layered' && id && baselineIds.has(id) && !remoteIds.has(id);
+            })
+            .map(node => String(node.id))
+    );
 }
 function mergeSmartConnections(localConns, remoteConns, nodeIds){
     const out = [];
@@ -5497,13 +5572,30 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 function applyMergedServerCanvas(serverCanvas, options={}){
     if(!serverCanvas || !canvas) return false;
     const remoteNodes = (Array.isArray(serverCanvas.nodes) ? serverCanvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
+    const remotelyDeletedOpenShopNodeIds = smartRemoteDeletedOpenShopNodeIds(
+        nodes,
+        remoteNodes,
+        lastSyncedSmartOpenShopNodeIds
+    );
+    remotelyDeletedOpenShopNodeIds.forEach(id => permanentlyDeletedOpenShopNodeIds.add(id));
+    const blockedPermanentlyDeletedOpenShopNode = remotelyDeletedOpenShopNodeIds.size > 0
+        || remoteNodes.some(node => permanentlyDeletedOpenShopNodeIds.has(String(node.id)));
+    const deletedNodeIds = new Set(permanentlyDeletedOpenShopNodeIds);
+    if(options.preserveLocalChanges){
+        smartDeletedNodeIds.forEach(id => deletedNodeIds.add(id));
+    }
     const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes, {
         preferLocal: Boolean(options.preserveLocalChanges),
-        deletedNodeIds: options.preserveLocalChanges ? smartDeletedNodeIds : new Set(),
+        deletedNodeIds,
     });
-    const nodeIds = new Set(mergedNodes.map(n => n.id));
-    nodes = mergedNodes;
-    canvas.connections = mergeSmartConnections(canvas.connections, serverCanvas.connections, nodeIds);
+    const nodeIds = new Set(mergedNodes.map(node => node.id));
+    const safeMergedState = filterPermanentlyDeletedOpenShopHistoryState({
+        nodes:mergedNodes,
+        connections:mergeSmartConnections(canvas.connections, serverCanvas.connections, nodeIds),
+    });
+    nodes = safeMergedState.nodes;
+    canvas.connections = safeMergedState.connections;
+    rememberSyncedSmartOpenShopNodes(remoteNodes);
     const cleanedState = clearCompletedNodeBusyStates();
     const recoveredLoopOutputs = recoverStuckLoopOutputsFromLogs();
     canvas.updated_at = Number(serverCanvas.updated_at || canvas.updated_at || 0);
@@ -5514,7 +5606,7 @@ function applyMergedServerCanvas(serverCanvas, options={}){
     }
     render();
     if(typeof scheduleConnectionLayerRefresh === 'function') scheduleConnectionLayerRefresh();
-    if(cleanedState || recoveredLoopOutputs) scheduleSave();
+    if(cleanedState || recoveredLoopOutputs || blockedPermanentlyDeletedOpenShopNode) scheduleSave();
     resumeSmartPendingTasks();
     resumeJimengPendingNodes();
     return true;
@@ -6084,11 +6176,15 @@ async function loadCanvas(){
         if(!res.ok) return;
         const data = await res.json();
         canvas = data.canvas;
+        permanentlyDeletedOpenShopNodeIds.clear();
+        undoStack.length = 0;
+        pendingUndoSnapshot = null;
         rememberCanvasListProject(canvas.project || 'default');
         canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
         document.title = canvas.title || tr('canvas.smartCanvas');
         document.getElementById('smartTitle').textContent = canvas.title || tr('canvas.smartCanvas');
         nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
+        rememberSyncedSmartOpenShopNodes(nodes);
         migrateSmartGroupImageMembers();
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         nodes.forEach(n => {
@@ -6172,6 +6268,7 @@ async function saveCanvas(){
         if(res.ok){
             const data = await res.json();
             if(data.canvas && data.canvas.updated_at) canvas.updated_at = data.canvas.updated_at;
+            if(Array.isArray(data.canvas?.nodes)) rememberSyncedSmartOpenShopNodes(data.canvas.nodes);
             clearSmartCanvasDirtyIfCurrent(saveRevision);
         } else if(res.status === 409) {
             // 冲突：别人先保存了。合并对方的状态（节点 id 合并、图片取并集，谁都不丢），
@@ -7019,8 +7116,15 @@ function copySelectedNodes(){
     if(!copiedNodes.length) return;
     const idSet = new Set(copiedNodes.map(n => n.id));
     const copiedConnections = (canvas.connections || []).filter(c => idSet.has(c.from) && idSet.has(c.to));
+    const serializedNodes = copiedNodes.map(node => {
+        const copy = JSON.parse(JSON.stringify(node));
+        if(node.type === OPENSHOP_LAYERED_NODE_TYPE){
+            window.HstarSmartOpenShopAdapter?.captureCloneSource?.(node, copy);
+        }
+        return copy;
+    });
     nodeClipboard = {
-        nodes:JSON.parse(JSON.stringify(copiedNodes)),
+        nodes:serializedNodes,
         connections:JSON.parse(JSON.stringify(copiedConnections))
     };
     toast(`已复制 ${copiedNodes.length} 个节点`);
@@ -7803,15 +7907,15 @@ function promptNodeBodyHtml(node){
         <div class="prompt-node-llm">
             <select class="prompt-node-control prompt-llm-provider">${chatProviderOptions(node.llmProvider)}</select>
             <select class="prompt-node-control prompt-llm-model">${chatModelOptions(node.llmModel, node.llmProvider)}</select>
-            <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}">${escapeHtml(node.llmInstruction || '')}</textarea>
+            <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}" data-voice-input="on" data-voice-label="LLM 修改要求">${escapeHtml(node.llmInstruction || '')}</textarea>
             <div class="prompt-node-llm-actions">
                 <button class="prompt-node-run prompt-node-control" type="button" ${node.running ? 'disabled' : ''}><i data-lucide="${node.running ? 'loader-2' : 'play'}"></i><span>${node.running ? escapeHtml(tr('common.running')) : escapeHtml(tr('common.run'))}</span></button>
                 <button class="prompt-node-pill prompt-node-control prompt-system-toggle ${node.llmSystemEnabled ? 'active' : ''}" type="button"><i data-lucide="${node.llmSystemEnabled ? 'toggle-right' : 'toggle-left'}"></i><span>${escapeHtml(node.llmSystemEnabled ? tr('smart.promptLlmDisableSystem') : tr('smart.promptLlmEnableSystem'))}</span></button>
             </div>
-            ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
+            ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}" data-voice-input="on" data-voice-label="LLM 系统提示词">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
         </div>` : '';
     return `<div class="prompt-node-card">
-        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}">${escapeHtml(node.text || '')}</textarea>
+        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}" data-voice-input="on" data-voice-label="提示词" data-voice-offset-y="42">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
             <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>模板库</span></button>
             <button class="prompt-node-pill prompt-llm-toggle ${node.llmEnabled ? 'active' : ''}" type="button"><i data-lucide="sparkles"></i><span>LLM</span></button>
@@ -7830,7 +7934,7 @@ function loopNumberControlHtml({label, value, key, min=1, max=100, quick=[1,2,3,
             </div>
             <label class="loop-number-custom">
                 <span>${escapeHtml(tr('common.custom'))}</span>
-                <input class="loop-smart-control loop-number-input" type="number" min="${min}" max="${max}" step="1" data-loop-number-input="${escapeHtml(key)}" value="${v}">
+                <input class="loop-smart-control loop-number-input" type="number" min="${min}" max="${max}" step="1" data-loop-number-input="${escapeHtml(key)}" value="${v}" data-voice-input="off">
             </label>
         </div>
     </div>`;
@@ -9489,8 +9593,15 @@ function copySelectedNodes(){
     if(!copiedNodes.length) return;
     const idSet = new Set(copiedNodes.map(n => n.id));
     const copiedConnections = (canvas.connections || []).filter(c => idSet.has(c.from) && idSet.has(c.to));
+    const serializedNodes = copiedNodes.map(node => {
+        const copy = JSON.parse(JSON.stringify(node));
+        if(node.type === OPENSHOP_LAYERED_NODE_TYPE){
+            window.HstarSmartOpenShopAdapter?.captureCloneSource?.(node, copy);
+        }
+        return copy;
+    });
     nodeClipboard = {
-        nodes:JSON.parse(JSON.stringify(copiedNodes)),
+        nodes:serializedNodes,
         connections:JSON.parse(JSON.stringify(copiedConnections))
     };
     toast(`已复制 ${copiedNodes.length} 个节点`);
@@ -10495,7 +10606,7 @@ function promptNodeBodyHtml(node){
             <select class="prompt-node-control prompt-llm-provider">${chatProviderOptions(node.llmProvider)}</select>
             <select class="prompt-node-control prompt-llm-model">${chatModelOptions(node.llmModel, node.llmProvider)}</select>
             <div class="prompt-llm-instruction-wrap">
-                <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}" style="height:${promptLlmInstructionHeight(node)}px">${escapeHtml(node.llmInstruction || '')}</textarea>
+                <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}" style="height:${promptLlmInstructionHeight(node)}px" data-voice-input="on" data-voice-label="LLM 修改要求">${escapeHtml(node.llmInstruction || '')}</textarea>
                 <div class="prompt-llm-instruction-resize prompt-node-control" data-llm-instruction-resize="1" title="拖动调整高度"><span></span></div>
             </div>
             ${upstreamPromptHtml}
@@ -10503,17 +10614,17 @@ function promptNodeBodyHtml(node){
                 <button class="prompt-node-run prompt-node-control" type="button" ${node.running ? 'disabled' : ''}><i data-lucide="${node.running ? 'loader-2' : 'play'}"></i><span>${node.running ? escapeHtml(tr('common.running')) : escapeHtml(tr('common.run'))}</span></button>
                 <button class="prompt-node-pill prompt-node-control prompt-system-toggle ${node.llmSystemEnabled ? 'active' : ''}" type="button"><i data-lucide="${node.llmSystemEnabled ? 'toggle-right' : 'toggle-left'}"></i><span>${escapeHtml(node.llmSystemEnabled ? tr('smart.promptLlmDisableSystem') : tr('smart.promptLlmEnableSystem'))}</span></button>
             </div>
-            ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
+            ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}" data-voice-input="on" data-voice-label="LLM 系统提示词">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
         </div>` : '';
     return `<div class="prompt-node-card">
-        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}">${escapeHtml(node.text || '')}</textarea>
+        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}" data-voice-input="on" data-voice-label="提示词" data-voice-offset-y="42">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
             <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>模板库</span></button>
             <button class="prompt-node-pill prompt-node-control prompt-split-toggle ${node.promptSplitEnabled ? 'active' : ''}" type="button"><i data-lucide="split"></i><span>分隔符</span></button>
             <button class="prompt-node-pill prompt-llm-toggle ${node.llmEnabled ? 'active' : ''}" type="button"><i data-lucide="sparkles"></i><span>LLM</span></button>
         </div>
         ${node.promptSplitEnabled ? `<div class="prompt-node-split-row">
-            <label class="prompt-node-split-control prompt-node-control"><span>分隔符</span><input class="prompt-node-separator" type="text" value="${escapeHtml(node.promptSeparator)}" maxlength="8" placeholder=";"></label>
+            <label class="prompt-node-split-control prompt-node-control"><span>分隔符</span><input class="prompt-node-separator" type="text" value="${escapeHtml(node.promptSeparator)}" maxlength="8" placeholder=";" data-voice-input="off"></label>
             <span class="prompt-node-split-count">${promptItems.length || 0} 段</span>
         </div>
         <div class="prompt-node-segments" style="height:${promptSplitPreviewH}px">${promptItems.length ? promptItems.map((item, index) => `<div class="prompt-node-segment"><span>${index + 1}</span><p>${escapeHtml(item)}</p></div>`).join('') : ''}</div>
@@ -10543,7 +10654,7 @@ function loopNumberControlHtml({label, value, key, min=1, max=100, quick=[1,2,3,
             </div>
             <label class="loop-number-custom">
                 <span>${escapeHtml(tr('common.custom'))}</span>
-                <input class="loop-smart-control loop-number-input" type="number" min="${min}" max="${max}" step="1" data-loop-number-input="${escapeHtml(key)}" value="${v}">
+                <input class="loop-smart-control loop-number-input" type="number" min="${min}" max="${max}" step="1" data-loop-number-input="${escapeHtml(key)}" value="${v}" data-voice-input="off">
             </label>
         </div>
     </div>`;
@@ -10973,15 +11084,36 @@ function ensureSmartTextEditPanel(){
         if(action === 'close' || action === 'cancel') closeSmartTextModifyPanel();
         if(action === 'mode' && smartTextEditPanelState){
             const mode = actionBtn.dataset.smartTextMode === 'erase' ? 'erase' : 'modify';
+            if(mode === 'erase') cancelSmartTextGenerationSession(smartTextEditPanelState);
             smartTextEditPanelState.mode = mode;
             renderSmartTextModifyPanel();
         }
         if(action === 'recognize' && smartTextEditPanelState) reloadSmartTextRecognition();
         if(action === 'cancelRecognize' && smartTextEditPanelState) cancelSmartTextRecognition();
+        if(action === 'selectGeneration' && smartTextEditPanelState) openSmartTextGenerationSelector();
+        if(action === 'cancelGeneration' && smartTextEditPanelState) cancelSmartTextGenerationSelector();
+        if(action === 'confirmGeneration' && smartTextEditPanelState) confirmSmartTextGenerationSelector();
         if(action === 'apply') applySmartTextModification();
         if(action === 'applyErase') applySmartTextErase();
     });
     panel.addEventListener('change', e => {
+        const generationEngine = e.target.closest('[data-smart-text-generation-engine]');
+        if(generationEngine && smartTextEditPanelState?.generationSettingsDraft){
+            const nextEngine = ['api','volcengine','modelscope','comfy','runninghub'].includes(generationEngine.value) ? generationEngine.value : 'api';
+            const draft = smartTextEditPanelState.generationSettingsDraft;
+            draft.engine = nextEngine;
+            draft.apiKind = 'image';
+            if(nextEngine === 'volcengine'){
+                draft.provider_id = 'volcengine';
+                draft.model = '';
+            } else if(draft.provider_id === 'volcengine'){
+                draft.provider_id = '';
+                draft.model = '';
+            }
+            smartTextEditPanelState.generationSettingsError = '';
+            renderSmartTextModifyPanel();
+            return;
+        }
         const textSelect = e.target.closest('[data-smart-text-select]');
         if(textSelect && smartTextEditPanelState){
             const key = textSelect.dataset.smartTextSelect;
@@ -11021,25 +11153,36 @@ function positionSmartTextEditPanel(){
     const panel = document.getElementById('smartTextEditPanel');
     const state = smartTextEditPanelState;
     if(!panel || !state) return;
+    const scale = Math.max(0.001, Number(viewport.scale) || 1);
     const width = SMART_TEXT_EDIT_PANEL_WIDTH;
-    const height = SMART_TEXT_EDIT_PANEL_HEIGHT;
+    const targetHeight = SMART_TEXT_EDIT_PANEL_HEIGHT;
+    const height = Math.min(targetHeight, Math.max(320, shell.clientHeight - 24));
+    const worldWidth = width;
+    const worldHeight = height;
     const node = nodes.find(n => n.id === state.nodeId);
     const bounds = node ? nodeRect(node) : null;
-    const viewLeft = -viewport.x / viewport.scale;
-    const viewTop = -viewport.y / viewport.scale;
-    const viewWidth = shell.clientWidth / viewport.scale;
-    const viewHeight = shell.clientHeight / viewport.scale;
+    const viewLeft = -viewport.x / scale;
+    const viewTop = -viewport.y / scale;
+    const viewWidth = shell.clientWidth / scale;
+    const viewHeight = shell.clientHeight / scale;
     const viewRight = viewLeft + viewWidth;
     const viewBottom = viewTop + viewHeight;
     const gap = 14;
-    let left = bounds ? bounds.x + bounds.width + gap : viewLeft + Math.max(12, (viewWidth - width) / 2);
-    if(left + width > viewRight - 12) left = Math.max(viewLeft + 12, (bounds ? bounds.x : viewRight) - width - gap);
-    const rawTop = bounds ? bounds.y : viewTop + 92;
-    const top = Math.max(viewTop + 12, Math.min(rawTop, viewBottom - height - 12));
+    const inset = 12 / scale;
+    let left = bounds
+        ? bounds.x + bounds.width + gap
+        : viewLeft + Math.max(inset, (viewWidth - worldWidth) / 2);
+    if(left + worldWidth > viewRight - inset){
+        left = (bounds ? bounds.x : viewRight) - worldWidth - gap;
+    }
+    left = Math.max(viewLeft + inset, Math.min(left, viewRight - worldWidth - inset));
+    const rawTop = bounds ? bounds.y : viewTop + (92 / scale);
+    const top = Math.max(viewTop + inset, Math.min(rawTop, viewBottom - worldHeight - inset));
     panel.style.width = `${width}px`;
     panel.style.height = `${height}px`;
-    panel.style.left = `${Math.round(left)}px`;
-    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.transform = '';
 }
 function renderSmartTextModifyPanel(){
     const panel = ensureSmartTextEditPanel();
@@ -11058,13 +11201,60 @@ function renderSmartTextModifyPanel(){
     const rows = (state.texts || []).length ? state.texts.map((item, index) => `
         <label class="smart-text-edit-field">
             <span>${index + 1}</span>
-            <textarea data-smart-text-index="${index}" rows="2" placeholder="识别文字">${escapeHtml(item.next ?? item.text ?? '')}</textarea>
+            <textarea data-smart-text-index="${index}" rows="2" placeholder="识别文字" data-voice-input="on" data-voice-label="识别文字">${escapeHtml(item.next ?? item.text ?? '')}</textarea>
         </label>`).join('') : `<div class="smart-text-edit-empty">${emptyText}</div>`;
     const modifyBody = `
         ${recognitionControls}
         ${error ? `<div class="smart-text-edit-error">${escapeHtml(error)}</div>` : ''}
         ${rows}`;
     const eraseBody = renderSmartTextEraseControls(state);
+    const summaryParts = state.generationSettingsConfirmed ? smartTextGenerationSummaryParts(state.generationSettings) : [];
+    const summary = summaryParts.length ? summaryParts.join(' · ') : '未选择生图模型';
+    const modifyActions = `
+        <div class="smart-text-edit-actions">
+            <div class="smart-text-edit-action-row">
+                <button type="button" class="smart-text-generation-trigger" data-smart-text-panel-action="selectGeneration">选择生图模型</button>
+                <div class="smart-text-edit-action-right">
+                    <button type="button" class="secondary" data-smart-text-panel-action="cancel">取消</button>
+                    <button type="button" class="primary" data-smart-text-panel-action="apply" ${(loading || !(state.texts || []).length || !state.generationSettingsConfirmed) ? 'disabled' : ''}>应用修改</button>
+                </div>
+            </div>
+            <div class="smart-text-generation-summary ${state.generationSettingsConfirmed ? 'confirmed' : ''}" title="${escapeHtml(summary)}">${escapeHtml(summary)}</div>
+        </div>`;
+    const eraseActions = `
+        <div class="smart-text-edit-actions erase-mode">
+            <div class="smart-text-edit-action-row">
+                <div class="smart-text-edit-action-right">
+                    <button type="button" class="secondary" data-smart-text-panel-action="cancel">取消</button>
+                    <button type="button" class="primary" data-smart-text-panel-action="applyErase">应用消除</button>
+                </div>
+            </div>
+        </div>`;
+    const generationLayer = state.mode === 'modify' && state.generationSelectorOpen ? `
+        <div class="smart-text-generation-layer open">
+            <div class="smart-text-generation-head">
+                <strong>选择生图模型</strong>
+                <button type="button" data-smart-text-panel-action="cancelGeneration" title="返回" aria-label="返回修改文字"><i data-lucide="arrow-left"></i></button>
+            </div>
+            <div class="smart-text-generation-content">
+                <label class="smart-text-generation-engine-field">
+                    <span>生成引擎</span>
+                    <select data-smart-text-generation-engine>
+                        <option value="api" ${state.generationSettingsDraft?.engine === 'api' ? 'selected' : ''}>API 生图</option>
+                        <option value="volcengine" ${state.generationSettingsDraft?.engine === 'volcengine' ? 'selected' : ''}>火山引擎</option>
+                        <option value="modelscope" ${state.generationSettingsDraft?.engine === 'modelscope' ? 'selected' : ''}>ModelScope</option>
+                        <option value="comfy" ${state.generationSettingsDraft?.engine === 'comfy' ? 'selected' : ''}>ComfyUI</option>
+                        <option value="runninghub" ${state.generationSettingsDraft?.engine === 'runninghub' ? 'selected' : ''}>RunningHub</option>
+                    </select>
+                </label>
+                <div class="smart-text-generation-fields"></div>
+                ${state.generationSettingsError ? `<div class="smart-text-generation-error" role="alert">${escapeHtml(state.generationSettingsError)}</div>` : ''}
+            </div>
+            <div class="smart-text-generation-actions">
+                <button type="button" class="secondary" data-smart-text-panel-action="cancelGeneration">取消</button>
+                <button type="button" class="primary" data-smart-text-panel-action="confirmGeneration">确认</button>
+            </div>
+        </div>` : '';
     panel.innerHTML = `
         <div class="smart-text-edit-head">
             ${modeTabs}
@@ -11073,10 +11263,12 @@ function renderSmartTextModifyPanel(){
         <div class="smart-text-edit-body">
             ${state.mode === 'erase' ? eraseBody : modifyBody}
         </div>
-        <div class="smart-text-edit-actions">
-            <button type="button" class="secondary" data-smart-text-panel-action="cancel">取消</button>
-            <button type="button" class="primary" data-smart-text-panel-action="${state.mode === 'erase' ? 'applyErase' : 'apply'}" ${state.mode === 'modify' && (loading || !(state.texts || []).length) ? 'disabled' : ''}>${state.mode === 'erase' ? '应用消除' : '应用修改'}</button>
-        </div>`;
+        ${state.mode === 'erase' ? eraseActions : modifyActions}
+        ${generationLayer}`;
+    if(state.generationSelectorOpen){
+        const generationFields = panel.querySelector('.smart-text-generation-fields');
+        if(generationFields) renderSmartTextGenerationFields(state, generationFields);
+    }
     panel.classList.add('open');
     positionSmartTextEditPanel();
     refreshIcons();
@@ -11097,6 +11289,148 @@ function cloneSmartTextRows(rows){
         index:Number(item?.index ?? index) || index
     })).filter(item => item.text || item.next);
 }
+function cloneSmartTextGenerationSettings(source){
+    const clean = settingsForStorage(cloneSmartSettings(source || {}));
+    clean.apiKind = 'image';
+    delete clean.videoTempShLinks;
+    return clean;
+}
+function smartTextSourceRatioForState(state){
+    const subject = smartTextEditSubject(state?.nodeId, state?.imageIndex);
+    return reducedRatioForImage(subject?.image) || reducedRatioForImage(subject?.item);
+}
+function applySmartTextSourceRatioToSettings(state, target, prefix=''){
+    if(!target || typeof target !== 'object') return null;
+    const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
+    if(target[ratioKey] !== 'source') return null;
+    const ratio = smartTextSourceRatioForState(state);
+    if(!ratio) return null;
+    const customKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
+    const widthKey = prefix ? `${prefix}CustomRatioWidth` : 'customRatioWidth';
+    const heightKey = prefix ? `${prefix}CustomRatioHeight` : 'customRatioHeight';
+    target[customKey] = `${ratio.w}:${ratio.h}`;
+    target[widthKey] = ratio.w;
+    target[heightKey] = ratio.h;
+    return ratio;
+}
+function applySmartTextSourceRatioToDraft(state, prefix=''){
+    return applySmartTextSourceRatioToSettings(state, state?.generationSettingsDraft, prefix);
+}
+function smartTextGenerationSession(state, fallbackSettings){
+    if(!state) return null;
+    const source = state.generationSettingsConfirmed && state.generationSettings
+        ? state.generationSettings
+        : fallbackSettings;
+    state.generationSettingsDraft = cloneSmartTextGenerationSettings(source);
+    state.generationSettingsDraft.apiKind = 'image';
+    state.generationSelectorOpen = true;
+    state.generationSettingsError = '';
+    return state.generationSettingsDraft;
+}
+function cancelSmartTextGenerationSession(state){
+    if(!state) return;
+    state.generationSettingsDraft = null;
+    state.generationSelectorOpen = false;
+    state.generationSettingsError = '';
+}
+function confirmSmartTextGenerationSession(state){
+    if(!state?.generationSettingsDraft) return null;
+    state.generationSettings = cloneSmartTextGenerationSettings(state.generationSettingsDraft);
+    state.generationSettingsConfirmed = true;
+    state.generationSettingsDraft = null;
+    state.generationSelectorOpen = false;
+    state.generationSettingsError = '';
+    return state.generationSettings;
+}
+function smartTextResolutionOptions(source, prefix=''){
+    const draft = source || {};
+    const model = prefix === 'ms'
+        ? (draft.msgenModel === 'custom' ? draft.msCustomModel : draft.msgenModel)
+        : draft.model;
+    const fixed = String(model || '').trim().toLowerCase().match(/(?:^|[-_])(1k|2k|4k)$/)?.[1] || '';
+    return ['1k','2k','4k'].map(value => ({
+        value,
+        disabled:Boolean(fixed) && value !== fixed
+    }));
+}
+function normalizeSmartTextResolution(source, prefix=''){
+    if(!source || typeof source !== 'object') return '1k';
+    const key = prefix ? `${prefix}Resolution` : 'resolution';
+    const allowed = smartTextResolutionOptions(source, prefix)
+        .filter(option => !option.disabled)
+        .map(option => option.value);
+    const preferred = prefix ? '1k' : defaultSmartApiResolution(source.model);
+    const fallback = allowed.includes(preferred) ? preferred : (allowed[0] || '1k');
+    if(!allowed.includes(source[key])) source[key] = fallback;
+    return source[key];
+}
+function validateSmartTextGenerationSettings(draft){
+    const source = draft || {};
+    const engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(source.engine) ? source.engine : 'api';
+    if(engine === 'api' || engine === 'volcengine'){
+        if(!String(source.provider_id || '').trim()) return '请选择 API 平台';
+        if(!String(source.model || '').trim()) return '请选择生图模型';
+        if(source.resolution === 'custom' && (!(Number(source.customWidth) > 0) || !(Number(source.customHeight) > 0))){
+            return '请填写完整的自定义宽度和高度';
+        }
+    }
+    if(engine === 'modelscope'){
+        if(source.msgenModel === 'custom' && !String(source.msCustomModel || '').trim()) return '请选择 ModelScope 自定义模型';
+        if(source.msResolution === 'custom' && (!(Number(source.msCustomWidth) > 0) || !(Number(source.msCustomHeight) > 0))){
+            return '请填写完整的 ModelScope 自定义宽度和高度';
+        }
+    }
+    if(engine === 'comfy' && source.comfyMode === 'custom' && !String(source.comfyWorkflow || '').trim()){
+        return '请选择 ComfyUI 工作流';
+    }
+    if(engine === 'runninghub' && !String(source.rhConfigKey || '').trim()){
+        return '请选择 RunningHub 模型、AI 应用或工作流';
+    }
+    const prefix = engine === 'modelscope' ? 'ms' : '';
+    const resolutionKey = prefix ? 'msResolution' : 'resolution';
+    if(source[resolutionKey] && ['api','volcengine','modelscope'].includes(engine)){
+        const selected = smartTextResolutionOptions(source, prefix)
+            .find(option => option.value === source[resolutionKey]);
+        if(!selected || selected.disabled) return '当前模型不支持所选分辨率，请重新选择';
+    }
+    return '';
+}
+function smartTextGenerationSummaryParts(source){
+    if(!source || typeof source !== 'object') return [];
+    const engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(source.engine) ? source.engine : 'api';
+    const ratioLabels = {square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4', landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21', source:'原图'};
+    const qualityLabels = {auto:'自动质量', low:'低质量', medium:'中等质量', high:'高质量'};
+    const sizePart = prefix => {
+        const ratio = source[prefix ? `${prefix}Ratio` : 'ratio'] || 'square';
+        const resolution = source[prefix ? `${prefix}Resolution` : 'resolution'] || '1k';
+        const customSize = source[prefix ? `${prefix}CustomSize` : 'customSize']
+            || ((source[prefix ? `${prefix}CustomWidth` : 'customWidth'] && source[prefix ? `${prefix}CustomHeight` : 'customHeight'])
+                ? `${source[prefix ? `${prefix}CustomWidth` : 'customWidth']} × ${source[prefix ? `${prefix}CustomHeight` : 'customHeight']}` : '');
+        const customRatio = source[prefix ? `${prefix}CustomRatio` : 'customRatio'] || '';
+        const ratioText = ratio === 'custom' ? customRatio : (ratioLabels[ratio] || ratio);
+        const resolutionText = resolution === 'custom' ? customSize : (resolution === 'auto' ? '自动' : String(resolution).toUpperCase());
+        return [ratioText, resolutionText].filter(Boolean).join(' / ');
+    };
+    const countPart = `${Math.max(1, Math.min(8, Number(source.count || 1)))} 张`;
+    if(engine === 'modelscope'){
+        const model = source.msgenModel === 'custom' ? source.msCustomModel : msModelLabel(source.msgenModel || 'zimage');
+        return ['ModelScope', model, sizePart('ms'), countPart].filter(Boolean);
+    }
+    if(engine === 'comfy'){
+        const modeLabels = {text:'文生图', enhance:'图片增强', edit:'图片编辑', custom:'自定义工作流'};
+        const mode = source.comfyMode || 'text';
+        const detail = mode === 'custom' ? source.comfyWorkflow : modeLabels[mode];
+        const dimensions = mode === 'text' && source.width && source.height ? `${source.width} × ${source.height}` : '';
+        return ['ComfyUI', detail, dimensions, countPart].filter(Boolean);
+    }
+    if(engine === 'runninghub'){
+        const ref = selectedRunningHubRef(source);
+        const label = ref ? runningHubEntryLabel(ref.entry || ref, ref.kind) : '';
+        return ['RunningHub', label, countPart].filter(Boolean);
+    }
+    const provider = apiProviderById(engine === 'volcengine' ? 'volcengine' : source.provider_id);
+    return [provider?.name || source.provider_id || (engine === 'volcengine' ? '火山引擎' : 'API'), source.model, sizePart(''), qualityLabels[source.quality || 'auto'], countPart].filter(Boolean);
+}
 function hydrateSmartTextPanelState(node, imageIndex=0, mode='modify'){
     const pref = markerApiPreference();
     const fallbackProvider = resolveChatProviderId(pref.provider || markerProviderValue());
@@ -11114,6 +11448,13 @@ function hydrateSmartTextPanelState(node, imageIndex=0, mode='modify'){
         texts,
         status:saved.status || (texts.length ? 'ready' : 'idle'),
         error:saved.error || '',
+        generationSettingsConfirmed:saved.generationSettingsConfirmed === true,
+        generationSettings:saved.generationSettingsConfirmed === true
+            ? cloneSmartTextGenerationSettings(saved.generationSettings)
+            : null,
+        generationSettingsDraft:null,
+        generationSelectorOpen:false,
+        generationSettingsError:'',
         open:true
     };
 }
@@ -11129,6 +11470,10 @@ function saveSmartTextPanelStateToNode(){
         texts:cloneSmartTextRows(state.texts || []),
         status:state.status || ((state.texts || []).length ? 'ready' : 'idle'),
         error:state.error || '',
+        generationSettingsConfirmed:state.generationSettingsConfirmed === true,
+        generationSettings:state.generationSettingsConfirmed
+            ? cloneSmartTextGenerationSettings(state.generationSettings)
+            : null,
         updatedAt:Date.now()
     };
     scheduleSave();
@@ -11202,6 +11547,309 @@ function renderSmartTextEraseControls(state){
         </div>
         <div class="smart-text-edit-empty">按所选尺寸、质量和数量生成去字图片，不固定原图比例。</div>
     </div>`;
+}
+function withSmartSettingsRenderContext(draft, callback){
+    const previousSettings = settings;
+    settings = draft;
+    try {
+        return callback();
+    } finally {
+        settings = previousSettings;
+    }
+}
+function renderSmartTextResolutionControl(prefix=''){
+    const draft = settings || {};
+    const key = prefix ? `${prefix}Resolution` : 'resolution';
+    const current = normalizeSmartTextResolution(draft, prefix);
+    const options = smartTextResolutionOptions(draft, prefix);
+    return `<div class="smart-control resolution-control smart-text-resolution-control">
+        <button class="smart-pill" type="button"><i data-lucide="monitor"></i><span>${escapeHtml(String(current).toUpperCase())}</span></button>
+        <div class="smart-popover compact-popover">
+            <div class="smart-popover-title">分辨率</div>
+            <div class="seg-row smart-text-resolution-options">
+                ${options.map(option => `<button type="button" class="${option.value === current ? 'active' : ''}" data-smart-param="${key}" data-smart-value="${option.value}" ${option.disabled ? 'disabled title="该模型不支持"' : ''}>${option.value.toUpperCase()}</button>`).join('')}
+            </div>
+        </div>
+    </div>`;
+}
+function splitSmartTextGenerationSizeControl(state, container, prefix='', includeSource=false){
+    const combined = container?.querySelector('.size-picker-control');
+    const draft = state?.generationSettingsDraft;
+    if(!combined || !draft) return;
+    const holder = document.createElement('div');
+    holder.innerHTML = withSmartSettingsRenderContext(draft, () =>
+        `${renderRatioControl(prefix, includeSource)}${renderInlineCustomRatioFields(prefix)}${renderSmartTextResolutionControl(prefix)}`
+    );
+    combined.replaceWith(...holder.children);
+}
+function smartTextGenerationFieldLabel(control){
+    if(control.classList.contains('provider-control')){
+        return control.querySelector('[data-smart-param="msgenModel"]') ? '生图模型' : 'API 平台';
+    }
+    if(control.classList.contains('model-control')) return '生图模型';
+    if(control.classList.contains('rh-config-control')) return '模型 / 应用 / 工作流';
+    if(control.classList.contains('ratio-control')) return '尺寸';
+    if(control.classList.contains('smart-text-resolution-control')) return '分辨率';
+    if(control.classList.contains('quality-control')) return '质量';
+    if(control.classList.contains('count-control')) return '生图数量';
+    if(control.classList.contains('rh-payment-control')) return '支付方式';
+    if(control.classList.contains('rh-machine-control')) return '运行规格';
+    if(control.classList.contains('workflow-control')) return '工作流';
+    if(control.classList.contains('comfy-mode-control')) return '生成模式';
+    return '';
+}
+function decorateSmartTextGenerationFields(container){
+    container?.querySelectorAll('.smart-control').forEach(control => {
+        const pill = control.querySelector(':scope > .smart-pill');
+        const label = smartTextGenerationFieldLabel(control);
+        if(pill && label) pill.dataset.smartTextFieldLabel = label;
+    });
+}
+function renderSmartTextGenerationFields(state, container){
+    const draft = state?.generationSettingsDraft;
+    if(!draft || !container) return;
+    draft.engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(draft.engine) ? draft.engine : 'api';
+    draft.apiKind = 'image';
+    withSmartSettingsRenderContext(draft, () => {
+        if(draft.engine === 'api') renderApiParams(container);
+        else if(draft.engine === 'volcengine') renderVolcengineParams(container);
+        else if(draft.engine === 'modelscope') renderMsParams(container);
+        else if(draft.engine === 'runninghub') renderRunningHubParams(container);
+        else renderComfyParams(container, () => {
+            if(smartTextEditPanelState === state && state.generationSelectorOpen) renderSmartTextModifyPanel();
+        });
+    });
+    const prefix = draft.engine === 'modelscope' ? 'ms' : '';
+    applySmartTextSourceRatioToDraft(state, prefix);
+    if(container.querySelector('.size-picker-control')){
+        splitSmartTextGenerationSizeControl(state, container, prefix, draft.engine !== 'modelscope');
+    }
+    decorateSmartTextGenerationFields(container);
+    bindSmartTextGenerationFields(state, container);
+}
+function setSmartTextGenerationDraftSetting(state, key, value){
+    const draft = state?.generationSettingsDraft;
+    if(!draft || !key) return false;
+    const numericKeys = new Set(['count','width','height','enhanceStrength','enhanceUpscaleRes','editUpscaleRes','customRatioWidth','customRatioHeight','customWidth','customHeight','msCustomRatioWidth','msCustomRatioHeight','msCustomWidth','msCustomHeight']);
+    const layoutKeys = new Set(['provider_id','model','resolution','ratio','customRatioWidth','customRatioHeight','msgenModel','msCustomModel','msResolution','msRatio','msCustomRatioWidth','msCustomRatioHeight','comfyMode','comfyWorkflow','quality','count','enhanceUpscaleRes','editUpscaleRes','rhConfigKey','rhPayment','rhInstanceType']);
+    draft[key] = numericKeys.has(key) && value !== '' ? Number(value) : value;
+    if(key === 'provider_id') draft.model = '';
+    if(key === 'resolution'){
+        if(draft.resolution === 'custom') draft.ratio = '';
+        else if(!draft.ratio) draft.ratio = 'square';
+    }
+    if(key === 'msResolution'){
+        if(draft.msResolution === 'custom') draft.msRatio = '';
+        else if(!draft.msRatio) draft.msRatio = 'square';
+    }
+    if(key === 'ratio' && draft.ratio === 'source') applySmartTextSourceRatioToDraft(state, '');
+    if(key === 'msRatio' && draft.msRatio === 'source') applySmartTextSourceRatioToDraft(state, 'ms');
+    if(key === 'customRatioWidth' || key === 'customRatioHeight'){
+        draft.customRatio = draft.customRatioWidth && draft.customRatioHeight ? `${draft.customRatioWidth}:${draft.customRatioHeight}` : '';
+        draft.ratio = 'custom';
+    }
+    if(key === 'msCustomRatioWidth' || key === 'msCustomRatioHeight'){
+        draft.msCustomRatio = draft.msCustomRatioWidth && draft.msCustomRatioHeight ? `${draft.msCustomRatioWidth}:${draft.msCustomRatioHeight}` : '';
+        draft.msRatio = 'custom';
+    }
+    if(key === 'customWidth' || key === 'customHeight'){
+        draft.customSize = draft.customWidth && draft.customHeight ? `${draft.customWidth}x${draft.customHeight}` : '';
+        draft.resolution = 'custom';
+    }
+    if(key === 'msCustomWidth' || key === 'msCustomHeight'){
+        draft.msCustomSize = draft.msCustomWidth && draft.msCustomHeight ? `${draft.msCustomWidth}x${draft.msCustomHeight}` : '';
+        draft.msResolution = 'custom';
+    }
+    if(key === 'comfyWorkflow') draft.comfyParams = {};
+    if(key === 'rhConfigKey'){
+        draft.rhParams = {};
+        draft.rhRandomActive = {};
+    }
+    state.generationSettingsError = '';
+    return layoutKeys.has(key);
+}
+function bindSmartTextGenerationFields(state, container){
+    const draft = state?.generationSettingsDraft;
+    if(!draft || !container) return;
+    const rerender = () => {
+        if(smartTextEditPanelState === state && state.generationSelectorOpen) renderSmartTextModifyPanel();
+    };
+    const closePopovers = () => container.querySelectorAll('.smart-control.pinned').forEach(control => control.classList.remove('pinned'));
+    container.querySelectorAll('.smart-control > .smart-pill').forEach(pill => {
+        pill.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const control = pill.parentElement;
+            const wasPinned = control.classList.contains('pinned');
+            closePopovers();
+            if(!wasPinned) control.classList.add('pinned');
+        };
+    });
+    container.querySelectorAll('[data-smart-param]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            setSmartTextGenerationDraftSetting(state, button.dataset.smartParam, button.dataset.smartValue);
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-size-scope]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const prefix = button.dataset.sizePrefix || '';
+            const scope = button.dataset.sizeScope;
+            const resolutionKey = prefix ? `${prefix}Resolution` : 'resolution';
+            const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
+            const allowAuto = !prefix && draft.engine === 'api' && isGptImageAutoSizeModel(draft.model);
+            if(scope === 'auto'){
+                if(!allowAuto) return;
+                draft[resolutionKey] = 'auto';
+                if(!draft[ratioKey]) draft[ratioKey] = 'square';
+            } else if(scope === 'custom'){
+                draft[resolutionKey] = 'custom';
+            } else {
+                const fallback = withSmartSettingsRenderContext(draft, () => sizePickerDefaultResolution(prefix));
+                draft[resolutionKey] = ['1k','2k','4k'].includes(draft[resolutionKey]) ? draft[resolutionKey] : fallback;
+                if(!draft[ratioKey] || draft[ratioKey] === 'custom') draft[ratioKey] = 'square';
+            }
+            state.generationSettingsError = '';
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-param]').forEach(input => {
+        input.onclick = event => event.stopPropagation();
+        input.oninput = input.onchange = event => {
+            event?.stopPropagation?.();
+            const layoutChanged = setSmartTextGenerationDraftSetting(state, input.dataset.param, input.value);
+            if(layoutChanged && event?.type === 'change') rerender();
+        };
+    });
+    container.querySelectorAll('[data-toggle-param]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            draft[button.dataset.toggleParam] = !draft[button.dataset.toggleParam];
+            state.generationSettingsError = '';
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-comfy-bool]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            draft.comfyParams = draft.comfyParams || {};
+            const fieldId = button.dataset.comfyBool;
+            const field = withSmartSettingsRenderContext(draft, () => currentComfyFields().find(item => item.id === fieldId));
+            draft.comfyParams[fieldId] = !Boolean(draft.comfyParams[fieldId] ?? field?.default ?? false);
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-comfy-param]').forEach(input => {
+        input.onclick = event => event.stopPropagation();
+        input.oninput = input.onchange = event => {
+            event?.stopPropagation?.();
+            draft.comfyParams = draft.comfyParams || {};
+            const field = withSmartSettingsRenderContext(draft, () => currentComfyFields().find(item => item.id === input.dataset.comfyParam));
+            draft.comfyParams[input.dataset.comfyParam] = field?.type === 'number' || field?.type === 'slider' ? (Number(input.value) || 0) : input.value;
+            state.generationSettingsError = '';
+        };
+    });
+    container.querySelectorAll('[data-comfy-pick]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const fieldId = button.dataset.comfyPick;
+            draft.comfyParams = draft.comfyParams || {};
+            draft.comfyParams[fieldId] = button.dataset.comfyValue;
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-comfy-random]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            draft.comfyRandomActive = draft.comfyRandomActive || {};
+            const fieldId = button.dataset.comfyRandom;
+            draft.comfyRandomActive[fieldId] = !(draft.comfyRandomActive[fieldId] !== false);
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-rh-bool]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const key = button.dataset.rhBool;
+            draft.rhParams = draft.rhParams || {};
+            const field = withSmartSettingsRenderContext(draft, () => rhActiveFields().find(item => rhParamKey(item.nodeId, item.fieldName) === key));
+            const current = withSmartSettingsRenderContext(draft, () => String(rhParamValue(field, null)).toLowerCase() === 'true');
+            draft.rhParams[key] = {...(draft.rhParams[key] || {}), value:String(!current)};
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-rh-param]').forEach(input => {
+        input.onclick = event => event.stopPropagation();
+        input.oninput = input.onchange = event => {
+            event?.stopPropagation?.();
+            const key = input.dataset.rhParam;
+            draft.rhParams = draft.rhParams || {};
+            draft.rhParams[key] = {...(draft.rhParams[key] || {}), value:input.value};
+            const control = input.closest('.smart-control');
+            const valueText = control?.querySelector('.rh-slider-value');
+            const pillValue = control?.querySelector('.rh-slider-pill-value');
+            if(valueText) valueText.textContent = input.value;
+            if(pillValue) pillValue.textContent = input.value;
+            state.generationSettingsError = '';
+        };
+    });
+    container.querySelectorAll('[data-rh-pick]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const key = button.dataset.rhPick;
+            draft.rhParams = draft.rhParams || {};
+            draft.rhParams[key] = {...(draft.rhParams[key] || {}), value:button.dataset.rhValue};
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-rh-random]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            draft.rhRandomActive = draft.rhRandomActive || {};
+            const key = button.dataset.rhRandom;
+            draft.rhRandomActive[key] = !(draft.rhRandomActive[key] !== false);
+            rerender();
+        };
+    });
+}
+function openSmartTextGenerationSelector(){
+    const state = smartTextEditPanelState;
+    if(!state) return;
+    const subject = smartTextEditSubject(state.nodeId, state.imageIndex);
+    if(!subject) return;
+    smartTextGenerationSession(state, smartTextImageRunSettings(subject.node));
+    renderSmartTextModifyPanel();
+}
+function cancelSmartTextGenerationSelector(){
+    if(!smartTextEditPanelState) return;
+    cancelSmartTextGenerationSession(smartTextEditPanelState);
+    renderSmartTextModifyPanel();
+}
+function confirmSmartTextGenerationSelector(){
+    const state = smartTextEditPanelState;
+    if(!state?.generationSettingsDraft) return;
+    const prefix = state.generationSettingsDraft.engine === 'modelscope' ? 'ms' : '';
+    applySmartTextSourceRatioToDraft(state, prefix);
+    const error = validateSmartTextGenerationSettings(state.generationSettingsDraft);
+    if(error){
+        state.generationSettingsError = error;
+        renderSmartTextModifyPanel();
+        return;
+    }
+    confirmSmartTextGenerationSession(state);
+    saveSmartTextPanelStateToNode();
+    renderSmartTextModifyPanel();
 }
 function closeSmartTextModifyPanel(){
     saveSmartTextPanelStateToNode();
@@ -11297,14 +11945,17 @@ function openSmartTextErasePanel(nodeId, imageIndex=0){
 }
 function smartTextImageRunSettings(node){
     const runSettings = {...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(node) || {})};
-    if(!isApiLikeEngine(runSettings.engine)) runSettings.engine = 'api';
+    runSettings.engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(runSettings.engine) ? runSettings.engine : 'api';
     runSettings.apiKind = 'image';
-    if(!runSettings.provider_id || !providerImageModels(runSettings.provider_id).length){
-        const provider = imageProviders()[0];
-        runSettings.provider_id = provider?.id || runSettings.provider_id || '';
+    if(isApiLikeEngine(runSettings.engine)){
+        if(runSettings.engine === 'volcengine') runSettings.provider_id = 'volcengine';
+        if(!runSettings.provider_id || !providerImageModels(runSettings.provider_id).length){
+            const provider = runSettings.engine === 'volcengine' ? volcengineProvider() : imageProviders()[0];
+            runSettings.provider_id = provider?.id || runSettings.provider_id || '';
+        }
+        const models = providerImageModels(runSettings.provider_id);
+        if(!models.includes(runSettings.model)) runSettings.model = models[0] || runSettings.model || '';
     }
-    const models = providerImageModels(runSettings.provider_id);
-    if(!models.includes(runSettings.model)) runSettings.model = models[0] || runSettings.model || '';
     runSettings.count = Math.max(1, Math.min(8, Number(runSettings.count || 1)));
     return runSettings;
 }
@@ -11328,10 +11979,22 @@ function smartTextModificationPrompt(texts){
 }
 function smartTextErasePrompt(){
     return [
-        'Edit the reference image directly.',
-        'Remove all visible text, letters, captions, logos made of text, subtitles, labels, and poster copy.',
-        'Inpaint the removed text areas naturally so the background, objects, colors, lighting, texture, and design remain intact.',
-        'Do not add any new text.'
+        'Perform a surgical text-only removal edit on the supplied reference image.',
+        'STRICT EDITING SCOPE: remove readable text glyphs only. This is not a layout cleanup, simplification, debranding, template reset, or redesign.',
+        'Remove every visible textual element in every language and orientation, including words, letters, numbers, punctuation, captions, subtitles, label copy, watermarks, poster copy, and text-based logos whose visual content is readable text.',
+        'Remove glyph outlines, strokes, shadows, glows, and highlights only where they follow the contours of readable glyphs. Preserve outlines, strokes, shadows, and highlights that belong to a container or independent graphic.',
+        'Preserve every non-text carrier or supporting graphic behind, around, beside, or overlapping text, including background plates, colored blocks, panels, banners, ribbons, badges, buttons, tickets, speech bubbles, frames, borders, dividers, underlines, curves, shapes, patterns, and decorations.',
+        'A carrier surface is not text and must remain even when its only purpose is to hold text. If a colored, outlined, or shaped area extends beyond the glyph contours, treat the entire area as a protected non-text element.',
+        'A non-text element remains protected even when text touches, overlaps, sits inside, or is fully surrounded by it. Do not confuse a text container with the text itself.',
+        'Perform reconstruction only inside the areas previously covered by text glyph pixels and glyph-shaped effects. Fill only the holes left by the removed glyph pixels. Continue the exact local color, gradient, texture, material, edge, lighting, and pattern of the underlying carrier or background through those small holes.',
+        'Never erase, flatten, enlarge, shrink, simplify, or replace an entire container, colored region, badge, card, banner, border, line, curve, icon, or decoration just because it contains or is near text.',
+        'Treat people, faces, facial expressions, hands, objects, icons, stickers, illustrations, shapes, lines, standalone symbols, graphical logos, decorative marks, artwork, products, scenery, and all other non-text design elements as protected.',
+        'Within the requested target canvas, do not remove, redraw, replace, restyle, move, resize, or alter any non-text visual element.',
+        'Preserve all protected elements, colors, gradients, lighting, shadows, textures, patterns, composition, perspective, geometry, positions, scale, spacing, and visual style as faithfully as possible.',
+        'Honor the user-requested output dimensions and aspect ratio. If the target canvas differs from the reference, perform only the minimum global framing adaptation required to fit that target; do not redesign, replace, or invent non-text content.',
+        'Before returning the result, compare it with the reference and restore any non-text feature that was removed or changed. The only intentional visual difference should be the absence of readable text glyphs and their glyph-shaped effects.',
+        'Do not generate, preserve, or introduce any readable text, pseudo-text, letters, numbers, punctuation, or replacement glyphs anywhere in the output.',
+        'Return only the edited image.'
     ].join('\n');
 }
 async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='文字编辑', overrideSettings=null){
@@ -11355,7 +12018,7 @@ async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='�
         createdAt:Date.now()
     };
     pushUndo();
-    const outputNode = createPendingOutputFromSource(node, Math.max(1, Math.min(8, Number(runSettings.count || 1))), meta, {selectOutput:true, refs});
+    const outputNode = createPendingOutputFromSource(node, Math.max(1, Math.min(8, Number(runSettings.count || 1))), meta, {selectOutput:true, refs, settings:runSettings});
     outputNode.runSettings = settingsForStorage(runSettings);
     outputNode.running = true;
     outputNode.runStartedAt = nowMs();
@@ -11401,11 +12064,14 @@ async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='�
 }
 async function applySmartTextModification(){
     const state = smartTextEditPanelState;
-    if(!state || !(state.texts || []).length) return;
+    if(!state || !(state.texts || []).length || !state.generationSettingsConfirmed) return;
     const prompt = smartTextModificationPrompt(state.texts);
+    const runSettings = cloneSmartTextGenerationSettings(state.generationSettings);
+    const prefix = runSettings.engine === 'modelscope' ? 'ms' : '';
+    applySmartTextSourceRatioToSettings(state, runSettings, prefix);
     closeSmartTextModifyPanel();
     try {
-        await runSmartImageTextGeneration(state.nodeId, state.imageIndex, prompt, '修改文字');
+        await runSmartImageTextGeneration(state.nodeId, state.imageIndex, prompt, '修改文字', runSettings);
     } catch(err){
         toast((err?.message || '修改文字失败').slice(0, 160));
     }
@@ -12662,6 +13328,9 @@ function setDropHighlight(targetId){
 }
 function deleteNode(id){
     pushUndo();
+    const node = nodes.find(candidate => candidate.id === id);
+    trackPermanentlyDeletedOpenShopNodes([node]);
+    window.HstarSmartOpenShopAdapter?.disposeNode?.(node);
     const deleteIds = new Set([id]);
     nodes.forEach(node => {
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
@@ -12987,7 +13656,7 @@ function renderImageMarkers(){
         return `<div class="image-marker-row" data-marker-id="${escapeAttr(marker.id || '')}">
             ${marker.thumbnail ? `<img class="image-marker-thumb" src="${escapeAttr(marker.thumbnail)}" alt="">` : '<div class="image-marker-thumb"></div>'}
             <div class="image-marker-number"><span>${marker.number}</span></div>
-            <input class="image-marker-name" value="${escapeAttr(markerInputDisplayValue(marker))}" placeholder="标记名称" maxlength="18" data-marker-name="${escapeAttr(marker.id || '')}" ${marker.status === 'identifying' ? 'readonly' : ''}>
+            <input class="image-marker-name" value="${escapeAttr(markerInputDisplayValue(marker))}" placeholder="标记名称" maxlength="18" data-marker-name="${escapeAttr(marker.id || '')}" data-voice-input="on" data-voice-label="图片标记名称" ${marker.status === 'identifying' ? 'readonly' : ''}>
             <button class="image-marker-refresh-one" type="button" data-marker-refresh="${escapeAttr(marker.id || '')}" title="重新识别"><i data-lucide="refresh-cw" class="w-3 h-3"></i></button>
             <button class="image-marker-delete-one" type="button" data-marker-delete="${escapeAttr(marker.id || '')}" title="删除标记"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
             <div class="image-marker-status">${marker.status === 'identifying' ? '识别中' : marker.status === 'failed' ? '识别失败' : marker.objectName ? '已识别' : '待填写'}</div>
@@ -16619,38 +17288,38 @@ function sizeForRun(sourceSettings=settings){
         : '1k';
     return apiImageSize(sourceSettings.ratio || 'square', sourceSettings.resolution || fallbackResolution, sourceSettings.customRatio || '', sourceSettings.customSize || '') || '1024x1024';
 }
-function expectedOutputSize(){
-    if(settings.engine === 'comfy'){
-        if(settings.comfyMode === 'text'){
-            const w = Number(settings.width) || 1024;
-            const h = Number(settings.height) || 1024;
+function expectedOutputSize(sourceSettings=settings){
+    if(sourceSettings.engine === 'comfy'){
+        if(sourceSettings.comfyMode === 'text'){
+            const w = Number(sourceSettings.width) || 1024;
+            const h = Number(sourceSettings.height) || 1024;
             return {w, h};
         }
         return {w:1024, h:1024};
     }
-    if(settings.engine === 'runninghub') return {w:1024, h:1024};
-    const sizeStr = settings.engine === 'modelscope'
-        ? apiImageSize(settings.msRatio || 'square', settings.msResolution || '1k', settings.msCustomRatio || '', settings.msCustomSize || '')
-        : sizeForRun();
+    if(sourceSettings.engine === 'runninghub') return {w:1024, h:1024};
+    const sizeStr = sourceSettings.engine === 'modelscope'
+        ? apiImageSize(sourceSettings.msRatio || 'square', sourceSettings.msResolution || '1k', sourceSettings.msCustomRatio || '', sourceSettings.msCustomSize || '')
+        : sizeForRun(sourceSettings);
     const parsed = parseSizeValue(sizeStr);
     if(parsed){
         return {w: Number(parsed.width) || 1024, h: Number(parsed.height) || 1024};
     }
     return {w:1024, h:1024};
 }
-function explicitRequestOutputSizeForPending(){
-    if(isApiLikeEngine(settings.engine) && settings.apiKind !== 'video'){
-        const parsed = parseSizeValue(sizeForRun());
+function explicitRequestOutputSizeForPending(sourceSettings=settings){
+    if(isApiLikeEngine(sourceSettings.engine) && sourceSettings.apiKind !== 'video'){
+        const parsed = parseSizeValue(sizeForRun(sourceSettings));
         if(parsed) return {w:Number(parsed.width) || 1024, h:Number(parsed.height) || 1024};
     }
-    if(settings.engine === 'modelscope'){
-        const sizeStr = apiImageSize(settings.msRatio || 'square', settings.msResolution || '1k', settings.msCustomRatio || '', settings.msCustomSize || '');
+    if(sourceSettings.engine === 'modelscope'){
+        const sizeStr = apiImageSize(sourceSettings.msRatio || 'square', sourceSettings.msResolution || '1k', sourceSettings.msCustomRatio || '', sourceSettings.msCustomSize || '');
         const parsed = parseSizeValue(sizeStr);
         if(parsed) return {w:Number(parsed.width) || 1024, h:Number(parsed.height) || 1024};
     }
-    if(settings.engine === 'comfy' && settings.comfyMode === 'text'){
-        const w = Number(settings.width) || 1024;
-        const h = Number(settings.height) || 1024;
+    if(sourceSettings.engine === 'comfy' && sourceSettings.comfyMode === 'text'){
+        const w = Number(sourceSettings.width) || 1024;
+        const h = Number(sourceSettings.height) || 1024;
         return {w, h};
     }
     return null;
@@ -16685,12 +17354,12 @@ function displayBoxFromNaturalSize(size){
     return {w:layout.width, h:layout.height};
 }
 function pendingBaseBoxSize(options={}){
-    const requestSize = explicitRequestOutputSizeForPending();
+    const requestSize = explicitRequestOutputSizeForPending(options.settings || settings);
     if(requestSize) return displayBoxFromNaturalSize(requestSize);
     const sourceSize = pendingSourceBoxSize(options);
     if(sourceSize?.display) return {w:sourceSize.w, h:sourceSize.h};
     if(sourceSize) return displayBoxFromNaturalSize(sourceSize);
-    return displayBoxFromNaturalSize(expectedOutputSize());
+    return displayBoxFromNaturalSize(expectedOutputSize(options.settings || settings));
 }
 function pendingBoxSize(count, options={}){
     const base = pendingBaseBoxSize(options);
@@ -17837,7 +18506,11 @@ function nextOutputPositionForSource(sourceNode, pendingBox, options={}){
     return {x, y};
 }
 function createPendingOutputFromSource(sourceNode, expectedCount, meta, options={}){
-    const pendingBox = pendingBoxSize(expectedCount, {sourceNode, refs:options.refs || meta?.promptRefs || []});
+    const pendingBox = pendingBoxSize(expectedCount, {
+        sourceNode,
+        refs:options.refs || meta?.promptRefs || [],
+        settings:options.settings || meta?.settings || settings
+    });
     const pos = nextOutputPositionForSource(sourceNode, pendingBox);
     const output = {
         id:uid('smart'),
@@ -18165,6 +18838,52 @@ window.HstarSmartCanvasDirectorHooks = {
     saveCanvas,
     toast
 };
+function recordSmartOpenShopAiTaskLog(log, sourceNode){
+    if(!canvas || !log?.taskId) return false;
+    canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+    const openshopTaskId = String(log.taskId);
+    if(canvas.logs.some(entry => entry?.request?.openshopTaskId === openshopTaskId)) return false;
+    const toolId = String(log.toolId || '');
+    const toolLabel = ({
+        'art-font-restore':'艺术字体处理',
+        'generative-fill':'生成式填充',
+        'local-redraw':'局部重绘',
+    })[toolId] || 'OpenShop AI';
+    const rawOutputs = [
+        ...(Array.isArray(log.outputs) ? log.outputs : []),
+        ...(log.output ? [log.output] : []),
+    ].filter(output => output?.url);
+    const outputs = [...new Map(rawOutputs.map(output => [String(output.assetId || output.url), {
+        ...output, kind:'image',
+    }])).values()];
+    const error = ['failed', 'partial'].includes(log.status)
+        ? String(log.error || `${toolLabel}${log.status === 'partial' ? '部分生成失败' : '生成失败'}`)
+        : '';
+    canvas.logs = [{
+        id:uid('log'),
+        createdAt:Date.now(),
+        status:log.status === 'partial' ? 'partial' : (error ? 'failed' : 'success'),
+        platform:'OpenShop',
+        nodeId:sourceNode?.id || '',
+        nodeType:'openshop-layered',
+        model:String(log.modelId || toolLabel),
+        request:{
+            openshopTaskId,
+            task_id:openshopTaskId,
+            provider_id:String(log.apiConfigId || ''),
+            tool_id:String(log.toolId || ''),
+            generated_layer_id:String(log.generatedLayerId || ''),
+        },
+        prompt:String(log.prompt || ''),
+        outputs,
+        refs:[],
+        runMs:Math.max(0, Number(log.runMs || 0)),
+        error,
+    }, ...canvas.logs].slice(0, 500);
+    renderSmartCanvasLog();
+    scheduleSave();
+    return true;
+}
 window.HstarSmartCanvasOpenShopHooks = {
     uid,
     getCanvasId:() => canvasId || canvas?.id || '',
@@ -18176,10 +18895,13 @@ window.HstarSmartCanvasOpenShopHooks = {
     displayMediaUrl,
     createImageOutput({sourceNode, output, requestId}){
         const existingCount = nodes.filter(node => node.openshopSourceNodeId === sourceNode.id).length;
+        const naturalWidth = Math.max(0, Number(output.width || 0));
+        const naturalHeight = Math.max(0, Number(output.height || 0));
         const image = {
             url:output.url,
             name:output.name || '图文分层输出.png',
             kind:'image',
+            ...(naturalWidth && naturalHeight ? {natural_w:naturalWidth, natural_h:naturalHeight} : {}),
             openshopAssetId:output.assetId,
         };
         const sourceRect = nodeRect(sourceNode);
@@ -18196,6 +18918,19 @@ window.HstarSmartCanvasOpenShopHooks = {
         addConnection(sourceNode.id, node.id, 'flow');
         return node;
     },
+    rollbackImageOutput(id){
+        const nodeIndex = nodes.findIndex(node => node.id === id);
+        if(nodeIndex >= 0) nodes.splice(nodeIndex, 1);
+        const connectionList = canvas?.connections || [];
+        for(let index = connectionList.length - 1; index >= 0; index -= 1){
+            if(connectionList[index].from === id || connectionList[index].to === id){
+                connectionList.splice(index, 1);
+            }
+        }
+        if(selectedId === id) selectedId = '';
+        selectedIds = selectedIds.filter(nodeId => nodeId !== id);
+        if(selectedImage.nodeId === id) selectedImage = {nodeId:'', index:-1};
+    },
     pushUndo,
     selectOnly:id => {
         selectedId = id;
@@ -18205,6 +18940,7 @@ window.HstarSmartCanvasOpenShopHooks = {
     render,
     scheduleSave,
     saveCanvas,
+    recordAiTaskLog:recordSmartOpenShopAiTaskLog,
     t:tr,
     toast
 };
@@ -20621,14 +21357,15 @@ function openCreateMenu(event, options={}){
     if(!createMenu) return;
     createMenuPoint = screenToWorld(event);
     createMenuGroupId = options.groupId || '';
-    const w = 500;
-    const h = 222;
-    const left = Math.max(14, Math.min(window.innerWidth - w - 14, event.clientX + 8));
-    const top = Math.max(14, Math.min(window.innerHeight - h - 14, event.clientY + 8));
-    createMenu.style.left = `${left}px`;
-    createMenu.style.top = `${top}px`;
     createMenu.classList.add('open');
     refreshIcons();
+    const bounds = createMenu.getBoundingClientRect();
+    const marginX = Math.min(14, Math.max(0, (window.innerWidth - bounds.width) / 2));
+    const marginY = Math.min(14, Math.max(0, (window.innerHeight - bounds.height) / 2));
+    const left = Math.max(marginX, Math.min(window.innerWidth - bounds.width - marginX, event.clientX + 8));
+    const top = Math.max(marginY, Math.min(window.innerHeight - bounds.height - marginY, event.clientY + 8));
+    createMenu.style.left = `${left}px`;
+    createMenu.style.top = `${top}px`;
 }
 function addCreatedNodeToMenuGroup(node){
     const group = createMenuGroupId ? nodes.find(n => n.id === createMenuGroupId) : null;
@@ -21021,7 +21758,8 @@ window.onmousemove = e => {
     updateLoopInsertPreview();
     if(target) setDropHighlight(target.id);
 };
-window.onmouseup = e => {
+function finishSmartPointerInteraction(e, options={}) {
+    const cancelled = options.cancelled === true;
     document.body.classList.remove('smart-node-drag');
     document.body.classList.remove('smart-node-resize');
     if(portDragState){
@@ -21029,11 +21767,23 @@ window.onmouseup = e => {
         portDragState = null;
         shell.classList.remove('port-dragging');
         clearPortDragVisual();
-        handlePortDrop(drag, e);
+        if(cancelled){
+            discardPendingUndo();
+            render();
+        } else {
+            handlePortDrop(drag, e);
+        }
         return;
     }
     if(promptResizeState){ promptResizeState = null; scheduleSave(); }
-    if(selectionState) finishSelection(e);
+    if(selectionState){
+        if(cancelled){
+            selectionState = null;
+            selectionBox.style.display = 'none';
+        } else {
+            finishSelection(e);
+        }
+    }
     if(previewCompareDrag) previewCompareDrag = false;
     if(panoramaState.drag){
         panoramaState.drag = null;
@@ -21093,6 +21843,23 @@ window.onmouseup = e => {
     if(dragState){
         const draggedNode = nodes.find(n => n.id === dragState.id);
         let stateChanged = false;
+        if(cancelled){
+            stateChanged = Boolean(dragState.thumbDetached) || (dragState.group || []).some(item => {
+                const node = nodes.find(candidate => candidate.id === item.id);
+                return node && (
+                    Math.abs((Number(node.x) || 0) - item.ox) > 1
+                    || Math.abs((Number(node.y) || 0) - item.oy) > 1
+                );
+            });
+            if(stateChanged) commitPendingUndo();
+            else discardPendingUndo();
+            clearDropHighlight();
+            loopInsertPreview = null;
+            dragState = null;
+            scheduleSave();
+            scheduleConnectionLayerRefresh();
+            return;
+        }
         const hit = document.elementFromPoint(e.clientX, e.clientY);
         const droppedOnAssetPanel = assetLibraryOpen && hit && assetPanel?.contains(hit);
         if(droppedOnAssetPanel && draggedNode && (draggedNode.images || []).length){
@@ -21196,9 +21963,10 @@ window.onmouseup = e => {
         scheduleSave();
         scheduleConnectionLayerRefresh();
     }
-};
+}
+window.onmouseup = finishSmartPointerInteraction;
 shell.addEventListener('wheel', e => {
-    if(e.target.closest('.composer,.smart-back,.image-edit-modal,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.workflow-transfer-panel,.log-modal,.shortcut-modal,.prompt-node-segments,.prompt-node-text,.prompt-node-llm,.smart-group-list,[data-thumb-scroll]')) return;
+    if(e.target.closest('.composer,.smart-back,.image-edit-modal,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.workflow-transfer-panel,.log-modal,.shortcut-modal,.create-menu,.prompt-node-segments,.prompt-node-text,.prompt-node-llm,.smart-group-list,[data-thumb-scroll]')) return;
     e.preventDefault();
     const rect = shell.getBoundingClientRect();
     const sx = e.clientX - rect.left;
@@ -21322,6 +22090,7 @@ window.addEventListener('keyup', e => {
 });
 window.addEventListener('blur', () => {
     isRKeyDown = false;
+    finishSmartPointerInteraction(null, {cancelled:true});
 });
 engineSelect.onchange = () => {
     settings.engine = engineSelect.value;

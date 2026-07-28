@@ -32,6 +32,16 @@ temp/
 tmp/
 *.log
 
+# Local user projects, libraries, and generated catalogs
+assets/
+data/canvases/
+data/media_previews/
+data/openshop/
+data/openshop-font-catalog-v1.json
+data/projects.json
+data/prompt_libraries.json
+python/share/
+
 # Installer staging output
 build/installer/stage/
 build/generated/
@@ -48,6 +58,7 @@ build/release/
 # OS/editor noise
 .DS_Store
 Thumbs.db
+.superpowers/
 
 # Local isolated development worktrees
 .worktrees/

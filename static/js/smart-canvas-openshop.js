@@ -1,6 +1,8 @@
 (function bootstrapSmartOpenShopAdapter(root){
     if(root.HstarSmartOpenShopAdapter) return;
     const appliedOutputRequests = new Set();
+    const appliedAiTaskLogs = new Set();
+    const AI_LOG_TOOL_IDS = new Set(['art-font-restore', 'generative-fill', 'local-redraw']);
 
     function hooks(){
         return root.HstarSmartCanvasOpenShopHooks || {};
@@ -46,6 +48,10 @@
             autosaveVersion:0,
             saveState:'new',
             saveError:'',
+            aiStatus:'',
+            aiTargetCount:0,
+            aiCompletedCount:0,
+            aiFailedCount:0,
             cloneSourceProjectId:'',
             cloneSourceCanvasType:'',
             cloneSourceCanvasId:'',
@@ -171,6 +177,15 @@
         return translate('smart.openshopUnsaved', '未保存');
     }
 
+    function aiProgressLabel(node){
+        const target = Math.max(0, Number(node.aiTargetCount || 0));
+        const completed = Math.max(0, Number(node.aiCompletedCount || 0));
+        if(!target) return '';
+        if(['queued', 'running'].includes(clean(node.aiStatus))) return `生成中 ${completed}/${target}`;
+        if(['partial', 'failed'].includes(clean(node.aiStatus)) && completed > 0) return `已完成 ${completed}/${target}`;
+        return '';
+    }
+
     function renderNode(node){
         const preview = previewForNode(node);
         const dimensions = dimensionsForNode(node);
@@ -178,12 +193,14 @@
             ? `<img loading="lazy" decoding="async" src="${safeHtml(preview.url)}" alt="${safeHtml(preview.name || node.projectName)}">`
             : '<div class="openshop-layered-placeholder"><i data-lucide="layers-3"></i></div>';
         const updates = Math.max(0, Number(node.sourceUpdateCount || 0));
+        const aiProgress = aiProgressLabel(node);
         return `<div class="openshop-layered-card">
             <div class="openshop-layered-preview">${previewMarkup}</div>
             <div class="openshop-layered-meta">
                 <span class="openshop-layered-meta-left">
                     <span class="openshop-layered-dimensions">${dimensions.width} x ${dimensions.height}</span>
                     <span class="openshop-layered-layers">${Math.max(0, Number(node.layerCount || 0))} ${safeHtml(translate('smart.openshopLayers', '图层'))}</span>
+                    ${aiProgress ? `<span class="openshop-layered-ai" data-state="${safeHtml(node.aiStatus)}">${safeHtml(aiProgress)}</span>` : ''}
                 </span>
                 <span class="openshop-layered-save" data-state="${safeHtml(node.saveState || 'new')}">${safeHtml(saveStateLabel(node))}</span>
             </div>
@@ -220,18 +237,56 @@
         return true;
     }
 
+    function completeCloneSource(source){
+        const existing = {
+            cloneSourceProjectId:clean(source?.cloneSourceProjectId),
+            cloneSourceCanvasType:clean(source?.cloneSourceCanvasType),
+            cloneSourceCanvasId:clean(source?.cloneSourceCanvasId),
+            cloneSourceNodeId:clean(source?.cloneSourceNodeId),
+        };
+        return Object.values(existing).every(Boolean) ? existing : null;
+    }
+
+    function cloneSourceFor(source){
+        return completeCloneSource(source) || {
+            cloneSourceProjectId:clean(source?.projectId),
+            cloneSourceCanvasType:'smart',
+            cloneSourceCanvasId:currentCanvasId(),
+            cloneSourceNodeId:clean(source?.id),
+        };
+    }
+
+    function captureCloneSource(source, clipboardCopy){
+        Object.assign(clipboardCopy, cloneSourceFor(source));
+        return clipboardCopy;
+    }
+
     function prepareClone(source, copy){
         copy.projectId = newProjectId();
-        copy.cloneSourceProjectId = clean(source?.projectId);
-        copy.cloneSourceCanvasType = 'smart';
-        copy.cloneSourceCanvasId = currentCanvasId();
-        copy.cloneSourceNodeId = clean(source?.id);
+        Object.assign(copy, cloneSourceFor(source));
         copy.autosaveVersion = 0;
         copy.saveState = 'new';
         copy.saveError = '';
         copy.sourceUpdateCount = 0;
+        copy.aiStatus = '';
+        copy.aiTargetCount = 0;
+        copy.aiCompletedCount = 0;
+        copy.aiFailedCount = 0;
         copy.created_at = Date.now();
         return copy;
+    }
+
+    function disposeNode(node){
+        if(!node || node.type !== 'openshop-layered' || !clean(node.projectId)) return false;
+        const host = root.parent?.HstarOpenShopHost || root.HstarOpenShopHost;
+        if(!host?.disposeProject) return false;
+        void host.disposeProject(node.projectId, {
+            canvasType:'smart',
+            canvasId:currentCanvasId(),
+            nodeId:node.id,
+            projectId:node.projectId,
+        });
+        return true;
     }
 
     function matchingContext(context, node){
@@ -244,25 +299,60 @@
         );
     }
 
+    function acknowledgeOutput(data, status, details={}){
+        const source = nodeFor(data?.context?.nodeId);
+        if(
+            !clean(data?.requestId)
+            || source?.type !== 'openshop-layered'
+            || !matchingContext(data?.context, source)
+        ) return false;
+        root.parent?.postMessage?.({
+            type:'hstar-openshop-output-applied',
+            requestId:clean(data.requestId),
+            context:{...data.context},
+            status,
+            ...(details.nodeId ? {nodeId:clean(details.nodeId)} : {}),
+            ...(details.message ? {message:clean(details.message).slice(0, 180)} : {}),
+        }, root.location.origin);
+        return true;
+    }
+
     function applyNodeMeta(data){
         const node = nodeFor(data?.context?.nodeId);
         if(!node || node.type !== 'openshop-layered' || !matchingContext(data.context, node)) return false;
         const meta = data.meta || {};
         node.projectName = clean(meta.projectName) || node.projectName;
         node.previewUrl = clean(meta.previewUrl);
-        if(Number(meta.documentWidth) > 0) node.documentWidth = Math.max(1, Math.round(Number(meta.documentWidth)));
-        if(Number(meta.documentHeight) > 0) node.documentHeight = Math.max(1, Math.round(Number(meta.documentHeight)));
+        node.documentWidth = Math.max(1, Number(meta.documentWidth || node.documentWidth || 1920));
+        node.documentHeight = Math.max(1, Number(meta.documentHeight || node.documentHeight || 1080));
         node.layerCount = Math.max(0, Number(meta.layerCount || 0));
         node.sourceUpdateCount = Math.max(0, Number(meta.sourceUpdateCount || 0));
         node.autosaveVersion = Math.max(0, Number(meta.autosaveVersion || 0));
         node.saveState = clean(meta.saveState) || 'saved';
         node.saveError = clean(meta.error);
+        node.aiStatus = clean(meta.aiStatus);
+        node.aiTargetCount = Math.max(0, Number(meta.aiTargetCount || 0));
+        node.aiCompletedCount = Math.max(0, Number(meta.aiCompletedCount || 0));
+        node.aiFailedCount = Math.max(0, Number(meta.aiFailedCount || 0));
         node.cloneSourceProjectId = '';
         node.cloneSourceCanvasType = '';
         node.cloneSourceCanvasId = '';
         node.cloneSourceNodeId = '';
         hooks().render?.();
         hooks().scheduleSave?.();
+        return true;
+    }
+
+    function applyAiTaskLog(data){
+        const source = nodeFor(data?.context?.nodeId);
+        const log = data?.log;
+        if(!source || source.type !== 'openshop-layered' || !matchingContext(data?.context, source)
+            || !AI_LOG_TOOL_IDS.has(clean(log?.toolId)) || !clean(log?.taskId)) return false;
+        const key = `${source.projectId}:${clean(log.taskId)}:${clean(log.status)}`;
+        if(appliedAiTaskLogs.has(key)) return false;
+        if(typeof hooks().recordAiTaskLog !== 'function') return false;
+        if(hooks().recordAiTaskLog(log, source) === false) return false;
+        appliedAiTaskLogs.add(key);
         return true;
     }
 
@@ -275,14 +365,26 @@
         const url = clean(output.url);
         if(!clean(output.assetId) || !url || /^(?:data:image\/|blob:)/i.test(url)) return null;
         if(requestId) appliedOutputRequests.add(requestId);
-        hooks().pushUndo?.();
-        const created = hooks().createImageOutput?.({sourceNode:source, output:{...output, url}, requestId});
-        if(!created) return null;
-        hooks().selectOnly?.(created.id);
-        hooks().render?.();
-        hooks().scheduleSave?.();
-        await hooks().saveCanvas?.();
-        return created;
+        acknowledgeOutput(data, 'accepted');
+        let created = null;
+        try {
+            hooks().pushUndo?.();
+            created = hooks().createImageOutput?.({sourceNode:source, output:{...output, url}, requestId});
+            if(!created) throw new Error('图文分层输出节点创建失败');
+            hooks().selectOnly?.(created.id);
+            hooks().render?.();
+            hooks().scheduleSave?.();
+            await hooks().saveCanvas?.();
+            acknowledgeOutput(data, 'success', {nodeId:created.id});
+            return created;
+        } catch(error){
+            if(created?.id) hooks().rollbackImageOutput?.(created.id);
+            hooks().render?.();
+            hooks().scheduleSave?.();
+            if(requestId) appliedOutputRequests.delete(requestId);
+            acknowledgeOutput(data, 'error', {message:error?.message || '图文分层输出导入失败'});
+            throw error;
+        }
     }
 
     function handleMessage(event){
@@ -290,6 +392,7 @@
         if(root.parent && root.parent !== root && event.source !== root.parent) return;
         const data = event.data || {};
         if(data.type === 'hstar-openshop-node-meta') applyNodeMeta(data);
+        if(data.type === 'hstar-openshop-ai-task-log') applyAiTaskLog(data);
         if(data.type === 'hstar-openshop-output'){
             void importOutput(data).catch(error => {
                 console.error('[HstarSmartOpenShopAdapter] output import failed', error);
@@ -305,8 +408,11 @@
         canConnect,
         sourcesForNode,
         openNode,
+        captureCloneSource,
         prepareClone,
+        disposeNode,
         applyNodeMeta,
+        applyAiTaskLog,
         importOutput,
     });
 })(window);

@@ -69,6 +69,7 @@
             --chat-shadow:rgba(0,0,0,.28);
         }
         * { box-sizing:border-box; }
+        html { width:100%; height:100%; overflow:hidden; overscroll-behavior:none; }
         body { margin:0; height:100vh; overflow:hidden; background:var(--chat-bg); color:var(--chat-text); font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
         html.studio-ui-scaled body:not(.studio-scale-host) {
             width:calc(100vw / var(--studio-ui-scale, 1)) !important;
@@ -154,7 +155,7 @@
         .thumb.file-thumb i,.thumb.file-thumb svg { width:15px; height:15px; flex:0 0 auto; color:var(--chat-muted); }
         .thumb-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .assistant .thumb { border-color:var(--chat-line); }
-        .composer-wrap { min-height:0; padding:10px 30px 18px; background:linear-gradient(to top,var(--chat-bg) 82%,rgba(238,242,246,0)); border-top:0; z-index:6; }
+        .composer-wrap { position:sticky; bottom:0; min-height:0; padding:10px 30px 18px; background:linear-gradient(to top,var(--chat-bg) 82%,rgba(238,242,246,0)); border-top:0; z-index:20; }
         .composer { width:min(var(--chat-width),calc(100% - 60px)); margin:0 auto; min-height:0; max-height:min(34vh,310px); background:rgba(248,250,252,.94); border:1px solid var(--chat-line); border-radius:18px; box-shadow:0 14px 36px var(--chat-shadow); padding:8px; display:flex; flex-direction:column; gap:8px; backdrop-filter:blur(14px); overflow:hidden; }
         .mode-switch { display:none; }
         .mode-switch button { height:30px; min-width:72px; border-radius:10px; display:flex; align-items:center; justify-content:center; gap:5px; color:var(--chat-muted); background:transparent; font-size:11px; font-weight:800; transition:background .16s var(--ease), color .16s var(--ease), box-shadow .16s var(--ease); }
@@ -459,6 +460,7 @@
             background:transparent !important;
         }
     </style>
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.28.2.1785229104"></script>
 </head>
 <body>
     <div class="chat-shell">
@@ -628,6 +630,12 @@
         window.addEventListener('resize', () => {
             if(document.getElementById('modelPicker')?.classList.contains('open')) positionModelPicker();
             if(document.getElementById('resolutionPicker')?.classList.contains('open')) positionResolutionPicker();
+        });
+        window.addEventListener('studio-ui-scale-change', () => {
+            requestAnimationFrame(() => {
+                if(document.getElementById('modelPicker')?.classList.contains('open')) positionModelPicker();
+                if(document.getElementById('resolutionPicker')?.classList.contains('open')) positionResolutionPicker();
+            });
         });
         function uuid(){
             if(crypto?.randomUUID) return crypto.randomUUID();
@@ -906,6 +914,19 @@
             }
         }
 
+        function anchoredPickerTop(buttonTop, popupHeight, scale, gap=8, safeTop=12){
+            const normalizedScale = Number.isFinite(Number(scale)) && Number(scale) > 0 ? Number(scale) : 1;
+            return Math.max(
+                safeTop / normalizedScale,
+                (Number(buttonTop) - gap) / normalizedScale - Math.max(0, Number(popupHeight) || 0),
+            );
+        }
+
+        function pickerUiScale(){
+            const scale = Number(getComputedStyle(document.documentElement).getPropertyValue('--studio-ui-scale'));
+            return Number.isFinite(scale) && scale > 0 ? scale : 1;
+        }
+
         function positionModelPicker(){
             const btn = document.getElementById('modelPickerBtn');
             const pop = document.getElementById('modelPickerPopover');
@@ -914,20 +935,17 @@
             const viewportW = (window.visualViewport?.width || window.innerWidth);
             const viewportH = (window.visualViewport?.height || window.innerHeight);
             const width = Math.min(380, Math.max(300, viewportW - 32));
-            const estimatedHeight = Math.min(390, Math.max(260, viewportH * .62));
             const availableAbove = Math.max(180, rect.top - 14);
             const maxHeight = Math.min(390, availableAbove, viewportH - 32);
             const left = Math.min(Math.max(16, rect.left), Math.max(16, viewportW - width - 16));
-            const top = Math.max(12, rect.top - maxHeight - 10);
             pop.style.setProperty('--model-picker-left', `${Math.round(left)}px`);
-            pop.style.setProperty('--model-picker-top', `${Math.round(Math.max(16, top))}px`);
             pop.style.setProperty('--model-picker-width', `${Math.round(width)}px`);
             pop.style.setProperty('--model-picker-max-height', `${Math.round(maxHeight)}px`);
+            pop.style.setProperty('--model-picker-top', `${Math.round(anchoredPickerTop(rect.top, pop.offsetHeight, pickerUiScale()))}px`);
             requestAnimationFrame(() => {
                 const box = pop.getBoundingClientRect();
                 const nextLeft = box.right > viewportW - 12 ? (left - (box.right - viewportW + 12)) : left;
-                const overlap = box.bottom - (rect.top - 8);
-                const nextTop = overlap > 0 ? (top - overlap - 2) : top;
+                const nextTop = anchoredPickerTop(rect.top, pop.offsetHeight, pickerUiScale());
                 pop.style.setProperty('--model-picker-left', `${Math.round(Math.max(12, nextLeft))}px`);
                 pop.style.setProperty('--model-picker-top', `${Math.round(Math.max(12, nextTop))}px`);
             });
@@ -965,31 +983,27 @@
             const safeX = 12;
             const safeTop = 12;
             const safeBottom = 18;
-            const gap = 10;
+            const gap = 8;
             const left = Math.min(Math.max(safeX, rect.left + rect.width / 2 - width / 2), Math.max(safeX, viewportW - width - safeX));
             const availableAbove = Math.max(96, rect.top - safeTop - gap);
             const initialHeight = Math.min(chatResolution === 'auto' ? 220 : 390, availableAbove, viewportH - safeTop - safeBottom);
-            const initialTop = Math.max(safeTop, rect.top - initialHeight - gap);
             pop.style.setProperty('--resolution-picker-left', `${Math.round(left)}px`);
-            pop.style.setProperty('--resolution-picker-top', `${Math.round(initialTop)}px`);
             pop.style.setProperty('--resolution-picker-width', `${Math.round(width)}px`);
             pop.style.setProperty('--resolution-picker-max-height', `${Math.round(initialHeight)}px`);
             pop.style.setProperty('--resolution-picker-list-height', '320px');
+            pop.style.setProperty('--resolution-picker-top', `${Math.round(anchoredPickerTop(rect.top, pop.offsetHeight, pickerUiScale(), gap, safeTop))}px`);
             requestAnimationFrame(() => {
                 const naturalHeight = Math.ceil(pop.scrollHeight || pop.getBoundingClientRect().height || 160);
                 const maxHeight = Math.max(96, Math.min(naturalHeight, availableAbove, viewportH - safeTop - safeBottom));
                 const headHeight = Math.ceil(pop.querySelector('.resolution-picker-head')?.getBoundingClientRect().height || 50);
                 const listHeight = Math.max(58, maxHeight - headHeight - 20);
-                const top = Math.max(safeTop, rect.top - maxHeight - gap);
                 pop.style.setProperty('--resolution-picker-max-height', `${Math.round(maxHeight)}px`);
                 pop.style.setProperty('--resolution-picker-list-height', `${Math.round(listHeight)}px`);
+                const top = anchoredPickerTop(rect.top, pop.offsetHeight, pickerUiScale(), gap, safeTop);
                 pop.style.setProperty('--resolution-picker-top', `${Math.round(top)}px`);
                 const box = pop.getBoundingClientRect();
                 const nextLeft = box.right > viewportW - 12 ? (left - (box.right - viewportW + 12)) : left;
-                const overlap = box.bottom - (rect.top - 8);
-                const nextTop = overlap > 0 ? (top - overlap - 2) : top;
                 pop.style.setProperty('--resolution-picker-left', `${Math.round(Math.max(12, nextLeft))}px`);
-                pop.style.setProperty('--resolution-picker-top', `${Math.round(Math.max(12, nextTop))}px`);
             });
         }
 
@@ -1032,6 +1046,7 @@
                 ? models.map(m => `<button class="model-picker-option ${m === currentMdl ? 'active' : ''}" onclick="setActiveModel('${escapeHtml(m)}','${kind}');toggleModelPicker(false)"><span>${escapeHtml(shortModelName(m))}</span>${m === currentMdl ? '<i data-lucide="check"></i>' : ''}</button>`).join('')
                 : `<div class="model-picker-empty">暂无模型</div>`;
             lucide.createIcons();
+            if(picker.classList.contains('open')) requestAnimationFrame(positionModelPicker);
         }
 
         async function loadConversations(){

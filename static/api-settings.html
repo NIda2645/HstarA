@@ -21,7 +21,8 @@
     <script src="/static/js/theme.js?v=2026.07.28.2.1783470418"></script>
     <script src="/static/js/i18n.js?v=2026.07.28.2.1783749136"></script>
     <link rel="stylesheet" href="/static/css/theme.css?v=2026.07.28.2.1783470418">
-    <link rel="stylesheet" href="/static/css/api-settings.css?v=2026.07.28.2.1783601055">
+    <link rel="stylesheet" href="/static/css/api-settings.css?v=2026.07.28.2.1785229104">
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.28.2.1785229104"></script>
 </head>
 <body>
     <div class="page">
@@ -97,6 +98,14 @@
                                     <span class="ms-line">Seedance 视频生成使用方舟 API Key，验证会请求 <span class="inline-code">/api/v3/models</span>。</span>
                                 </div>
                             </label>
+                            <div class="field full api-proxy-field">
+                                <span class="label" data-i18n="api.networkProxy">网络代理</span>
+                                <label class="api-proxy-toggle" for="systemProxyInput">
+                                    <input id="systemProxyInput" type="checkbox" checked>
+                                    <span data-i18n="api.useSystemProxy">使用系统代理</span>
+                                </label>
+                                <span class="hint" data-i18n="api.systemProxyHint">关闭后，此平台的模型验证与生成请求将直接连接上游地址。</span>
+                            </div>
                             <label class="field full api-key-field">
                                 <span class="label api-key-label">API Key</span>
                                 <div class="key-panel api-standard-key-row">
@@ -573,6 +582,6 @@
         </div>
     </div>
 
-    <script src="/static/js/api-settings.js?v=2026.07.28.2.1784043418"></script>
+    <script src="/static/js/api-settings.js?v=2026.07.28.2.1785229104"></script>
 </body>
 </html>

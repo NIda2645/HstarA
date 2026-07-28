@@ -10,6 +10,7 @@
     listener: null,
     dirtyListener: null,
     apiSettingsListener: null,
+    pageHideListener: null,
     editor: null,
     protocol: null,
     projectAdapter: null,
@@ -23,6 +24,8 @@
     saving: false,
     saveAgain: false,
     dirty: false,
+    dirtyRevision: 0,
+    savedRevision: 0,
     applying: false,
     saveTimer: null,
     pendingSave: null,
@@ -31,6 +34,7 @@
     queuedMutationCount: 0,
     runtimeGeneration: 0,
     workspaceInitialized: false,
+    entryMode: 'welcome',
   };
 
   function uuid(prefix){
@@ -91,6 +95,8 @@
     cancelPendingSave();
     state.saveAgain = false;
     state.dirty = false;
+    state.dirtyRevision = 0;
+    state.savedRevision = 0;
     state.queuedSaveOptions = null;
   }
 
@@ -117,8 +123,7 @@
       state.editor._selectionMask = null;
       state.editor._cropRegion = null;
       state.editor._marqueeStart = null;
-      state.editor._cloneSource = null;
-      state.editor._cloneOffset = null;
+      state.editor._rasterTools?.reset?.();
       state.editor._lassoPoints = [];
       state.editor._penPoints = [];
       state.editor.canvas?.discardActiveObject?.();
@@ -133,6 +138,8 @@
   function openSession(envelope){
     resetSaveState();
     const context = state.protocol.normalizeContext(envelope.context);
+    state.entryMode = envelope.payload?.entryMode === 'workspace' ? 'workspace' : 'welcome';
+    state.workspaceInitialized = false;
     state.activeSession = {
       sessionId: envelope.sessionId,
       context,
@@ -249,9 +256,15 @@
     };
   }
 
-  function markDirty(reason = 'editor-change'){
+  function markDirty(reason = 'editor-change', {notify = true} = {}){
     if(!state.started || !state.activeSession || state.applying) return;
+    state.dirtyRevision += 1;
     state.dirty = true;
+    if(notify){
+      post(state.protocol.TYPES.PROJECT_CHANGED, {
+        payload:{reason, revision:state.dirtyRevision},
+      });
+    }
     if(state.saving){
       state.saveAgain = true;
       state.queuedSaveOptions = mergeSaveOptions(state.queuedSaveOptions, {reason:'autosave'});
@@ -288,6 +301,7 @@
     const pending = {
       requestId: '',
       session,
+      revision: state.dirtyRevision,
       promise,
       resolve:resolvePromise,
       reject:rejectPromise,
@@ -347,12 +361,14 @@
     if(confirmedProject.previewAssetId){
       state.editor.__hstarPreviewAssetId = String(confirmedProject.previewAssetId);
     }
-    const saveAgain = state.saveAgain || state.dirty;
+    state.savedRevision = Math.max(state.savedRevision, Number(pending.revision || 0));
+    const newerRevision = state.dirtyRevision > state.savedRevision;
+    const saveAgain = state.saveAgain || state.dirty || newerRevision;
     const queuedOptions = state.queuedSaveOptions || {reason:'autosave', closeAfter:false};
     state.pendingSave = null;
     state.saving = false;
     state.saveAgain = false;
-    state.dirty = false;
+    state.dirty = newerRevision;
     state.queuedSaveOptions = null;
     pending.resolve(confirmedProject);
     if(saveAgain){
@@ -393,6 +409,13 @@
     if(!output?.assetId || !output?.url){
       throw new Error('OpenShop output writer returned incomplete metadata');
     }
+    if(typeof state.projectAdapter.recordExport !== 'function'){
+      throw new Error('OpenShop export recorder is unavailable');
+    }
+    state.projectAdapter.recordExport({editor:state.editor, output});
+    const exportSave = await requestSave({reason:'send-to-canvas-output'});
+    if(exportSave?.cancelled) throw new Error('OpenShop send was cancelled before the output was saved');
+    assertActiveSession(session);
     const payload = {
       assetId: String(output.assetId),
       url: String(output.url),
@@ -409,9 +432,41 @@
     return payload;
   }
 
+  async function requestDownloadLocal(envelope){
+    const session = captureSession();
+    try {
+      const result = await state.editor.downloadToLocal({format:'png', options:{}});
+      assertActiveSession(session);
+      post(state.protocol.TYPES.DOWNLOAD_LOCAL_RESULT, {
+        requestId:envelope.requestId,
+        sessionId:session.sessionId,
+        context:session.context,
+        payload:result?.cancelled
+          ? {status:'cancelled'}
+          : {status:'success', filename:String(result?.filename || 'openshop-export.png')},
+      });
+    } catch(error){
+      assertActiveSession(session);
+      post(state.protocol.TYPES.DOWNLOAD_LOCAL_RESULT, {
+        requestId:envelope.requestId,
+        sessionId:session.sessionId,
+        context:session.context,
+        payload:{status:'error', message:safeErrorMessage(error)},
+      });
+    }
+  }
+
   async function applyRequest(envelope){
     const types = state.protocol.TYPES;
     let reason = '';
+    if(envelope.type === types.SESSION_VISIBILITY){
+      const visible = envelope.payload?.visible === true;
+      root.dispatchEvent?.(new CustomEvent(
+        visible ? 'openshop:session-visible' : 'openshop:session-hidden',
+        {detail:{context:{...state.activeSession.context}}}
+      ));
+      return;
+    }
     if(envelope.type === types.SAVE_CONFIRMED){
       confirmSave(envelope);
       return;
@@ -431,6 +486,16 @@
       await requestSendToCanvas({requestId:envelope.requestId});
       return;
     }
+    if(envelope.type === types.REQUEST_DOWNLOAD_LOCAL){
+      await requestDownloadLocal(envelope);
+      return;
+    }
+    if(envelope.type === types.FIT_WORKSPACE){
+      state.editor.resizeCanvas?.();
+      state.editor.zoomFit?.();
+      state.editor.canvas?.renderAll?.();
+      return;
+    }
     if(envelope.type === types.LOAD_PROJECT){
       const project = envelope.payload?.project;
       if(!project || String(project.projectId || '') !== state.activeSession.context.projectId){
@@ -442,16 +507,17 @@
         assetResolver: state.assetResolver,
       }));
       root.dispatchEvent?.(new CustomEvent('openshop:project-loaded', {detail:{project}}));
-      revealEditorWorkspace();
       reason = 'project-loaded';
     } else if(envelope.type === types.SYNC_SOURCES){
+      const sources = envelope.payload?.sources || [];
       await whileApplying(() => state.projectAdapter.reconcileSources({
         editor: state.editor,
-        sources: envelope.payload?.sources || [],
+        sources,
         imageLoader: state.imageLoader || undefined,
       }));
+      if(state.entryMode === 'workspace' || sources.length > 0) revealEditorWorkspace();
       reason = 'sources-synchronized';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else if(envelope.type === types.RESOLVE_SOURCE_UPDATE){
       await whileApplying(() => state.projectAdapter.resolveSourceUpdate({
         editor: state.editor,
@@ -460,15 +526,16 @@
         imageLoader: state.imageLoader || undefined,
       }));
       reason = 'source-update-resolved';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else if(envelope.type === types.ADD_IMAGE_LAYER){
       await whileApplying(() => state.projectAdapter.queueSourceImageLayer({
         editor: state.editor,
         source: envelope.payload?.source,
         imageLoader: state.imageLoader || undefined,
       }));
+      revealEditorWorkspace();
       reason = 'source-image-added';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else {
       return;
     }
@@ -476,6 +543,7 @@
     post(types.PROJECT_CHANGED, {
       payload: {
         reason,
+        revision:state.dirtyRevision,
         project: currentProject(),
         requestId: envelope.requestId,
       },
@@ -490,6 +558,7 @@
 
     if(envelope.type === state.protocol.TYPES.OPEN_SESSION){
       openSession(envelope);
+      state.editor._setPersistenceMode?.('embedded-hstara');
       return;
     }
     if(!activeEnvelope(envelope)) return;
@@ -537,6 +606,7 @@
     if(state.listener) root.removeEventListener('message', state.listener);
     if(state.dirtyListener) root.removeEventListener('openshop:project-dirty', state.dirtyListener);
     if(state.apiSettingsListener) root.removeEventListener('openshop:open-api-settings', state.apiSettingsListener);
+    if(state.pageHideListener) root.removeEventListener('pagehide', state.pageHideListener);
     resetSaveState();
     state.activeSession = null;
     state.processedRequestIds.clear();
@@ -544,6 +614,7 @@
     state.listener = null;
     state.dirtyListener = null;
     state.apiSettingsListener = null;
+    state.pageHideListener = null;
     state.editor = null;
     state.protocol = null;
     state.projectAdapter = null;
@@ -559,6 +630,7 @@
     state.messageQueue = Promise.resolve();
     state.queuedMutationCount = 0;
     state.workspaceInitialized = false;
+    state.entryMode = 'welcome';
     if(shouldNotify) root.dispatchEvent?.(new CustomEvent('openshop:session-stopped'));
   }
 
@@ -605,10 +677,17 @@
       if(!state.activeSession) return;
       post(state.protocol.TYPES.OPEN_API_SETTINGS, {payload:{}});
     };
+    state.pageHideListener = () => {
+      if(!state.activeSession || state.applying || (!state.dirty && !state.saving)) return;
+      void requestSave({reason:'pagehide'}).catch(error => {
+        root.console?.error?.('[HstarOpenShopRuntime] pagehide save failed', error);
+      });
+    };
     state.started = true;
     root.addEventListener('message', state.listener);
     root.addEventListener('openshop:project-dirty', state.dirtyListener);
     root.addEventListener('openshop:open-api-settings', state.apiSettingsListener);
+    root.addEventListener('pagehide', state.pageHideListener);
   }
 
   function requestClose(){
@@ -627,6 +706,8 @@
       saving: state.saving,
       saveAgain: state.saveAgain,
       dirty: state.dirty,
+      dirtyRevision: state.dirtyRevision,
+      savedRevision: state.savedRevision,
       applying: state.applying,
       autosaveVersion: Number(state.editor?.__hstarAutosaveVersion || 0),
       pendingSaveRequestId: state.pendingSave?.requestId || '',
