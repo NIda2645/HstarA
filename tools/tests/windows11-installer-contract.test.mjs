@@ -23,6 +23,7 @@ assert.match(installer, /#define\s+SourceRoot\s+"stage\\windows11"/i);
 assert.match(installer, /#ifndef\s+MyAppVersion[\s\S]*#error/i, 'version must come from the build command');
 assert.match(installer, /^AppId=\{\{7D2E8423-5B6B-48EC-A986-5E8B57EE3A11\}$/mi);
 assert.match(installer, /^DefaultDirName=\{localappdata\}\\Programs\\Hstar$/mi);
+assert.match(installer, /^DisableDirPage=no$/mi, 'interactive installs always show the destination directory page');
 assert.match(installer, /^PrivilegesRequired=lowest$/mi);
 assert.match(installer, /^ArchitecturesAllowed=x64compatible$/mi);
 assert.match(installer, /^ArchitecturesInstallIn64BitMode=x64compatible$/mi);

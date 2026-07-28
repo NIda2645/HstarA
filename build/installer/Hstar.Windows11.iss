@@ -17,6 +17,7 @@ AppPublisher={#MyAppPublisher}
 AppMutex={#MyAppMutex}
 DefaultDirName={localappdata}\Programs\Hstar
 DefaultGroupName={#MyAppName}
+DisableDirPage=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
