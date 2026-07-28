@@ -5,7 +5,7 @@ import {resolve} from 'node:path';
 
 const root = resolve(process.cwd());
 const installerPath = resolve(root, 'build/installer/Hstar.Windows11.iss');
-const retiredInstallerPath = resolve(root, 'build/installer/Hstar.iss');
+const classicInstallerPath = resolve(root, 'build/installer/Hstar.iss');
 const builderPath = resolve(root, 'build/scripts/New-HstarWindows11Installer.ps1');
 const chineseLanguagePath = resolve(root, 'build/installer/languages/ChineseSimplified.isl');
 const desktopProjectPath = resolve(root, 'desktop/Hstar.Desktop/Hstar.Desktop.csproj');
@@ -19,7 +19,7 @@ assert.ok(existsSync(brandIconPath), 'the Windows brand icon exists');
 assert.ok(existsSync(brandIconSourcePath), 'the editable Windows brand icon source exists');
 
 const installer = readFileSync(installerPath, 'utf8');
-const retiredInstaller = readFileSync(retiredInstallerPath, 'utf8');
+const classicInstaller = readFileSync(classicInstallerPath, 'utf8');
 const builder = readFileSync(builderPath, 'utf8');
 const desktopProject = readFileSync(desktopProjectPath, 'utf8');
 const ignore = readFileSync(resolve(root, '.gitignore'), 'utf8');
@@ -89,8 +89,18 @@ for (const size of [16, 32, 48, 256]) {
   assert.ok(iconSizes.has(size), `brand ICO contains a ${size}x${size} layer`);
 }
 
-assert.match(retiredInstaller, /retired/i, 'legacy combined installer is explicitly retired');
-assert.doesNotMatch(retiredInstaller, /^\[Setup\]/mi, 'retired installer cannot produce a package');
+assert.match(classicInstaller, /^\[Setup\]/mi, 'classic installer remains independently buildable');
+assert.match(classicInstaller, /^AppId=\{\{B41E0B38-7D96-49FD-95BC-781C568F9E18\}$/mi);
+assert.doesNotMatch(
+  classicInstaller,
+  /7D2E8423-5B6B-48EC-A986-5E8B57EE3A11/i,
+  'classic and Windows 11 installers use independent product identities',
+);
+assert.doesNotMatch(
+  classicInstaller,
+  /Hstar_Windows11_Setup_/i,
+  'classic installer cannot overwrite the Windows 11 release name',
+);
 
 assert.match(builder, /Test-HstarWindows11Stage\.ps1/);
 assert.match(builder, /ISCC\.exe/i);

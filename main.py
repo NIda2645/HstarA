@@ -29,6 +29,7 @@ import shlex
 import functools
 import html
 import xml.etree.ElementTree as ET
+from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional, Tuple
 from threading import Lock, Thread
 import httpx
@@ -98,6 +99,7 @@ SHELL_TOKEN_HEADER = "X-Hstar-Shell-Token"
 SHELL_TOKEN_QUERY = "hstar_shell_token"
 SHELL_SESSION_COOKIE = "hstar_shell_session"
 COLLABORATION_SESSION_COOKIE = "hstar_collaboration_session"
+EDITION = os.environ.get("HSTAR_EDITION", "development").strip().lower() or "development"
 SHELL_TOKEN = os.environ.get("HSTAR_SHELL_TOKEN", "").strip()
 SHELL_BOOTSTRAP_TOKEN_CONSUMED = False
 SHELL_SESSION_LOCK = Lock()
@@ -111,7 +113,9 @@ async def app_lifespan(_app):
     try:
         yield
     finally:
-        await VOICE_ASSISTANT.shutdown()
+        voice_assistant = globals().get("VOICE_ASSISTANT")
+        if voice_assistant is not None:
+            await voice_assistant.shutdown()
 
 
 app = FastAPI(lifespan=app_lifespan)
