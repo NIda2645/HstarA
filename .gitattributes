@@ -1,3 +1,11 @@
 # Checksum-controlled OpenShop runtime files must retain their original bytes.
 integrations/openshop/vendor/** -text whitespace=-trailing-space,cr-at-eol
 static/openshop/vendor/** -text whitespace=-trailing-space,cr-at-eol
+
+# The 3D Director mirror is byte-compared with Vite output during release gates.
+integrations/storyai-3d-director-desk/index.html text eol=lf
+integrations/storyai-3d-director-desk/public/**/*.txt text eol=lf
+static/3d-director/**/*.html text eol=lf
+static/3d-director/**/*.js text eol=lf
+static/3d-director/**/*.css text eol=lf
+static/3d-director/**/*.txt text eol=lf

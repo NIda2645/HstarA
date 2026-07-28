@@ -27,7 +27,14 @@ public sealed class DesktopStartupShellContractTests
 
         Assert.Contains("WebViewEnvironmentFactory", source);
         Assert.Contains("EnsureCoreWebView2Async(environment)", source);
-        Assert.Contains("SetVirtualHostNameToFolderMapping", source);
+        Assert.Contains("AddWebResourceRequestedFilter", source);
+        Assert.Contains("WebResourceRequested += OnStartupWebResourceRequested", source);
+        Assert.Contains("CreateWebResourceResponse", source);
+        Assert.Contains("Cache-Control: no-store", source);
+        Assert.Contains("WebResourceRequested -= OnStartupWebResourceRequested", source);
+        Assert.Contains("EmbeddedStartupRuntime", source);
+        Assert.DoesNotContain("SetVirtualHostNameToFolderMapping", source);
+        Assert.DoesNotContain("startupAssetDirectory", source);
         Assert.Contains("InteractiveTimeout", source);
         Assert.Contains("CoreWebView2Environment.CreateAsync", factory);
         Assert.Contains("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", factory);

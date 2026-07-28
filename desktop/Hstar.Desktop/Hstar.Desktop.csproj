@@ -16,9 +16,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Assets\startup\**\*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </Content>
+    <EmbeddedResource Include="Assets\startup\index.html" LogicalName="Hstar.Desktop.StartupAssets.index.html" />
+    <EmbeddedResource Include="Assets\startup\startup.css" LogicalName="Hstar.Desktop.StartupAssets.startup.css" />
+    <EmbeddedResource Include="Assets\startup\startup.js" LogicalName="Hstar.Desktop.StartupAssets.startup.js" />
+    <EmbeddedResource Include="Assets\startup\ogl.mjs" LogicalName="Hstar.Desktop.StartupAssets.ogl.mjs" />
+    <EmbeddedResource Include="Assets\startup\ogl.LICENSE.txt" LogicalName="Hstar.Desktop.StartupAssets.ogl.LICENSE.txt" />
   </ItemGroup>
 </Project>

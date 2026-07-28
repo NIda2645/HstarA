@@ -87,7 +87,9 @@ assert.equal([...validator.matchAll(/Invoke-Native\s+-Command\s+\$python\s+-Argu
 assert.match(validator, /Invoke-Native\s+-Command\s+\$python[\s\S]*'-I'[\s\S]*'-B'[\s\S]*import fastapi,uvicorn,PIL,httpx,websockets,fontTools/i, 'stage validator imports packaged Python modules');
 assert.match(validator, /\.hstar-voice|Fun-ASR-Nano|safetensors/i, 'stage validator rejects optional voice payloads');
 assert.match(validator, /assets\/\(\?:input\|library\|output\|uploads\)/i, 'stage validator rejects only user-data asset directories');
-assert.doesNotMatch(validator, /['"]\^assets\/['"]/i, 'stage validator does not reject the desktop startup assets directory');
+assert.doesNotMatch(validator, /['"]\^assets\/['"]/i, 'stage validator does not reject every program asset directory');
+assert.match(validator, /assets\/startup/i, 'stage validator rejects external startup web assets');
+assert.doesNotMatch(validator, /'Assets\\startup\\(?:index\.html|startup\.css|startup\.js|ogl\.mjs)'/i, 'stage validator does not require external startup web assets');
 
 if (!existsSync(stageRoot)) {
   console.log('Windows 11 stage scripts contract passed; no generated stage is present');
@@ -114,10 +116,6 @@ const requiredStageEntries = [
   'runtime/python/python311._pth',
   'runtime/python/Lib/site-packages/fastapi/__init__.py',
   'runtime/browser/WebView2/msedgewebview2.exe',
-  'Assets/startup/index.html',
-  'Assets/startup/startup.css',
-  'Assets/startup/startup.js',
-  'Assets/startup/ogl.mjs',
   'manifests/windows11-runtime.json',
   'manifests/files.sha256',
   'manifests/release.json',
@@ -135,6 +133,7 @@ const forbiddenPatterns = [
   /^build\//i,
   /(^|\/)output(\/|$)/i,
   /(^|\/)assets\/(?:input|library|output|uploads)(\/|$)/i,
+  /(^|\/)assets\/startup(\/|$)/i,
   /(^|\/)projects?(\/|$)/i,
   /(^|\/)cache(\/|$)/i,
   /(^|\/)logs?(\/|$)/i,

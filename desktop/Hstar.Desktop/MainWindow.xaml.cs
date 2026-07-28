@@ -11,7 +11,8 @@ namespace Hstar.Desktop;
 
 public partial class MainWindow : Window
 {
-    private const string StartupHostName = "hstar-startup.local";
+    private const string StartupHostName = EmbeddedStartupRuntime.HostName;
+    private const string StartupFilter = "https://hstar-startup.local/*";
     private static readonly Uri StartupUri = new(
         $"https://{StartupHostName}/index.html",
         UriKind.Absolute);
@@ -21,6 +22,8 @@ public partial class MainWindow : Window
 
     private readonly StartupCoordinator _startupCoordinator;
     private readonly StartupStateMachine _startupState = new();
+    private readonly EmbeddedStartupRuntime _embeddedStartupRuntime =
+        EmbeddedStartupRuntime.CreateApplicationRuntime();
     private readonly WebViewEnvironmentFactory _environmentFactory = new();
     private readonly CancellationTokenSource _windowCancellation = new();
     private readonly SemaphoreSlim _messageGate = new(1, 1);
@@ -32,6 +35,7 @@ public partial class MainWindow : Window
     private string? _navigationScriptId;
     private bool _browsersPrepared;
     private bool _mainEventsAttached;
+    private bool _startupResourceEventsAttached;
     private bool _startupDisposed;
     private bool _allowClose;
     private bool _systemShutdownRequested;
@@ -72,18 +76,12 @@ public partial class MainWindow : Window
             "runtime",
             "browser",
             "WebView2");
-        var startupAssetDirectory = Path.Combine(Paths.ProgramRoot, "Assets", "startup");
         if (!Directory.Exists(browserExecutableFolder))
         {
             throw new DirectoryNotFoundException(
                 $"Hstar 固定 WebView2 运行时不存在：{browserExecutableFolder}");
         }
-        if (!File.Exists(Path.Combine(startupAssetDirectory, "index.html")))
-        {
-            throw new FileNotFoundException(
-                "Hstar 启动画面资源不完整。",
-                Path.Combine(startupAssetDirectory, "index.html"));
-        }
+        _embeddedStartupRuntime.ValidateResources();
         Directory.CreateDirectory(Paths.WebViewCacheRoot);
 
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -99,10 +97,11 @@ public partial class MainWindow : Window
 
         ConfigureBrowserSettings(MainWebView.CoreWebView2);
         ConfigureBrowserSettings(StartupWebView.CoreWebView2);
-        StartupWebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
-            StartupHostName,
-            startupAssetDirectory,
-            CoreWebView2HostResourceAccessKind.DenyCors);
+        StartupWebView.CoreWebView2.AddWebResourceRequestedFilter(
+            StartupFilter,
+            CoreWebView2WebResourceContext.All);
+        StartupWebView.CoreWebView2.WebResourceRequested += OnStartupWebResourceRequested;
+        _startupResourceEventsAttached = true;
         StartupWebView.CoreWebView2.WebMessageReceived += OnStartupWebMessageReceived;
         await NavigateAsync(
             StartupWebView.CoreWebView2,
@@ -247,6 +246,7 @@ public partial class MainWindow : Window
         await completion.Task;
 
         StartupWebView.CoreWebView2.WebMessageReceived -= OnStartupWebMessageReceived;
+        DetachStartupResourceHandler();
         StartupWebView.Visibility = Visibility.Collapsed;
         StartupWebView.Dispose();
         _startupDisposed = true;
@@ -430,6 +430,49 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnStartupWebResourceRequested(
+        object? sender,
+        CoreWebView2WebResourceRequestedEventArgs eventArgs)
+    {
+        var core = StartupWebView.CoreWebView2;
+        if (core is null)
+        {
+            return;
+        }
+
+        if (Uri.TryCreate(eventArgs.Request.Uri, UriKind.Absolute, out var uri)
+            && _embeddedStartupRuntime.TryOpen(uri, out var asset)
+            && asset is not null)
+        {
+            eventArgs.Response = core.Environment.CreateWebResourceResponse(
+                asset.Content,
+                200,
+                "OK",
+                $"Content-Type: {asset.ContentType}\r\nCache-Control: no-store");
+            return;
+        }
+
+        eventArgs.Response = core.Environment.CreateWebResourceResponse(
+            new MemoryStream(),
+            404,
+            "Not Found",
+            "Content-Type: text/plain; charset=utf-8\r\nCache-Control: no-store");
+    }
+
+    private void DetachStartupResourceHandler()
+    {
+        if (!_startupResourceEventsAttached || StartupWebView.CoreWebView2 is null)
+        {
+            return;
+        }
+
+        StartupWebView.CoreWebView2.WebResourceRequested -= OnStartupWebResourceRequested;
+        StartupWebView.CoreWebView2.RemoveWebResourceRequestedFilter(
+            StartupFilter,
+            CoreWebView2WebResourceContext.All);
+        _startupResourceEventsAttached = false;
+    }
+
     private async Task ExecuteStartupScriptAsync(string script)
     {
         if (_startupDisposed || StartupWebView.CoreWebView2 is null)
@@ -530,6 +573,7 @@ public partial class MainWindow : Window
         if (!_startupDisposed && StartupWebView.CoreWebView2 is not null)
         {
             StartupWebView.CoreWebView2.WebMessageReceived -= OnStartupWebMessageReceived;
+            DetachStartupResourceHandler();
         }
         MainWebView.Dispose();
         if (!_startupDisposed)

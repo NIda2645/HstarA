@@ -7,11 +7,31 @@ const root = process.cwd();
 const directorRoot = path.join(root, 'static', '3d-director');
 const windows11StageRoot = path.join(root, 'build', 'installer', 'stage', 'windows11');
 const indexPath = path.join(directorRoot, 'index.html');
+const attributesPath = path.join(root, '.gitattributes');
 const approvedSharedAssets = new Map([
   ['/static/js/voice-input-adapter.js', path.join(root, 'static', 'js', 'voice-input-adapter.js')],
 ]);
 
 assert.ok(fs.existsSync(indexPath), 'static/3d-director/index.html exists');
+
+const attributes = fs.readFileSync(attributesPath, 'utf8');
+assert.match(
+  attributes,
+  /^integrations\/storyai-3d-director-desk\/index\.html\s+text\s+eol=lf\b/m,
+  'director source template uses deterministic LF line endings',
+);
+assert.match(
+  attributes,
+  /^integrations\/storyai-3d-director-desk\/public\/\*\*\/\*\.txt\s+text\s+eol=lf\b/m,
+  'director public text assets use deterministic LF line endings',
+);
+for(const extension of ['html', 'js', 'css', 'txt']){
+  assert.match(
+    attributes,
+    new RegExp(`^static/3d-director/\\*\\*/\\*\\.${extension}\\s+text\\s+eol=lf\\b`, 'm'),
+    `director built ${extension} assets use deterministic LF line endings`,
+  );
+}
 
 const index = fs.readFileSync(indexPath, 'utf8');
 const assetRefs = [...index.matchAll(/(?:src|href)=["']([^"']+)["']/g)].map(match => match[1]);
