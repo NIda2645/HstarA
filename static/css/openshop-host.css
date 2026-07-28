@@ -19,6 +19,10 @@
     display: grid;
 }
 
+.openshop-host[hidden] {
+    display: none !important;
+}
+
 .openshop-host-bar {
     min-width: 0;
     display: flex;
@@ -87,7 +91,32 @@
 .openshop-host-primary { border-color: #6d9fff; background: var(--openshop-accent); color: #fff; }
 .openshop-host-primary:hover:not(:disabled) { background: #3e7fe8; }
 
-.openshop-host > iframe {
+.openshop-host-notice {
+    position: absolute;
+    top: 56px;
+    left: 50%;
+    z-index: 4;
+    max-width: min(520px, calc(100% - 32px));
+    padding: 8px 12px;
+    border: 1px solid rgba(121, 219, 163, 0.45);
+    border-radius: 6px;
+    background: rgba(22, 34, 29, 0.96);
+    color: #b7f2cf;
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    transform: translateX(-50%);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.openshop-host-notice[data-kind="error"] {
+    border-color: rgba(255, 139, 139, 0.5);
+    background: rgba(47, 24, 27, 0.97);
+    color: #ffc1c1;
+}
+
+.openshop-session-frame {
     position: relative;
     inset: auto;
     grid-row: 2;
@@ -100,6 +129,8 @@
     pointer-events: auto;
     background: #0d1014;
 }
+
+.openshop-session-frame[hidden] { display: none; }
 
 .openshop-source-panel {
     position: absolute;
@@ -152,4 +183,5 @@
     .openshop-host-title { max-width: 150px; }
     .openshop-host-spacer { min-width: 0; }
     .openshop-source-panel { top: 46px; }
+    .openshop-host-notice { top: 52px; }
 }

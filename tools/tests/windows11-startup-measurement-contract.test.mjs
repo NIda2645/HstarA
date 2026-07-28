@@ -7,13 +7,16 @@ const root = resolve(process.cwd());
 const scriptPath = resolve(root, 'tools/measure-windows11-startup.ps1');
 const appPath = resolve(root, 'desktop/Hstar.Desktop/App.xaml.cs');
 const mainWindowPath = resolve(root, 'desktop/Hstar.Desktop/MainWindow.xaml.cs');
+const environmentFactoryPath = resolve(root, 'desktop/Hstar.Desktop/Runtime/WebViewEnvironmentFactory.cs');
 
 assert.ok(existsSync(scriptPath), 'Windows 11 startup measurement script exists');
 assert.ok(existsSync(appPath), 'Windows 11 shell application source exists');
 assert.ok(existsSync(mainWindowPath), 'Windows 11 shell window source exists');
+assert.ok(existsSync(environmentFactoryPath), 'shared WebView environment factory exists');
 const script = readFileSync(scriptPath, 'utf8');
 const app = readFileSync(appPath, 'utf8');
 const mainWindow = readFileSync(mainWindowPath, 'utf8');
+const environmentFactory = readFileSync(environmentFactoryPath, 'utf8');
 
 for (const parameter of [
   'InstallRoot',
@@ -50,13 +53,18 @@ assert.match(
 );
 assert.match(
   mainWindow,
-  /PrepareBrowserAsync[\s\S]*?CoreWebView2Environment\.CreateAsync[\s\S]*?EnsureCoreWebView2Async/i,
-  'browser preparation owns fixed-runtime initialization',
+  /PrepareBrowserAsync[\s\S]*?_environmentFactory[\s\S]*?MainWebView\.EnsureCoreWebView2Async\(environment\)[\s\S]*?StartupWebView\.EnsureCoreWebView2Async\(environment\)/i,
+  'browser preparation shares one fixed-runtime environment across both WebViews',
+);
+assert.equal(
+  [...environmentFactory.matchAll(/CoreWebView2Environment\.CreateAsync/g)].length,
+  1,
+  'shared environment factory has one creation site',
 );
 assert.match(
   mainWindow,
-  /AttachBackendSessionAsync[\s\S]*?WebViewConfiguration\.Create[\s\S]*?NavigateAsync/i,
-  'session attachment binds the backend origin before navigation',
+  /AttachBackendSessionAsync[\s\S]*?WebViewConfiguration\.Create[\s\S]*?NavigateAsync[\s\S]*?_interactiveCompletion\.Task\.WaitAsync/i,
+  'session attachment remains covered until the interactive handshake',
 );
 
 const parseResult = spawnSync(

@@ -37,6 +37,7 @@ assert.match(installer, /^MinVersion=10\.0\.22000$/mi);
 assert.match(installer, /^OutputDir=\.\.\\release\\windows11$/mi);
 assert.match(installer, /^OutputBaseFilename=Hstar_Windows11_Setup_\{#MyAppVersion\}$/mi);
 assert.match(installer, /^SetupIconFile=\.\.\\\.\.\\desktop\\Hstar\.Desktop\\Branding\\Hstar\.ico$/mi);
+assert.match(installer, /^Compression=lzma2\/max$/mi, 'installer prioritizes dependable build behavior over extreme compression');
 assert.match(installer, /^AppMutex=\{#MyAppMutex\}$/mi, 'installer binds only the Windows 11 mutex');
 assert.match(installer, /^CloseApplications=no$/mi, 'installer does not terminate unrelated processes');
 assert.match(desktopProject, /<ApplicationIcon>Branding\\Hstar\.ico<\/ApplicationIcon>/i);
@@ -51,6 +52,7 @@ assert.doesNotMatch(filesSection, /(?:\.\.[\\/]|node_modules|Fun-ASR-Nano|safete
 
 assert.match(installer, /Name:\s*"desktopicon";[^\r\n]*Flags:\s*checkedonce/i);
 assert.match(installer, /Name:\s*"updateapiconfig";[^\r\n]*Flags:\s*unchecked/i);
+assert.match(installer, /Name:\s*"updateapiconfig";[^\r\n]*覆盖更新内置 API 配置/i);
 assert.match(installer, /Name:\s*"\{group\}\\\{#MyAppName\}";\s*Filename:\s*"\{app\}\\\{#MyAppExeName\}"/i);
 assert.match(installer, /Name:\s*"\{autodesktop\}\\\{#MyAppName\}";[^\r\n]*Tasks:\s*desktopicon/i);
 
@@ -107,6 +109,8 @@ assert.match(builder, /ISCC\.exe/i);
 assert.match(builder, /Hstar\.Windows11\.iss/i);
 assert.match(builder, /Get-FileHash[\s\S]*SHA256/i);
 assert.match(builder, /release-manifest\.json/i);
+assert.match(builder, /\[string\]\$OutputDirectory/i, 'builder accepts the requested final output folder');
+assert.match(builder, /Copy-Item[\s\S]*\$finalInstallerPath/i, 'builder copies the verified installer to the requested folder');
 assert.match(builder, /Compiler engine version:\\s\*Inno Setup/i, 'manifest version comes from compiler output');
 assert.doesNotMatch(builder, /VersionInfo\.ProductVersion/i, 'ISCC PE version fields are always 0.0.0.0');
 assert.doesNotMatch(builder, /Skip(?:Stage|Validation)/i);

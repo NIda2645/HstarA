@@ -18,7 +18,8 @@ public sealed class WebViewConfiguration
     private WebViewConfiguration(
         AppPaths paths,
         Uri backendBaseUri,
-        string shellToken)
+        string shellToken,
+        string navigationId)
     {
         Paths = paths;
         BackendBaseUri = backendBaseUri;
@@ -28,6 +29,7 @@ public sealed class WebViewConfiguration
             "browser",
             "WebView2");
         UserDataFolder = paths.WebViewCacheRoot;
+        NavigationId = navigationId;
         var startUri = new UriBuilder(backendBaseUri)
         {
             Query = $"hstar_shell_token={Uri.EscapeDataString(shellToken)}",
@@ -45,10 +47,13 @@ public sealed class WebViewConfiguration
 
     public Uri StartUri { get; }
 
+    public string NavigationId { get; }
+
     public static WebViewConfiguration Create(
         AppPaths paths,
         Uri backendBaseUri,
-        string shellToken)
+        string shellToken,
+        string? navigationId = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(backendBaseUri);
@@ -62,7 +67,10 @@ public sealed class WebViewConfiguration
         {
             throw new ArgumentException("Hstar WebView 会话令牌不能为空。", nameof(shellToken));
         }
-        return new WebViewConfiguration(paths, backendBaseUri, shellToken);
+        navigationId = string.IsNullOrWhiteSpace(navigationId)
+            ? Guid.NewGuid().ToString("N")
+            : navigationId.Trim();
+        return new WebViewConfiguration(paths, backendBaseUri, shellToken, navigationId);
     }
 
     public bool IsAllowedNavigation(Uri? uri) =>
@@ -129,13 +137,16 @@ public sealed class WebViewMessageRouter
 {
     private readonly WebViewConfiguration _configuration;
     private readonly Func<string, CancellationToken, Task> _restart;
+    private readonly Func<string, CancellationToken, Task> _interactive;
 
     public WebViewMessageRouter(
         WebViewConfiguration configuration,
-        Func<string, CancellationToken, Task> restart)
+        Func<string, CancellationToken, Task> restart,
+        Func<string, CancellationToken, Task>? interactive = null)
     {
         _configuration = configuration;
         _restart = restart;
+        _interactive = interactive ?? ((_, _) => Task.CompletedTask);
     }
 
     public async Task<bool> TryHandleAsync(
@@ -154,8 +165,36 @@ public sealed class WebViewMessageRouter
             using var message = JsonDocument.Parse(messageJson);
             var root = message.RootElement;
             if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("type", out var type)
-                || type.GetString() != "hstar-restart-with-data-root"
+                || !root.TryGetProperty("type", out var typeElement)
+                || !root.TryGetProperty("schemaVersion", out var schemaElement)
+                || schemaElement.ValueKind != JsonValueKind.Number
+                || !schemaElement.TryGetInt32(out var schemaVersion)
+                || schemaVersion != 1)
+            {
+                return false;
+            }
+
+            var type = typeElement.GetString();
+            if (type == "hstar:interactive")
+            {
+                if (!root.TryGetProperty("navigationId", out var navigationElement)
+                    || navigationElement.ValueKind != JsonValueKind.String)
+                {
+                    return false;
+                }
+                var navigationId = navigationElement.GetString() ?? string.Empty;
+                if (!string.Equals(
+                    navigationId,
+                    _configuration.NavigationId,
+                    StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                await _interactive(navigationId, cancellationToken);
+                return true;
+            }
+
+            if (type != "hstar:restart-with-data-root"
                 || !root.TryGetProperty("dataRoot", out var dataRootElement))
             {
                 return false;

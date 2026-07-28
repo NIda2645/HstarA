@@ -147,10 +147,14 @@ class OpenShopProjectStore:
         source_project_id: str,
         target_project_id: str,
         target_owner: dict,
+        source_owner: dict | None = None,
     ) -> dict:
         source_project_id = self._validate_id(source_project_id, "sourceProjectId")
         target_project_id = self._validate_id(target_project_id, "targetProjectId")
         normalized_owner = self._normalize_owner(target_owner)
+        normalized_source_owner = (
+            self._normalize_owner(source_owner) if source_owner is not None else None
+        )
 
         with self._lock:
             target_path = self._project_path(target_project_id)
@@ -160,6 +164,8 @@ class OpenShopProjectStore:
                 return copy.deepcopy(existing)
 
             source = self._read_project(source_project_id)
+            if normalized_source_owner is not None:
+                self._assert_owner(source, normalized_source_owner)
             clone = copy.deepcopy(source)
             timestamp = self._now()
             clone["projectId"] = target_project_id

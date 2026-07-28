@@ -7,10 +7,35 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const integrationRoot = resolve(scriptDir, '..');
 const projectRoot = resolve(integrationRoot, '..', '..');
 const staticRoot = resolve(projectRoot, 'static');
-const destination = resolve(staticRoot, 'openshop');
+const defaultDestination = resolve(staticRoot, 'openshop');
+let destination = defaultDestination;
+const args = process.argv.slice(2);
+for(let index = 0; index < args.length; index += 1){
+  const argument = args[index];
+  if(argument !== '--output') throw new Error(`Unknown OpenShop build argument: ${argument}`);
+  const output = args[index + 1];
+  if(!output || output.startsWith('--')) throw new Error('--output requires a directory path');
+  destination = resolve(output);
+  index += 1;
+}
 
-if(dirname(destination) !== staticRoot){
+const destinationFromIntegration = relative(integrationRoot, destination);
+const destinationInsideIntegration = destinationFromIntegration === '' || (
+  !isAbsolute(destinationFromIntegration)
+  && destinationFromIntegration !== '..'
+  && !destinationFromIntegration.startsWith(`..${sep}`)
+);
+if(
+  dirname(destination) === destination
+  || destination === projectRoot
+  || destination === staticRoot
+  || destination === integrationRoot
+  || destinationInsideIntegration
+){
   throw new Error(`Unsafe OpenShop build destination: ${destination}`);
+}
+if(destination === defaultDestination && dirname(destination) !== staticRoot){
+  throw new Error(`Unsafe default OpenShop build destination: ${destination}`);
 }
 
 const manifest = JSON.parse(await readFile(resolve(integrationRoot, 'vendor/runtime-manifest.json'), 'utf8'));

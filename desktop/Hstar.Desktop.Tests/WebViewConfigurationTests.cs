@@ -82,7 +82,8 @@ public sealed class WebViewConfigurationTests : IDisposable
         var target = Path.Combine(_root, "新的数据目录");
         var json = JsonSerializer.Serialize(new
         {
-            type = "hstar-restart-with-data-root",
+            type = "hstar:restart-with-data-root",
+            schemaVersion = 1,
             dataRoot = target,
         });
 
@@ -109,19 +110,64 @@ public sealed class WebViewConfigurationTests : IDisposable
             });
         var validMessage = JsonSerializer.Serialize(new
         {
-            type = "hstar-restart-with-data-root",
+            type = "hstar:restart-with-data-root",
+            schemaVersion = 1,
             dataRoot = Path.Combine(_root, "Data2"),
         });
         var unsafeMessage = JsonSerializer.Serialize(new
         {
-            type = "hstar-restart-with-data-root",
+            type = "hstar:restart-with-data-root",
+            schemaVersion = 1,
             dataRoot = Path.Combine(paths.ProgramRoot, "data"),
+        });
+        var unsupportedSchema = JsonSerializer.Serialize(new
+        {
+            type = "hstar:restart-with-data-root",
+            schemaVersion = 2,
+            dataRoot = Path.Combine(_root, "Data2"),
         });
 
         Assert.False(await router.TryHandleAsync("https://example.com/", validMessage));
         Assert.False(await router.TryHandleAsync("http://127.0.0.1:5007/", unsafeMessage));
+        Assert.False(await router.TryHandleAsync("http://127.0.0.1:5007/", unsupportedSchema));
         Assert.False(await router.TryHandleAsync("http://127.0.0.1:5007/", "{not-json"));
         Assert.Equal(0, restartCount);
+    }
+
+    [Fact]
+    public async Task InteractiveMessageRequiresCurrentNavigationSchemaAndOrigin()
+    {
+        var configuration = CreateConfiguration(navigationId: "nav-current");
+        var accepted = new List<string>();
+        var router = new WebViewMessageRouter(
+            configuration,
+            (_, _) => Task.CompletedTask,
+            (navigationId, _) =>
+            {
+                accepted.Add(navigationId);
+                return Task.CompletedTask;
+            });
+        string Message(string navigationId, int schemaVersion) => JsonSerializer.Serialize(new
+        {
+            type = "hstar:interactive",
+            schemaVersion,
+            navigationId,
+        });
+
+        Assert.False(await router.TryHandleAsync(
+            "https://example.com/",
+            Message("nav-current", 1)));
+        Assert.False(await router.TryHandleAsync(
+            "http://127.0.0.1:5007/",
+            Message("nav-old", 1)));
+        Assert.False(await router.TryHandleAsync(
+            "http://127.0.0.1:5007/",
+            Message("nav-current", 2)));
+        Assert.True(await router.TryHandleAsync(
+            "http://127.0.0.1:5007/",
+            Message("nav-current", 1)));
+
+        Assert.Equal(["nav-current"], accepted);
     }
 
     [Fact]
@@ -142,11 +188,14 @@ public sealed class WebViewConfigurationTests : IDisposable
             StartupCoordinator.LoadRestartPaths(current, Path.Combine(_root, "OtherData")));
     }
 
-    private WebViewConfiguration CreateConfiguration(AppPaths? paths = null) =>
+    private WebViewConfiguration CreateConfiguration(
+        AppPaths? paths = null,
+        string navigationId = "nav-test") =>
         WebViewConfiguration.Create(
             paths ?? CreatePaths(),
             new Uri("http://127.0.0.1:5007/"),
-            new string('A', 64));
+            new string('A', 64),
+            navigationId);
 
     private AppPaths CreatePaths() => AppPaths.Create(
         Path.Combine(_root, "Program"),

@@ -26,7 +26,7 @@ MinVersion=10.0.22000
 OutputDir=..\release\windows11
 OutputBaseFilename=Hstar_Windows11_Setup_{#MyAppVersion}
 SetupIconFile=..\..\desktop\Hstar.Desktop\Branding\Hstar.ico
-Compression=lzma2/ultra64
+Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=no
@@ -43,7 +43,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式"; Flags: checkedonce
-Name: "updateapiconfig"; Description: "更新 API 配置（保留已有密钥和自定义服务商）"; GroupDescription: "API 配置"; Flags: unchecked
+Name: "updateapiconfig"; Description: "覆盖更新内置 API 配置（保留已有密钥和自定义服务商）"; GroupDescription: "API 配置"; Flags: unchecked
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\app"

@@ -26,7 +26,8 @@ assert.doesNotMatch(settings, /正在迁移|已迁移并保存/, 'storage settin
 assert.match(settings, /<dialog[^>]+id="storageRestartDialog"/, 'saving storage uses an explicit restart confirmation');
 assert.match(settings, /await\s+confirmStorageRestart\(/, 'save waits for restart confirmation before persisting');
 assert.match(settings, /storageInput\.value\s*=\s*activeStorageRoot/, 'cancel restores the active storage root');
-assert.match(settings, /type:\s*['"]hstar-restart-with-data-root['"]/, 'confirmed storage change requests desktop restart');
+assert.match(settings, /type:\s*['"]hstar:restart-with-data-root['"]/, 'confirmed storage change requests desktop restart');
+assert.match(settings, /schemaVersion:\s*1/, 'desktop restart message pins schema version 1');
 
 assert.ok(existsSync(resolve(root, 'static/software-settings.html')), 'software settings page must exist');
 assert.match(index, /switchUI\(this, 'software-settings'\)/, 'sidebar must expose software settings entry');

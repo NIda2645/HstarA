@@ -64,6 +64,22 @@ class ShellSessionMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(accepted.status_code, 200)
         self.assertEqual(accepted.json()["edition"], main.EDITION)
 
+    async def test_shell_health_reports_interactive_startup_readiness(self):
+        transport = httpx.ASGITransport(app=main.app, client=("127.0.0.1", 51006))
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            denied = await client.get("/api/shell/health")
+            accepted = await client.get(
+                "/api/shell/health",
+                headers={main.SHELL_TOKEN_HEADER: main.SHELL_TOKEN},
+            )
+
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(
+            accepted.json(),
+            {"ready": True, "edition": main.EDITION, "version": main.current_app_version()},
+        )
+
     async def test_one_time_query_token_sets_http_only_cookie_and_redirects_cleanly(self):
         transport = httpx.ASGITransport(app=main.app, client=("127.0.0.1", 51002))
         async with httpx.AsyncClient(

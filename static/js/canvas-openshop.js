@@ -53,6 +53,9 @@
             saveState:'new',
             saveError:'',
             cloneSourceProjectId:'',
+            cloneSourceCanvasType:'',
+            cloneSourceCanvasId:'',
+            cloneSourceNodeId:'',
             created_at:Date.now(),
         };
     }
@@ -123,6 +126,48 @@
             .map((source, sequence) => ({...source, sequence}));
     }
 
+    function fieldNumber(source, keys){
+        for(const key of keys){
+            const value = Number(source?.[key]);
+            if(Number.isFinite(value) && value > 0) return Math.round(value);
+        }
+        return 0;
+    }
+
+    function imageSize(source){
+        const width = fieldNumber(source, ['natural_w', 'naturalWidth', 'width', 'w', 'layout_w', 'preview_w']);
+        const height = fieldNumber(source, ['natural_h', 'naturalHeight', 'height', 'h', 'layout_h', 'preview_h']);
+        return width > 0 && height > 0 ? {width, height} : null;
+    }
+
+    function primarySourceRef(node){
+        const nodes = nodeList();
+        const connection = connectionList()
+            .map((item, index) => ({item, index}))
+            .filter(entry => entry.item?.to === node?.id)
+            .sort((left, right) => left.index - right.index || clean(left.item?.id).localeCompare(clean(right.item?.id)))[0]?.item;
+        const sourceNode = nodes.find(candidate => candidate.id === connection?.from);
+        return imageRefs(sourceNode)[0] || null;
+    }
+
+    function previewForNode(node){
+        const preview = clean(node.previewUrl);
+        if(preview) return {url:preview, name:node.projectName};
+        const source = sourcesForNode(node)[0];
+        return source?.url ? source : {url:'', name:''};
+    }
+
+    function dimensionsForNode(node){
+        if(!clean(node.previewUrl)){
+            const inputSize = imageSize(primarySourceRef(node));
+            if(inputSize) return inputSize;
+        }
+        return {
+            width:Math.max(1, Number(node.documentWidth || 1920)),
+            height:Math.max(1, Number(node.documentHeight || 1080)),
+        };
+    }
+
     function saveStateLabel(node){
         if(node.saveState === 'saving') return translate('canvas.openshopSaving', '正在保存');
         if(node.saveState === 'saved') return translate('canvas.openshopSaved', '已保存');
@@ -133,18 +178,20 @@
     function renderNode(node){
         const wrap = document.createElement('div');
         wrap.className = 'openshop-layered-card';
-        const preview = clean(node.previewUrl);
-        const previewMarkup = preview
-            ? `<img loading="lazy" decoding="async" src="${safeAttr(preview)}" alt="${safeAttr(node.projectName)}">`
+        const preview = previewForNode(node);
+        const dimensions = dimensionsForNode(node);
+        const previewMarkup = preview.url
+            ? `<img loading="lazy" decoding="async" src="${safeAttr(preview.url)}" alt="${safeAttr(preview.name || node.projectName)}">`
             : '<div class="openshop-layered-placeholder"><i data-lucide="layers-3"></i></div>';
         const updates = Math.max(0, Number(node.sourceUpdateCount || 0));
         wrap.innerHTML = `
             <div class="openshop-layered-preview">${previewMarkup}</div>
             <div class="openshop-layered-meta">
-                <span>${Math.max(1, Number(node.documentWidth || 1920))} x ${Math.max(1, Number(node.documentHeight || 1080))}</span>
-                <span>${Math.max(0, Number(node.layerCount || 0))} ${safeHtml(translate('canvas.openshopLayers', '图层'))}</span>
+                <span class="openshop-layered-meta-left">
+                    <span class="openshop-layered-dimensions">${dimensions.width} x ${dimensions.height}</span>
+                    <span class="openshop-layered-layers">${Math.max(0, Number(node.layerCount || 0))} ${safeHtml(translate('canvas.openshopLayers', '图层'))}</span>
+                </span>
                 <span class="openshop-layered-save" data-state="${safeAttr(node.saveState || 'new')}">${safeHtml(saveStateLabel(node))}</span>
-                <span class="openshop-layered-updates ${updates ? 'has-updates' : ''}">${safeHtml(translate('canvas.openshopSourceUpdates', '来源更新'))} ${updates}</span>
             </div>
             <button class="openshop-layered-open" type="button" data-open-openshop="${safeAttr(node.id)}">
                 <i data-lucide="panel-top-open"></i><span>${safeHtml(translate('canvas.openshopOpen', '打开编辑器'))}</span>
@@ -175,6 +222,9 @@
             projectName:node.projectName || translate('canvas.openshopProjectName', '图文分层项目'),
             frameId:root.frameElement?.id || 'frame-canvas',
             cloneSourceProjectId:clean(node.cloneSourceProjectId),
+            cloneSourceCanvasType:clean(node.cloneSourceCanvasType),
+            cloneSourceCanvasId:clean(node.cloneSourceCanvasId),
+            cloneSourceNodeId:clean(node.cloneSourceNodeId),
             documentWidth:Number(node.documentWidth || 1920),
             documentHeight:Number(node.documentHeight || 1080),
         }, sourcesForNode(node));
@@ -185,6 +235,9 @@
     function prepareClone(source, copy){
         copy.projectId = newProjectId();
         copy.cloneSourceProjectId = clean(source?.projectId);
+        copy.cloneSourceCanvasType = 'classic';
+        copy.cloneSourceCanvasId = currentCanvasId();
+        copy.cloneSourceNodeId = clean(source?.id);
         copy.autosaveVersion = 0;
         copy.saveState = 'new';
         copy.saveError = '';
@@ -209,12 +262,17 @@
         const meta = data.meta || {};
         node.projectName = clean(meta.projectName) || node.projectName;
         node.previewUrl = clean(meta.previewUrl);
+        if(Number(meta.documentWidth) > 0) node.documentWidth = Math.max(1, Math.round(Number(meta.documentWidth)));
+        if(Number(meta.documentHeight) > 0) node.documentHeight = Math.max(1, Math.round(Number(meta.documentHeight)));
         node.layerCount = Math.max(0, Number(meta.layerCount || 0));
         node.sourceUpdateCount = Math.max(0, Number(meta.sourceUpdateCount || 0));
         node.autosaveVersion = Math.max(0, Number(meta.autosaveVersion || 0));
         node.saveState = clean(meta.saveState) || 'saved';
         node.saveError = clean(meta.error);
         node.cloneSourceProjectId = '';
+        node.cloneSourceCanvasType = '';
+        node.cloneSourceCanvasId = '';
+        node.cloneSourceNodeId = '';
         hooks().render?.();
         hooks().scheduleSave?.();
         return true;

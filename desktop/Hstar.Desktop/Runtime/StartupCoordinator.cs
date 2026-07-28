@@ -117,6 +117,25 @@ public sealed class StartupCoordinator : IAsyncDisposable
         return migrated;
     }
 
+    public async Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (Current is null)
+            {
+                return;
+            }
+            var current = Current;
+            Current = null;
+            await current.Backend.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _lifecycle.WaitAsync().ConfigureAwait(false);

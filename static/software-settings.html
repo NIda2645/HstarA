@@ -413,7 +413,7 @@
             const webview = window.chrome?.webview;
             if(!webview?.postMessage) return false;
             webview.postMessage({
-                type:'hstar-restart-with-data-root',
+                type:'hstar:restart-with-data-root',
                 schemaVersion:1,
                 dataRoot
             });

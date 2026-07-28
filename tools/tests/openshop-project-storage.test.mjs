@@ -331,9 +331,23 @@ async def api_lifecycle():
             assert conflict.status_code == 409
 
             clone_owner = {**owner, "nodeId": "node-clone"}
+            denied_clone = await client.post(
+                "/api/openshop/projects/project-clone-denied/clone",
+                json={
+                    "source_project_id": "project-api",
+                    "source_owner": {**owner, "nodeId": "another-node"},
+                    "owner": clone_owner,
+                },
+            )
+            assert denied_clone.status_code == 403
+
             cloned = await client.post(
                 "/api/openshop/projects/project-clone/clone",
-                json={"source_project_id": "project-api", "owner": clone_owner},
+                json={
+                    "source_project_id": "project-api",
+                    "source_owner": owner,
+                    "owner": clone_owner,
+                },
             )
             assert cloned.status_code == 200, cloned.text
             assert cloned.json()["project"]["owner"] == clone_owner

@@ -144,6 +144,9 @@ assert.deepEqual({...openedSessions[0].context}, {
   projectName:'图文分层项目',
   frameId:'frame-smart-canvas',
   cloneSourceProjectId:'',
+  cloneSourceCanvasType:'',
+  cloneSourceCanvasId:'',
+  cloneSourceNodeId:'',
   documentWidth:1920,
   documentHeight:1080,
 });
@@ -197,8 +200,27 @@ const clone = {...projectNode, id:'smart-openshop-copy'};
 adapter.prepareClone(projectNode, clone);
 assert.notEqual(clone.projectId, projectNode.projectId);
 assert.equal(clone.cloneSourceProjectId, projectNode.projectId);
+assert.equal(clone.cloneSourceCanvasType, 'smart');
+assert.equal(clone.cloneSourceCanvasId, 'smart-canvas-1');
+assert.equal(clone.cloneSourceNodeId, projectNode.id);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
+nodes.push(clone);
+assert.equal(adapter.openNode(clone.id), true);
+assert.deepEqual({...openedSessions.at(-1).context}, {
+  canvasType:'smart',
+  canvasId:'smart-canvas-1',
+  nodeId:clone.id,
+  projectId:clone.projectId,
+  projectName:'图文分层项目',
+  frameId:'frame-smart-canvas',
+  cloneSourceProjectId:projectNode.projectId,
+  cloneSourceCanvasType:'smart',
+  cloneSourceCanvasId:'smart-canvas-1',
+  cloneSourceNodeId:projectNode.id,
+  documentWidth:1920,
+  documentHeight:1080,
+});
 
 assert.match(htmlSource, /src=["']\/static\/js\/smart-canvas-openshop\.js(?:\?[^"']*)?["']/);
 assert.match(htmlSource, /data-create-type=["']openshop-layered["']/);

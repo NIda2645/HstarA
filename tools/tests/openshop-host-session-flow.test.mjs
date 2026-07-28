@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const protocolPath = 'integrations/openshop/host/openshop-protocol.js';
+const protocolPath = 'static/openshop/host/openshop-protocol.js';
 const hostPath = 'static/js/openshop-host.js';
 assert.ok(fs.existsSync(hostPath), `${hostPath} should exist`);
 
@@ -64,6 +64,7 @@ const canvasMessages = [];
 const fetchCalls = [];
 const switchUICalls = [];
 let uploadedSourceCount = 0;
+let sessionFrame = null;
 
 const editorWindow = {
   postMessage(message, origin) {
@@ -82,6 +83,7 @@ const frame = createElement('frame-openshop');
 frame.dataset.src = '/static/openshop/index.html';
 frame.contentWindow = editorWindow;
 const canvasFrame = createElement('frame-canvas');
+canvasFrame.classList.add('active');
 canvasFrame.contentWindow = canvasWindow;
 const title = createElement('openshop-title');
 const status = createElement('openshop-state');
@@ -140,6 +142,9 @@ async function fetchFake(url, options = {}) {
   if(method === 'GET' && String(url).startsWith('/api/openshop/projects/project-1?')) {
     return response({json:{project}});
   }
+  if(method === 'POST' && String(url) === '/api/openshop/projects/project-1/clone') {
+    return response({json:{project}});
+  }
   if(method === 'POST' && String(url) === '/api/openshop/projects/project-1/assets') {
     uploadedSourceCount += 1;
     const assetId = `asset-source-${uploadedSourceCount}`;
@@ -156,7 +161,14 @@ const documentRef = {
   body: createElement('body'),
   readyState: 'complete',
   contains(element) { return elements.has(element?.id); },
-  createElement,
+  createElement(tagName) {
+    const element = createElement();
+    if(String(tagName).toLowerCase() === 'iframe') {
+      element.contentWindow = editorWindow;
+      sessionFrame = element;
+    }
+    return element;
+  },
   addEventListener() {},
   getElementById(id) { return elements.get(id) || null; },
   querySelector(selector) {
@@ -222,14 +234,31 @@ const sources = [
 host.openNodeSession({
   canvasType:'classic', canvasId:'canvas-1', nodeId:'layered-1',
   projectId:'project-1', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
-}, sources);
+  cloneSourceProjectId:'legacy-source-project',
+}, []);
 
 assert.equal(overlay.classList.contains('is-open'), true);
 assert.equal(overlay.getAttribute('aria-hidden'), 'false');
-assert.match(frame.src, /\/static\/openshop\/index\.html/);
-frame.dispatch('load');
-assert.deepEqual(editorMessages.map(item => item.message.type), [protocol.TYPES.OPEN_SESSION]);
-const sessionId = editorMessages[0].message.sessionId;
+assert.ok(sessionFrame, 'OpenShop should create a project-scoped session iframe');
+assert.match(sessionFrame.src, /\/static\/openshop\/index\.html/);
+sessionFrame.dispatch('load');
+assert.deepEqual(editorMessages.map(item => item.message.type), [
+  protocol.TYPES.SESSION_VISIBILITY,
+  protocol.TYPES.OPEN_SESSION,
+]);
+const openSessionMessage = editorMessages.find(item => item.message.type === protocol.TYPES.OPEN_SESSION);
+assert.equal(
+  openSessionMessage.message.payload.entryMode,
+  'workspace',
+  'a zero-source Hstar node should open an empty editing workspace',
+);
+const sessionId = openSessionMessage.message.sessionId;
+
+host.openNodeSession({
+  canvasType:'classic', canvasId:'canvas-1', nodeId:'layered-1',
+  projectId:'project-1', frameId:'frame-canvas', documentWidth:1920, documentHeight:1080,
+  cloneSourceProjectId:'legacy-source-project',
+}, sources);
 
 dispatchEditorMessage(protocol.createEnvelope({
   type:protocol.TYPES.READY,
@@ -239,15 +268,30 @@ dispatchEditorMessage(protocol.createEnvelope({
   payload:{ready:true},
 }));
 await flushAsync();
+const cloneRequest = fetchCalls.find(call => call.url === '/api/openshop/projects/project-1/clone');
+assert.ok(cloneRequest, 'legacy clone metadata should still clone the source project');
+assert.equal(
+  Object.hasOwn(JSON.parse(cloneRequest.options.body), 'source_owner'),
+  false,
+  'legacy clone metadata should omit an unavailable source owner',
+);
 
-assert.deepEqual(editorMessages.map(item => item.message.type), [
+const bootstrapMessageTypes = editorMessages
+  .map(item => item.message.type)
+  .filter(type => [
+    protocol.TYPES.OPEN_SESSION,
+    protocol.TYPES.LOAD_PROJECT,
+    protocol.TYPES.SYNC_SOURCES,
+  ].includes(type));
+assert.deepEqual(bootstrapMessageTypes, [
   protocol.TYPES.OPEN_SESSION,
   protocol.TYPES.LOAD_PROJECT,
   protocol.TYPES.SYNC_SOURCES,
 ]);
 assert.equal(uploadedSourceCount, 2);
+const synchronizedSources = editorMessages.find(item => item.message.type === protocol.TYPES.SYNC_SOURCES);
 assert.deepEqual(
-  Array.from(editorMessages[2].message.payload.sources, source => source.sequence),
+  Array.from(synchronizedSources.message.payload.sources, source => source.sequence),
   [0, 1],
 );
 

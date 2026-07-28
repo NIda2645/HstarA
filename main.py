@@ -2928,6 +2928,7 @@ class OpenShopProjectSaveRequest(BaseModel):
 
 class OpenShopProjectCloneRequest(BaseModel):
     source_project_id: str
+    source_owner: Dict[str, Any] | None = None
     owner: Dict[str, Any]
 
 class OpenShopAiTaskRequest(BaseModel):
@@ -12108,6 +12109,15 @@ def backend_health():
     }
 
 
+@app.get("/api/shell/health")
+def shell_health():
+    return {
+        "ready": True,
+        "edition": EDITION,
+        "version": current_app_version(),
+    }
+
+
 @app.post("/api/shell/shutdown")
 async def shutdown_packaged_backend():
     if not SHELL_TOKEN:
@@ -16803,6 +16813,7 @@ async def clone_openshop_project(
             payload.source_project_id,
             project_id,
             payload.owner,
+            payload.source_owner,
         )
         return {"project": project}
     except OpenShopStoreError as exc:

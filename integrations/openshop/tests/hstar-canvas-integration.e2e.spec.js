@@ -63,6 +63,7 @@ async function mountCanvas(page, kind, canvasId){
   await page.evaluate(src => {
     const frame = document.getElementById('frame-canvas');
     frame.src = src;
+    window.switchUI(null, 'canvas', {skipRemember:true});
   }, target);
   await expect.poll(() => {
     const frame = page.frames().find(candidate => candidate.url().includes(`${kind === 'smart' ? 'smart-canvas' : 'canvas'}.html`));
@@ -87,7 +88,10 @@ async function openNode(page, canvasFrame, kind, nodeId, expectedSources = null)
     const state = window.HstarOpenShopHost?.getState?.();
     return state?.activeSession?.context?.nodeId === id && state.editorReady;
   }, {id:nodeId});
-  const editor = page.frames().find(frame => frame.url().includes('/static/openshop/index.html'));
+  const activeEditorElement = await page.locator('#openshop-host iframe.openshop-session-frame:not([hidden])').elementHandle();
+  expect(activeEditorElement, 'the active OpenShop session iframe should be visible').toBeTruthy();
+  const editor = await activeEditorElement.contentFrame();
+  expect(editor, 'the active OpenShop session iframe should have a browser frame').toBeTruthy();
   await editor.waitForFunction(() => Boolean(typeof OS !== 'undefined' && OS.canvas && window.HstarOpenShopRuntime?.getState?.().activeSession));
   await expect(editor.locator('#welcome-overlay')).toBeHidden();
   if(expectedSources !== null){

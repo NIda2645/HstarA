@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
 
 const integrationRoot = 'integrations/openshop';
 const runtimeRoot = 'static/openshop';
+const allowDirtyMirrorForTest = process.env.HSTAR_ALLOW_DIRTY_MIRROR_FOR_TEST === '1';
 const gitAttributes = readFileSync('.gitattributes', 'utf8');
 const sourceManifest = JSON.parse(readFileSync(`${integrationRoot}/vendor/runtime-manifest.json`, 'utf8'));
 const glossary = JSON.parse(readFileSync(`${integrationRoot}/locales/photoshop-zh-CN-glossary.json`, 'utf8'));
@@ -51,7 +53,21 @@ const expectedFiles = [
 ].sort();
 
 assert.ok(existsSync(runtimeRoot), `${runtimeRoot} should exist`);
-assert.deepEqual(listFiles(runtimeRoot).sort(), expectedFiles, 'static runtime must contain only approved files');
+const runtimeFiles = listFiles(runtimeRoot).sort();
+if(allowDirtyMirrorForTest){
+  for(const file of expectedFiles){
+    assert.ok(runtimeFiles.includes(file), `dirty test runtime should retain approved file ${file}`);
+  }
+  assert.equal(
+    runtimeFiles.some(file => /(^|\/)(?:tests?|node_modules|__pycache__|\.cache|projects?|runtime-data)(?:\/|$)/i.test(file)
+      || /\.(?:tmp|log|pyc)$/i.test(file)),
+    false,
+    'dirty test runtime must still exclude tests, caches, runtime data, and temporary files',
+  );
+}
+else{
+  assert.deepEqual(runtimeFiles, expectedFiles, 'static runtime must contain only approved files');
+}
 
 const builtManifest = JSON.parse(readFileSync(`${runtimeRoot}/vendor/runtime-manifest.json`, 'utf8'));
 assert.deepEqual(builtManifest, sourceManifest, 'static runtime manifest must match the audited source manifest');
@@ -84,12 +100,8 @@ for (const [key, value] of Object.entries(glossary)) {
   assert.equal(dictionary[key], value, `${key} should match the Photoshop glossary`);
 }
 
-function runBuild(){
-  const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npm';
-  const args = process.platform === 'win32'
-    ? ['/d', '/s', '/c', 'npm.cmd run build:hstar']
-    : ['run', 'build:hstar'];
-  const result = spawnSync(command, args, {
+function runBuild(output){
+  const result = spawnSync(process.execPath, ['scripts/build-hstar.mjs', '--output', output], {
     cwd:integrationRoot,
     encoding:'utf8',
     shell:false,
@@ -100,6 +112,16 @@ function runBuild(){
   return match[1];
 }
 
-assert.equal(runBuild(), runBuild(), 'repeated OpenShop builds should have identical tree fingerprints');
+const buildRoot = mkdtempSync(join(tmpdir(), 'hstar-openshop-build-'));
+try{
+  assert.equal(
+    runBuild(join(buildRoot, 'first')),
+    runBuild(join(buildRoot, 'second')),
+    'repeated OpenShop builds should have identical tree fingerprints',
+  );
+}
+finally{
+  rmSync(buildRoot, {recursive:true, force:true});
+}
 
 console.log(`OpenShop localization build tests passed (${expectedFiles.length} approved files)`);

@@ -1,0 +1,21 @@
+.hstar-vertical-text-editor {
+  box-sizing: border-box;
+  display: none;
+  position: fixed;
+  z-index: 2147483647;
+  overflow: auto;
+  resize: none;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  white-space: pre-wrap;
+  background: transparent;
+  caret-color: currentColor;
+  border: 0;
+  outline: 0;
+  padding: 0;
+}
+
+.hstar-vertical-text-editor:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}

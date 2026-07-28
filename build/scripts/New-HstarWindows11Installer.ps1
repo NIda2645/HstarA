@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InnoCompiler = '',
+    [string]$OutputDirectory = '',
     [switch]$AllowTestStage
 )
 
@@ -130,3 +131,15 @@ $releaseManifestPath = Join-Path $releaseRoot 'release-manifest.json'
 Write-Utf8NoBom -Path $releaseManifestPath -Content (($releaseManifest | ConvertTo-Json -Depth 10) + "`n")
 Write-Host "Windows 11 installer created: $installerPath"
 Write-Host "SHA-256: $($releaseManifest.installer.sha256)"
+
+if (-not [string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $finalOutputRoot = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')
+    New-Item -ItemType Directory -Path $finalOutputRoot -Force | Out-Null
+    $finalInstallerPath = Join-Path $finalOutputRoot $installerName
+    Copy-Item -LiteralPath $installerPath -Destination $finalInstallerPath -Force
+    Copy-Item `
+        -LiteralPath $releaseManifestPath `
+        -Destination (Join-Path $finalOutputRoot "$installerName.manifest.json") `
+        -Force
+    Write-Host "Windows 11 installer copied to: $finalInstallerPath"
+}

@@ -112,6 +112,9 @@ assert.deepEqual({...openedSessions[0].context}, {
   projectName:'图文分层项目',
   frameId:'frame-canvas',
   cloneSourceProjectId:'',
+  cloneSourceCanvasType:'',
+  cloneSourceCanvasId:'',
+  cloneSourceNodeId:'',
   documentWidth:1920,
   documentHeight:1080,
 });
@@ -156,8 +159,27 @@ const clone = {...node, id:'openshop-copy'};
 adapter.prepareClone(node, clone);
 assert.notEqual(clone.projectId, node.projectId);
 assert.equal(clone.cloneSourceProjectId, node.projectId);
+assert.equal(clone.cloneSourceCanvasType, 'classic');
+assert.equal(clone.cloneSourceCanvasId, 'canvas-1');
+assert.equal(clone.cloneSourceNodeId, node.id);
 assert.equal(clone.saveState, 'new');
 assert.equal(clone.autosaveVersion, 0);
+nodes.push(clone);
+assert.equal(adapter.openNode(clone.id), true);
+assert.deepEqual({...openedSessions.at(-1).context}, {
+  canvasType:'classic',
+  canvasId:'canvas-1',
+  nodeId:clone.id,
+  projectId:clone.projectId,
+  projectName:'图文分层项目',
+  frameId:'frame-canvas',
+  cloneSourceProjectId:node.projectId,
+  cloneSourceCanvasType:'classic',
+  cloneSourceCanvasId:'canvas-1',
+  cloneSourceNodeId:node.id,
+  documentWidth:1920,
+  documentHeight:1080,
+});
 
 assert.match(htmlSource, /src=["']\/static\/js\/canvas-openshop\.js(?:\?[^"']*)?["']/);
 assert.match(htmlSource, /addOpenShopLayeredNode\(\)/);
@@ -168,7 +190,8 @@ assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.canConnect/);
 assert.match(canvasSource, /HstarClassicOpenShopAdapter\??\.prepareClone/);
 assert.match(canvasSource, /type\s*===\s*['"]openshop-layered['"]/);
 assert.match(cssSource, /\.openshop-layered-node/);
-assert.match(cssSource, /aspect-ratio:\s*16\s*\/\s*9/);
+assert.match(cssSource, /\.openshop-layered-card\s*\{[^}]*width:\s*100%[^}]*height:\s*100%[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/s);
+assert.match(cssSource, /\.openshop-layered-preview img\s*\{[^}]*width:\s*100%[^}]*height:\s*100%[^}]*object-fit:\s*contain/s);
 assert.match(i18nSource, /canvas\.openshopLayered/);
 assert.match(i18nSource, /canvas\.openshopOpen/);
 assert.match(i18nSource, /canvas\.openshopSourceUpdates/);

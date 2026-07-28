@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Hstar 正在启动中</title>
+  <link rel="stylesheet" href="startup.css">
+</head>
+<body>
+  <main id="startup-root">
+    <div id="lightfall" class="lightfall-container" aria-hidden="true"></div>
+    <div class="startup-title" role="status" aria-label="Hstar 正在启动中">
+      <svg viewBox="0 0 700 100" aria-hidden="true" focusable="false">
+        <defs>
+          <mask id="title-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="700" height="100">
+            <rect width="700" height="100" fill="black" />
+            <path fill="white" d="M58 5C61 32 68 40 98 45C68 50 61 58 58 94C55 58 48 50 14 45C48 40 55 32 58 5Z" />
+            <path fill="white" d="M106 9C108 22 112 26 126 29C112 32 108 36 106 51C104 36 100 32 86 29C100 26 104 22 106 9Z" />
+            <path fill="white" d="M112 57C114 69 118 73 132 76C118 79 114 83 112 96C110 83 106 79 92 76C106 73 110 69 112 57Z" />
+            <text x="150" y="67" fill="white">Hstar 正在启动中</text>
+          </mask>
+          <linearGradient id="steel-base" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#d0d4d8" />
+            <stop offset="0.46" stop-color="#838a92" />
+            <stop offset="1" stop-color="#555c64" />
+          </linearGradient>
+          <linearGradient id="cold-shine" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#ffffff" stop-opacity="0" />
+            <stop offset="0.46" stop-color="#ffffff" stop-opacity="0.12" />
+            <stop offset="0.5" stop-color="#f4f8ff" stop-opacity="0.98" />
+            <stop offset="0.54" stop-color="#ffffff" stop-opacity="0.12" />
+            <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+          </linearGradient>
+        </defs>
+        <rect width="700" height="100" fill="url(#steel-base)" mask="url(#title-mask)" />
+        <rect class="title-shine" x="-190" y="0" width="190" height="100" fill="url(#cold-shine)" mask="url(#title-mask)" />
+      </svg>
+    </div>
+    <section id="startup-failure" class="startup-failure" aria-live="assertive" hidden>
+      <h1>Hstar 暂时无法完成启动</h1>
+      <p id="startup-failure-message">请重试启动，或退出后检查运行日志。</p>
+      <div class="startup-failure-actions">
+        <button id="startup-retry" type="button">重试启动</button>
+        <button id="startup-exit" type="button">退出 Hstar</button>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="startup.js"></script>
+</body>
+</html>

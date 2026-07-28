@@ -148,7 +148,7 @@ public sealed class BackendProcess : IAsyncDisposable
 
             try
             {
-                using var request = CreateAuthorizedRequest(HttpMethod.Get, "api/health");
+                using var request = CreateAuthorizedRequest(HttpMethod.Get, "api/shell/health");
                 using var response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using Hstar.Desktop.Runtime;
 using Hstar.Desktop.Views;
@@ -75,19 +76,22 @@ public partial class App : Application
 
             _startupCancellation = new CancellationTokenSource();
             browserPreparation = window.PrepareBrowserAsync(_startupCancellation.Token);
-            window.SetStartupStatus("正在启动本地服务");
             var session = await _startupCoordinator.StartAsync(
                 paths,
                 _startupCancellation.Token);
             validationOptions.WriteBackendHealthyMarker(session.Paths.DataRoot, session.Backend.Port);
             await browserPreparation;
-            await window.AttachBackendSessionAsync(session, _startupCancellation.Token);
-            window.SetStartupStatus("本地服务已就绪");
+            if (!await window.AttachBackendSessionAsync(session, _startupCancellation.Token))
+            {
+                Shutdown();
+                return;
+            }
             validationOptions.WriteReadyMarker(session.Paths.DataRoot, session.Backend.Port);
         }
         catch (OperationCanceledException) when (_startupCancellation?.IsCancellationRequested == true)
         {
             await ObservePreparationAsync(browserPreparation);
+            BeginSystemShutdown();
             Shutdown();
         }
         catch (Exception error)
@@ -99,6 +103,7 @@ public partial class App : Application
                 "Hstar",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
+            BeginSystemShutdown();
             Shutdown(-1);
         }
     }
@@ -122,15 +127,31 @@ public partial class App : Application
         {
             await instance.WaitForShutdownAsync(cancellationToken).ConfigureAwait(false);
             _maintenanceShutdownRequested = true;
-            await Dispatcher.InvokeAsync(Shutdown);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                BeginSystemShutdown();
+                Shutdown();
+            });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
     }
 
+    private void BeginSystemShutdown()
+    {
+        if (MainWindow is Hstar.Desktop.MainWindow window)
+        {
+            window.BeginSystemShutdown();
+        }
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        var restartRequested = MainWindow is Hstar.Desktop.MainWindow
+        {
+            RestartRequested: true,
+        };
         _maintenanceShutdownCancellation?.Cancel();
         if (!_maintenanceShutdownRequested && _maintenanceShutdownTask is not null)
         {
@@ -156,6 +177,19 @@ public partial class App : Application
         _startupCancellation?.Dispose();
         _maintenanceShutdownCancellation?.Dispose();
         _singleInstance?.Dispose();
+        if (restartRequested)
+        {
+            var executablePath = Environment.ProcessPath;
+            if (!string.IsNullOrWhiteSpace(executablePath))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = executablePath,
+                    WorkingDirectory = AppContext.BaseDirectory,
+                    UseShellExecute = true,
+                });
+            }
+        }
         base.OnExit(e);
     }
 }

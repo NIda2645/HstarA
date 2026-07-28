@@ -47,6 +47,9 @@
             saveState:'new',
             saveError:'',
             cloneSourceProjectId:'',
+            cloneSourceCanvasType:'',
+            cloneSourceCanvasId:'',
+            cloneSourceNodeId:'',
             inputNodeIds:[],
             created_at:Date.now(),
         };
@@ -112,6 +115,55 @@
         return sources;
     }
 
+    function fieldNumber(source, keys){
+        for(const key of keys){
+            const value = Number(source?.[key]);
+            if(Number.isFinite(value) && value > 0) return Math.round(value);
+        }
+        return 0;
+    }
+
+    function imageSize(source){
+        const width = fieldNumber(source, ['natural_w', 'naturalWidth', 'original_w', 'originalWidth', 'source_w', 'sourceWidth', 'asset_w', 'assetWidth', 'image_w', 'imageWidth', 'intrinsic_w', 'intrinsicWidth']);
+        const height = fieldNumber(source, ['natural_h', 'naturalHeight', 'original_h', 'originalHeight', 'source_h', 'sourceHeight', 'asset_h', 'assetHeight', 'image_h', 'imageHeight', 'intrinsic_h', 'intrinsicHeight']);
+        return width > 0 && height > 0 ? {width, height} : null;
+    }
+
+    function primaryInputImage(node){
+        const direct = (hooks().inputImagesForNode?.(node) || [])
+            .find(image => clean(image?.url || image?.imageUrl));
+        return direct || sourcesForNode(node)[0] || null;
+    }
+
+    function previewForNode(node){
+        const preview = clean(node.previewUrl);
+        if(preview) return {url:preview, name:node.projectName};
+        const source = primaryInputImage(node);
+        const rawUrl = clean(source?.url || source?.imageUrl);
+        if(!rawUrl) return {url:'', name:''};
+        const name = clean(source?.name) || node.projectName || translate('smart.openshopProjectName', '鍥炬枃鍒嗗眰椤圭洰');
+        return {
+            url:hooks().displayMediaUrl?.(rawUrl, name) || rawUrl,
+            name,
+        };
+    }
+
+    function dimensionsForNode(node){
+        if(!clean(node.previewUrl)){
+            const sourceSize = hooks().sourceSizeForNode?.(node);
+            if(sourceSize?.width > 0 && sourceSize?.height > 0) return {
+                width:Math.max(1, Math.round(Number(sourceSize.width))),
+                height:Math.max(1, Math.round(Number(sourceSize.height))),
+            };
+            const inputSize = imageSize(primaryInputImage(node));
+            if(inputSize) return inputSize;
+        }
+        return {
+            width:Math.max(1, Number(node.documentWidth || 1920)),
+            height:Math.max(1, Number(node.documentHeight || 1080)),
+        };
+    }
+
     function saveStateLabel(node){
         if(node.saveState === 'saving') return translate('smart.openshopSaving', '正在保存');
         if(node.saveState === 'saved') return translate('smart.openshopSaved', '已保存');
@@ -120,18 +172,20 @@
     }
 
     function renderNode(node){
-        const preview = clean(node.previewUrl);
-        const previewMarkup = preview
-            ? `<img loading="lazy" decoding="async" src="${safeHtml(preview)}" alt="${safeHtml(node.projectName)}">`
+        const preview = previewForNode(node);
+        const dimensions = dimensionsForNode(node);
+        const previewMarkup = preview.url
+            ? `<img loading="lazy" decoding="async" src="${safeHtml(preview.url)}" alt="${safeHtml(preview.name || node.projectName)}">`
             : '<div class="openshop-layered-placeholder"><i data-lucide="layers-3"></i></div>';
         const updates = Math.max(0, Number(node.sourceUpdateCount || 0));
         return `<div class="openshop-layered-card">
             <div class="openshop-layered-preview">${previewMarkup}</div>
             <div class="openshop-layered-meta">
-                <span>${Math.max(1, Number(node.documentWidth || 1920))} x ${Math.max(1, Number(node.documentHeight || 1080))}</span>
-                <span>${Math.max(0, Number(node.layerCount || 0))} ${safeHtml(translate('smart.openshopLayers', '图层'))}</span>
+                <span class="openshop-layered-meta-left">
+                    <span class="openshop-layered-dimensions">${dimensions.width} x ${dimensions.height}</span>
+                    <span class="openshop-layered-layers">${Math.max(0, Number(node.layerCount || 0))} ${safeHtml(translate('smart.openshopLayers', '图层'))}</span>
+                </span>
                 <span class="openshop-layered-save" data-state="${safeHtml(node.saveState || 'new')}">${safeHtml(saveStateLabel(node))}</span>
-                <span class="openshop-layered-updates ${updates ? 'has-updates' : ''}">${safeHtml(translate('smart.openshopSourceUpdates', '来源更新'))} ${updates}</span>
             </div>
             <button class="openshop-layered-open" type="button" data-openshop-open="${safeHtml(node.id)}">
                 <i data-lucide="panel-top-open"></i><span>${safeHtml(translate('smart.openshopOpen', '打开编辑器'))}</span>
@@ -156,6 +210,9 @@
             projectName:node.projectName || translate('smart.openshopProjectName', '图文分层项目'),
             frameId:root.frameElement?.id || 'frame-smart-canvas',
             cloneSourceProjectId:clean(node.cloneSourceProjectId),
+            cloneSourceCanvasType:clean(node.cloneSourceCanvasType),
+            cloneSourceCanvasId:clean(node.cloneSourceCanvasId),
+            cloneSourceNodeId:clean(node.cloneSourceNodeId),
             documentWidth:Number(node.documentWidth || 1920),
             documentHeight:Number(node.documentHeight || 1080),
         }, sourcesForNode(node));
@@ -166,6 +223,9 @@
     function prepareClone(source, copy){
         copy.projectId = newProjectId();
         copy.cloneSourceProjectId = clean(source?.projectId);
+        copy.cloneSourceCanvasType = 'smart';
+        copy.cloneSourceCanvasId = currentCanvasId();
+        copy.cloneSourceNodeId = clean(source?.id);
         copy.autosaveVersion = 0;
         copy.saveState = 'new';
         copy.saveError = '';
@@ -190,12 +250,17 @@
         const meta = data.meta || {};
         node.projectName = clean(meta.projectName) || node.projectName;
         node.previewUrl = clean(meta.previewUrl);
+        if(Number(meta.documentWidth) > 0) node.documentWidth = Math.max(1, Math.round(Number(meta.documentWidth)));
+        if(Number(meta.documentHeight) > 0) node.documentHeight = Math.max(1, Math.round(Number(meta.documentHeight)));
         node.layerCount = Math.max(0, Number(meta.layerCount || 0));
         node.sourceUpdateCount = Math.max(0, Number(meta.sourceUpdateCount || 0));
         node.autosaveVersion = Math.max(0, Number(meta.autosaveVersion || 0));
         node.saveState = clean(meta.saveState) || 'saved';
         node.saveError = clean(meta.error);
         node.cloneSourceProjectId = '';
+        node.cloneSourceCanvasType = '';
+        node.cloneSourceCanvasId = '';
+        node.cloneSourceNodeId = '';
         hooks().render?.();
         hooks().scheduleSave?.();
         return true;
