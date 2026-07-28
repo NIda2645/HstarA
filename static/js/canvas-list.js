@@ -481,14 +481,48 @@ function openCanvas(c){
 let createCardEl = null;
 let createKind = 'classic';
 function closeCreateCard(){ createCardEl?.remove(); createCardEl = null; }
+function attachCreateCardDrag(card, position){
+    card.addEventListener('mousedown', e => {
+        if(e.button !== 0) return;
+        e.stopPropagation();
+        if(e.target.closest('input, button, select, textarea, [contenteditable="true"]')) return;
+        e.preventDefault();
+        const startWorld = screenToWorld(e.clientX, e.clientY);
+        const originX = position.x;
+        const originY = position.y;
+        let moved = false;
+        const onMove = event => {
+            const currentWorld = screenToWorld(event.clientX, event.clientY);
+            const deltaX = currentWorld.x - startWorld.x;
+            const deltaY = currentWorld.y - startWorld.y;
+            if(!moved && (Math.abs(deltaX * viewport.scale) > 4 || Math.abs(deltaY * viewport.scale) > 4)){
+                moved = true;
+                card.classList.add('dragging');
+            }
+            if(!moved) return;
+            position.x = originX + deltaX;
+            position.y = originY + deltaY;
+            card.style.left = `${position.x}px`;
+            card.style.top = `${position.y}px`;
+        };
+        const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            card.classList.remove('dragging');
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    });
+}
 function openCreateCard(worldPt){
     closeCreateCard();
     closeCardMenu();
     createKind = 'classic';
+    const position = { x: worldPt.x, y: worldPt.y };
     const el = document.createElement('div');
     el.className = 'ws-create-card';
-    el.style.left = worldPt.x + 'px';
-    el.style.top = worldPt.y + 'px';
+    el.style.left = position.x + 'px';
+    el.style.top = position.y + 'px';
     el.innerHTML = `
         <div class="ws-create-title">${L('新建画布','New canvas')}</div>
         <input class="ws-create-input" type="text" maxlength="80" placeholder="${L('画布名称（可留空）','Canvas name (optional)')}">
@@ -502,7 +536,7 @@ function openCreateCard(worldPt){
         </div>`;
     boardWorld.appendChild(el);
     createCardEl = el;
-    el.addEventListener('mousedown', e => e.stopPropagation());
+    attachCreateCardDrag(el, position);
     const input = el.querySelector('.ws-create-input');
     input.focus();
     el.querySelectorAll('.ws-create-toggle-btn').forEach(btn => {
@@ -511,7 +545,7 @@ function openCreateCard(worldPt){
             el.querySelectorAll('.ws-create-toggle-btn').forEach(b => b.classList.toggle('active', b === btn));
         };
     });
-    const confirm = () => createCanvasOnBoard(input.value.trim(), createKind, worldPt);
+    const confirm = () => createCanvasOnBoard(input.value.trim(), createKind, position);
     el.querySelector('.ws-create-confirm').onclick = confirm;
     el.querySelector('.ws-create-cancel').onclick = closeCreateCard;
     input.onkeydown = e => {

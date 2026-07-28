@@ -30,6 +30,9 @@ const scanPathspecs = [
   ':(glob)integrations/openshop/host/**/*.css',
   ':(glob)integrations/openshop/locales/**/*.js',
   ':(exclude)integrations/openshop/vendor/**',
+  ':(glob)integrations/storyai-3d-director-desk/src/**/*.ts',
+  ':(glob)integrations/storyai-3d-director-desk/src/**/*.tsx',
+  ':(glob)integrations/storyai-3d-director-desk/src/**/*.css',
 ];
 
 const files = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...scanPathspecs], {
@@ -129,7 +132,7 @@ function reportRuleIssues(file, text) {
 
 for (const file of files) {
   const text = fs.readFileSync(file).toString('utf8').replace(/^\uFEFF/, '');
-  const isJavaScript = /\.(?:js|mjs)$/i.test(file);
+  const isJavaScript = /\.(?:js|mjs|ts|tsx)$/i.test(file);
 
   if (file.toLowerCase().endsWith('.json')) {
     try {

@@ -3500,6 +3500,14 @@ window.HstarClassicOpenShopHooks = Object.freeze({
     t:tr,
     addNode:node => { nodes.push(node); return node; },
     addConnection:connection => { connections.push(connection); return connection; },
+    rollbackImageOutput:id => {
+        const nodeIndex = nodes.findIndex(node => node.id === id);
+        if(nodeIndex >= 0) nodes.splice(nodeIndex, 1);
+        for(let index = connections.length - 1; index >= 0; index -= 1){
+            if(connections[index].from === id || connections[index].to === id) connections.splice(index, 1);
+        }
+        selected.delete(id);
+    },
     pushUndo,
     render,
     scheduleSave,
@@ -18199,7 +18207,8 @@ function endDrag(event=null){
     knifeActive = false;
     knifePoint = null;
     knifeTrail = [];
-    const shouldRenderKnife = knifeNeedsRender;
+    const shouldRenderInteraction = knifeNeedsRender || Boolean(tempLink);
+    tempLink = null;
     knifeChanged = false;
     knifeNeedsRender = false;
     if(!event?.shiftKey) setKnifeMode(false);
@@ -18207,7 +18216,7 @@ function endDrag(event=null){
     document.body.classList.remove('canvas-node-drag', 'canvas-node-resize', 'canvas-selecting', 'canvas-board-pan');
     window.onmousemove = null;
     window.onmouseup = null;
-    if(shouldRenderKnife) render();
+    if(shouldRenderInteraction) render();
     scheduleMinimapRender();
     if(hadContentDrag) scheduleSave();
     else if(hadViewportDrag) scheduleViewportSave();
@@ -18960,15 +18969,15 @@ window.addEventListener('keyup', e => {
     if(String(e.key || '').toLowerCase() === 'r') isRKeyDown = false;
     if(e.key === 'Shift') setKnifeMode(false);
 });
-window.addEventListener('blur', () => { isRKeyDown = false; setKnifeMode(false); });
 window.addEventListener('blur', () => {
+    isRKeyDown = false;
+    setKnifeMode(false);
     if(selectDrag){
         selectionBox.style.display = 'none';
         selectDrag = null;
         document.body.classList.remove('canvas-selecting');
-        window.onmousemove = null;
-        window.onmouseup = null;
     }
+    endDrag();
 });
 function deleteSelectedNodes(){
     if(!canvas || selected.size === 0) return;

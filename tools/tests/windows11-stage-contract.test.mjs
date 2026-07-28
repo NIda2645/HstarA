@@ -25,6 +25,7 @@ for (const [path, label] of [
 const builder = readFileSync(builderPath, 'utf8');
 const sourceGate = readFileSync(sourceGatePath, 'utf8');
 const validator = readFileSync(validatorPath, 'utf8');
+const directorPackage = JSON.parse(readFileSync(resolve(root, 'integrations/storyai-3d-director-desk/package.json'), 'utf8'));
 
 assert.match(builder, /\[switch\]\s*\$AllowDirtyForTest/, 'dirty builds require an explicit test-only switch');
 assert.match(builder, /git[\s\S]*status[\s\S]*--porcelain/, 'builder checks the Git worktree state');
@@ -48,14 +49,15 @@ assert.match(builder, /files\.sha256/, 'builder creates a complete file hash man
 
 for (const requiredCommand of [
   /audit-text-encoding\.mjs/,
+  /audit-secrets\.mjs/,
   /unittest[\s\S]*discover/,
   /tools[\\/]tests[\s\S]*\.test\.mjs/,
   /\$openShopRoot\s*=\s*Join-Path[^\r\n]+integrations[\\/]openshop/,
   /Invoke-Native\s+-Command\s+'npm\.cmd'\s+-Arguments\s+@\('test',\s*'--prefix',\s*\$openShopRoot\)/,
-  /build:hstar/,
+  /build-hstar\.mjs/,
   /\$directorRoot\s*=\s*Join-Path[^\r\n]+storyai-3d-director-desk/,
   /Invoke-Native\s+-Command\s+'npm\.cmd'\s+-Arguments\s+@\('test',\s*'--prefix',\s*\$directorRoot\)/,
-  /Invoke-Native\s+-Command\s+'npm\.cmd'\s+-Arguments\s+@\('run',\s*'build',\s*'--prefix',\s*\$directorRoot\)/,
+  /Invoke-Native\s+-Command\s+'npm\.cmd'\s+-Arguments\s+@\([\s\S]*'run',[\s\S]*'build',[\s\S]*'--prefix',[\s\S]*\$directorRoot,[\s\S]*'--outDir',[\s\S]*\$directorBuildRoot/,
   /\$desktopTests\s*=\s*Join-Path[^\r\n]+Hstar\.Desktop\.Tests/,
   /Invoke-Native\s+-Command\s+'dotnet'\s+-Arguments\s+@\('test',\s*\$desktopTests/,
   /test:hstar:canvas-integration/,
@@ -65,6 +67,16 @@ for (const requiredCommand of [
 assert.doesNotMatch(sourceGate, /param\s*\([\s\S]*Skip/i, 'source gate cannot skip release checks');
 assert.match(sourceGate, /HSTAR_DATA_DIR/, 'browser smoke uses an isolated data root');
 assert.match(sourceGate, /HSTAR_PORT/, 'browser smoke uses an isolated non-production port');
+assert.match(sourceGate, /'-B'[\s\S]*unittest[\s\S]*discover/, 'source unit tests cannot create repository bytecode');
+assert.match(sourceGate, /pycache_prefix=/, 'compileall writes bytecode beneath an isolated cache root');
+assert.match(sourceGate, /Get-TreeDigest/, 'source gate fingerprints generated runtime mirrors');
+assert.match(sourceGate, /build-hstar\.mjs'[\s\S]*'--output'[\s\S]*\$openShopBuildRoot/, 'OpenShop verification builds into an isolated directory');
+assert.match(sourceGate, /PYTHONDONTWRITEBYTECODE/, 'all source-gate Python paths disable repository bytecode');
+assert.match(sourceGate, /ArgumentList\s+@\('-B',\s*'-X',\s*'utf8',\s*'main\.py'\)/, 'browser smoke server cannot write repository bytecode');
+assert.match(sourceGate, /OpenShop build output drifted/, 'source gate rejects a stale OpenShop mirror');
+assert.match(sourceGate, /3D Director build output drifted/, 'source gate rejects a stale 3D Director mirror');
+assert.match(directorPackage.scripts.build, /tsc\s+--noEmit\s+-p\s+tsconfig\.json/, '3D build type-check cannot emit integration artifacts');
+assert.doesNotMatch(directorPackage.scripts.build, /tsc\s+-b\b/, '3D build cannot leave TypeScript build-mode outputs');
 
 assert.match(validator, /files\.sha256/, 'stage validator verifies the file manifest');
 assert.match(validator, /sbom\.spdx\.json/, 'stage validator verifies the SPDX document');

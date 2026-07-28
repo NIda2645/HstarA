@@ -73,9 +73,23 @@
         .voice-confirm-fact span:first-child { color:var(--muted); font-size:10px; font-weight:850; }
         .voice-confirm-fact span:last-child { overflow-wrap:anywhere; font-size:12px; font-weight:750; }
         .voice-confirm-toolbar { display:flex; justify-content:flex-end; gap:8px; }
+        .settings-confirm-dialog { width:min(460px,calc(100vw - 32px)); padding:0; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:8px; box-shadow:0 24px 70px rgba(15,23,42,.24); }
+        .settings-confirm-dialog::backdrop { background:rgba(15,23,42,.38); backdrop-filter:blur(3px); }
+        .settings-confirm-panel { display:grid; gap:14px; padding:20px; }
+        .settings-confirm-panel h2 { margin:0; font-size:17px; }
+        .settings-confirm-copy { margin:0; color:var(--muted); font-size:12px; line-height:1.65; }
+        .settings-confirm-fact { display:grid; gap:5px; padding:10px 0; border-top:1px solid var(--line); }
+        .settings-confirm-fact span:first-child { color:var(--muted); font-size:10px; font-weight:850; }
+        .settings-confirm-fact span:last-child { overflow-wrap:anywhere; font-size:12px; font-weight:750; }
+        .settings-confirm-toolbar { display:flex; justify-content:flex-end; gap:8px; }
+        .storage-restart-overlay { position:fixed; inset:0; z-index:10000; display:grid; place-items:center; padding:24px; background:color-mix(in srgb,var(--bg) 84%,transparent); backdrop-filter:blur(6px); }
+        .storage-restart-overlay[hidden] { display:none; }
+        .storage-restart-state { width:min(420px,100%); display:grid; gap:12px; padding:20px; border:1px solid var(--line); border-radius:8px; background:var(--card); box-shadow:0 24px 70px rgba(15,23,42,.2); }
+        .storage-restart-state strong { font-size:16px; }
+        .storage-restart-state span { color:var(--muted); font-size:12px; line-height:1.6; }
         @media (max-width:700px){ .page{padding:28px 16px 60px}.row{grid-template-columns:1fr}.path-box,.link-box{flex-direction:column;align-items:stretch}.shortcut-grid,.voice-setting-grid,.voice-meta{grid-template-columns:1fr}.voice-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))} }
     </style>
-    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.1630000001.1785052407"></script>
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.1630000001.1785141198"></script>
 </head>
 <body>
     <main class="page">
@@ -105,13 +119,13 @@
                     </div>
                     <div id="status" class="status"></div>
                     <div id="storageProgressWrap" class="storage-progress-wrap" hidden>
-                        <progress id="storageProgress" max="100" aria-label="数据迁移进度"></progress>
+                        <progress id="storageProgress" max="100" aria-label="存储位置应用状态"></progress>
                         <div class="storage-progress-meta">
                             <span id="storageProgressStage">准备中</span>
                             <span id="storageProgressBytes">0 B</span>
                         </div>
                         <div class="storage-progress-actions">
-                            <button id="storageCancelBtn" type="button">取消迁移</button>
+                            <button id="storageCancelBtn" type="button">取消应用</button>
                         </div>
                     </div>
                 </div>
@@ -282,6 +296,30 @@
             </div>
         </section>
     </main>
+    <dialog id="storageRestartDialog" class="settings-confirm-dialog">
+        <form class="settings-confirm-panel" method="dialog">
+            <h2>确认重启 Hstar</h2>
+            <p class="settings-confirm-copy">确认后将切换储存位置并自动重启 Hstar。原储存位置中的数据不会被迁移、删除或修改。</p>
+            <div class="settings-confirm-fact">
+                <span>新的储存位置</span>
+                <span id="storageRestartTarget" data-voice-input="off">-</span>
+            </div>
+            <div class="settings-confirm-toolbar">
+                <button id="storageRestartCancel" type="button">取消</button>
+                <button id="storageRestartConfirm" class="primary" type="button">确认并重启</button>
+            </div>
+        </form>
+    </dialog>
+    <div id="storageRestartOverlay" class="storage-restart-overlay" hidden>
+        <div class="storage-restart-state" role="status" aria-live="assertive">
+            <strong>正在重新启动 Hstar</strong>
+            <span id="storageRestartMessage">正在等待新的 Hstar 服务...</span>
+            <div class="settings-confirm-toolbar">
+                <button id="storageRestartDetect" type="button" hidden>重新检测</button>
+                <button id="storageRestartRetry" type="button" hidden>重试重启</button>
+            </div>
+        </div>
+    </div>
     <dialog id="voiceConfirmDialog" class="voice-confirm-dialog">
         <form class="voice-confirm-panel">
             <h2 id="voiceConfirmTitle">确认操作</h2>
@@ -528,8 +566,7 @@
         loadAppInfo();
         loadShortcuts();
     </script>
-    <script src="/static/js/storage-settings-panel.js?v=2026.07.26.1630000001.1785073600"></script>
+    <script src="/static/js/storage-settings-panel.js?v=2026.07.26.1630000001.1785155942"></script>
     <script src="/static/js/voice-settings-panel.js?v=2026.07.26.1630000001.1785006136"></script>
 </body>
 </html>
-

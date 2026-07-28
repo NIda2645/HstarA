@@ -2934,9 +2934,28 @@ function apiImageSize(ratioValue, resolutionValue, customRatioValue='', customSi
         const parsed = parseRatioValue(customRatioValue);
         const longSide = RES_LONG_SIDE[resolutionKey] || 1024;
         if(parsed){
+            const presetRatios = {
+                square:1,
+                portrait:2 / 3,
+                landscape:3 / 2,
+                portrait43:3 / 4,
+                landscape43:4 / 3,
+                story:9 / 16,
+                wide:16 / 9,
+                ultrawide:21 / 9,
+                ultratall:9 / 21
+            };
+            const matchingPreset = Object.entries(presetRatios)
+                .find(([, value]) => Math.abs(value - parsed) < 0.000001)?.[0];
+            if(matchingPreset && SIZE_MAP[matchingPreset]?.[resolutionKey]){
+                return SIZE_MAP[matchingPreset][resolutionKey];
+            }
             const pixelLimit = RES_PIXEL_LIMIT[resolutionKey] || (longSide * longSide);
-            const rawWidth = parsed >= 1 ? longSide : Math.min(longSide * parsed, Math.sqrt(pixelLimit * parsed));
-            const rawHeight = parsed >= 1 ? Math.min(longSide / parsed, Math.sqrt(pixelLimit / parsed)) : longSide;
+            let rawWidth = parsed >= 1 ? longSide : longSide * parsed;
+            let rawHeight = parsed >= 1 ? longSide / parsed : longSide;
+            const pixelScale = Math.min(1, Math.sqrt(pixelLimit / (rawWidth * rawHeight)));
+            rawWidth *= pixelScale;
+            rawHeight *= pixelScale;
             const width = Math.floor(rawWidth / 16) * 16;
             const height = Math.floor(rawHeight / 16) * 16;
             return `${Math.max(64, width)}x${Math.max(64, height)}`;
@@ -3073,7 +3092,7 @@ function renderDynamicParams(){
     persistActiveSmartSettings();
     if(window.lucide) lucide.createIcons();
 }
-function renderApiParams(){
+function renderApiParams(target=dynamicParams){
     const providers = imageProviders();
     if(!settings.provider_id || !providers.some(p => p.id === settings.provider_id)) settings.provider_id = providers[0]?.id || '';
     const models = filterJimengImageModels(providerImageModels(settings.provider_id));
@@ -3081,7 +3100,7 @@ function renderApiParams(){
     // 切换平台/模型时保留用户已选的分辨率（记忆），normalizeApiSizeSettings 只会修正非法的 auto。
     normalizeApiSizeSettings('');
     const outpaintLocked = settings.outpaintResolutionLocked === true;
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         ${renderProviderControl(providers)}
         ${renderModelControl(models)}
         ${renderSizePickerControl('', true)}
@@ -3110,7 +3129,7 @@ function renderApiVideoParams(){
         ${settings.videoProvider === 'jimeng' ? '' : renderVideoTrustedAssetControl()}
     `;
 }
-function renderVolcengineParams(){
+function renderVolcengineParams(target=dynamicParams){
     const provider = volcengineProvider();
     const providers = [provider];
     const models = providerImageModels('volcengine');
@@ -3118,7 +3137,7 @@ function renderVolcengineParams(){
     if(!settings.model || !models.includes(settings.model)) settings.model = models[0] || '';
     normalizeApiSizeSettings('');
     const outpaintLocked = settings.outpaintResolutionLocked === true;
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         ${renderProviderControl(providers)}
         ${renderModelControl(models)}
         ${renderSizePickerControl('', true)}
@@ -3148,21 +3167,21 @@ function renderVolcengineVideoParams(){
         ${renderVideoTrustedAssetControl()}
     `;
 }
-function renderRunningHubParams(){
+function renderRunningHubParams(target=dynamicParams){
     const ref = selectedRunningHubRef();
     const fields = rhActiveFields();
     settings.rhPayment = settings.rhPayment === 'wallet' ? 'wallet' : 'free';
     settings.rhParams = settings.rhParams || {};
     settings.rhRandomActive = settings.rhRandomActive || {};
     if(!ref){
-        dynamicParams.innerHTML = `<div class="muted-note">${escapeHtml(tr('smart.rhNeedConfig'))}</div>`;
+        target.innerHTML = `<div class="muted-note">${escapeHtml(tr('smart.rhNeedConfig'))}</div>`;
         return;
     }
     if(ref.kind === 'model'){
         settings.provider_id = 'runninghub';
         settings.model = ref.id;
         normalizeApiSizeSettings('');
-        dynamicParams.innerHTML = `
+        target.innerHTML = `
             ${renderRhConfigControl(ref)}
             ${renderSizePickerControl('', true)}
             ${renderQualityControl()}
@@ -3172,7 +3191,7 @@ function renderRunningHubParams(){
     }
     const mediaFields = fields.filter(f => ['image','video','audio'].includes(rhFieldRole(f))).length;
     const promptFields = fields.filter(f => rhFieldRole(f) === 'prompt').length;
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         ${renderRhConfigControl(ref)}
         ${renderRhPaymentControl()}
         ${renderRhMachineControl()}
@@ -3230,18 +3249,18 @@ function renderRhMachineControl(){
         </div>
     </div>`;
 }
-function renderMsParams(){
+function renderMsParams(target=dynamicParams){
     settings.msgenModel = MS_GEN_MODELS[settings.msgenModel] ? settings.msgenModel : 'zimage';
     if(!settings.msCustomModel) settings.msCustomModel = modelscopeImageModels()[0] || 'Tongyi-MAI/Z-Image-Turbo';
     normalizeApiSizeSettings('ms');
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         ${renderMsFunctionControl()}
         ${renderMsCustomModelPill()}
         ${renderSizePickerControl('ms', false)}
         ${renderCountVisualControl()}
     `;
 }
-function renderComfyParams(){
+function renderComfyParams(target=dynamicParams, onWorkflowReady=renderDynamicParams){
     settings.comfyMode = ['text','enhance','edit','custom'].includes(settings.comfyMode) ? settings.comfyMode : 'text';
     const modeOptions = [
         ['text', tr('canvas.comfyModeText') || '文生图'],
@@ -3251,7 +3270,7 @@ function renderComfyParams(){
     ];
     if(settings.comfyMode === 'custom'){
         if(!settings.comfyWorkflow || !comfyWorkflows.some(w => w.name === settings.comfyWorkflow)) settings.comfyWorkflow = comfyWorkflows[0]?.name || '';
-        if(settings.comfyWorkflow && !comfyWorkflowCache[settings.comfyWorkflow]) ensureComfyWorkflow(settings.comfyWorkflow).then(renderDynamicParams);
+        if(settings.comfyWorkflow && !comfyWorkflowCache[settings.comfyWorkflow]) ensureComfyWorkflow(settings.comfyWorkflow).then(onWorkflowReady);
     }
     let html = '';
     if(settings.comfyMode === 'text'){
@@ -3270,7 +3289,7 @@ function renderComfyParams(){
         html += renderComfyWorkflowControl();
         html += fields.length ? fields.map(renderComfySettingField).join('') : (settings.comfyWorkflow ? '' : `<div class="muted-note">${escapeHtml(tr('smart.noWorkflow'))}</div>`);
     }
-    dynamicParams.innerHTML = `
+    target.innerHTML = `
         <div class="smart-control comfy-mode-control">
             <button class="smart-pill" type="button"><i data-lucide="workflow"></i><span>${escapeHtml(modeOptions.find(([v]) => v === settings.comfyMode)?.[1] || 'ComfyUI')}</span></button>
             <div class="smart-popover compact-popover">
@@ -3329,7 +3348,7 @@ function renderSizeControls(prefix='', includeSource=false){
 function ratioLabel(prefix=''){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const customKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
-    const sourceLabel = sourceImageRatioLabel(prefix) || tr('smart.imageRatio');
+    const sourceLabel = settings[customKey] || sourceImageRatioLabel(prefix) || tr('smart.imageRatio');
     const map = {square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4', landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21', source:sourceLabel, custom:settings[customKey] || tr('smart.custom')};
     return map[settings[ratioKey] || 'square'] || '1:1';
 }
@@ -11065,15 +11084,36 @@ function ensureSmartTextEditPanel(){
         if(action === 'close' || action === 'cancel') closeSmartTextModifyPanel();
         if(action === 'mode' && smartTextEditPanelState){
             const mode = actionBtn.dataset.smartTextMode === 'erase' ? 'erase' : 'modify';
+            if(mode === 'erase') cancelSmartTextGenerationSession(smartTextEditPanelState);
             smartTextEditPanelState.mode = mode;
             renderSmartTextModifyPanel();
         }
         if(action === 'recognize' && smartTextEditPanelState) reloadSmartTextRecognition();
         if(action === 'cancelRecognize' && smartTextEditPanelState) cancelSmartTextRecognition();
+        if(action === 'selectGeneration' && smartTextEditPanelState) openSmartTextGenerationSelector();
+        if(action === 'cancelGeneration' && smartTextEditPanelState) cancelSmartTextGenerationSelector();
+        if(action === 'confirmGeneration' && smartTextEditPanelState) confirmSmartTextGenerationSelector();
         if(action === 'apply') applySmartTextModification();
         if(action === 'applyErase') applySmartTextErase();
     });
     panel.addEventListener('change', e => {
+        const generationEngine = e.target.closest('[data-smart-text-generation-engine]');
+        if(generationEngine && smartTextEditPanelState?.generationSettingsDraft){
+            const nextEngine = ['api','volcengine','modelscope','comfy','runninghub'].includes(generationEngine.value) ? generationEngine.value : 'api';
+            const draft = smartTextEditPanelState.generationSettingsDraft;
+            draft.engine = nextEngine;
+            draft.apiKind = 'image';
+            if(nextEngine === 'volcengine'){
+                draft.provider_id = 'volcengine';
+                draft.model = '';
+            } else if(draft.provider_id === 'volcengine'){
+                draft.provider_id = '';
+                draft.model = '';
+            }
+            smartTextEditPanelState.generationSettingsError = '';
+            renderSmartTextModifyPanel();
+            return;
+        }
         const textSelect = e.target.closest('[data-smart-text-select]');
         if(textSelect && smartTextEditPanelState){
             const key = textSelect.dataset.smartTextSelect;
@@ -11113,25 +11153,36 @@ function positionSmartTextEditPanel(){
     const panel = document.getElementById('smartTextEditPanel');
     const state = smartTextEditPanelState;
     if(!panel || !state) return;
+    const scale = Math.max(0.001, Number(viewport.scale) || 1);
     const width = SMART_TEXT_EDIT_PANEL_WIDTH;
-    const height = SMART_TEXT_EDIT_PANEL_HEIGHT;
+    const targetHeight = SMART_TEXT_EDIT_PANEL_HEIGHT;
+    const height = Math.min(targetHeight, Math.max(320, shell.clientHeight - 24));
+    const worldWidth = width;
+    const worldHeight = height;
     const node = nodes.find(n => n.id === state.nodeId);
     const bounds = node ? nodeRect(node) : null;
-    const viewLeft = -viewport.x / viewport.scale;
-    const viewTop = -viewport.y / viewport.scale;
-    const viewWidth = shell.clientWidth / viewport.scale;
-    const viewHeight = shell.clientHeight / viewport.scale;
+    const viewLeft = -viewport.x / scale;
+    const viewTop = -viewport.y / scale;
+    const viewWidth = shell.clientWidth / scale;
+    const viewHeight = shell.clientHeight / scale;
     const viewRight = viewLeft + viewWidth;
     const viewBottom = viewTop + viewHeight;
     const gap = 14;
-    let left = bounds ? bounds.x + bounds.width + gap : viewLeft + Math.max(12, (viewWidth - width) / 2);
-    if(left + width > viewRight - 12) left = Math.max(viewLeft + 12, (bounds ? bounds.x : viewRight) - width - gap);
-    const rawTop = bounds ? bounds.y : viewTop + 92;
-    const top = Math.max(viewTop + 12, Math.min(rawTop, viewBottom - height - 12));
+    const inset = 12 / scale;
+    let left = bounds
+        ? bounds.x + bounds.width + gap
+        : viewLeft + Math.max(inset, (viewWidth - worldWidth) / 2);
+    if(left + worldWidth > viewRight - inset){
+        left = (bounds ? bounds.x : viewRight) - worldWidth - gap;
+    }
+    left = Math.max(viewLeft + inset, Math.min(left, viewRight - worldWidth - inset));
+    const rawTop = bounds ? bounds.y : viewTop + (92 / scale);
+    const top = Math.max(viewTop + inset, Math.min(rawTop, viewBottom - worldHeight - inset));
     panel.style.width = `${width}px`;
     panel.style.height = `${height}px`;
-    panel.style.left = `${Math.round(left)}px`;
-    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.transform = '';
 }
 function renderSmartTextModifyPanel(){
     const panel = ensureSmartTextEditPanel();
@@ -11157,6 +11208,53 @@ function renderSmartTextModifyPanel(){
         ${error ? `<div class="smart-text-edit-error">${escapeHtml(error)}</div>` : ''}
         ${rows}`;
     const eraseBody = renderSmartTextEraseControls(state);
+    const summaryParts = state.generationSettingsConfirmed ? smartTextGenerationSummaryParts(state.generationSettings) : [];
+    const summary = summaryParts.length ? summaryParts.join(' · ') : '未选择生图模型';
+    const modifyActions = `
+        <div class="smart-text-edit-actions">
+            <div class="smart-text-edit-action-row">
+                <button type="button" class="smart-text-generation-trigger" data-smart-text-panel-action="selectGeneration">选择生图模型</button>
+                <div class="smart-text-edit-action-right">
+                    <button type="button" class="secondary" data-smart-text-panel-action="cancel">取消</button>
+                    <button type="button" class="primary" data-smart-text-panel-action="apply" ${(loading || !(state.texts || []).length || !state.generationSettingsConfirmed) ? 'disabled' : ''}>应用修改</button>
+                </div>
+            </div>
+            <div class="smart-text-generation-summary ${state.generationSettingsConfirmed ? 'confirmed' : ''}" title="${escapeHtml(summary)}">${escapeHtml(summary)}</div>
+        </div>`;
+    const eraseActions = `
+        <div class="smart-text-edit-actions erase-mode">
+            <div class="smart-text-edit-action-row">
+                <div class="smart-text-edit-action-right">
+                    <button type="button" class="secondary" data-smart-text-panel-action="cancel">取消</button>
+                    <button type="button" class="primary" data-smart-text-panel-action="applyErase">应用消除</button>
+                </div>
+            </div>
+        </div>`;
+    const generationLayer = state.mode === 'modify' && state.generationSelectorOpen ? `
+        <div class="smart-text-generation-layer open">
+            <div class="smart-text-generation-head">
+                <strong>选择生图模型</strong>
+                <button type="button" data-smart-text-panel-action="cancelGeneration" title="返回" aria-label="返回修改文字"><i data-lucide="arrow-left"></i></button>
+            </div>
+            <div class="smart-text-generation-content">
+                <label class="smart-text-generation-engine-field">
+                    <span>生成引擎</span>
+                    <select data-smart-text-generation-engine>
+                        <option value="api" ${state.generationSettingsDraft?.engine === 'api' ? 'selected' : ''}>API 生图</option>
+                        <option value="volcengine" ${state.generationSettingsDraft?.engine === 'volcengine' ? 'selected' : ''}>火山引擎</option>
+                        <option value="modelscope" ${state.generationSettingsDraft?.engine === 'modelscope' ? 'selected' : ''}>ModelScope</option>
+                        <option value="comfy" ${state.generationSettingsDraft?.engine === 'comfy' ? 'selected' : ''}>ComfyUI</option>
+                        <option value="runninghub" ${state.generationSettingsDraft?.engine === 'runninghub' ? 'selected' : ''}>RunningHub</option>
+                    </select>
+                </label>
+                <div class="smart-text-generation-fields"></div>
+                ${state.generationSettingsError ? `<div class="smart-text-generation-error" role="alert">${escapeHtml(state.generationSettingsError)}</div>` : ''}
+            </div>
+            <div class="smart-text-generation-actions">
+                <button type="button" class="secondary" data-smart-text-panel-action="cancelGeneration">取消</button>
+                <button type="button" class="primary" data-smart-text-panel-action="confirmGeneration">确认</button>
+            </div>
+        </div>` : '';
     panel.innerHTML = `
         <div class="smart-text-edit-head">
             ${modeTabs}
@@ -11165,10 +11263,12 @@ function renderSmartTextModifyPanel(){
         <div class="smart-text-edit-body">
             ${state.mode === 'erase' ? eraseBody : modifyBody}
         </div>
-        <div class="smart-text-edit-actions">
-            <button type="button" class="secondary" data-smart-text-panel-action="cancel">取消</button>
-            <button type="button" class="primary" data-smart-text-panel-action="${state.mode === 'erase' ? 'applyErase' : 'apply'}" ${state.mode === 'modify' && (loading || !(state.texts || []).length) ? 'disabled' : ''}>${state.mode === 'erase' ? '应用消除' : '应用修改'}</button>
-        </div>`;
+        ${state.mode === 'erase' ? eraseActions : modifyActions}
+        ${generationLayer}`;
+    if(state.generationSelectorOpen){
+        const generationFields = panel.querySelector('.smart-text-generation-fields');
+        if(generationFields) renderSmartTextGenerationFields(state, generationFields);
+    }
     panel.classList.add('open');
     positionSmartTextEditPanel();
     refreshIcons();
@@ -11189,6 +11289,148 @@ function cloneSmartTextRows(rows){
         index:Number(item?.index ?? index) || index
     })).filter(item => item.text || item.next);
 }
+function cloneSmartTextGenerationSettings(source){
+    const clean = settingsForStorage(cloneSmartSettings(source || {}));
+    clean.apiKind = 'image';
+    delete clean.videoTempShLinks;
+    return clean;
+}
+function smartTextSourceRatioForState(state){
+    const subject = smartTextEditSubject(state?.nodeId, state?.imageIndex);
+    return reducedRatioForImage(subject?.image) || reducedRatioForImage(subject?.item);
+}
+function applySmartTextSourceRatioToSettings(state, target, prefix=''){
+    if(!target || typeof target !== 'object') return null;
+    const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
+    if(target[ratioKey] !== 'source') return null;
+    const ratio = smartTextSourceRatioForState(state);
+    if(!ratio) return null;
+    const customKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
+    const widthKey = prefix ? `${prefix}CustomRatioWidth` : 'customRatioWidth';
+    const heightKey = prefix ? `${prefix}CustomRatioHeight` : 'customRatioHeight';
+    target[customKey] = `${ratio.w}:${ratio.h}`;
+    target[widthKey] = ratio.w;
+    target[heightKey] = ratio.h;
+    return ratio;
+}
+function applySmartTextSourceRatioToDraft(state, prefix=''){
+    return applySmartTextSourceRatioToSettings(state, state?.generationSettingsDraft, prefix);
+}
+function smartTextGenerationSession(state, fallbackSettings){
+    if(!state) return null;
+    const source = state.generationSettingsConfirmed && state.generationSettings
+        ? state.generationSettings
+        : fallbackSettings;
+    state.generationSettingsDraft = cloneSmartTextGenerationSettings(source);
+    state.generationSettingsDraft.apiKind = 'image';
+    state.generationSelectorOpen = true;
+    state.generationSettingsError = '';
+    return state.generationSettingsDraft;
+}
+function cancelSmartTextGenerationSession(state){
+    if(!state) return;
+    state.generationSettingsDraft = null;
+    state.generationSelectorOpen = false;
+    state.generationSettingsError = '';
+}
+function confirmSmartTextGenerationSession(state){
+    if(!state?.generationSettingsDraft) return null;
+    state.generationSettings = cloneSmartTextGenerationSettings(state.generationSettingsDraft);
+    state.generationSettingsConfirmed = true;
+    state.generationSettingsDraft = null;
+    state.generationSelectorOpen = false;
+    state.generationSettingsError = '';
+    return state.generationSettings;
+}
+function smartTextResolutionOptions(source, prefix=''){
+    const draft = source || {};
+    const model = prefix === 'ms'
+        ? (draft.msgenModel === 'custom' ? draft.msCustomModel : draft.msgenModel)
+        : draft.model;
+    const fixed = String(model || '').trim().toLowerCase().match(/(?:^|[-_])(1k|2k|4k)$/)?.[1] || '';
+    return ['1k','2k','4k'].map(value => ({
+        value,
+        disabled:Boolean(fixed) && value !== fixed
+    }));
+}
+function normalizeSmartTextResolution(source, prefix=''){
+    if(!source || typeof source !== 'object') return '1k';
+    const key = prefix ? `${prefix}Resolution` : 'resolution';
+    const allowed = smartTextResolutionOptions(source, prefix)
+        .filter(option => !option.disabled)
+        .map(option => option.value);
+    const preferred = prefix ? '1k' : defaultSmartApiResolution(source.model);
+    const fallback = allowed.includes(preferred) ? preferred : (allowed[0] || '1k');
+    if(!allowed.includes(source[key])) source[key] = fallback;
+    return source[key];
+}
+function validateSmartTextGenerationSettings(draft){
+    const source = draft || {};
+    const engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(source.engine) ? source.engine : 'api';
+    if(engine === 'api' || engine === 'volcengine'){
+        if(!String(source.provider_id || '').trim()) return '请选择 API 平台';
+        if(!String(source.model || '').trim()) return '请选择生图模型';
+        if(source.resolution === 'custom' && (!(Number(source.customWidth) > 0) || !(Number(source.customHeight) > 0))){
+            return '请填写完整的自定义宽度和高度';
+        }
+    }
+    if(engine === 'modelscope'){
+        if(source.msgenModel === 'custom' && !String(source.msCustomModel || '').trim()) return '请选择 ModelScope 自定义模型';
+        if(source.msResolution === 'custom' && (!(Number(source.msCustomWidth) > 0) || !(Number(source.msCustomHeight) > 0))){
+            return '请填写完整的 ModelScope 自定义宽度和高度';
+        }
+    }
+    if(engine === 'comfy' && source.comfyMode === 'custom' && !String(source.comfyWorkflow || '').trim()){
+        return '请选择 ComfyUI 工作流';
+    }
+    if(engine === 'runninghub' && !String(source.rhConfigKey || '').trim()){
+        return '请选择 RunningHub 模型、AI 应用或工作流';
+    }
+    const prefix = engine === 'modelscope' ? 'ms' : '';
+    const resolutionKey = prefix ? 'msResolution' : 'resolution';
+    if(source[resolutionKey] && ['api','volcengine','modelscope'].includes(engine)){
+        const selected = smartTextResolutionOptions(source, prefix)
+            .find(option => option.value === source[resolutionKey]);
+        if(!selected || selected.disabled) return '当前模型不支持所选分辨率，请重新选择';
+    }
+    return '';
+}
+function smartTextGenerationSummaryParts(source){
+    if(!source || typeof source !== 'object') return [];
+    const engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(source.engine) ? source.engine : 'api';
+    const ratioLabels = {square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4', landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21', source:'原图'};
+    const qualityLabels = {auto:'自动质量', low:'低质量', medium:'中等质量', high:'高质量'};
+    const sizePart = prefix => {
+        const ratio = source[prefix ? `${prefix}Ratio` : 'ratio'] || 'square';
+        const resolution = source[prefix ? `${prefix}Resolution` : 'resolution'] || '1k';
+        const customSize = source[prefix ? `${prefix}CustomSize` : 'customSize']
+            || ((source[prefix ? `${prefix}CustomWidth` : 'customWidth'] && source[prefix ? `${prefix}CustomHeight` : 'customHeight'])
+                ? `${source[prefix ? `${prefix}CustomWidth` : 'customWidth']} × ${source[prefix ? `${prefix}CustomHeight` : 'customHeight']}` : '');
+        const customRatio = source[prefix ? `${prefix}CustomRatio` : 'customRatio'] || '';
+        const ratioText = ratio === 'custom' ? customRatio : (ratioLabels[ratio] || ratio);
+        const resolutionText = resolution === 'custom' ? customSize : (resolution === 'auto' ? '自动' : String(resolution).toUpperCase());
+        return [ratioText, resolutionText].filter(Boolean).join(' / ');
+    };
+    const countPart = `${Math.max(1, Math.min(8, Number(source.count || 1)))} 张`;
+    if(engine === 'modelscope'){
+        const model = source.msgenModel === 'custom' ? source.msCustomModel : msModelLabel(source.msgenModel || 'zimage');
+        return ['ModelScope', model, sizePart('ms'), countPart].filter(Boolean);
+    }
+    if(engine === 'comfy'){
+        const modeLabels = {text:'文生图', enhance:'图片增强', edit:'图片编辑', custom:'自定义工作流'};
+        const mode = source.comfyMode || 'text';
+        const detail = mode === 'custom' ? source.comfyWorkflow : modeLabels[mode];
+        const dimensions = mode === 'text' && source.width && source.height ? `${source.width} × ${source.height}` : '';
+        return ['ComfyUI', detail, dimensions, countPart].filter(Boolean);
+    }
+    if(engine === 'runninghub'){
+        const ref = selectedRunningHubRef(source);
+        const label = ref ? runningHubEntryLabel(ref.entry || ref, ref.kind) : '';
+        return ['RunningHub', label, countPart].filter(Boolean);
+    }
+    const provider = apiProviderById(engine === 'volcengine' ? 'volcengine' : source.provider_id);
+    return [provider?.name || source.provider_id || (engine === 'volcengine' ? '火山引擎' : 'API'), source.model, sizePart(''), qualityLabels[source.quality || 'auto'], countPart].filter(Boolean);
+}
 function hydrateSmartTextPanelState(node, imageIndex=0, mode='modify'){
     const pref = markerApiPreference();
     const fallbackProvider = resolveChatProviderId(pref.provider || markerProviderValue());
@@ -11206,6 +11448,13 @@ function hydrateSmartTextPanelState(node, imageIndex=0, mode='modify'){
         texts,
         status:saved.status || (texts.length ? 'ready' : 'idle'),
         error:saved.error || '',
+        generationSettingsConfirmed:saved.generationSettingsConfirmed === true,
+        generationSettings:saved.generationSettingsConfirmed === true
+            ? cloneSmartTextGenerationSettings(saved.generationSettings)
+            : null,
+        generationSettingsDraft:null,
+        generationSelectorOpen:false,
+        generationSettingsError:'',
         open:true
     };
 }
@@ -11221,6 +11470,10 @@ function saveSmartTextPanelStateToNode(){
         texts:cloneSmartTextRows(state.texts || []),
         status:state.status || ((state.texts || []).length ? 'ready' : 'idle'),
         error:state.error || '',
+        generationSettingsConfirmed:state.generationSettingsConfirmed === true,
+        generationSettings:state.generationSettingsConfirmed
+            ? cloneSmartTextGenerationSettings(state.generationSettings)
+            : null,
         updatedAt:Date.now()
     };
     scheduleSave();
@@ -11294,6 +11547,309 @@ function renderSmartTextEraseControls(state){
         </div>
         <div class="smart-text-edit-empty">按所选尺寸、质量和数量生成去字图片，不固定原图比例。</div>
     </div>`;
+}
+function withSmartSettingsRenderContext(draft, callback){
+    const previousSettings = settings;
+    settings = draft;
+    try {
+        return callback();
+    } finally {
+        settings = previousSettings;
+    }
+}
+function renderSmartTextResolutionControl(prefix=''){
+    const draft = settings || {};
+    const key = prefix ? `${prefix}Resolution` : 'resolution';
+    const current = normalizeSmartTextResolution(draft, prefix);
+    const options = smartTextResolutionOptions(draft, prefix);
+    return `<div class="smart-control resolution-control smart-text-resolution-control">
+        <button class="smart-pill" type="button"><i data-lucide="monitor"></i><span>${escapeHtml(String(current).toUpperCase())}</span></button>
+        <div class="smart-popover compact-popover">
+            <div class="smart-popover-title">分辨率</div>
+            <div class="seg-row smart-text-resolution-options">
+                ${options.map(option => `<button type="button" class="${option.value === current ? 'active' : ''}" data-smart-param="${key}" data-smart-value="${option.value}" ${option.disabled ? 'disabled title="该模型不支持"' : ''}>${option.value.toUpperCase()}</button>`).join('')}
+            </div>
+        </div>
+    </div>`;
+}
+function splitSmartTextGenerationSizeControl(state, container, prefix='', includeSource=false){
+    const combined = container?.querySelector('.size-picker-control');
+    const draft = state?.generationSettingsDraft;
+    if(!combined || !draft) return;
+    const holder = document.createElement('div');
+    holder.innerHTML = withSmartSettingsRenderContext(draft, () =>
+        `${renderRatioControl(prefix, includeSource)}${renderInlineCustomRatioFields(prefix)}${renderSmartTextResolutionControl(prefix)}`
+    );
+    combined.replaceWith(...holder.children);
+}
+function smartTextGenerationFieldLabel(control){
+    if(control.classList.contains('provider-control')){
+        return control.querySelector('[data-smart-param="msgenModel"]') ? '生图模型' : 'API 平台';
+    }
+    if(control.classList.contains('model-control')) return '生图模型';
+    if(control.classList.contains('rh-config-control')) return '模型 / 应用 / 工作流';
+    if(control.classList.contains('ratio-control')) return '尺寸';
+    if(control.classList.contains('smart-text-resolution-control')) return '分辨率';
+    if(control.classList.contains('quality-control')) return '质量';
+    if(control.classList.contains('count-control')) return '生图数量';
+    if(control.classList.contains('rh-payment-control')) return '支付方式';
+    if(control.classList.contains('rh-machine-control')) return '运行规格';
+    if(control.classList.contains('workflow-control')) return '工作流';
+    if(control.classList.contains('comfy-mode-control')) return '生成模式';
+    return '';
+}
+function decorateSmartTextGenerationFields(container){
+    container?.querySelectorAll('.smart-control').forEach(control => {
+        const pill = control.querySelector(':scope > .smart-pill');
+        const label = smartTextGenerationFieldLabel(control);
+        if(pill && label) pill.dataset.smartTextFieldLabel = label;
+    });
+}
+function renderSmartTextGenerationFields(state, container){
+    const draft = state?.generationSettingsDraft;
+    if(!draft || !container) return;
+    draft.engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(draft.engine) ? draft.engine : 'api';
+    draft.apiKind = 'image';
+    withSmartSettingsRenderContext(draft, () => {
+        if(draft.engine === 'api') renderApiParams(container);
+        else if(draft.engine === 'volcengine') renderVolcengineParams(container);
+        else if(draft.engine === 'modelscope') renderMsParams(container);
+        else if(draft.engine === 'runninghub') renderRunningHubParams(container);
+        else renderComfyParams(container, () => {
+            if(smartTextEditPanelState === state && state.generationSelectorOpen) renderSmartTextModifyPanel();
+        });
+    });
+    const prefix = draft.engine === 'modelscope' ? 'ms' : '';
+    applySmartTextSourceRatioToDraft(state, prefix);
+    if(container.querySelector('.size-picker-control')){
+        splitSmartTextGenerationSizeControl(state, container, prefix, draft.engine !== 'modelscope');
+    }
+    decorateSmartTextGenerationFields(container);
+    bindSmartTextGenerationFields(state, container);
+}
+function setSmartTextGenerationDraftSetting(state, key, value){
+    const draft = state?.generationSettingsDraft;
+    if(!draft || !key) return false;
+    const numericKeys = new Set(['count','width','height','enhanceStrength','enhanceUpscaleRes','editUpscaleRes','customRatioWidth','customRatioHeight','customWidth','customHeight','msCustomRatioWidth','msCustomRatioHeight','msCustomWidth','msCustomHeight']);
+    const layoutKeys = new Set(['provider_id','model','resolution','ratio','customRatioWidth','customRatioHeight','msgenModel','msCustomModel','msResolution','msRatio','msCustomRatioWidth','msCustomRatioHeight','comfyMode','comfyWorkflow','quality','count','enhanceUpscaleRes','editUpscaleRes','rhConfigKey','rhPayment','rhInstanceType']);
+    draft[key] = numericKeys.has(key) && value !== '' ? Number(value) : value;
+    if(key === 'provider_id') draft.model = '';
+    if(key === 'resolution'){
+        if(draft.resolution === 'custom') draft.ratio = '';
+        else if(!draft.ratio) draft.ratio = 'square';
+    }
+    if(key === 'msResolution'){
+        if(draft.msResolution === 'custom') draft.msRatio = '';
+        else if(!draft.msRatio) draft.msRatio = 'square';
+    }
+    if(key === 'ratio' && draft.ratio === 'source') applySmartTextSourceRatioToDraft(state, '');
+    if(key === 'msRatio' && draft.msRatio === 'source') applySmartTextSourceRatioToDraft(state, 'ms');
+    if(key === 'customRatioWidth' || key === 'customRatioHeight'){
+        draft.customRatio = draft.customRatioWidth && draft.customRatioHeight ? `${draft.customRatioWidth}:${draft.customRatioHeight}` : '';
+        draft.ratio = 'custom';
+    }
+    if(key === 'msCustomRatioWidth' || key === 'msCustomRatioHeight'){
+        draft.msCustomRatio = draft.msCustomRatioWidth && draft.msCustomRatioHeight ? `${draft.msCustomRatioWidth}:${draft.msCustomRatioHeight}` : '';
+        draft.msRatio = 'custom';
+    }
+    if(key === 'customWidth' || key === 'customHeight'){
+        draft.customSize = draft.customWidth && draft.customHeight ? `${draft.customWidth}x${draft.customHeight}` : '';
+        draft.resolution = 'custom';
+    }
+    if(key === 'msCustomWidth' || key === 'msCustomHeight'){
+        draft.msCustomSize = draft.msCustomWidth && draft.msCustomHeight ? `${draft.msCustomWidth}x${draft.msCustomHeight}` : '';
+        draft.msResolution = 'custom';
+    }
+    if(key === 'comfyWorkflow') draft.comfyParams = {};
+    if(key === 'rhConfigKey'){
+        draft.rhParams = {};
+        draft.rhRandomActive = {};
+    }
+    state.generationSettingsError = '';
+    return layoutKeys.has(key);
+}
+function bindSmartTextGenerationFields(state, container){
+    const draft = state?.generationSettingsDraft;
+    if(!draft || !container) return;
+    const rerender = () => {
+        if(smartTextEditPanelState === state && state.generationSelectorOpen) renderSmartTextModifyPanel();
+    };
+    const closePopovers = () => container.querySelectorAll('.smart-control.pinned').forEach(control => control.classList.remove('pinned'));
+    container.querySelectorAll('.smart-control > .smart-pill').forEach(pill => {
+        pill.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const control = pill.parentElement;
+            const wasPinned = control.classList.contains('pinned');
+            closePopovers();
+            if(!wasPinned) control.classList.add('pinned');
+        };
+    });
+    container.querySelectorAll('[data-smart-param]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            setSmartTextGenerationDraftSetting(state, button.dataset.smartParam, button.dataset.smartValue);
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-size-scope]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const prefix = button.dataset.sizePrefix || '';
+            const scope = button.dataset.sizeScope;
+            const resolutionKey = prefix ? `${prefix}Resolution` : 'resolution';
+            const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
+            const allowAuto = !prefix && draft.engine === 'api' && isGptImageAutoSizeModel(draft.model);
+            if(scope === 'auto'){
+                if(!allowAuto) return;
+                draft[resolutionKey] = 'auto';
+                if(!draft[ratioKey]) draft[ratioKey] = 'square';
+            } else if(scope === 'custom'){
+                draft[resolutionKey] = 'custom';
+            } else {
+                const fallback = withSmartSettingsRenderContext(draft, () => sizePickerDefaultResolution(prefix));
+                draft[resolutionKey] = ['1k','2k','4k'].includes(draft[resolutionKey]) ? draft[resolutionKey] : fallback;
+                if(!draft[ratioKey] || draft[ratioKey] === 'custom') draft[ratioKey] = 'square';
+            }
+            state.generationSettingsError = '';
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-param]').forEach(input => {
+        input.onclick = event => event.stopPropagation();
+        input.oninput = input.onchange = event => {
+            event?.stopPropagation?.();
+            const layoutChanged = setSmartTextGenerationDraftSetting(state, input.dataset.param, input.value);
+            if(layoutChanged && event?.type === 'change') rerender();
+        };
+    });
+    container.querySelectorAll('[data-toggle-param]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            draft[button.dataset.toggleParam] = !draft[button.dataset.toggleParam];
+            state.generationSettingsError = '';
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-comfy-bool]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            draft.comfyParams = draft.comfyParams || {};
+            const fieldId = button.dataset.comfyBool;
+            const field = withSmartSettingsRenderContext(draft, () => currentComfyFields().find(item => item.id === fieldId));
+            draft.comfyParams[fieldId] = !Boolean(draft.comfyParams[fieldId] ?? field?.default ?? false);
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-comfy-param]').forEach(input => {
+        input.onclick = event => event.stopPropagation();
+        input.oninput = input.onchange = event => {
+            event?.stopPropagation?.();
+            draft.comfyParams = draft.comfyParams || {};
+            const field = withSmartSettingsRenderContext(draft, () => currentComfyFields().find(item => item.id === input.dataset.comfyParam));
+            draft.comfyParams[input.dataset.comfyParam] = field?.type === 'number' || field?.type === 'slider' ? (Number(input.value) || 0) : input.value;
+            state.generationSettingsError = '';
+        };
+    });
+    container.querySelectorAll('[data-comfy-pick]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const fieldId = button.dataset.comfyPick;
+            draft.comfyParams = draft.comfyParams || {};
+            draft.comfyParams[fieldId] = button.dataset.comfyValue;
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-comfy-random]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            draft.comfyRandomActive = draft.comfyRandomActive || {};
+            const fieldId = button.dataset.comfyRandom;
+            draft.comfyRandomActive[fieldId] = !(draft.comfyRandomActive[fieldId] !== false);
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-rh-bool]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const key = button.dataset.rhBool;
+            draft.rhParams = draft.rhParams || {};
+            const field = withSmartSettingsRenderContext(draft, () => rhActiveFields().find(item => rhParamKey(item.nodeId, item.fieldName) === key));
+            const current = withSmartSettingsRenderContext(draft, () => String(rhParamValue(field, null)).toLowerCase() === 'true');
+            draft.rhParams[key] = {...(draft.rhParams[key] || {}), value:String(!current)};
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-rh-param]').forEach(input => {
+        input.onclick = event => event.stopPropagation();
+        input.oninput = input.onchange = event => {
+            event?.stopPropagation?.();
+            const key = input.dataset.rhParam;
+            draft.rhParams = draft.rhParams || {};
+            draft.rhParams[key] = {...(draft.rhParams[key] || {}), value:input.value};
+            const control = input.closest('.smart-control');
+            const valueText = control?.querySelector('.rh-slider-value');
+            const pillValue = control?.querySelector('.rh-slider-pill-value');
+            if(valueText) valueText.textContent = input.value;
+            if(pillValue) pillValue.textContent = input.value;
+            state.generationSettingsError = '';
+        };
+    });
+    container.querySelectorAll('[data-rh-pick]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const key = button.dataset.rhPick;
+            draft.rhParams = draft.rhParams || {};
+            draft.rhParams[key] = {...(draft.rhParams[key] || {}), value:button.dataset.rhValue};
+            rerender();
+        };
+    });
+    container.querySelectorAll('[data-rh-random]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            draft.rhRandomActive = draft.rhRandomActive || {};
+            const key = button.dataset.rhRandom;
+            draft.rhRandomActive[key] = !(draft.rhRandomActive[key] !== false);
+            rerender();
+        };
+    });
+}
+function openSmartTextGenerationSelector(){
+    const state = smartTextEditPanelState;
+    if(!state) return;
+    const subject = smartTextEditSubject(state.nodeId, state.imageIndex);
+    if(!subject) return;
+    smartTextGenerationSession(state, smartTextImageRunSettings(subject.node));
+    renderSmartTextModifyPanel();
+}
+function cancelSmartTextGenerationSelector(){
+    if(!smartTextEditPanelState) return;
+    cancelSmartTextGenerationSession(smartTextEditPanelState);
+    renderSmartTextModifyPanel();
+}
+function confirmSmartTextGenerationSelector(){
+    const state = smartTextEditPanelState;
+    if(!state?.generationSettingsDraft) return;
+    const prefix = state.generationSettingsDraft.engine === 'modelscope' ? 'ms' : '';
+    applySmartTextSourceRatioToDraft(state, prefix);
+    const error = validateSmartTextGenerationSettings(state.generationSettingsDraft);
+    if(error){
+        state.generationSettingsError = error;
+        renderSmartTextModifyPanel();
+        return;
+    }
+    confirmSmartTextGenerationSession(state);
+    saveSmartTextPanelStateToNode();
+    renderSmartTextModifyPanel();
 }
 function closeSmartTextModifyPanel(){
     saveSmartTextPanelStateToNode();
@@ -11389,14 +11945,17 @@ function openSmartTextErasePanel(nodeId, imageIndex=0){
 }
 function smartTextImageRunSettings(node){
     const runSettings = {...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(node) || {})};
-    if(!isApiLikeEngine(runSettings.engine)) runSettings.engine = 'api';
+    runSettings.engine = ['api','volcengine','modelscope','comfy','runninghub'].includes(runSettings.engine) ? runSettings.engine : 'api';
     runSettings.apiKind = 'image';
-    if(!runSettings.provider_id || !providerImageModels(runSettings.provider_id).length){
-        const provider = imageProviders()[0];
-        runSettings.provider_id = provider?.id || runSettings.provider_id || '';
+    if(isApiLikeEngine(runSettings.engine)){
+        if(runSettings.engine === 'volcengine') runSettings.provider_id = 'volcengine';
+        if(!runSettings.provider_id || !providerImageModels(runSettings.provider_id).length){
+            const provider = runSettings.engine === 'volcengine' ? volcengineProvider() : imageProviders()[0];
+            runSettings.provider_id = provider?.id || runSettings.provider_id || '';
+        }
+        const models = providerImageModels(runSettings.provider_id);
+        if(!models.includes(runSettings.model)) runSettings.model = models[0] || runSettings.model || '';
     }
-    const models = providerImageModels(runSettings.provider_id);
-    if(!models.includes(runSettings.model)) runSettings.model = models[0] || runSettings.model || '';
     runSettings.count = Math.max(1, Math.min(8, Number(runSettings.count || 1)));
     return runSettings;
 }
@@ -11420,10 +11979,22 @@ function smartTextModificationPrompt(texts){
 }
 function smartTextErasePrompt(){
     return [
-        'Edit the reference image directly.',
-        'Remove all visible text, letters, captions, logos made of text, subtitles, labels, and poster copy.',
-        'Inpaint the removed text areas naturally so the background, objects, colors, lighting, texture, and design remain intact.',
-        'Do not add any new text.'
+        'Perform a surgical text-only removal edit on the supplied reference image.',
+        'STRICT EDITING SCOPE: remove readable text glyphs only. This is not a layout cleanup, simplification, debranding, template reset, or redesign.',
+        'Remove every visible textual element in every language and orientation, including words, letters, numbers, punctuation, captions, subtitles, label copy, watermarks, poster copy, and text-based logos whose visual content is readable text.',
+        'Remove glyph outlines, strokes, shadows, glows, and highlights only where they follow the contours of readable glyphs. Preserve outlines, strokes, shadows, and highlights that belong to a container or independent graphic.',
+        'Preserve every non-text carrier or supporting graphic behind, around, beside, or overlapping text, including background plates, colored blocks, panels, banners, ribbons, badges, buttons, tickets, speech bubbles, frames, borders, dividers, underlines, curves, shapes, patterns, and decorations.',
+        'A carrier surface is not text and must remain even when its only purpose is to hold text. If a colored, outlined, or shaped area extends beyond the glyph contours, treat the entire area as a protected non-text element.',
+        'A non-text element remains protected even when text touches, overlaps, sits inside, or is fully surrounded by it. Do not confuse a text container with the text itself.',
+        'Perform reconstruction only inside the areas previously covered by text glyph pixels and glyph-shaped effects. Fill only the holes left by the removed glyph pixels. Continue the exact local color, gradient, texture, material, edge, lighting, and pattern of the underlying carrier or background through those small holes.',
+        'Never erase, flatten, enlarge, shrink, simplify, or replace an entire container, colored region, badge, card, banner, border, line, curve, icon, or decoration just because it contains or is near text.',
+        'Treat people, faces, facial expressions, hands, objects, icons, stickers, illustrations, shapes, lines, standalone symbols, graphical logos, decorative marks, artwork, products, scenery, and all other non-text design elements as protected.',
+        'Within the requested target canvas, do not remove, redraw, replace, restyle, move, resize, or alter any non-text visual element.',
+        'Preserve all protected elements, colors, gradients, lighting, shadows, textures, patterns, composition, perspective, geometry, positions, scale, spacing, and visual style as faithfully as possible.',
+        'Honor the user-requested output dimensions and aspect ratio. If the target canvas differs from the reference, perform only the minimum global framing adaptation required to fit that target; do not redesign, replace, or invent non-text content.',
+        'Before returning the result, compare it with the reference and restore any non-text feature that was removed or changed. The only intentional visual difference should be the absence of readable text glyphs and their glyph-shaped effects.',
+        'Do not generate, preserve, or introduce any readable text, pseudo-text, letters, numbers, punctuation, or replacement glyphs anywhere in the output.',
+        'Return only the edited image.'
     ].join('\n');
 }
 async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='文字编辑', overrideSettings=null){
@@ -11447,7 +12018,7 @@ async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='�
         createdAt:Date.now()
     };
     pushUndo();
-    const outputNode = createPendingOutputFromSource(node, Math.max(1, Math.min(8, Number(runSettings.count || 1))), meta, {selectOutput:true, refs});
+    const outputNode = createPendingOutputFromSource(node, Math.max(1, Math.min(8, Number(runSettings.count || 1))), meta, {selectOutput:true, refs, settings:runSettings});
     outputNode.runSettings = settingsForStorage(runSettings);
     outputNode.running = true;
     outputNode.runStartedAt = nowMs();
@@ -11493,11 +12064,14 @@ async function runSmartImageTextGeneration(nodeId, imageIndex, prompt, label='�
 }
 async function applySmartTextModification(){
     const state = smartTextEditPanelState;
-    if(!state || !(state.texts || []).length) return;
+    if(!state || !(state.texts || []).length || !state.generationSettingsConfirmed) return;
     const prompt = smartTextModificationPrompt(state.texts);
+    const runSettings = cloneSmartTextGenerationSettings(state.generationSettings);
+    const prefix = runSettings.engine === 'modelscope' ? 'ms' : '';
+    applySmartTextSourceRatioToSettings(state, runSettings, prefix);
     closeSmartTextModifyPanel();
     try {
-        await runSmartImageTextGeneration(state.nodeId, state.imageIndex, prompt, '修改文字');
+        await runSmartImageTextGeneration(state.nodeId, state.imageIndex, prompt, '修改文字', runSettings);
     } catch(err){
         toast((err?.message || '修改文字失败').slice(0, 160));
     }
@@ -16714,38 +17288,38 @@ function sizeForRun(sourceSettings=settings){
         : '1k';
     return apiImageSize(sourceSettings.ratio || 'square', sourceSettings.resolution || fallbackResolution, sourceSettings.customRatio || '', sourceSettings.customSize || '') || '1024x1024';
 }
-function expectedOutputSize(){
-    if(settings.engine === 'comfy'){
-        if(settings.comfyMode === 'text'){
-            const w = Number(settings.width) || 1024;
-            const h = Number(settings.height) || 1024;
+function expectedOutputSize(sourceSettings=settings){
+    if(sourceSettings.engine === 'comfy'){
+        if(sourceSettings.comfyMode === 'text'){
+            const w = Number(sourceSettings.width) || 1024;
+            const h = Number(sourceSettings.height) || 1024;
             return {w, h};
         }
         return {w:1024, h:1024};
     }
-    if(settings.engine === 'runninghub') return {w:1024, h:1024};
-    const sizeStr = settings.engine === 'modelscope'
-        ? apiImageSize(settings.msRatio || 'square', settings.msResolution || '1k', settings.msCustomRatio || '', settings.msCustomSize || '')
-        : sizeForRun();
+    if(sourceSettings.engine === 'runninghub') return {w:1024, h:1024};
+    const sizeStr = sourceSettings.engine === 'modelscope'
+        ? apiImageSize(sourceSettings.msRatio || 'square', sourceSettings.msResolution || '1k', sourceSettings.msCustomRatio || '', sourceSettings.msCustomSize || '')
+        : sizeForRun(sourceSettings);
     const parsed = parseSizeValue(sizeStr);
     if(parsed){
         return {w: Number(parsed.width) || 1024, h: Number(parsed.height) || 1024};
     }
     return {w:1024, h:1024};
 }
-function explicitRequestOutputSizeForPending(){
-    if(isApiLikeEngine(settings.engine) && settings.apiKind !== 'video'){
-        const parsed = parseSizeValue(sizeForRun());
+function explicitRequestOutputSizeForPending(sourceSettings=settings){
+    if(isApiLikeEngine(sourceSettings.engine) && sourceSettings.apiKind !== 'video'){
+        const parsed = parseSizeValue(sizeForRun(sourceSettings));
         if(parsed) return {w:Number(parsed.width) || 1024, h:Number(parsed.height) || 1024};
     }
-    if(settings.engine === 'modelscope'){
-        const sizeStr = apiImageSize(settings.msRatio || 'square', settings.msResolution || '1k', settings.msCustomRatio || '', settings.msCustomSize || '');
+    if(sourceSettings.engine === 'modelscope'){
+        const sizeStr = apiImageSize(sourceSettings.msRatio || 'square', sourceSettings.msResolution || '1k', sourceSettings.msCustomRatio || '', sourceSettings.msCustomSize || '');
         const parsed = parseSizeValue(sizeStr);
         if(parsed) return {w:Number(parsed.width) || 1024, h:Number(parsed.height) || 1024};
     }
-    if(settings.engine === 'comfy' && settings.comfyMode === 'text'){
-        const w = Number(settings.width) || 1024;
-        const h = Number(settings.height) || 1024;
+    if(sourceSettings.engine === 'comfy' && sourceSettings.comfyMode === 'text'){
+        const w = Number(sourceSettings.width) || 1024;
+        const h = Number(sourceSettings.height) || 1024;
         return {w, h};
     }
     return null;
@@ -16780,12 +17354,12 @@ function displayBoxFromNaturalSize(size){
     return {w:layout.width, h:layout.height};
 }
 function pendingBaseBoxSize(options={}){
-    const requestSize = explicitRequestOutputSizeForPending();
+    const requestSize = explicitRequestOutputSizeForPending(options.settings || settings);
     if(requestSize) return displayBoxFromNaturalSize(requestSize);
     const sourceSize = pendingSourceBoxSize(options);
     if(sourceSize?.display) return {w:sourceSize.w, h:sourceSize.h};
     if(sourceSize) return displayBoxFromNaturalSize(sourceSize);
-    return displayBoxFromNaturalSize(expectedOutputSize());
+    return displayBoxFromNaturalSize(expectedOutputSize(options.settings || settings));
 }
 function pendingBoxSize(count, options={}){
     const base = pendingBaseBoxSize(options);
@@ -17932,7 +18506,11 @@ function nextOutputPositionForSource(sourceNode, pendingBox, options={}){
     return {x, y};
 }
 function createPendingOutputFromSource(sourceNode, expectedCount, meta, options={}){
-    const pendingBox = pendingBoxSize(expectedCount, {sourceNode, refs:options.refs || meta?.promptRefs || []});
+    const pendingBox = pendingBoxSize(expectedCount, {
+        sourceNode,
+        refs:options.refs || meta?.promptRefs || [],
+        settings:options.settings || meta?.settings || settings
+    });
     const pos = nextOutputPositionForSource(sourceNode, pendingBox);
     const output = {
         id:uid('smart'),
@@ -18339,6 +18917,19 @@ window.HstarSmartCanvasOpenShopHooks = {
         node.openshopRequestId = requestId || '';
         addConnection(sourceNode.id, node.id, 'flow');
         return node;
+    },
+    rollbackImageOutput(id){
+        const nodeIndex = nodes.findIndex(node => node.id === id);
+        if(nodeIndex >= 0) nodes.splice(nodeIndex, 1);
+        const connectionList = canvas?.connections || [];
+        for(let index = connectionList.length - 1; index >= 0; index -= 1){
+            if(connectionList[index].from === id || connectionList[index].to === id){
+                connectionList.splice(index, 1);
+            }
+        }
+        if(selectedId === id) selectedId = '';
+        selectedIds = selectedIds.filter(nodeId => nodeId !== id);
+        if(selectedImage.nodeId === id) selectedImage = {nodeId:'', index:-1};
     },
     pushUndo,
     selectOnly:id => {
@@ -21167,7 +21758,8 @@ window.onmousemove = e => {
     updateLoopInsertPreview();
     if(target) setDropHighlight(target.id);
 };
-window.onmouseup = e => {
+function finishSmartPointerInteraction(e, options={}) {
+    const cancelled = options.cancelled === true;
     document.body.classList.remove('smart-node-drag');
     document.body.classList.remove('smart-node-resize');
     if(portDragState){
@@ -21175,11 +21767,23 @@ window.onmouseup = e => {
         portDragState = null;
         shell.classList.remove('port-dragging');
         clearPortDragVisual();
-        handlePortDrop(drag, e);
+        if(cancelled){
+            discardPendingUndo();
+            render();
+        } else {
+            handlePortDrop(drag, e);
+        }
         return;
     }
     if(promptResizeState){ promptResizeState = null; scheduleSave(); }
-    if(selectionState) finishSelection(e);
+    if(selectionState){
+        if(cancelled){
+            selectionState = null;
+            selectionBox.style.display = 'none';
+        } else {
+            finishSelection(e);
+        }
+    }
     if(previewCompareDrag) previewCompareDrag = false;
     if(panoramaState.drag){
         panoramaState.drag = null;
@@ -21239,6 +21843,23 @@ window.onmouseup = e => {
     if(dragState){
         const draggedNode = nodes.find(n => n.id === dragState.id);
         let stateChanged = false;
+        if(cancelled){
+            stateChanged = Boolean(dragState.thumbDetached) || (dragState.group || []).some(item => {
+                const node = nodes.find(candidate => candidate.id === item.id);
+                return node && (
+                    Math.abs((Number(node.x) || 0) - item.ox) > 1
+                    || Math.abs((Number(node.y) || 0) - item.oy) > 1
+                );
+            });
+            if(stateChanged) commitPendingUndo();
+            else discardPendingUndo();
+            clearDropHighlight();
+            loopInsertPreview = null;
+            dragState = null;
+            scheduleSave();
+            scheduleConnectionLayerRefresh();
+            return;
+        }
         const hit = document.elementFromPoint(e.clientX, e.clientY);
         const droppedOnAssetPanel = assetLibraryOpen && hit && assetPanel?.contains(hit);
         if(droppedOnAssetPanel && draggedNode && (draggedNode.images || []).length){
@@ -21342,7 +21963,8 @@ window.onmouseup = e => {
         scheduleSave();
         scheduleConnectionLayerRefresh();
     }
-};
+}
+window.onmouseup = finishSmartPointerInteraction;
 shell.addEventListener('wheel', e => {
     if(e.target.closest('.composer,.smart-back,.image-edit-modal,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.workflow-transfer-panel,.log-modal,.shortcut-modal,.create-menu,.prompt-node-segments,.prompt-node-text,.prompt-node-llm,.smart-group-list,[data-thumb-scroll]')) return;
     e.preventDefault();
@@ -21468,6 +22090,7 @@ window.addEventListener('keyup', e => {
 });
 window.addEventListener('blur', () => {
     isRKeyDown = false;
+    finishSmartPointerInteraction(null, {cancelled:true});
 });
 engineSelect.onchange = () => {
     settings.engine = engineSelect.value;

@@ -365,9 +365,11 @@
         const url = clean(output.url);
         if(!clean(output.assetId) || !url || /^(?:data:image\/|blob:)/i.test(url)) return null;
         if(requestId) appliedOutputRequests.add(requestId);
+        acknowledgeOutput(data, 'accepted');
+        let created = null;
         try {
             hooks().pushUndo?.();
-            const created = hooks().createImageOutput?.({sourceNode:source, output:{...output, url}, requestId});
+            created = hooks().createImageOutput?.({sourceNode:source, output:{...output, url}, requestId});
             if(!created) throw new Error('图文分层输出节点创建失败');
             hooks().selectOnly?.(created.id);
             hooks().render?.();
@@ -376,6 +378,10 @@
             acknowledgeOutput(data, 'success', {nodeId:created.id});
             return created;
         } catch(error){
+            if(created?.id) hooks().rollbackImageOutput?.(created.id);
+            hooks().render?.();
+            hooks().scheduleSave?.();
+            if(requestId) appliedOutputRequests.delete(requestId);
             acknowledgeOutput(data, 'error', {message:error?.message || '图文分层输出导入失败'});
             throw error;
         }

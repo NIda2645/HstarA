@@ -52,11 +52,16 @@ describe('Hstar OpenShop offline runtime', () => {
     expect(buildScript).toContain("'host/openshop-writing-mode.css'");
     expect(buildScript).toContain("'host/openshop-canvas-sampler.js'");
     expect(buildScript).toContain("'host/openshop-update-scheduler.js'");
-    expect(html).toContain('_precacheRuntime()');
+    expect(html).not.toContain('_precacheRuntime()');
     expect(html).not.toMatch(/<script[^>]+https?:\/\//i);
     expect(html).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com/i);
     expect(html).not.toMatch(/cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com/i);
     expect(html).toMatch(/script-src 'self' 'unsafe-inline' blob:/);
+  });
+
+  it('does not create an unused Cache Storage copy without a service worker', () => {
+    expect(html).not.toMatch(/caches\.(?:open|keys|delete)\(/);
+    expect(html).not.toMatch(/serviceWorker\.register\(/);
   });
 
   it('records every shipped dependency with a digest and license', () => {

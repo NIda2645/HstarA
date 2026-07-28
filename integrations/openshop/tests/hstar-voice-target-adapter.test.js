@@ -184,4 +184,53 @@ describe('Hstar global voice target adapter', () => {
     expect(transaction.commitComposition).toHaveBeenCalledWith('完成');
     expect(editor.textContent).toBe('');
   });
+
+  it('removes registered targets from both adapter indexes when unregistered', () => {
+    const editor = document.createElement('div');
+    document.body.append(editor);
+    const unregister = adapter.register(editor, {
+      isTargetAvailable: () => true,
+      beginComposition: () => ({
+        updateComposition() {},
+        commitComposition() {},
+        cancelComposition() {},
+      }),
+    });
+    editor.tabIndex = 0;
+    editor.focus();
+    let id = '';
+    window.addEventListener('hstar-voice-target-command', event => {
+      id = event.detail?.targetId || '';
+    }, {once: true});
+    editor.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Q', shiftKey: true, bubbles: true, cancelable: true,
+    }));
+
+    expect(id).toBeTruthy();
+    expect(adapter.getTargetById(id)).toBe(editor);
+    unregister();
+
+    expect(adapter.getTargetById(id)).toBeNull();
+    expect(adapter.isEligible(editor)).toBe(false);
+  });
+
+  it('releases an ordinary detached textarea from the target index', async () => {
+    document.body.innerHTML = '<textarea id="prompt"></textarea>';
+    const prompt = document.querySelector('#prompt');
+    prompt.focus();
+    let id = '';
+    window.addEventListener('hstar-voice-target-command', event => {
+      id = event.detail?.targetId || '';
+    }, {once: true});
+    prompt.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Q', shiftKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(adapter.getTargetById(id)).toBe(prompt);
+
+    prompt.remove();
+    prompt.dispatchEvent(new FocusEvent('focusout', {bubbles: true}));
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(adapter.getTargetById(id)).toBeNull();
+  });
 });

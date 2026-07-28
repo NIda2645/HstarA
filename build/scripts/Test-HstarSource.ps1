@@ -37,6 +37,30 @@ function Assert-SafeGeneratedPath {
     }
 }
 
+function Get-TreeDigest {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return ''
+    }
+    $root = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $records = Get-ChildItem -LiteralPath $root -Recurse -File |
+        Sort-Object -Property FullName |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($root.Length).TrimStart('\').Replace('\', '/')
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "${relative}`0${hash}"
+        }
+    $payload = [Text.Encoding]::UTF8.GetBytes(($records -join "`n"))
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($payload))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+}
+
 function Get-FreeLoopbackPort {
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     try {
@@ -80,8 +104,14 @@ function Wait-HstarHealth {
 
 Set-Location $repoRoot
 
+$openShopMirror = Join-Path $repoRoot 'static\openshop'
+$directorMirror = Join-Path $repoRoot 'static\3d-director'
+$openShopDigestBefore = Get-TreeDigest -Path $openShopMirror
+$directorDigestBefore = Get-TreeDigest -Path $directorMirror
+
 Invoke-Native -Command 'node' -Arguments @('tools/audit-text-encoding.mjs')
-Invoke-Native -Command $engineeringPython -Arguments @('-X', 'utf8', '-m', 'unittest', 'discover', '-s', 'tests', '-v')
+Invoke-Native -Command 'node' -Arguments @('tools/audit-secrets.mjs')
+Invoke-Native -Command $engineeringPython -Arguments @('-B', '-X', 'utf8', '-m', 'unittest', 'discover', '-s', 'tests', '-v')
 
 $nodeTests = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tools\tests') -Filter '*.test.mjs' -File |
     Sort-Object -Property Name
@@ -90,9 +120,56 @@ foreach ($test in $nodeTests) {
 }
 
 Invoke-Native -Command 'npm.cmd' -Arguments @('test', '--prefix', $openShopRoot)
-Invoke-Native -Command 'npm.cmd' -Arguments @('run', 'build:hstar', '--prefix', $openShopRoot)
 Invoke-Native -Command 'npm.cmd' -Arguments @('test', '--prefix', $directorRoot)
-Invoke-Native -Command 'npm.cmd' -Arguments @('run', 'build', '--prefix', $directorRoot)
+
+if ($openShopDigestBefore -ne (Get-TreeDigest -Path $openShopMirror)) {
+    throw 'OpenShop tests modified the checked-in runtime mirror.'
+}
+if ($directorDigestBefore -ne (Get-TreeDigest -Path $directorMirror)) {
+    throw '3D Director tests modified the checked-in runtime mirror.'
+}
+
+$mirrorBuildRoot = Join-Path $generatedRoot ("mirrors-{0}" -f [Guid]::NewGuid().ToString('N'))
+$openShopBuildRoot = Join-Path $mirrorBuildRoot 'openshop'
+$directorBuildRoot = Join-Path $mirrorBuildRoot '3d-director'
+Assert-SafeGeneratedPath -Path $mirrorBuildRoot -ExpectedParent $generatedRoot
+New-Item -ItemType Directory -Path $mirrorBuildRoot -Force | Out-Null
+try {
+    Invoke-Native -Command 'node' -Arguments @(
+        (Join-Path $openShopRoot 'scripts\build-hstar.mjs'),
+        '--output',
+        $openShopBuildRoot
+    )
+    if ($openShopDigestBefore -ne (Get-TreeDigest -Path $openShopBuildRoot)) {
+        throw 'OpenShop build output drifted from its checked-in runtime mirror.'
+    }
+
+    Invoke-Native -Command 'npm.cmd' -Arguments @(
+        'run',
+        'build',
+        '--prefix',
+        $directorRoot,
+        '--',
+        '--outDir',
+        $directorBuildRoot
+    )
+    if ($directorDigestBefore -ne (Get-TreeDigest -Path $directorBuildRoot)) {
+        throw '3D Director build output drifted from its checked-in runtime mirror.'
+    }
+    Invoke-Native -Command 'node' -Arguments @(
+        'tools/audit-secrets.mjs',
+        '--extra',
+        $openShopBuildRoot,
+        '--extra',
+        $directorBuildRoot
+    )
+}
+finally {
+    Assert-SafeGeneratedPath -Path $mirrorBuildRoot -ExpectedParent $generatedRoot
+    if (Test-Path -LiteralPath $mirrorBuildRoot) {
+        Remove-Item -LiteralPath $mirrorBuildRoot -Recurse -Force
+    }
+}
 Invoke-Native -Command 'dotnet' -Arguments @('test', $desktopTests, '-c', 'Release')
 
 $smokeRoot = Join-Path $generatedRoot ("run-{0}" -f [Guid]::NewGuid().ToString('N'))
@@ -110,7 +187,8 @@ $environmentNames = @(
     'HSTAR_BASE_URL',
     'HSTAR_DISABLE_AUTO_UPDATE',
     'PYTHONUTF8',
-    'PYTHONIOENCODING'
+    'PYTHONIOENCODING',
+    'PYTHONDONTWRITEBYTECODE'
 )
 foreach ($name in $environmentNames) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -126,10 +204,11 @@ try {
     $env:HSTAR_DISABLE_AUTO_UPDATE = '1'
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
+    $env:PYTHONDONTWRITEBYTECODE = '1'
 
     $server = Start-Process `
         -FilePath $engineeringPython `
-        -ArgumentList @('-X', 'utf8', 'main.py') `
+        -ArgumentList @('-B', '-X', 'utf8', 'main.py') `
         -WorkingDirectory $repoRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $smokeRoot 'source-gate.stdout.log') `
@@ -167,6 +246,28 @@ finally {
     }
 }
 
-Invoke-Native -Command $engineeringPython -Arguments @('-X', 'utf8', '-m', 'compileall', '-q', 'main.py', 'hstar_runtime', 'voice_assistant')
+$compileCacheRoot = Join-Path $generatedRoot ("pycache-{0}" -f [Guid]::NewGuid().ToString('N'))
+Assert-SafeGeneratedPath -Path $compileCacheRoot -ExpectedParent $generatedRoot
+New-Item -ItemType Directory -Path $compileCacheRoot -Force | Out-Null
+try {
+    Invoke-Native -Command $engineeringPython -Arguments @(
+        '-X',
+        'utf8',
+        '-X',
+        "pycache_prefix=$compileCacheRoot",
+        '-m',
+        'compileall',
+        '-q',
+        'main.py',
+        'hstar_runtime',
+        'voice_assistant'
+    )
+}
+finally {
+    Assert-SafeGeneratedPath -Path $compileCacheRoot -ExpectedParent $generatedRoot
+    if (Test-Path -LiteralPath $compileCacheRoot) {
+        Remove-Item -LiteralPath $compileCacheRoot -Recurse -Force
+    }
+}
 Invoke-Native -Command 'git' -Arguments @('diff', '--check')
 Write-Host 'Hstar source release gate passed.'

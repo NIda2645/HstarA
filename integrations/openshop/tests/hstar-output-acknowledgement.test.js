@@ -39,6 +39,13 @@ const variants = [
         uid:prefix => `${prefix}-created`,
         addNode:node => { nodes.push(node); return node; },
         addConnection:connection => { connections.push(connection); return connection; },
+        rollbackImageOutput:vi.fn(id => {
+          const nodeIndex = nodes.findIndex(node => node.id === id);
+          if(nodeIndex >= 0) nodes.splice(nodeIndex, 1);
+          for(let index = connections.length - 1; index >= 0; index -= 1){
+            if(connections[index].from === id || connections[index].to === id) connections.splice(index, 1);
+          }
+        }),
         pushUndo:vi.fn(),
         selectOnly:vi.fn(),
         render:vi.fn(),
@@ -59,10 +66,19 @@ const variants = [
         id:'layered-2', type:'openshop-layered', projectId:'project-2',
         x:100, y:100, w:340,
       };
+      const nodes = [source];
       window.HstarSmartCanvasOpenShopHooks = {
         getCanvasId:() => 'canvas-2',
-        getNode:id => id === source.id ? source : null,
-        createImageOutput:vi.fn(({requestId}) => ({id:'smart-created', openshopRequestId:requestId})),
+        getNode:id => nodes.find(node => node.id === id) || null,
+        createImageOutput:vi.fn(({requestId}) => {
+          const node = {id:'smart-created', openshopRequestId:requestId};
+          nodes.push(node);
+          return node;
+        }),
+        rollbackImageOutput:vi.fn(id => {
+          const nodeIndex = nodes.findIndex(node => node.id === id);
+          if(nodeIndex >= 0) nodes.splice(nodeIndex, 1);
+        }),
         pushUndo:vi.fn(),
         selectOnly:vi.fn(),
         render:vi.fn(),
@@ -102,7 +118,7 @@ describe.each(variants)('$name OpenShop output acknowledgement', variant => {
     vi.restoreAllMocks();
   });
 
-  it('posts success only after canvas persistence resolves', async () => {
+  it('posts accepted immediately and success only after canvas persistence resolves', async () => {
     const persistence = deferred();
     const postMessage = vi.spyOn(window, 'postMessage').mockImplementation(() => {});
     const adapter = loadVariant(variant, vi.fn(() => persistence.promise));
@@ -110,13 +126,19 @@ describe.each(variants)('$name OpenShop output acknowledgement', variant => {
 
     const importing = adapter.importOutput(data);
     await Promise.resolve();
-    expect(postMessage).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage.mock.calls[0][0]).toMatchObject({
+      type:'hstar-openshop-output-applied',
+      requestId:`${variant.name}-success`,
+      context:variant.context,
+      status:'accepted',
+    });
 
     persistence.resolve();
     const created = await importing;
 
-    expect(postMessage).toHaveBeenCalledTimes(1);
-    expect(postMessage.mock.calls[0]).toEqual([
+    expect(postMessage).toHaveBeenCalledTimes(2);
+    expect(postMessage.mock.calls[1]).toEqual([
       {
         type:'hstar-openshop-output-applied',
         requestId:`${variant.name}-success`,
@@ -135,14 +157,29 @@ describe.each(variants)('$name OpenShop output acknowledgement', variant => {
 
     await expect(adapter.importOutput(data)).rejects.toThrow('canvas save failed');
 
-    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledTimes(2);
     expect(postMessage.mock.calls[0][0]).toMatchObject({
+      type:'hstar-openshop-output-applied',
+      requestId:`${variant.name}-failure`,
+      context:variant.context,
+      status:'accepted',
+    });
+    expect(postMessage.mock.calls[1][0]).toMatchObject({
       type:'hstar-openshop-output-applied',
       requestId:`${variant.name}-failure`,
       context:variant.context,
       status:'error',
       message:'canvas save failed',
     });
+    expect(window[variant.hooks].rollbackImageOutput).toHaveBeenCalledTimes(1);
+    expect(window[variant.hooks].rollbackImageOutput).toHaveBeenCalledWith(
+      variant.name === 'classic' ? 'img-created' : 'smart-created',
+    );
+    const createdId = variant.name === 'classic' ? 'img-created' : 'smart-created';
+    const createdStillExists = variant.name === 'classic'
+      ? window[variant.hooks].getNodes().some(node => node.id === createdId)
+      : Boolean(window[variant.hooks].getNode(createdId));
+    expect(createdStillExists).toBe(false);
   });
 
   it('forwards one trusted artistic-font terminal log to the canvas hook', () => {

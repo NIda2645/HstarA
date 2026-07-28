@@ -43,3 +43,23 @@ test('text encoding audit includes root user-facing documents', () => {
   assert.notEqual(result.status, 0, 'root user-facing documents must be audited');
   assert.match(result.stderr, /LICENSE:1:replacement-character/);
 });
+
+test('text encoding audit includes 3D Director source files', () => {
+  const result = runFixtureAudit(
+    'integrations/storyai-3d-director-desk/src/NewPanel.tsx',
+    'export const title = "\uFFFD";',
+  );
+  assert.notEqual(result.status, 0, '3D Director source must be audited');
+  assert.match(
+    result.stderr,
+    /integrations[/\\]storyai-3d-director-desk[/\\]src[/\\]NewPanel\.tsx:1:replacement-character/,
+  );
+});
+
+test('text encoding audit ignores replacement-character regex literals in TypeScript', () => {
+  const result = runFixtureAudit(
+    'integrations/storyai-3d-director-desk/src/encoding.ts',
+    'export const replacementCharacter = /\uFFFD/u;',
+  );
+  assert.equal(result.status, 0, result.stderr);
+});

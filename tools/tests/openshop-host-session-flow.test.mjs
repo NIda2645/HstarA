@@ -88,12 +88,19 @@ const fetchCalls = [];
 const switchUICalls = [];
 const deletedProjects = [];
 const attachedVoiceFrames = [];
+const deactivatedVoiceFrames = [];
+const detachedVoiceFrames = [];
+const delayedSourceFetches = new Map();
+const delayedProjectSaves = new Map();
+const longTimers = new Map();
+let longTimerSequence = 0;
 const overlay = createElement('section', 'openshop-host');
 overlay.setAttribute('aria-hidden', 'true');
 const title = createElement('strong', 'openshop-title');
 const status = createElement('span', 'openshop-state');
 const sourcesButton = createElement('button', 'openshop-sources');
 const sourcePanel = createElement('aside', 'openshop-source-panel');
+const notice = createElement('div', 'openshop-notice');
 const backButton = createElement('button', 'openshop-back');
 const saveButton = createElement('button', 'openshop-save');
 const sendButton = createElement('button', 'openshop-send');
@@ -105,6 +112,7 @@ const selectorElements = new Map([
   ['[data-openshop-state]', status],
   ['[data-openshop-sources]', sourcesButton],
   ['[data-openshop-source-panel]', sourcePanel],
+  ['[data-openshop-notice]', notice],
   ['[data-openshop-back]', backButton],
   ['[data-openshop-save]', saveButton],
   ['[data-openshop-send]', sendButton],
@@ -145,7 +153,10 @@ async function fetchFake(url, options={}) {
   const value = String(url);
   const method = String(options.method || 'GET').toUpperCase();
   fetchCalls.push({url:value, method, options});
-  if(value.startsWith('/source-')) return response({blob:new Blob([value], {type:'image/png'})});
+  if(value.startsWith('/source-')) {
+    await delayedSourceFetches.get(value);
+    return response({blob:new Blob([value], {type:'image/png'})});
+  }
   const projectMatch = value.match(/^\/api\/openshop\/projects\/([^/?]+)(?:[/?]|$)/);
   if(projectMatch){
     const projectId = decodeURIComponent(projectMatch[1]);
@@ -162,6 +173,7 @@ async function fetchFake(url, options={}) {
     }
     if(method === 'PUT'){
       const body = JSON.parse(options.body);
+      await delayedProjectSaves.get(projectId);
       const saved = {...body.project, autosaveVersion:Number(body.base_version || 0) + 1};
       projectRecords.set(projectId, saved);
       return response({json:{project:saved}});
@@ -195,9 +207,27 @@ const windowRef = {
   },
   removeEventListener() {},
   lucide:{createIcons() {}},
-  HstarVoiceAssistant:{attachFrame(frame) { attachedVoiceFrames.push(frame); }},
+  HstarVoiceAssistant:{
+    attachFrame(frame) { attachedVoiceFrames.push(frame); },
+    deactivateFrame(frame, reason) { deactivatedVoiceFrames.push({frame, reason}); },
+    detachFrame(frame, reason) { detachedVoiceFrames.push({frame, reason}); },
+  },
   switchUI(trigger, pageId) { switchUICalls.push({trigger, pageId}); },
 };
+
+function setTimeoutFake(handler, delay, ...args) {
+  if(Number(delay) >= 10_000){
+    const id = `long-timer-${++longTimerSequence}`;
+    longTimers.set(id, () => handler(...args));
+    return id;
+  }
+  return setTimeout(handler, delay, ...args);
+}
+
+function clearTimeoutFake(id) {
+  if(longTimers.delete(id)) return;
+  clearTimeout(id);
+}
 
 function dispatchEditorMessage(frame, data) {
   for(const handler of listeners.get('message') || []){
@@ -220,14 +250,14 @@ const sandbox = {
   document:documentRef,
   encodeURIComponent,
   fetch:fetchFake,
-  setTimeout,
-  clearTimeout,
+  setTimeout:setTimeoutFake,
+  clearTimeout:clearTimeoutFake,
   window:windowRef,
 };
 sandbox.window.document = documentRef;
 sandbox.window.fetch = fetchFake;
-sandbox.window.setTimeout = setTimeout;
-sandbox.window.clearTimeout = clearTimeout;
+sandbox.window.setTimeout = setTimeoutFake;
+sandbox.window.clearTimeout = clearTimeoutFake;
 
 vm.createContext(sandbox);
 vm.runInContext(protocolSource, sandbox, {filename:protocolPath});
@@ -309,12 +339,22 @@ assert.equal(frameA.isConnected, true, 'hidden project iframe should remain moun
 assert.equal(frameA.contentWindow.closed, false);
 assert.equal(editorMessages(frameA).some(message => message.type === protocol.TYPES.REQUEST_SAVE), false);
 assert.equal(editorMessages(frameA).some(message => message.type === protocol.TYPES.CLOSE), false);
+assert.deepEqual(
+  deactivatedVoiceFrames.at(-1),
+  {frame:frameA, reason:'openshop-hidden'},
+  'hiding OpenShop must clear and stop any voice target inside its iframe',
+);
 
 host.openNodeSession(contextB, []);
 const frameB = frameFor(contextB);
 assert.ok(frameB, 'project B should create a second iframe');
 assert.notEqual(frameA, frameB);
 assert.equal(frameA.hidden, true);
+assert.deepEqual(
+  deactivatedVoiceFrames.at(-1),
+  {frame:frameA, reason:'openshop-session-switch'},
+  'switching OpenShop projects must stop voice input in the hidden iframe',
+);
 assert.equal(frameB.hidden, true, 'empty editor should stay hidden until its project is restored');
 frameB.dispatch('load');
 const sessionB = readyFrame(frameB, contextB, 'ready-b');
@@ -374,6 +414,70 @@ assert.equal(frameA.hidden, false);
 assert.equal(frameB.hidden, true);
 assert.equal(editorMessages(frameA).filter(message => message.type === protocol.TYPES.OPEN_SESSION).length, 2);
 
+let releaseSlowSource;
+delayedSourceFetches.set('/source-race-slow.png', new Promise(resolve => { releaseSlowSource = resolve; }));
+const syncCountBeforeRace = editorMessages(frameA)
+  .filter(message => message.type === protocol.TYPES.SYNC_SOURCES).length;
+const slowRefresh = host.refreshSources([{
+  edgeId:'edge-race', sourceNodeId:'image-race', assetVersion:'slow-v1',
+  name:'慢来源.png', url:'/source-race-slow.png', sequence:0,
+}], contextA);
+await flushAsync();
+const sourceUploadsBeforeFast = fetchCalls.filter(call => call.method === 'POST' && call.url.endsWith('/assets')).length;
+const fastRefresh = host.refreshSources([{
+  edgeId:'edge-race', sourceNodeId:'image-race', assetVersion:'fast-v2',
+  name:'新来源.png', url:'/source-race-fast.png', sequence:0,
+}], contextA);
+await fastRefresh;
+const sourceUploadsAfterFast = fetchCalls.filter(call => call.method === 'POST' && call.url.endsWith('/assets')).length;
+assert.equal(sourceUploadsAfterFast, sourceUploadsBeforeFast + 1);
+releaseSlowSource();
+await slowRefresh;
+assert.equal(
+  fetchCalls.filter(call => call.method === 'POST' && call.url.endsWith('/assets')).length,
+  sourceUploadsAfterFast,
+  'superseded source synchronization must stop before uploading a stale asset',
+);
+const raceSyncMessages = editorMessages(frameA)
+  .filter(message => message.type === protocol.TYPES.SYNC_SOURCES)
+  .slice(syncCountBeforeRace);
+assert.equal(raceSyncMessages.length, 1, 'a stale same-session refresh must not overwrite a newer source set');
+assert.equal(raceSyncMessages[0].payload.sources[0].assetVersion, 'fast-v2');
+
+let releaseDelayedSave;
+delayedProjectSaves.set('project-a', new Promise(resolve => { releaseDelayedSave = resolve; }));
+const delayedSaveProject = {
+  ...projectRecords.get('project-a'),
+  editor:{objects:[{id:'saved-older-edit'}]},
+};
+dispatchEditorMessage(frameA, protocol.createEnvelope({
+  type:protocol.TYPES.SAVE_PROJECT,
+  sessionId:sessionA,
+  requestId:'save-delayed-a',
+  context:contextA,
+  payload:{project:delayedSaveProject, reason:'autosave', closeAfter:false},
+}));
+await flushAsync();
+const newerProject = {
+  ...delayedSaveProject,
+  editor:{objects:[{id:'newer-unsaved-edit'}]},
+};
+dispatchEditorMessage(frameA, protocol.createEnvelope({
+  type:protocol.TYPES.PROJECT_CHANGED,
+  sessionId:sessionA,
+  requestId:'changed-after-save-a',
+  context:contextA,
+  payload:{project:newerProject, reason:'user-edit'},
+}));
+releaseDelayedSave();
+await flushAsync();
+delayedProjectSaves.delete('project-a');
+assert.equal(host.getState().status, 'dirty', 'an older save response must not mark newer edits as saved');
+assert.deepEqual(
+  host.getState().sessions.find(item => item.projectId === 'project-a')?.status,
+  'dirty',
+);
+
 dispatchEditorMessage(frameA, protocol.createEnvelope({
   type:protocol.TYPES.SEND_TO_CANVAS,
   sessionId:sessionA,
@@ -383,6 +487,46 @@ dispatchEditorMessage(frameA, protocol.createEnvelope({
 }));
 await flushAsync();
 assert.ok(canvasFrameA.contentWindow.messages.some(item => item.message.type === 'hstar-openshop-output'));
+assert.equal(longTimers.size, 1, 'canvas output should wait for one bounded acknowledgement');
+const initialOutputTimer = [...longTimers.keys()][0];
+for(const handler of listeners.get('message') || []){
+  handler({
+    origin:windowRef.location.origin,
+    source:canvasFrameA.contentWindow,
+    data:{
+      type:'hstar-openshop-output-applied', requestId:'send-a', context:contextA, status:'accepted',
+    },
+  });
+}
+assert.equal(longTimers.size, 1, 'accepted output should keep waiting for the final persistence result');
+assert.notEqual(
+  [...longTimers.keys()][0],
+  initialOutputTimer,
+  'accepted output should receive a fresh final-persistence deadline',
+);
+for(const handler of listeners.get('message') || []){
+  handler({
+    origin:windowRef.location.origin,
+    source:canvasFrameA.contentWindow,
+    data:{
+      type:'hstar-openshop-output-applied', requestId:'send-a', context:contextA, status:'success',
+    },
+  });
+}
+assert.equal(longTimers.size, 0, 'a canvas acknowledgement should cancel its timeout');
+
+dispatchEditorMessage(frameA, protocol.createEnvelope({
+  type:protocol.TYPES.SEND_TO_CANVAS,
+  sessionId:sessionA,
+  requestId:'send-timeout-a',
+  context:contextA,
+  payload:{assetId:'asset-timeout', url:'/api/openshop/assets/asset-timeout', name:'超时.png', width:1, height:1},
+}));
+await flushAsync();
+assert.equal(longTimers.size, 1);
+longTimers.values().next().value();
+longTimers.clear();
+assert.match(notice.textContent, /超时/, 'missing canvas acknowledgement should produce a visible failure');
 
 dispatchEditorMessage(frameA, protocol.createEnvelope({
   type:protocol.TYPES.OPEN_API_SETTINGS,
@@ -406,6 +550,40 @@ assert.equal(fetchCalls.some(call => (
 )), false);
 assert.equal(editorMessages(frameA).at(-1).type, protocol.TYPES.CLOSE);
 assert.equal(host.getState().sessionCount, 1);
+assert.deepEqual(
+  detachedVoiceFrames.at(-1),
+  {frame:frameA, reason:'project-deleted'},
+  'disposing an OpenShop session must detach its iframe from voice coordination',
+);
+
+async function openReadyEmptySession(projectId, index) {
+  const context = {
+    canvasType:'smart', canvasId:`canvas-${projectId}`, nodeId:`node-${projectId}`, projectId,
+    projectName:`项目 ${index}`, frameId:`frame-${projectId}`, documentWidth:640, documentHeight:480,
+  };
+  projectRecords.set(projectId, {
+    schemaVersion:1, projectId,
+    owner:{canvasType:context.canvasType, canvasId:context.canvasId, nodeId:context.nodeId},
+    document:{width:640, height:480}, editor:{objects:[]}, layers:[], sourceBindings:[],
+    aiTaskRecords:[], assetRefs:[], previewAssetId:'', autosaveVersion:1,
+  });
+  elements.set(context.frameId, createElement('iframe', context.frameId));
+  host.openNodeSession(context, []);
+  const frame = frameFor(context);
+  frame.dispatch('load');
+  readyFrame(frame, context, `ready-${projectId}`);
+  await flushAsync();
+  return {context, frame};
+}
+
+const idleSessionC = await openReadyEmptySession('project-c', 3);
+await openReadyEmptySession('project-d', 4);
+await openReadyEmptySession('project-e', 5);
+await openReadyEmptySession('project-f', 6);
+await openReadyEmptySession('project-g', 7);
+assert.equal(idleSessionC.frame.isConnected, false, 'the oldest safe idle session should be reclaimed above the cap');
+assert.equal(frameB.isConnected, true, 'an unsaved hidden session must never be reclaimed to satisfy the cap');
+assert.equal(host.getState().sessionCount, 5, 'the active session, three safe idle sessions, and one dirty session should remain');
 
 assert.match(cssSource, /\.openshop-session-frame\[hidden\]\s*\{\s*display:\s*none;/);
 assert.doesNotMatch(hostSource, /about:blank/);

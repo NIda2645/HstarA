@@ -361,9 +361,17 @@ async def run():
             assert quality == "high"
             for phrase in (
                 "every visible text glyph and punctuation mark",
+                "glyph outlines, strokes, shadows, glows, and highlights only where they follow the contours",
+                "outlines, strokes, shadows, and highlights that belong to a container or independent graphic",
                 "lines, borders, dividers",
                 "icons, pictograms, geometric shapes",
                 "color blocks, patterns, illustrations",
+                "background plates, colored blocks, panels, banners, ribbons, badges, buttons, tickets, speech bubbles",
+                "extends beyond the glyph contours",
+                "remains protected even when text touches, overlaps, sits inside, or is fully surrounded by it",
+                "Fill only the holes left by the removed glyph pixels",
+                "Never erase, flatten, enlarge, shrink, simplify, or replace an entire container",
+                "restore any non-text feature that was removed or changed",
                 "Do not erase, move, redraw, recolor, blur, or deform",
                 "Extend only the outer canvas background",
             ):

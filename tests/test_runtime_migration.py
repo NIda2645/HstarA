@@ -1,4 +1,5 @@
 import hashlib
+import os
 import shutil
 import tempfile
 import threading
@@ -8,7 +9,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from hstar_runtime.bootstrap import BootstrapConfig, BootstrapStore
-from hstar_runtime.migration import MigrationManager
+from hstar_runtime.migration import MigrationManager, _sha256_file
+
+
+def _file_tree_snapshot(root: Path):
+    return {
+        path.relative_to(root).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 class RuntimeMigrationTests(unittest.TestCase):
@@ -101,6 +110,57 @@ class RuntimeMigrationTests(unittest.TestCase):
         self.assertTrue((self.target / f".hstar-migration-{task.id}").is_dir())
         self.assertFalse((self.target / "projects" / "canvas.json").exists())
 
+    def test_source_changes_during_copy_are_included_before_bootstrap_switch(self):
+        (self.source / "projects").mkdir()
+        (self.source / "projects" / "canvas.json").write_bytes(b"canvas-data")
+        changed = False
+
+        def add_late_write(_state):
+            nonlocal changed
+            if changed:
+                return
+            changed = True
+            (self.source / "projects" / "late-canvas.json").write_bytes(b"late")
+
+        manager = self.manager(copy_chunk_size=1, after_chunk=add_late_write)
+        task = manager.start(self.source, self.target)
+        state = manager.wait(task.id, timeout=5)
+
+        self.assertEqual(state.status, "completed")
+        self.assertEqual(self.bootstrap.require().data_root, str(self.target.resolve()))
+        self.assertEqual(
+            (self.target / "projects" / "late-canvas.json").read_bytes(),
+            b"late",
+        )
+
+    def test_same_size_same_mtime_source_rewrite_is_detected_by_content_hash(self):
+        source_file = self.source / "projects" / "canvas.json"
+        source_file.parent.mkdir()
+        source_file.write_bytes(b"old-data")
+        original_mtime = source_file.stat().st_mtime_ns
+        changed = False
+
+        def rewrite_after_initial_copy(_state):
+            nonlocal changed
+            if changed:
+                return
+            changed = True
+            source_file.write_bytes(b"new-data")
+            os.utime(source_file, ns=(original_mtime, original_mtime))
+
+        manager = self.manager(
+            copy_chunk_size=len(b"old-data"),
+            after_chunk=rewrite_after_initial_copy,
+        )
+        task = manager.start(self.source, self.target)
+        state = manager.wait(task.id, timeout=5)
+
+        self.assertEqual(state.status, "completed")
+        self.assertEqual(
+            (self.target / "projects" / "canvas.json").read_bytes(),
+            b"new-data",
+        )
+
     def test_cancelled_copy_can_resume(self):
         (self.source / "projects").mkdir()
         (self.source / "projects" / "large.bin").write_bytes(b"a" * (256 * 1024))
@@ -133,6 +193,105 @@ class RuntimeMigrationTests(unittest.TestCase):
             (self.target / "projects" / "large.bin").stat().st_size,
             256 * 1024,
         )
+
+    def test_cancel_transitions_active_task_to_cancelling_immediately(self):
+        source_file = self.source / "large.bin"
+        source_file.write_bytes(b"a" * 1024)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_hash(path: Path) -> str:
+            entered.set()
+            release.wait(timeout=5)
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        manager = self.manager(hash_file=blocking_hash)
+        task = manager.start(self.source, self.target)
+        self.assertTrue(entered.wait(timeout=5))
+
+        cancelling = manager.cancel(task.id)
+
+        self.assertEqual(cancelling.status, "cancelling")
+        self.assertEqual(manager.status(task.id).status, "cancelling")
+        release.set()
+        self.assertEqual(manager.wait(task.id, timeout=5).status, "cancelled")
+
+    def test_cancellation_during_manifest_hashing_stops_before_next_file(self):
+        (self.source / "a-first.bin").write_bytes(b"first")
+        (self.source / "b-second.bin").write_bytes(b"second")
+        entered = threading.Event()
+        release = threading.Event()
+        hashed_files = []
+
+        def blocking_first_hash(path: Path) -> str:
+            hashed_files.append(path.name)
+            if path.name == "a-first.bin":
+                entered.set()
+                release.wait(timeout=5)
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        manager = self.manager(hash_file=blocking_first_hash)
+        task = manager.start(self.source, self.target)
+        self.assertTrue(entered.wait(timeout=5))
+
+        manager.cancel(task.id)
+        release.set()
+        cancelled = manager.wait(task.id, timeout=5)
+
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(hashed_files, ["a-first.bin"])
+
+    def test_sha256_file_checks_for_cancellation_between_chunks(self):
+        source_file = self.source / "chunked.bin"
+        source_file.write_bytes(b"abcdefgh")
+        checks = 0
+
+        def cancel_after_first_chunk():
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                raise RuntimeError("cancelled between hash chunks")
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled between hash chunks"):
+            _sha256_file(source_file, chunk_size=4, cancel_check=cancel_after_first_chunk)
+
+        self.assertEqual(checks, 2)
+
+    def test_switch_storage_changes_only_bootstrap_and_preserves_both_roots(self):
+        source_file = self.source / "projects" / "canvas.json"
+        source_file.parent.mkdir()
+        source_file.write_text("source-canvas", encoding="utf-8")
+        self.target.mkdir()
+        ordinary_file = self.target / "notes.txt"
+        ordinary_file.write_text("ordinary-target-file", encoding="utf-8")
+        source_before = _file_tree_snapshot(self.source)
+        target_before = _file_tree_snapshot(self.target)
+
+        manager = self.manager()
+        task = manager.switch_storage(self.source, self.target)
+        state = manager.wait(task.id, timeout=5)
+
+        self.assertEqual(state.status, "completed")
+        self.assertEqual(state.operation, "switch_storage")
+        self.assertEqual(state.total_bytes, 0)
+        self.assertEqual(state.copied_bytes, 0)
+        self.assertEqual(_file_tree_snapshot(self.source), source_before)
+        self.assertEqual(_file_tree_snapshot(self.target), target_before)
+        self.assertEqual(self.bootstrap.require().data_root, str(self.target.resolve()))
+
+    def test_switch_storage_can_return_to_previous_root_after_restart(self):
+        self.target.mkdir()
+        first_manager = self.manager()
+        first = first_manager.switch_storage(self.source, self.target)
+        self.assertEqual(first_manager.wait(first.id, timeout=5).status, "completed")
+
+        restarted_manager = self.manager()
+        returning = restarted_manager.switch_storage(self.target, self.source)
+        returned = restarted_manager.wait(returning.id, timeout=5)
+
+        self.assertEqual(returned.status, "completed")
+        self.assertEqual(returned.operation, "switch_storage")
+        self.assertEqual(self.bootstrap.require().data_root, str(self.source.resolve()))
 
     def test_existing_target_content_is_not_overwritten(self):
         self.target.mkdir()

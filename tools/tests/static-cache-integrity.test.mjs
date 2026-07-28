@@ -28,6 +28,10 @@ function walk(dir){
 }
 
 walk(path.join(root, 'static'));
+htmlFiles.push(
+  path.join(root, 'integrations', 'openshop', 'index.html'),
+  path.join(root, 'integrations', 'storyai-3d-director-desk', 'index.html'),
+);
 
 const mismatches = [];
 const refPattern = /(?:src|href|data-src)=["'](\/static\/[^"'?]+)\?v=([^"']+)["']/g;
@@ -48,6 +52,6 @@ for(const file of htmlFiles){
   }
 }
 
-assert.deepEqual(mismatches, [], 'static HTML cache keys should match the backend versioning contract');
+assert.deepEqual(mismatches, [], 'runtime HTML cache keys should match the backend versioning contract');
 
 console.log('static cache integrity tests passed');

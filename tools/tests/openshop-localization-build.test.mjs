@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
 
 const integrationRoot = 'integrations/openshop';
 const runtimeRoot = 'static/openshop';
-const projectRoot = resolve(integrationRoot, '..', '..');
 const gitAttributes = readFileSync('.gitattributes', 'utf8');
 const sourceManifest = JSON.parse(readFileSync(`${integrationRoot}/vendor/runtime-manifest.json`, 'utf8'));
 const glossary = JSON.parse(readFileSync(`${integrationRoot}/locales/photoshop-zh-CN-glossary.json`, 'utf8'));
@@ -120,12 +120,23 @@ for (const [key, value] of Object.entries({
   assert.equal(dictionary[key], value, `${key} should use the approved Simplified Chinese term`);
 }
 
-function runBuild(){
-  const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npm';
-  const args = process.platform === 'win32'
-    ? ['/d', '/s', '/c', 'npm.cmd run build:hstar']
-    : ['run', 'build:hstar'];
-  const result = spawnSync(command, args, {
+function treeFingerprint(root) {
+  const hash = createHash('sha256');
+  for (const file of listFiles(root).sort()) {
+    hash.update(file);
+    hash.update('\0');
+    hash.update(readFileSync(join(root, file)));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+function runBuild(destination){
+  const result = spawnSync(process.execPath, [
+    'scripts/build-hstar.mjs',
+    '--output',
+    destination,
+  ], {
     cwd:integrationRoot,
     encoding:'utf8',
     shell:false,
@@ -136,21 +147,20 @@ function runBuild(){
   return match[1];
 }
 
-assert.equal(runBuild(), runBuild(), 'repeated OpenShop builds should have identical tree fingerprints');
-
-const bundledPython = join(projectRoot, 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python3');
-const pythonExecutable = existsSync(bundledPython)
-  ? bundledPython
-  : process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
-const cacheSync = spawnSync(
-  pythonExecutable,
-  ['-X', 'utf8', '-c', 'import main; main.sync_static_html_versions()'],
-  {
-    cwd: projectRoot,
-    encoding: 'utf8',
-    shell: false,
-  },
-);
-assert.equal(cacheSync.status, 0, cacheSync.stderr || cacheSync.stdout);
+const buildRoot = mkdtempSync(join(tmpdir(), 'hstara-openshop-build-'));
+try {
+  const runtimeBefore = treeFingerprint(runtimeRoot);
+  const firstOutput = join(buildRoot, 'first');
+  const secondOutput = join(buildRoot, 'second');
+  assert.equal(
+    runBuild(firstOutput),
+    runBuild(secondOutput),
+    'repeated OpenShop builds should have identical tree fingerprints',
+  );
+  assert.deepEqual(listFiles(firstOutput).sort(), expectedFiles, 'temporary build contains the approved runtime tree');
+  assert.equal(treeFingerprint(runtimeRoot), runtimeBefore, 'verification builds must not modify the checked-in mirror');
+} finally {
+  rmSync(buildRoot, {recursive:true, force:true});
+}
 
 console.log(`OpenShop localization build tests passed (${expectedFiles.length} approved files)`);

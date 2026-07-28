@@ -256,10 +256,15 @@
     };
   }
 
-  function markDirty(reason = 'editor-change'){
+  function markDirty(reason = 'editor-change', {notify = true} = {}){
     if(!state.started || !state.activeSession || state.applying) return;
     state.dirtyRevision += 1;
     state.dirty = true;
+    if(notify){
+      post(state.protocol.TYPES.PROJECT_CHANGED, {
+        payload:{reason, revision:state.dirtyRevision},
+      });
+    }
     if(state.saving){
       state.saveAgain = true;
       state.queuedSaveOptions = mergeSaveOptions(state.queuedSaveOptions, {reason:'autosave'});
@@ -512,7 +517,7 @@
       }));
       if(state.entryMode === 'workspace' || sources.length > 0) revealEditorWorkspace();
       reason = 'sources-synchronized';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else if(envelope.type === types.RESOLVE_SOURCE_UPDATE){
       await whileApplying(() => state.projectAdapter.resolveSourceUpdate({
         editor: state.editor,
@@ -521,7 +526,7 @@
         imageLoader: state.imageLoader || undefined,
       }));
       reason = 'source-update-resolved';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else if(envelope.type === types.ADD_IMAGE_LAYER){
       await whileApplying(() => state.projectAdapter.queueSourceImageLayer({
         editor: state.editor,
@@ -530,7 +535,7 @@
       }));
       revealEditorWorkspace();
       reason = 'source-image-added';
-      markDirty(reason);
+      markDirty(reason, {notify:false});
     } else {
       return;
     }
@@ -538,6 +543,7 @@
     post(types.PROJECT_CHANGED, {
       payload: {
         reason,
+        revision:state.dirtyRevision,
         project: currentProject(),
         requestId: envelope.requestId,
       },

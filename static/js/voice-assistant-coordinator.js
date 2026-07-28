@@ -175,6 +175,29 @@
       return true;
     }
 
+    deactivateFrame(frame, reason = 'frame-hidden') {
+      if (!frame) return false;
+      const activeTarget = this._activeTarget;
+      const lockedTarget = this._lockedTarget;
+      const activeMatches = this._isFrameHandle(activeTarget) && activeTarget.frame === frame;
+      const lockedMatches = this._isFrameHandle(lockedTarget) && lockedTarget.frame === frame;
+      if (activeMatches) this._clearActiveTarget(activeTarget, reason);
+      else if (lockedMatches) void this.stop(reason);
+      this._schedulePosition();
+      return activeMatches || lockedMatches;
+    }
+
+    detachFrame(frame, reason = 'frame-removed') {
+      if (!frame) return false;
+      const wasAttached = this._attachedFrames.has(frame);
+      this.deactivateFrame(frame, reason);
+      const onLoad = this._frameLoadHandlers.get(frame);
+      if (onLoad) frame.removeEventListener?.('load', onLoad);
+      this._frameLoadHandlers.delete(frame);
+      this._attachedFrames.delete(frame);
+      return wasAttached;
+    }
+
     onPageSwitch(frame) {
       const target = this._activeTarget;
       if (!target) {
@@ -237,10 +260,7 @@
       global.removeEventListener?.('resize', this._onViewportChange);
       global.removeEventListener?.('scroll', this._onViewportChange, true);
       global.removeEventListener?.('message', this._onFrameMessage);
-      for (const frame of this._attachedFrames) {
-        frame.removeEventListener?.('load', this._frameLoadHandlers.get(frame));
-      }
-      this._attachedFrames.clear();
+      for (const frame of [...this._attachedFrames]) this.detachFrame(frame, 'page-unload');
       if (this._positionFrame) global.cancelAnimationFrame?.(this._positionFrame);
       this._ui?.root.remove();
       this._ui?.dialog.remove();

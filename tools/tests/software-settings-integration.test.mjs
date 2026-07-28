@@ -7,6 +7,7 @@ const main = readFileSync(resolve(root, 'main.py'), 'utf8');
 const index = readFileSync(resolve(root, 'static/index.html'), 'utf8');
 const apiSettings = readFileSync(resolve(root, 'static/js/api-settings.js'), 'utf8');
 const canvasI18n = readFileSync(resolve(root, 'static/js/i18n/canvas.js'), 'utf8');
+const storagePanel = readFileSync(resolve(root, 'static/js/storage-settings-panel.js'), 'utf8');
 
 assert.match(main, /from hstar_runtime\.bootstrap import [^\n]*BootstrapStore/, 'backend must use the shared bootstrap store');
 assert.match(main, /from hstar_runtime\.credentials import [\s\S]*create_credential_store/, 'backend must use the shared credential store');
@@ -30,6 +31,7 @@ assert.match(main, /PRIMARY_OPENSHOP_STORE\s*=\s*OpenShopProjectStore\([\s\S]*cr
 assert.match(main, /def ensure_runtime_config_files\(\):[\s\S]*if not MODERN_STORAGE_ACTIVE_ON_STARTUP:\s*return/, 'configuration directories must initialize for a modern layout beside legacy data');
 assert.match(main, /LEGACY_OPENSHOP_STORE\s*=\s*\([\s\S]*migrate_legacy_projects=False[\s\S]*\)/, 'legacy OpenShop reads must not migrate old project files');
 assert.match(main, /OPENSHOP_STORE\s*=\s*OpenShopStorageRouter\(/, 'OpenShop operations must route by owning canvas storage source');
+assert.match(main, /collect_openshop_garbage\(include_legacy=True\)/, 'explicit canvas purge must collect legacy OpenShop assets');
 assert.match(main, /StorageOverlayStaticFiles\(\[OUTPUT_DIR, LEGACY_OUTPUT_DIR\]\)/, 'output delivery must resolve modern files before legacy files');
 assert.match(main, /StorageOverlayStaticFiles\(\[ASSETS_DIR\]\)/, 'missing asset storage must return 404 without creating a directory');
 assert.match(main, /def list_projects\(\):\s*projects = ensure_default_project\(persist=not PRESERVE_EXISTING_DATA_ON_STARTUP\)/, 'listing legacy-cache projects must not create or rewrite project data');
@@ -53,7 +55,14 @@ assert.match(main, /class SoftwareStorageRequest\(BaseModel\):/, 'storage save r
 assert.match(main, /class StorageMigrationRequest\(BaseModel\):/, 'asynchronous storage migration request model must exist');
 assert.match(main, /@app\.get\("\/api\/software-settings"\)/, 'software settings read endpoint must exist');
 assert.match(main, /@app\.post\("\/api\/software-settings\/storage"\)/, 'software storage save endpoint must exist');
-assert.match(main, /@app\.post\("\/api\/storage-migrations",\s*status_code=202\)/, 'non-blocking storage migration endpoint must exist');
+assert.match(main, /@app\.post\("\/api\/storage-migrations",\s*status_code=202\)/, 'non-blocking storage switch endpoint must exist');
+assert.match(main, /STORAGE_MIGRATIONS\.switch_storage\(source, target\)/, 'software settings must switch roots without copying data');
+assert.match(main, /@app\.post\("\/api\/runtime\/restart",\s*status_code=202\)/, 'development runtime must expose controlled automatic restart');
+assert.match(main, /DEVELOPMENT_RESTART_TARGET/, 'development restart must retain only the verified bootstrap target');
+assert.match(main, /os\.execv\(sys\.executable, argv\)/, 'development restart must re-execute without launching a command shell');
+assert.match(main, /"instance_id": CLIENT_ID/, 'health must identify replacement backend instances');
+assert.match(main, /"active_storage_root": STORAGE_ROOT/, 'health must report the active storage root');
+assert.doesNotMatch(main, /existing_hstar_storage_target/, 'arbitrary nonempty target directories must remain selectable');
 assert.match(main, /status_code=410/, 'legacy synchronous storage endpoint must direct callers to migration tasks');
 assert.match(main, /@app\.get\("\/api\/collaboration-link"\)/, 'collaboration link endpoint must exist');
 assert.match(main, /@app\.post\("\/api\/collaboration-link\/refresh"\)/, 'collaboration link refresh endpoint must exist');
@@ -72,6 +81,11 @@ assert.ok(existsSync(resolve(root, 'static/software-settings.html')), 'software 
 assert.ok(existsSync(resolve(root, 'static/js/voice-settings-panel.js')), 'software settings must include the voice settings controller');
 const settingsHtml = readFileSync(resolve(root, 'static/software-settings.html'), 'utf8');
 assert.match(settingsHtml, /src="\/static\/js\/voice-settings-panel\.js\?v=[0-9.]+"/, 'software settings must load a versioned voice settings controller');
+assert.match(settingsHtml, /id="storageRestartDialog"/, 'software settings must confirm before switching storage');
+assert.match(settingsHtml, /id="storageRestartOverlay"[^>]*hidden/, 'software settings must block writes while restarting');
+assert.match(storagePanel, /requestStorageRestartConfirmation/, 'storage save must pass through explicit restart confirmation');
+assert.match(storagePanel, /'\/api\/runtime\/restart'/, 'browser development mode must request controlled restart');
+assert.match(storagePanel, /health\.instance_id/, 'browser mode must wait for a replacement runtime instance');
 assert.match(index, /switchUI\(this, 'software-settings'\)/, 'sidebar must expose software settings entry');
 assert.match(index, /id="frame-software-settings"/, 'stage must mount software settings iframe');
 assert.match(index, /PAGE_IDS = \[[^\]]*'software-settings'/, 'software settings must be routable via PAGE_IDS');

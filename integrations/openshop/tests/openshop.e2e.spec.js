@@ -319,6 +319,44 @@ test('loads the editor on a mobile viewport without clipped controls', async ({ 
   expect(result.toolbarVisible).toBe(true);
 });
 
+test('keeps the welcome screen reachable on a short desktop viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+
+  const initial = await page.evaluate(() => {
+    const overlay = document.getElementById('welcome-overlay');
+    const inner = overlay.querySelector('.welcome-inner');
+    const overlayRect = overlay.getBoundingClientRect();
+    const innerRect = inner.getBoundingClientRect();
+    return {
+      overflowY: getComputedStyle(overlay).overflowY,
+      overlayTop: overlayRect.top,
+      innerTop: innerRect.top,
+      canScroll: overlay.scrollHeight > overlay.clientHeight,
+    };
+  });
+
+  expect(initial.overflowY).toBe('auto');
+  expect(initial.innerTop).toBeGreaterThanOrEqual(initial.overlayTop);
+  expect(initial.canScroll).toBe(true);
+
+  const scrolled = await page.evaluate(() => {
+    const overlay = document.getElementById('welcome-overlay');
+    const inner = overlay.querySelector('.welcome-inner');
+    overlay.scrollTop = overlay.scrollHeight;
+    const overlayRect = overlay.getBoundingClientRect();
+    const innerRect = inner.getBoundingClientRect();
+    return {
+      scrollTop: overlay.scrollTop,
+      innerBottom: innerRect.bottom,
+      overlayBottom: overlayRect.bottom,
+    };
+  });
+
+  expect(scrolled.scrollTop).toBeGreaterThan(0);
+  expect(scrolled.innerBottom).toBeLessThanOrEqual(scrolled.overlayBottom);
+});
+
 test('renders persisted UI data without activating markup', async ({ page }) => {
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => {

@@ -1263,6 +1263,7 @@ class OpenShopStorageRouter:
     ):
         self.primary_store = primary_store
         self.legacy_store = legacy_store
+        self.root = primary_store.root
         self.primary_canvas_dir = Path(primary_canvas_dir).expanduser().resolve()
         self.legacy_canvas_dir = (
             Path(legacy_canvas_dir).expanduser().resolve()
@@ -1450,5 +1451,13 @@ class OpenShopStorageRouter:
             canvas_type, canvas_id
         )
 
-    def collect_garbage(self, additional_asset_refs=None) -> list[str]:
-        return self.primary_store.collect_garbage(additional_asset_refs)
+    def collect_garbage(
+        self,
+        additional_asset_refs=None,
+        *,
+        include_legacy: bool = False,
+    ) -> list[str]:
+        removed = self.primary_store.collect_garbage(additional_asset_refs)
+        if include_legacy and self.legacy_store is not None:
+            removed.extend(self.legacy_store.collect_garbage(additional_asset_refs))
+        return sorted(set(removed))

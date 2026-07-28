@@ -89,14 +89,15 @@ from native_file_picker import (
 )
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
 from hstar_runtime.api_merge import merge_api_defaults
-from hstar_runtime.atomic import atomic_write_bytes
-from hstar_runtime.bootstrap import BootstrapConfig, BootstrapStore
+from hstar_runtime.atomic import atomic_create_json, atomic_write_bytes, atomic_write_json
+from hstar_runtime.bootstrap import BootstrapStore
 from hstar_runtime.credentials import (
     create_credential_store,
     migrate_legacy_env_sources,
 )
 from hstar_runtime.migration import MigrationError, MigrationManager, MigrationState
 from hstar_runtime.paths import RuntimePaths, build_runtime_paths, build_storage_path_map, default_data_root, uses_existing_legacy_storage_layout
+from hstar_runtime.storage_barrier import StorageMutationBarrier, StorageMutationBlocked
 
 
 def configure_process_stdio():
@@ -158,8 +159,14 @@ SHELL_TOKEN = os.environ.get("HSTAR_SHELL_TOKEN", "").strip()
 SHELL_BOOTSTRAP_TOKEN_CONSUMED = False
 SHELL_SESSION_LOCK = Lock()
 ACTIVE_UVICORN_SERVER = None
+DEVELOPMENT_RESTART_TARGET: Optional[Path] = None
+DEVELOPMENT_RESTART_LOCK = Lock()
 SHELL_PUBLIC_PATHS = {"/favicon.ico"}
 SHELL_PUBLIC_PREFIXES = ("/static/", "/assets/", "/output/")
+STORAGE_BARRIER_LIFECYCLE_PATHS = {
+    "/api/runtime/restart",
+    "/api/shell/shutdown",
+}
 
 @asynccontextmanager
 async def app_lifespan(_app):
@@ -269,7 +276,7 @@ GLOBAL_LOOP = None
 COLLABORATION_KEY = secrets.token_urlsafe(24)
 COLLABORATION_LOCK = Lock()
 APP_VERSION = "2026.06.03"
-OPENSHOP_RUNTIME_REVISION = "2026.07.27.104021979"
+OPENSHOP_RUNTIME_REVISION = "2026.07.27.150100001"
 OPENSHOP_ENTRY_ASSET_URLS = frozenset({
     "/static/css/openshop-host.css",
     "/static/openshop/host/openshop-protocol.js",
@@ -508,6 +515,48 @@ async def packaged_shell_session(request: Request, call_next):
         return await call_next(request)
     return JSONResponse(status_code=401, content={"detail": "请从 Hstar 桌面程序打开此页面"})
 
+
+@app.middleware("http")
+async def storage_mutation_barrier(request: Request, call_next):
+    if (
+        request.method not in {"POST", "PUT", "PATCH", "DELETE"}
+        or request.url.path in STORAGE_BARRIER_LIFECYCLE_PATHS
+    ):
+        return await call_next(request)
+    try:
+        mutation = STORAGE_WRITE_BARRIER.mutation()
+        mutation.__enter__()
+    except StorageMutationBlocked as error:
+        code = "STORAGE_SWITCHING" if error.reason == "switching" else "STORAGE_RESTART_REQUIRED"
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "1"},
+            content={"detail": {"code": code, "message": str(error)}},
+        )
+    try:
+        response = await call_next(request)
+    except BaseException as error:
+        mutation.__exit__(type(error), error, error.__traceback__)
+        raise
+
+    body_iterator = getattr(response, "body_iterator", None)
+    if body_iterator is None:
+        mutation.__exit__(None, None, None)
+        return response
+
+    async def guarded_body_iterator():
+        try:
+            async for chunk in body_iterator:
+                yield chunk
+        except BaseException as error:
+            mutation.__exit__(type(error), error, error.__traceback__)
+            raise
+        else:
+            mutation.__exit__(None, None, None)
+
+    response.body_iterator = guarded_body_iterator()
+    return response
+
 def bootstrap_app_software_settings() -> None:
     if PRESERVE_EXISTING_DATA_ON_STARTUP:
         return
@@ -594,7 +643,12 @@ def storage_read_path(primary_path: str, legacy_path: str = "") -> str:
         return legacy_path
     return primary_path
 
-STORAGE_MIGRATIONS = MigrationManager(BOOTSTRAP, PROGRAM_ROOT)
+STORAGE_WRITE_BARRIER = StorageMutationBarrier()
+STORAGE_MIGRATIONS = MigrationManager(
+    BOOTSTRAP,
+    PROGRAM_ROOT,
+    switch_guard=STORAGE_WRITE_BARRIER.switch_to_read_only,
+)
 PRIMARY_OPENSHOP_STORE = OpenShopProjectStore(
     OPENSHOP_DATA_DIR,
     canvas_dir=CANVAS_DIR,
@@ -2891,6 +2945,9 @@ class SoftwareStorageRequest(BaseModel):
 class StorageMigrationRequest(BaseModel):
     storage_root: str = Field(min_length=1, max_length=1024)
 
+class RuntimeRestartRequest(BaseModel):
+    expected_storage_root: str = Field(min_length=1, max_length=1024)
+
 class VoiceSettingsRequest(BaseModel):
     enabled: bool = True
     storage_mode: Literal["inherit", "custom"] = "inherit"
@@ -3316,6 +3373,17 @@ def comfy_class_is_debug_text(class_type):
     ct = str(class_type or "").lower()
     return bool(ct) and any(h in ct for h in COMFY_DEBUG_TEXT_CLASS_HINTS)
 
+def backup_corrupt_history(read_path: str, error: Exception) -> Path:
+    source = Path(read_path)
+    backup = (
+        Path(HISTORY_FILE).parent
+        / "corrupt"
+        / f"{source.name}.{uuid.uuid4().hex}.corrupt"
+    )
+    atomic_write_bytes(backup, source.read_bytes())
+    print(f"历史文件损坏，已保留原始副本 {backup}: {error}")
+    return backup
+
 def save_to_history(record):
     with HISTORY_LOCK:
         history = []
@@ -3323,14 +3391,16 @@ def save_to_history(record):
         if os.path.exists(read_path):
             try:
                 with open(read_path, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-            except: pass
+                    loaded = json.load(f)
+                if not isinstance(loaded, list) or any(not isinstance(item, dict) for item in loaded):
+                    raise ValueError("历史记录根节点必须是对象数组")
+                history = loaded
+            except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+                backup_corrupt_history(read_path, error)
         if "timestamp" not in record:
             record["timestamp"] = time.time()
         history.insert(0, record)
-        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history[:5000], f, ensure_ascii=False, indent=4)
+        atomic_write_json(Path(HISTORY_FILE), history[:5000])
 
 def get_comfy_history(comfy_address, prompt_id):
     try:
@@ -3400,9 +3470,7 @@ def now_ms():
 def save_conversation(user_id, conversation):
     with CONVERSATION_LOCK:
         path = conversation_path(user_id, conversation["id"])
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(conversation, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(path), conversation)
 
 def new_conversation(user_id, title="新对话"):
     timestamp = now_ms()
@@ -3443,8 +3511,8 @@ def list_conversations(user_id):
     return sorted(records, key=lambda item: item["updated_at"], reverse=True)
 
 def cleaned_canvas_id(canvas_id):
-    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", canvas_id or "")
-    if not cleaned:
+    cleaned = str(canvas_id or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", cleaned):
         raise HTTPException(status_code=400, detail="无效的画布 ID")
     return cleaned
 
@@ -3483,8 +3551,7 @@ def save_canvas(canvas):
     previous_updated_at = int(canvas.get("updated_at") or 0)
     canvas["updated_at"] = max(now_ms(), previous_updated_at + 1)
     with CANVAS_LOCK:
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(canvas_path(canvas["id"])), canvas)
 
 OPENSHOP_ASSET_URL_PREFIX = "/api/openshop/assets/"
 OPENSHOP_ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -3516,8 +3583,11 @@ def openshop_canvas_asset_refs():
                 continue
     return refs
 
-def collect_openshop_garbage():
-    return OPENSHOP_STORE.collect_garbage(openshop_canvas_asset_refs())
+def collect_openshop_garbage(*, include_legacy: bool = False):
+    return OPENSHOP_STORE.collect_garbage(
+        openshop_canvas_asset_refs(),
+        include_legacy=include_legacy,
+    )
 
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
@@ -3553,7 +3623,7 @@ def reconcile_openshop_canvas_projects(canvas):
                 OPENSHOP_AI_TASKS.cancel_project(record["projectId"], record["owner"])
     finally:
         if removed_records:
-            collect_openshop_garbage()
+            collect_openshop_garbage(include_legacy=True)
     if reconciliation_error:
         if reconciliation_error.__cause__ is not None:
             raise reconciliation_error.__cause__
@@ -3611,7 +3681,7 @@ def remove_openshop_projects(project_owners, canvas_type, canvas_id):
         except OpenShopNotFound:
             continue
     if removed:
-        collect_openshop_garbage()
+        collect_openshop_garbage(include_legacy=True)
     return removed
 
 # ===== 项目（按项目分类管理画布）=====
@@ -3633,9 +3703,7 @@ def load_projects():
 
 def save_projects(projects):
     with CANVAS_LOCK:
-        os.makedirs(os.path.dirname(PROJECTS_PATH), exist_ok=True)
-        with open(PROJECTS_PATH, 'w', encoding='utf-8') as f:
-            json.dump({"projects": projects}, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(PROJECTS_PATH), {"projects": projects})
 
 def project_record(p):
     return {
@@ -3685,27 +3753,7 @@ def create_canvas_file(canvas):
     if os.path.isfile(canvas_path(canvas["id"])):
         raise FileExistsError(canvas["id"])
     path = primary_canvas_path(canvas["id"])
-    os.makedirs(CANVAS_DIR, exist_ok=True)
-    file_descriptor = os.open(
-        path,
-        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-        0o644,
-    )
-    try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8") as file:
-            file_descriptor = None
-            json.dump(canvas, file, ensure_ascii=False, indent=2)
-    except Exception:
-        if file_descriptor is not None:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
-        raise
+    atomic_create_json(Path(path), canvas)
 
 
 def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None, canvas_id=None):
@@ -3746,21 +3794,36 @@ def new_canvas(title="未命名画布", icon="layers", kind="classic", project=N
     return canvas
 
 def load_canvas(canvas_id):
-    path = canvas_path(canvas_id)
+    normalized_id = cleaned_canvas_id(canvas_id)
+    path = canvas_path(normalized_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="画布不存在")
     with open(path, 'r', encoding='utf-8') as f:
         canvas = json.load(f)
+    if not isinstance(canvas, dict):
+        raise HTTPException(status_code=409, detail="画布记录格式无效")
+    stored_id = str(canvas.get("id") or "")
+    if stored_id and stored_id != normalized_id:
+        raise HTTPException(status_code=409, detail="画布记录 ID 与文件名不一致")
+    canvas.setdefault("id", normalized_id)
     if canvas.get("deleted_at"):
         raise HTTPException(status_code=404, detail="画布已在回收站")
     return canvas
 
 def load_canvas_any(canvas_id):
-    path = canvas_path(canvas_id)
+    normalized_id = cleaned_canvas_id(canvas_id)
+    path = canvas_path(normalized_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="画布不存在")
     with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        canvas = json.load(f)
+    if not isinstance(canvas, dict):
+        raise HTTPException(status_code=409, detail="画布记录格式无效")
+    stored_id = str(canvas.get("id") or "")
+    if stored_id and stored_id != normalized_id:
+        raise HTTPException(status_code=409, detail="画布记录 ID 与文件名不一致")
+    canvas.setdefault("id", normalized_id)
+    return canvas
 
 CANVAS_COLORS = {"", "red", "orange", "amber", "green", "teal", "blue", "violet", "pink", "slate"}
 
@@ -3817,7 +3880,7 @@ def cleanup_expired_canvas_trash():
             except Exception:
                 continue
     if removed_projects:
-        collect_openshop_garbage()
+        collect_openshop_garbage(include_legacy=True)
 
 def iter_canvas_records(include_deleted=False):
     cleanup_expired_canvas_trash()
@@ -3867,7 +3930,7 @@ def purge_canvas_storage(canvas_id: str, *, require_deleted: bool = False) -> bo
                 os.remove(path)
             except FileNotFoundError:
                 return False
-            collect_openshop_garbage()
+            collect_openshop_garbage(include_legacy=True)
         return True
 
 def canvas_asset_url_value(value):
@@ -7647,8 +7710,7 @@ def _read_local_upload_classification(filename):
 
 def _write_local_upload_classification(filename, classification):
     path = _local_upload_classification_path(filename)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(normalize_asset_classification(classification), f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(path), normalize_asset_classification(classification))
 
 def asset_classification_prompt(extra_prompt=""):
     extra = str(extra_prompt or "").strip()
@@ -7772,9 +7834,7 @@ def save_asset_library(lib):
     lib = normalize_asset_library(lib)
     sort_asset_library_items(lib)
     lib["updated_at"] = now_ms()
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(ASSET_LIBRARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(lib, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(ASSET_LIBRARY_PATH), lib)
     if GLOBAL_LOOP:
         asyncio.run_coroutine_threadsafe(manager.broadcast_asset_library_updated(int(lib["updated_at"])), GLOBAL_LOOP)
 
@@ -7834,9 +7894,7 @@ def shared_folders_load():
     return {"folders": [f for f in folders if isinstance(f, dict)]}
 
 def shared_folders_save(data):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SHARED_FOLDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(SHARED_FOLDERS_FILE), data)
 
 def shared_folder_by_id(folder_id):
     for entry in shared_folders_load().get("folders", []):
@@ -8111,9 +8169,7 @@ def load_prompt_libraries():
 def save_prompt_libraries(data):
     data = normalize_prompt_libraries(data)
     data["updated_at"] = now_ms()
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(PROMPT_LIBRARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(PROMPT_LIBRARY_PATH), data)
     return data
 
 def public_prompt_libraries(data=None):
@@ -12514,7 +12570,36 @@ def backend_health():
         "ok": True,
         "edition": EDITION,
         "version": current_app_version(),
+        "instance_id": CLIENT_ID,
+        "active_storage_root": STORAGE_ROOT,
     }
+
+
+@app.post("/api/runtime/restart", status_code=202)
+async def restart_development_runtime(payload: RuntimeRestartRequest, request: Request):
+    global DEVELOPMENT_RESTART_TARGET
+    if EDITION != "development" or not is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="当前环境不允许自动重启 Hstar")
+
+    target = Path(resolve_storage_root(payload.expected_storage_root)).resolve()
+    validate_storage_migration_target(Path(STORAGE_ROOT), target)
+    validate_storage_root_location(str(target))
+    try:
+        persisted = BOOTSTRAP.require().resolved_data_root()
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail="尚未保存可供重启的储存位置") from error
+    if os.path.normcase(str(target)) != os.path.normcase(str(persisted)):
+        raise HTTPException(status_code=409, detail="重启目录与已确认的储存位置不一致")
+
+    server = ACTIVE_UVICORN_SERVER
+    if server is None:
+        raise HTTPException(status_code=503, detail="Hstar 服务尚未进入可重启状态")
+    with DEVELOPMENT_RESTART_LOCK:
+        if DEVELOPMENT_RESTART_TARGET not in (None, target):
+            raise HTTPException(status_code=409, detail="已有其他储存位置正在等待重启")
+        DEVELOPMENT_RESTART_TARGET = target
+    asyncio.get_running_loop().call_soon(setattr, server, "should_exit", True)
+    return {"ok": True, "scheduled": True, "instance_id": CLIENT_ID}
 
 
 @app.post("/api/shell/shutdown")
@@ -12626,22 +12711,17 @@ def load_software_settings() -> Dict[str, Any]:
         return {"external_apps": {}}
 
 def save_software_settings(settings: Dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(SOFTWARE_SETTINGS_FILE), exist_ok=True)
     safe = settings if isinstance(settings, dict) else {}
-    with open(SOFTWARE_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(safe, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(SOFTWARE_SETTINGS_FILE), safe)
 
-def normalize_storage_root(value: str) -> str:
+def resolve_storage_root(value: str) -> str:
     raw = os.path.expandvars(os.path.expanduser(str(value or "").strip().strip('"')))
     if not raw:
         raise HTTPException(status_code=400, detail="Storage folder path is required")
-    folder = os.path.abspath(raw)
-    try:
-        os.makedirs(folder, exist_ok=True)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Storage folder cannot be created or opened: {exc}") from exc
-    if not os.path.isdir(folder):
-        raise HTTPException(status_code=400, detail="Storage path must be a folder")
+    return os.path.abspath(raw)
+
+
+def validate_storage_root_location(folder: str) -> None:
     for protected in (
         DATA_DIR,
         ASSETS_DIR,
@@ -12657,6 +12737,17 @@ def normalize_storage_root(value: str) -> str:
                 raise HTTPException(status_code=400, detail="Storage folder cannot be inside Hstar runtime folders")
         except ValueError:
             continue
+
+
+def normalize_storage_root(value: str) -> str:
+    folder = resolve_storage_root(value)
+    validate_storage_root_location(folder)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Storage folder cannot be created or opened: {exc}") from exc
+    if not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="Storage path must be a folder")
     test_path = os.path.join(folder, ".hstar_write_test")
     try:
         with open(test_path, "w", encoding="utf-8") as f:
@@ -13056,8 +13147,7 @@ def validate_storage_migration_target(source: Path, target: Path) -> None:
         raise HTTPException(status_code=400, detail="源目录与目标目录不能互相包含")
     if resolved_target == PROGRAM_ROOT or PROGRAM_ROOT in resolved_target.parents:
         raise HTTPException(status_code=400, detail="目标目录不能位于 Hstar 程序目录内")
-    if resolved_target.exists() and any(resolved_target.iterdir()):
-        raise HTTPException(status_code=400, detail="目标目录必须为空，现有数据不会被覆盖")
+
 
 def is_loopback_request(request: Request) -> bool:
     host = request.client.host if request.client else ""
@@ -13075,16 +13165,12 @@ def storage_migration_payload(state: MigrationState, request: Request) -> Dict[s
 
 @app.post("/api/storage-migrations", status_code=202)
 def start_storage_migration(payload: StorageMigrationRequest, request: Request):
-    target = Path(normalize_storage_root(payload.storage_root))
     source = Path(STORAGE_ROOT).expanduser().resolve()
+    target = Path(resolve_storage_root(payload.storage_root))
     validate_storage_migration_target(source, target)
-    migration_bootstrap = STORAGE_MIGRATIONS.bootstrap
-    if migration_bootstrap.load() is None:
-        migration_bootstrap.save(
-            BootstrapConfig(1, migration_bootstrap.edition, str(source))
-        )
+    target = Path(normalize_storage_root(str(target)))
     try:
-        task = STORAGE_MIGRATIONS.start(source, target)
+        task = STORAGE_MIGRATIONS.switch_storage(source, target)
     except MigrationError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"ok": True, "task": storage_migration_payload(task, request)}
@@ -16023,7 +16109,7 @@ async def create_canvas_image_task(payload: OnlineImageRequest):
             "provider_id": payload.provider_id,
             "model": payload.model,
         }
-    asyncio.create_task(run_canvas_image_task(task_id, payload))
+    STORAGE_WRITE_BARRIER.create_task(run_canvas_image_task(task_id, payload))
     return {"task_id": task_id, "status": "queued"}
 
 @app.get("/api/canvas-image-tasks/{task_id}")
@@ -16075,7 +16161,7 @@ async def create_canvas_comfy_task(payload: GenerateRequest):
             "error": "",
             "workflow_json": payload.workflow_json,
         }
-    asyncio.create_task(run_canvas_comfy_task(task_id, payload))
+    STORAGE_WRITE_BARRIER.create_task(run_canvas_comfy_task(task_id, payload))
     return {"task_id": task_id, "status": "queued"}
 
 @app.get("/api/canvas-comfy-tasks/{task_id}")
@@ -17906,13 +17992,33 @@ def openshop_text_remove_prompt(mode: str, extra: str = "", output_ratio: str = 
         else "Keep the original aspect ratio and framing. Do not crop, resize, reframe, or stretch the source image. "
     )
     prompt = (
-        "Remove every visible text glyph and punctuation mark from the supplied source layer, including letters, "
-        "numbers, CJK characters, captions, labels, and punctuation associated with text. Restrict editing to the "
-        "vacated text and punctuation pixels, then reconstruct only the underlying background. Preserve all non-text "
-        "visual content exactly, especially lines, borders, dividers, arrows, icons, pictograms, geometric shapes, "
-        "purely graphical symbols, color blocks, patterns, illustrations, objects, logos without text, composition, "
-        "colors, lighting, texture, and image style. Do not erase, move, redraw, recolor, blur, or deform any non-text "
-        f"element. {ratio_requirement}Do not redesign or add new text, letters, numbers, logos, captions, or labels."
+        "Perform a surgical text-only removal edit on the supplied source layer. Remove every visible text glyph and "
+        "punctuation mark in every language and orientation, including letters, numbers, CJK characters, captions, "
+        "labels, watermarks, poster copy, and text-based logos whose visual content is readable text. This is not a "
+        "layout cleanup, simplification, debranding, template reset, or redesign. Remove glyph outlines, strokes, "
+        "shadows, glows, and highlights only where they follow the contours of readable glyphs. Preserve outlines, "
+        "strokes, shadows, and highlights that belong to a container or independent graphic. Preserve every non-text "
+        "carrier or supporting graphic behind, around, beside, or overlapping text, including background plates, "
+        "colored blocks, panels, banners, ribbons, badges, buttons, tickets, speech bubbles, frames, borders, dividers, "
+        "underlines, curves, shapes, patterns, and decorations. A carrier surface is not text and must remain even when "
+        "its only purpose is to hold text. If a colored, outlined, or shaped area extends beyond the glyph contours, "
+        "treat the entire area as a protected non-text element. A non-text element remains protected even when text "
+        "touches, overlaps, sits inside, or is fully surrounded by it. Do not confuse a text container with the text "
+        "itself. Perform reconstruction only inside the areas previously covered by text glyph pixels and glyph-shaped "
+        "effects. Fill only the holes left by the removed glyph pixels, continuing the exact local color, gradient, "
+        "texture, material, edge, lighting, and pattern of the underlying carrier or background through those small "
+        "holes. Never erase, flatten, enlarge, shrink, simplify, or replace an entire container, colored region, badge, "
+        "card, banner, border, line, curve, icon, or decoration merely because it contains or is near text. Preserve all "
+        "non-text visual content exactly, especially lines, borders, dividers, arrows, icons, pictograms, geometric "
+        "shapes, purely graphical symbols, color blocks, patterns, illustrations, people, faces, facial expressions, "
+        "hands, objects, stickers, graphical logos, products, scenery, composition, perspective, colors, gradients, "
+        "lighting, shadows, texture, and image style. Do not erase, move, redraw, recolor, blur, or deform any non-text "
+        f"element. Do not restyle, resize, or otherwise alter any non-text element. {ratio_requirement}Before returning "
+        "the result, compare it with the "
+        "source and restore any non-text feature that was removed or changed. The only intentional visual difference "
+        "should be the absence of readable text glyphs and their glyph-shaped effects. Do not redesign the image. Do not "
+        "add, preserve, or introduce any readable text, pseudo-text, letters, numbers, punctuation, text-based logos, "
+        "captions, or labels. Return only the edited image."
     )
     extra = re.sub(r"[\x00-\x1f\x7f]", " ", str(extra or "")).strip()[:2000]
     return f"{prompt}\nAdditional requirement (must not conflict with the preservation rules above): {extra}" if extra else prompt
@@ -18452,7 +18558,7 @@ def create_and_schedule_openshop_generation(
     )
     for index in snapshot["requestedIndexes"]:
         child = OPENSHOP_AI_TASKS.create_child(parent["taskId"], index)
-        future = asyncio.create_task(run_openshop_generation_child(
+        future = STORAGE_WRITE_BARRIER.create_task(run_openshop_generation_child(
             parent["taskId"],
             child["childTaskId"],
             project_id,
@@ -18542,7 +18648,7 @@ async def run_openshop_ai_task(
             )
             if not OPENSHOP_AI_TASKS.can_complete(task_id):
                 return
-            storage_task = asyncio.create_task(
+            storage_task = STORAGE_WRITE_BARRIER.create_task(
                 store_openshop_ai_png(
                     project_id,
                     owner,
@@ -18750,7 +18856,7 @@ async def delete_openshop_project(
             )
             OPENSHOP_AI_TASKS.cancel_project(project_id, owner)
         if deleted:
-            collect_openshop_garbage()
+            collect_openshop_garbage(include_legacy=True)
         return deleted
 
     try:
@@ -18935,7 +19041,7 @@ async def create_openshop_ai_task(
         except OpenShopAiValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if created:
-            future = asyncio.create_task(
+            future = STORAGE_WRITE_BARRIER.create_task(
                 run_openshop_ai_task(record["taskId"], project_id, payload)
             )
             OPENSHOP_AI_TASKS.bind(record["taskId"], future)
@@ -18989,7 +19095,7 @@ async def create_openshop_ai_task(
         raise_openshop_http_error(exc)
     except OpenShopAiValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    future = asyncio.create_task(run_openshop_ai_task(record["taskId"], project_id, payload))
+    future = STORAGE_WRITE_BARRIER.create_task(run_openshop_ai_task(record["taskId"], project_id, payload))
     OPENSHOP_AI_TASKS.bind(record["taskId"], future)
     return {"task_id": record["taskId"], "status": record["status"], "task": record}
 
@@ -19127,8 +19233,7 @@ async def delete_project(project_id: str):
                 continue
             if str(data.get("project") or "") == project_id:
                 data["project"] = DEFAULT_PROJECT_ID
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(Path(path), data)
                 moved += 1
     return {"ok": True, "moved": moved}
 
@@ -19195,8 +19300,7 @@ async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
             canvas["board_x"] = float(payload.board_x)
         if payload.board_y is not None:
             canvas["board_y"] = float(payload.board_y)
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(canvas_path(canvas["id"])), canvas)
     return {"canvas": canvas_record(canvas)}
 
 @app.get("/api/canvases/{canvas_id}")
@@ -20841,9 +20945,7 @@ async def delete_history(req: DeleteHistoryRequest):
                 else:
                     new_history.append(item)
             if target_record:
-                os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-                with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(new_history, f, ensure_ascii=False, indent=4)
+                atomic_write_json(Path(HISTORY_FILE), new_history)
 
         if target_record:
             for img_url in target_record.get("images", []):
@@ -21520,9 +21622,7 @@ def load_runninghub_workflow_store():
         return {}
 
 def save_runninghub_workflow_store(store):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(RUNNINGHUB_WORKFLOW_STORE_FILE, "w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(RUNNINGHUB_WORKFLOW_STORE_FILE), store)
 
 def runninghub_workflow_config_has_payload(cfg):
     if not isinstance(cfg, dict):
@@ -22009,8 +22109,7 @@ def upload_workflow(payload: WorkflowUploadRequest):
     os.makedirs(custom_dir, exist_ok=True)
     stored_name = f"{CUSTOM_WORKFLOW_FOLDER}/{name}"
     path = workflow_path_from_name(stored_name, for_write=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload.workflow, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(path), payload.workflow)
     return {"name": stored_name}
 
 @app.put("/api/workflows/{name:path}/config")
@@ -22021,9 +22120,7 @@ def save_workflow_config(name: str, payload: WorkflowConfig):
     if not os.path.exists(workflow_path):
         raise HTTPException(status_code=404, detail="Workflow not found")
     cfg_path = workflow_config_path(name, for_write=True)
-    os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        json.dump(payload.dict(), f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(cfg_path), payload.dict())
     return {"config": payload.dict()}
 
 @app.delete("/api/workflows/{name:path}")
@@ -22121,8 +22218,23 @@ def run_server():
     finally:
         ACTIVE_UVICORN_SERVER = None
 
+
+def exec_development_restart_if_scheduled() -> bool:
+    target = DEVELOPMENT_RESTART_TARGET
+    if target is None:
+        return False
+    os.environ["HSTAR_DATA_DIR"] = str(target)
+    os.environ["HSTAR_PROGRAM_DIR"] = str(PROGRAM_ROOT)
+    os.environ["HSTAR_EDITION"] = "development"
+    os.environ["HSTAR_HOST"] = resolve_server_host()
+    os.environ["HSTAR_PORT"] = str(resolve_server_port())
+    argv = [sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve())]
+    os.execv(sys.executable, argv)
+    return True
+
 if __name__ == "__main__":
     # 关闭服务端协议级 WebSocket ping：部分客户端（如 PS UXP 面板）不会自动回 pong，
     # 默认 20s ping/20s 超时会把这些连接每隔一会儿就踢掉造成"频繁断连"。
     # 客户端有自己的应用层心跳 + 断线重连兜底，这里禁用协议 ping 更稳。
     run_server()
+    exec_development_restart_if_scheduled()

@@ -11,9 +11,9 @@
 <meta name="theme-color" content="#0a0c10">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https://huggingface.co https://*.hf.co blob:; worker-src 'self' blob:; frame-src 'self';">
 <title>OpenShop v0.19.1 - Online Image Editor</title>
-<link rel="stylesheet" href="./host/openshop-text-properties.css?v=2026.07.27.104021979">
-<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=2026.07.27.104021979">
-<link rel="stylesheet" href="./host/openshop-color-panel.css?v=2026.07.27.104021979">
+<link rel="stylesheet" href="./host/openshop-text-properties.css?v=2026.07.27.150100001">
+<link rel="stylesheet" href="./host/openshop-writing-mode.css?v=2026.07.27.150100001">
+<link rel="stylesheet" href="./host/openshop-color-panel.css?v=2026.07.27.150100001">
 <script src="./vendor/fabric-5.3.1.min.js"></script>
 <script src="./vendor/ag-psd-22.0.2.bundle.js"></script>
 <script src="./vendor/jspdf-4.2.1.umd.min.js"></script>
@@ -300,10 +300,10 @@ animation:marchAnts .4s linear infinite}
 .toast.show{opacity:1;transform:translateY(0) scale(1)}.toast.success{border-left:3px solid var(--success)}.toast.error{border-left:3px solid var(--danger)}.toast.info{border-left:3px solid var(--accent)}
 
 /* === WELCOME SCREEN === */
-#welcome-overlay{position:fixed;inset:0;background:var(--bg-depth-0);z-index:30000;display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:1;transition:opacity .4s var(--ease-out)}
+#welcome-overlay{position:fixed;inset:0;background:var(--bg-depth-0);z-index:30000;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;overflow-y:auto;overscroll-behavior:contain;padding:24px 0;box-sizing:border-box;opacity:1;transition:opacity .4s var(--ease-out)}
 #welcome-overlay.hidden{opacity:0;pointer-events:none}
 #welcome-overlay::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 80% 60% at 50% 30%,rgba(108,140,255,.06) 0%,transparent 70%);pointer-events:none}
-.welcome-inner{max-width:720px;width:90%;text-align:center;position:relative}
+.welcome-inner{max-width:720px;width:90%;text-align:center;position:relative;flex:none;margin:auto 0}
 .welcome-inner h1{font-family:Consolas,'Microsoft YaHei UI',monospace;font-size:32px;color:var(--accent);margin-bottom:6px;letter-spacing:-1.5px;font-weight:700}
 .welcome-inner p{color:var(--text-muted);font-size:14px;margin-bottom:32px;line-height:1.5}
 .welcome-actions{display:flex;gap:12px;justify-content:center;margin-bottom:36px}
@@ -590,7 +590,7 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 @media(max-width:767px){
   :root{--panel-width:0px;--toolbar-w:0px;--topbar-h:36px;--tool-size:32px;--statusbar-h:0px}
   #welcome-overlay{justify-content:flex-start;overflow-y:auto;overscroll-behavior:contain;padding:20px 0 28px}
-  .welcome-inner{width:calc(100% - 24px);max-width:520px;flex:none}
+  .welcome-inner{width:calc(100% - 24px);max-width:520px;flex:none;margin:0}
   .welcome-inner h1{font-size:24px;letter-spacing:0}
   .welcome-inner p{font-size:12px;margin-bottom:18px}
   .welcome-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:24px}
@@ -626,8 +626,8 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
   :root{--panel-width:200px}
 }
 </style>
-<link rel="stylesheet" href="./host/openshop-generative-tools.css?v=2026.07.27.104021979">
-    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.1630000001.1785052407"></script>
+<link rel="stylesheet" href="./host/openshop-generative-tools.css?v=2026.07.27.150100001">
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.1630000001.1785141198"></script>
 </head>
 <body>
 
@@ -1518,13 +1518,13 @@ body.fullscreen #canvas-area{left:0;top:0;right:0;bottom:0}
 <input type="file" id="psd-input" accept=".psd" style="display:none" onchange="OS.handlePSDOpen(event)">
 <input type="file" id="project-input" accept=".json" style="display:none" onchange="OS.handleProjectOpen(event)">
 
-<script src="./host/openshop-i18n.js?v=2026.07.27.104021979"></script>
-<script src="./locales/zh-CN.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-pixel-fill.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-desktop-input.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-writing-mode.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-ocr-layout.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-panel-splitter.js?v=2026.07.27.104021979"></script>
+<script src="./host/openshop-i18n.js?v=2026.07.27.150100001"></script>
+<script src="./locales/zh-CN.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-pixel-fill.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-desktop-input.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-writing-mode.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-ocr-layout.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-panel-splitter.js?v=2026.07.27.150100001"></script>
 <script>
 // ================================================================
 //  OpenShop v0.19.1 - Core Engine (Phase 10: Pro Toolbar)
@@ -6200,27 +6200,6 @@ self.onmessage = function(e) {
         const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
         const link = document.getElementById('pwa-manifest');
         if (link) link.href = URL.createObjectURL(blob);
-        this._precacheRuntime();
-    },
-    async _precacheRuntime() {
-        if (!('caches' in window)) return;
-        try {
-            const cache = await caches.open('openshop-runtime-v1');
-            const urls = [
-                './vendor/fabric-5.3.1.min.js',
-                './vendor/ag-psd-22.0.2.bundle.js',
-                './vendor/jspdf-4.2.1.umd.min.js',
-                './vendor/photon/photon_rs.js',
-                './vendor/photon/photon_rs_bg.wasm',
-                './vendor/gif/gif.js',
-                './vendor/gif/gif.worker.js'
-            ];
-            for (const url of urls) {
-                if (!await cache.match(url)) {
-                    try { await cache.add(url); } catch(e) { console.debug('Cache add failed for', url, e.message); }
-                }
-            }
-        } catch(e) { console.debug('Runtime precache failed:', e.message); }
     },
 
     // ====================== AUTO-SAVE (OPFS) ======================
@@ -11130,24 +11109,24 @@ window.addEventListener('error', e => { console.error('Unhandled error:', e.erro
 window.addEventListener('unhandledrejection', e => { console.error('Unhandled promise rejection:', e.reason); if (typeof OS !== 'undefined' && OS.toast) OS.toast(OS._t('Something went wrong — see console'), 'error'); });
 window.addEventListener('DOMContentLoaded', () => OS.init());
 </script>
-<script src="./host/openshop-canvas-sampler.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-raster-tools.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-brush-cursor.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-selection-engine.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-color-panel.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-update-scheduler.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-snap-engine.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-protocol.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-project-adapter.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-export-service.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-host-runtime.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-ai-client.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-font-catalog.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-text-properties.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-text-tools.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-reference-manager.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-generative-client.js?v=2026.07.27.104021979"></script>
-<script src="./host/openshop-generative-tools.js?v=2026.07.27.104021979"></script>
+<script src="./host/openshop-canvas-sampler.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-raster-tools.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-brush-cursor.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-selection-engine.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-color-panel.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-update-scheduler.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-snap-engine.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-protocol.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-project-adapter.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-export-service.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-host-runtime.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-ai-client.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-font-catalog.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-text-properties.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-text-tools.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-reference-manager.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-generative-client.js?v=2026.07.27.150100001"></script>
+<script src="./host/openshop-generative-tools.js?v=2026.07.27.150100001"></script>
 <script>
 function hstarOpenShopDataUrlToBlob(dataUrl) {
     const match = String(dataUrl || '').match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/i);

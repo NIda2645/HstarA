@@ -556,6 +556,23 @@ async def run():
         ] == ["modern-history", "legacy-history"]
         assert legacy_history_file.read_bytes() == legacy_history_before
 
+        corrupt_history_bytes = b'{"truncated":'
+        modern_history_file.write_bytes(corrupt_history_bytes)
+        main.save_to_history({
+            "id": "history-after-corruption",
+            "type": "zimage",
+            "images": ["/output/generated/recovered.png"],
+        })
+        corrupt_backups = list(
+            (modern_history_file.parent / "corrupt").glob("generations.json.*.corrupt")
+        )
+        assert len(corrupt_backups) == 1
+        assert corrupt_backups[0].read_bytes() == corrupt_history_bytes
+        assert [
+            item["id"] for item in json.loads(modern_history_file.read_text(encoding="utf-8"))
+        ] == ["history-after-corruption"]
+        assert legacy_history_file.read_bytes() == legacy_history_before
+
         main.shared_folders_save({"folders": [{"id": "modern-folder"}]})
         assert json.loads(
             (root / "config" / "shared-folders.json").read_text(encoding="utf-8")

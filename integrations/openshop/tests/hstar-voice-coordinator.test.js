@@ -537,6 +537,39 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.mediaDevices.getUserMedia).not.toHaveBeenCalled();
   });
 
+  it('detaches a removed iframe and stops its active microphone session', async () => {
+    const harness = makeHarness({renderUi: true});
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const childTarget = frame.contentDocument.createElement('textarea');
+    frame.contentDocument.body.append(childTarget);
+    frame.contentWindow.HstarVoiceInputAdapter = {
+      getTargetById: vi.fn(id => id === 'child-prompt' ? childTarget : null),
+      isEligible: vi.fn(target => target === childTarget),
+      begin: vi.fn(() => makeTransaction()),
+    };
+    harness.coordinator.attachFrame(frame);
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: window.location.origin,
+      source: frame.contentWindow,
+      data: {
+        type: 'hstar-voice-target-active',
+        targetId: 'child-prompt',
+        label: '子页面提示词',
+        framePath: [],
+      },
+    }));
+    await harness.coordinator.start();
+
+    expect(harness.coordinator.detachFrame(frame, 'editor-disposed')).toBe(true);
+    await harness.coordinator.whenIdle();
+
+    expect(harness.track.stop).toHaveBeenCalledOnce();
+    expect(harness.context.close).toHaveBeenCalledOnce();
+    expect(document.querySelector('.hstar-voice-entry').hidden).toBe(true);
+    await expect(harness.coordinator.start()).resolves.toBe(false);
+  });
+
   it('clears the microphone entry when an active target becomes unavailable', async () => {
     const harness = makeHarness({renderUi: true});
     const target = document.createElement('textarea');

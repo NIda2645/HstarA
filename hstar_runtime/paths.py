@@ -93,6 +93,28 @@ def uses_existing_legacy_storage_layout(paths: RuntimePaths) -> bool:
     )
 
 
+def has_existing_hstar_storage(paths: RuntimePaths) -> bool:
+    if uses_existing_legacy_storage_layout(paths):
+        return True
+    modern_files = (
+        paths.config_dir / "software-settings.json",
+        paths.config_dir / "global-config.json",
+        paths.config_dir / "api-providers.user.json",
+        paths.history_dir / "generations.json",
+    )
+    modern_directories = (
+        paths.canvas_dir,
+        paths.openshop_dir,
+        paths.director_dir,
+        paths.asset_dir,
+        paths.output_dir,
+        paths.model_dir,
+    )
+    return any(path.is_file() for path in modern_files) or any(
+        _has_files(path) for path in modern_directories
+    )
+
+
 def build_storage_path_map(
     paths: RuntimePaths,
     *,

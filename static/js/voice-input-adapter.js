@@ -7,6 +7,9 @@
   const undoStacks = new WeakMap();
   const targetIds = new WeakMap();
   const targetsById = new Map();
+  const WeakTargetRef = typeof global.WeakRef === 'function'
+    ? global.WeakRef
+    : (typeof WeakRef === 'function' ? WeakRef : null);
   const childFrameIds = new WeakMap();
   let targetSequence = 0;
   let childFrameSequence = 0;
@@ -303,7 +306,22 @@
       throw new TypeError('A custom voice target and beginComposition adapter are required');
     }
     customAdapters.set(target, adapter);
-    return () => customAdapters.delete(target);
+    return () => {
+      customAdapters.delete(target);
+      const id = targetIds.get(target);
+      if (id && indexedTarget(id) === target) targetsById.delete(id);
+      targetIds.delete(target);
+    };
+  }
+
+  function indexedTarget(id) {
+    const reference = targetsById.get(id);
+    const target = reference?.deref ? reference.deref() : reference;
+    if (!target || !target.isConnected) {
+      targetsById.delete(id);
+      return null;
+    }
+    return target;
   }
 
   function targetId(target) {
@@ -311,7 +329,7 @@
     if (!id) {
       id = `voice-target-${++targetSequence}`;
       targetIds.set(target, id);
-      targetsById.set(id, target);
+      targetsById.set(id, WeakTargetRef ? new WeakTargetRef(target) : target);
     }
     return id;
   }
@@ -418,6 +436,10 @@
       postToCoordinator('hstar-voice-target-lost', lostTarget, lostGeneration);
       activeTarget = null;
       observeTarget(null);
+      if (!lostTarget.isConnected) {
+        const id = targetIds.get(lostTarget);
+        if (id) targetsById.delete(id);
+      }
     }, 0);
   }
 
@@ -460,6 +482,7 @@
     activeTarget = null;
     activeGeneration += 1;
     observeTarget(null);
+    targetsById.clear();
     if (geometryFrame && typeof global.cancelAnimationFrame === 'function') {
       global.cancelAnimationFrame(geometryFrame);
       geometryFrame = 0;
@@ -486,7 +509,7 @@
     restoreSelection,
     undo,
     getActiveTarget: () => activeTarget,
-    getTargetById: id => targetsById.get(id) || null,
+    getTargetById: indexedTarget,
     setShortcut(value) {
       shortcut = String(value || '').trim();
     },
