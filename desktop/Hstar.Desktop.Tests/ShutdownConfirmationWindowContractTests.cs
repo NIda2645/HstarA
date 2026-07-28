@@ -13,7 +13,8 @@ public sealed class ShutdownConfirmationWindowContractTests
         Assert.Contains("WindowStyle=\"None\"", xaml);
         Assert.Contains("AllowsTransparency=\"True\"", xaml);
         Assert.Contains("CornerRadius=\"20\"", xaml);
-        Assert.Contains("CornerRadius=\"999\"", xaml);
+        Assert.Contains("CornerRadius=\"19\"", xaml);
+        Assert.DoesNotContain("CornerRadius=\"999\"", xaml);
         Assert.Contains("当前正在运行的任务将停止", xaml);
         Assert.Contains("已保存的画布和软件数据不会受到影响。", xaml);
         Assert.DoesNotContain("Title=\"确认关闭 Hstar\"", xaml);
@@ -47,6 +48,20 @@ public sealed class ShutdownConfirmationWindowContractTests
         Assert.Contains("#F8FAFC", source);
         Assert.Contains("#E8EDF3", source);
         Assert.Contains("#334155", source);
+    }
+
+    [Fact]
+    public void DialogLeavesCanvasVisibleAndUsesSubduedFocusBorders()
+    {
+        var source = ReadProjectFile(
+            "desktop", "Hstar.Desktop", "Views", "ShutdownConfirmationWindow.xaml.cs");
+
+        Assert.Contains("SetBrush(\"ShutdownBackdropBrush\", \"#00000000\");", source);
+        Assert.Contains(
+            "SetBrush(\"ShutdownFocusBrush\", dark ? \"#475569\" : \"#CBD5E1\");",
+            source);
+        Assert.DoesNotContain("#B8020617", source);
+        Assert.DoesNotContain("#6BF8FAFC", source);
     }
 
     private static string ReadProjectFile(params string[] segments)

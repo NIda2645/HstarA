@@ -29,7 +29,7 @@ public partial class ShutdownConfirmationWindow : Window
     private void ApplyTheme(CanvasTheme theme)
     {
         var dark = theme == CanvasTheme.Dark;
-        SetBrush("ShutdownBackdropBrush", dark ? "#B8020617" : "#6BF8FAFC");
+        SetBrush("ShutdownBackdropBrush", "#00000000");
         SetBrush("ShutdownPanelBrush", dark ? "#111827" : "#FFFFFF");
         SetBrush("ShutdownPanelBorderBrush", dark ? "#334155" : "#E8EDF3");
         SetBrush("ShutdownTextBrush", dark ? "#F8FAFC" : "#111827");
@@ -40,7 +40,7 @@ public partial class ShutdownConfirmationWindow : Window
         SetBrush("ShutdownStrongBrush", dark ? "#D8DEE9" : "#111827");
         SetBrush("ShutdownStrongTextBrush", dark ? "#0F172A" : "#FFFFFF");
         SetBrush("ShutdownIconHoverBrush", dark ? "#263449" : "#F1F5F9");
-        SetBrush("ShutdownFocusBrush", dark ? "#94A3B8" : "#64748B");
+        SetBrush("ShutdownFocusBrush", dark ? "#475569" : "#CBD5E1");
     }
 
     private void SetBrush(string key, string colorValue)
