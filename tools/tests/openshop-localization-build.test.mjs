@@ -35,22 +35,18 @@ function listFiles(root, directory = root) {
 
 const licenseFiles = listFiles(`${integrationRoot}/vendor/licenses`)
   .map((file) => `vendor/licenses/${file}`);
-const expectedFiles = [
+const sourceIndex = readFileSync(`${integrationRoot}/index.html`, 'utf8');
+const localRuntimeFiles = [...sourceIndex.matchAll(/(?:src|href)="\.\/((?:host|locales)\/[^"?]+)(?:\?v=[^"?]+)?"/g)]
+  .map(([, file]) => file);
+const expectedFiles = [...new Set([
   'LICENSE',
   'icon.png',
   'index.html',
-  'host/openshop-host-runtime.js',
-  'host/openshop-ai-client.js',
-  'host/openshop-font-catalog.js',
-  'host/openshop-i18n.js',
-  'host/openshop-project-adapter.js',
-  'host/openshop-protocol.js',
-  'host/openshop-text-tools.js',
-  'locales/zh-CN.js',
+  ...localRuntimeFiles,
   'vendor/runtime-manifest.json',
   ...sourceManifest.files.map((file) => file.path),
   ...licenseFiles,
-].sort();
+])].sort();
 
 assert.ok(existsSync(runtimeRoot), `${runtimeRoot} should exist`);
 const runtimeFiles = listFiles(runtimeRoot).sort();
