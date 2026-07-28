@@ -7,6 +7,7 @@ const broken = [
   '`鍥?{index + 1}`',
   '<div>缁煎悎鎺у埗鍣?/div>',
   '浜虹墿宸?5掳',
+  '鍥炬枃鍒嗗眰椤圭洰',
 ];
 
 for(const sample of broken) {

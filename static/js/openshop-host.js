@@ -7,7 +7,7 @@
     const MAX_IDLE_SESSIONS = 3;
     const CANVAS_OUTPUT_ACK_TIMEOUT_MS = 15 * 1000;
     const CANVAS_OUTPUT_SAVE_TIMEOUT_MS = 60 * 1000;
-    const OPENSHOP_RUNTIME_REVISION = '2026.07.27.150100001';
+    const OPENSHOP_RUNTIME_REVISION = '2026.07.29.001501706';
     const AI_LOG_TOOL_IDS = new Set(['art-font-restore', 'generative-fill', 'local-redraw']);
     const state = {
         sessions:new Map(),

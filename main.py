@@ -276,7 +276,7 @@ GLOBAL_LOOP = None
 COLLABORATION_KEY = secrets.token_urlsafe(24)
 COLLABORATION_LOCK = Lock()
 APP_VERSION = "2026.06.03"
-OPENSHOP_RUNTIME_REVISION = "2026.07.27.150100001"
+OPENSHOP_RUNTIME_REVISION = "2026.07.29.001501706"
 OPENSHOP_ENTRY_ASSET_URLS = frozenset({
     "/static/css/openshop-host.css",
     "/static/openshop/host/openshop-protocol.js",

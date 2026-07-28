@@ -147,7 +147,7 @@
         const source = primaryInputImage(node);
         const rawUrl = clean(source?.url || source?.imageUrl);
         if(!rawUrl) return {url:'', name:''};
-        const name = clean(source?.name) || node.projectName || translate('smart.openshopProjectName', '鍥炬枃鍒嗗眰椤圭洰');
+        const name = clean(source?.name) || node.projectName || translate('smart.openshopProjectName', '图文分层项目');
         return {
             url:hooks().displayMediaUrl?.(rawUrl, name) || rawUrl,
             name,
