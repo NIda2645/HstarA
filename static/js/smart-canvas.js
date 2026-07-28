@@ -1269,8 +1269,10 @@ function canvasListUrlForProject(projectId){
     const pid = rememberCanvasListProject(projectId);
     return `/static/canvas-list.html?project=${encodeURIComponent(pid)}`;
 }
-function backToCanvasList(){
+async function backToCanvasList(){
     savePromptDraftForCurrent();
+    const saved = await window.hstarFlushCanvasSave();
+    if(!saved) return;
     window.location.href = canvasListUrlForProject(canvas?.project || sourceProjectId || 'default');
 }
 function promptPlainText(){
@@ -6230,11 +6232,11 @@ function scheduleSave(){
     saveTimer = setTimeout(saveCanvas, 450);
 }
 async function saveCanvas(){
-    if(!canvasId || !canvas) return;
+    if(!canvasId || !canvas) return true;
     if(canvasSyncInFlight){
         clearTimeout(saveTimer);
         saveTimer = setTimeout(saveCanvas, 450);
-        return;
+        return false;
     }
     clearTimeout(saveTimer);
     saveTimer = null;
@@ -6270,6 +6272,7 @@ async function saveCanvas(){
             if(data.canvas && data.canvas.updated_at) canvas.updated_at = data.canvas.updated_at;
             if(Array.isArray(data.canvas?.nodes)) rememberSyncedSmartOpenShopNodes(data.canvas.nodes);
             clearSmartCanvasDirtyIfCurrent(saveRevision);
+            return true;
         } else if(res.status === 409) {
             // 冲突：别人先保存了。合并对方的状态（节点 id 合并、图片取并集，谁都不丢），
             // 然后用对方最新的 updated_at 作为基底重存，把合并结果落盘——而不是直接覆盖对方。
@@ -6287,8 +6290,14 @@ async function saveCanvas(){
             }
             clearTimeout(saveTimer);
             saveTimer = setTimeout(saveCanvas, 300);
+            return false;
+        } else {
+            throw new Error('save failed');
         }
-    } catch(e) {} finally {
+    } catch(e) {
+        console.error(e);
+        return false;
+    } finally {
         canvasSyncInFlight = false;
     }
 }
@@ -8165,10 +8174,8 @@ window.hstarFlushCanvasSave = async function(){
         clearTimeout(saveTimer);
         saveTimer = null;
     }
-    if(!canvas || applyingRemoteCanvas) return true;
-    saveCanvasAgain = false;
-    await saveCanvas();
-    return true;
+    if(!canvas || !smartLocalDirty) return true;
+    return await saveCanvas();
 };
 
 window.addEventListener('pagehide', () => {

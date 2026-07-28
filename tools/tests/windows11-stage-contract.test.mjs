@@ -88,7 +88,10 @@ assert.match(validator, /Invoke-Native\s+-Command\s+\$python[\s\S]*'-I'[\s\S]*'-
 assert.match(validator, /\.hstar-voice|Fun-ASR-Nano|safetensors/i, 'stage validator rejects optional voice payloads');
 assert.match(validator, /assets\/\(\?:input\|library\|output\|uploads\)/i, 'stage validator rejects only user-data asset directories');
 assert.doesNotMatch(validator, /['"]\^assets\/['"]/i, 'stage validator does not reject every program asset directory');
-assert.match(validator, /assets\/startup/i, 'stage validator rejects external startup web assets');
+assert.match(validator, /\^assets\/startup\/\(\?:index/i, 'stage validator rejects only external startup web assets');
+assert.doesNotMatch(validator, /\^assets\/startup\(\//i, 'stage validator permits native startup media');
+assert.match(validator, /Assets\\startup\\startup-lightfall\.mp4/i, 'stage validator requires native startup video');
+assert.match(validator, /Assets\\startup\\startup-lightfall-poster\.jpg/i, 'stage validator requires native startup poster');
 assert.doesNotMatch(validator, /'Assets\\startup\\(?:index\.html|startup\.css|startup\.js|ogl\.mjs)'/i, 'stage validator does not require external startup web assets');
 
 if (!existsSync(stageRoot)) {
@@ -111,6 +114,8 @@ const requiredStageEntries = [
   'static/openshop/LICENSE',
   'static/3d-director/index.html',
   'static/3d-director/models/ue-mannequin-retopology.glb',
+  'Assets/startup/startup-lightfall.mp4',
+  'Assets/startup/startup-lightfall-poster.jpg',
   'runtime/python/python.exe',
   'runtime/python/pythonw.exe',
   'runtime/python/python311._pth',
@@ -133,7 +138,7 @@ const forbiddenPatterns = [
   /^build\//i,
   /(^|\/)output(\/|$)/i,
   /(^|\/)assets\/(?:input|library|output|uploads)(\/|$)/i,
-  /(^|\/)assets\/startup(\/|$)/i,
+  /(^|\/)assets\/startup\/(?:index\.html|startup\.css|startup\.js|ogl\.mjs|ogl\.LICENSE\.txt)$/i,
   /(^|\/)projects?(\/|$)/i,
   /(^|\/)cache(\/|$)/i,
   /(^|\/)logs?(\/|$)/i,

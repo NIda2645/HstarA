@@ -1614,10 +1614,10 @@ function serializableCanvasNodes(list=nodes){
     return (list || []).map(serializableCanvasNode);
 }
 async function saveCanvas(){
-    if(!canvas || applyingRemoteCanvas) return;
+    if(!canvas || applyingRemoteCanvas) return true;
     if(savingCanvasNow){
         saveCanvasAgain = true;
-        return;
+        return false;
     }
     sanitizeConnections();
     savingCanvasNow = true;
@@ -1668,11 +1668,11 @@ async function saveCanvas(){
                 lastCanvasUpdatedAt = Number(data.detail?.updated_at || data.updated_at || remote?.updated_at || lastCanvasUpdatedAt || 0);
                 saveCanvasAgain = true;
                 setStatus('Saving...');
-                return;
+                return false;
             }
             if(remote) applyRemoteCanvasData(remote);
             setStatus('Synced');
-            return;
+            return true;
         }
         if(!res.ok) throw new Error('save failed');
         const data = await res.json().catch(() => ({}));
@@ -1689,9 +1689,11 @@ async function saveCanvas(){
         if(currentCanvasTime) currentCanvasTime.textContent = formatCanvasTime(canvas.updated_at);
         setStatus('Saved');
         loadCanvasList(false);
+        return true;
     } catch(e) {
         setStatus('Save failed');
         console.error(e);
+        return false;
     } finally {
         savingCanvasNow = false;
         if(saveCanvasAgain && canvas && !applyingRemoteCanvas){
@@ -2452,7 +2454,10 @@ function handleCanvasUpdatedMessage(data){
 }
 async function returnToCanvasManager(){
     clearTimeout(saveTimer);
-    if(canvas && localCanvasDirty) await saveCanvas();
+    if(canvas && localCanvasDirty){
+        const saved = await saveCanvas();
+        if(!saved) return;
+    }
     stopCanvasRemotePolling();
     canvas = null;
     nodes = [];
@@ -7881,8 +7886,7 @@ window.hstarFlushCanvasSave = async function(){
     }
     if(!canvas || applyingRemoteCanvas) return true;
     saveCanvasAgain = false;
-    await saveCanvas();
-    return true;
+    return await saveCanvas();
 };
 
 window.addEventListener('pagehide', () => {
