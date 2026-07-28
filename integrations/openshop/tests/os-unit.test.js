@@ -45,6 +45,7 @@ function mountToolbarFromSource() {
 describe('OpenShop core object', () => {
   beforeEach(() => {
     localStorage.clear();
+    delete window.HstarOpenShopTextPropertiesController;
     installFabricMock();
     installModalDelegation();
     mountEditorDom();
@@ -326,7 +327,28 @@ describe('OpenShop core object', () => {
     ]);
     expect(OS.canvas.getObjects()[0].hstarWritingMode).toBe('horizontal');
     expect(OS.canvas.getObjects()[1].hstarWritingMode).toBe('vertical');
+    expect(OS.canvas.getObjects()[0].hstarAutomaticFontPolicy).toBe('script-default');
+    expect(OS.canvas.getObjects()[1].hstarAutomaticFontPolicy).toBe('script-default');
     expect(OS.saveHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves an explicitly selected creation font without automatic replacement', () => {
+    const OS = loadOpenShop();
+    OS.canvas = createCanvasMock([]);
+    OS.canvas.getPointer = vi.fn(event => ({x:event.x, y:event.y}));
+    OS.layers = [{name:'Background', locked:false, visible:true, objects:[]}];
+    quietUiMethods(OS);
+    OS.state.textFont = 'Century Gothic';
+    OS.state.textFontAutomatic = false;
+
+    OS.setTool('text-horizontal');
+    OS.onMouseDown({e:{x:10, y:20}});
+
+    expect(OS.canvas.getObjects()[0]).toMatchObject({
+      fontFamily:'Century Gothic',
+      hstarWritingMode:'horizontal',
+    });
+    expect(OS.canvas.getObjects()[0].hstarAutomaticFontPolicy).toBeUndefined();
   });
 
   it('edits an existing vertical text object without creating another layer', () => {
@@ -401,6 +423,7 @@ describe('OpenShop core object', () => {
     expect(converted.isEditing).toBe(true);
     expect(OS.saveHistory).toHaveBeenCalledOnce();
     expect(OS._fabricCustomProperties).toContain('hstarWritingMode');
+    expect(OS._fabricCustomProperties).toContain('hstarAutomaticFontPolicy');
     expect(converted.toObject(OS._fabricCustomProperties).hstarWritingMode).toBe('vertical');
   });
 

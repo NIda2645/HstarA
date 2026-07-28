@@ -338,6 +338,16 @@ async def run():
 
         generated_bytes = png_bytes((20, 170, 90, 255))
 
+        output_route_name = "openshop-output-route.png"
+        output_route_path = Path(main.output_path_for(output_route_name))
+        output_route_path.write_bytes(generated_bytes)
+        try:
+            output_route_url = main.output_url_for(output_route_name)
+            assert output_route_url == f"/output/generated/{output_route_name}"
+            assert Path(main.output_file_from_url(output_route_url)).resolve() == output_route_path.resolve()
+        finally:
+            output_route_path.unlink(missing_ok=True)
+
         assert main.openshop_text_remove_size(96, 64, "auto", "square") == "96x64"
         assert main.openshop_text_remove_size(96, 64, "1k", "source") == "1536x1024"
         assert main.openshop_text_remove_size(96, 64, "2k", "landscape") == "2048x1360"
@@ -351,9 +361,17 @@ async def run():
             assert quality == "high"
             for phrase in (
                 "every visible text glyph and punctuation mark",
+                "glyph outlines, strokes, shadows, glows, and highlights only where they follow the contours",
+                "outlines, strokes, shadows, and highlights that belong to a container or independent graphic",
                 "lines, borders, dividers",
                 "icons, pictograms, geometric shapes",
                 "color blocks, patterns, illustrations",
+                "background plates, colored blocks, panels, banners, ribbons, badges, buttons, tickets, speech bubbles",
+                "extends beyond the glyph contours",
+                "remains protected even when text touches, overlaps, sits inside, or is fully surrounded by it",
+                "Fill only the holes left by the removed glyph pixels",
+                "Never erase, flatten, enlarge, shrink, simplify, or replace an entire container",
+                "restore any non-text feature that was removed or changed",
                 "Do not erase, move, redraw, recolor, blur, or deform",
                 "Extend only the outer canvas background",
             ):

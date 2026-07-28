@@ -2,7 +2,7 @@
   const GENERIC_FAMILIES = new Set([
     'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
   ]);
-  const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
+  const CJK_RE = /\p{Script=Han}/u;
   const FONT_COLLATOR = new Intl.Collator('zh-CN', {numeric:true, sensitivity:'base'});
   const FALLBACK_FAMILIES = Object.freeze({
     'zh-hans':'阿里巴巴普惠体 3.0',
@@ -16,6 +16,12 @@
   });
   const FALLBACK_FAMILY = FALLBACK_FAMILIES['zh-hans'];
   const SCRIPT_CATEGORY = Object.freeze({'zh-hans':'01', 'zh-hant':'02', en:'03'});
+  const COMMON_FALLBACK_FAMILIES = Object.freeze({
+    'zh-hans':Object.freeze(['Microsoft YaHei UI', 'Microsoft YaHei', 'SimHei', 'SimSun', 'DengXian']),
+    'zh-hant':Object.freeze(['Microsoft JhengHei UI', 'Microsoft JhengHei', 'Microsoft YaHei UI', 'Microsoft YaHei']),
+    en:Object.freeze(['Segoe UI', 'Arial', 'Verdana', 'Georgia', 'Times New Roman']),
+  });
+  const LATIN_OR_NUMBER_RE = /[\p{Script=Latin}\p{Number}]/u;
   // Below this normalized family-name score, a visually unrelated font is less safe than the fallback.
   const OCR_MATCH_THRESHOLD = 0.72;
   const OCR_MATCH_TIER = Object.freeze({none:0, partial:1, normalized:2, raw:3});
@@ -368,6 +374,12 @@
     return SCRIPT_CATEGORY[reported] || '';
   }
 
+  function scriptForCategory(category){
+    if(category === '03') return 'en';
+    if(category === '02') return 'zh-hant';
+    return 'zh-hans';
+  }
+
   function createManager(options = {}){
     const documentRef = options.documentRef || root.document;
     const fontProbe = typeof options.fontProbe === 'function'
@@ -387,7 +399,6 @@
       catalogSignature:'',
       matchPools:{'01':[], '02':[], '03':[]},
       fallbackFonts:{'zh-hans':null, 'zh-hant':null, en:null},
-      fallbackSystemFont:null,
       loaded:false,
       loading:false,
       error:'',
@@ -504,7 +515,6 @@
           const matchIndex = buildSystemFontMatchIndex(state.systemFonts);
           state.matchPools = matchIndex.pools;
           state.fallbackFonts = matchIndex.fallbackFonts;
-          state.fallbackSystemFont = matchIndex.fallbackFonts['zh-hans'];
           state.platform = cleanFamily(payload?.platform);
           state.cached = Boolean(payload?.cached);
           state.loaded = true;
@@ -575,7 +585,89 @@
       return style ? {...style, localNames:[...style.localNames]} : null;
     }
 
-    function matchOcrProfile(profile, category, fallbackFont, fallbackFamily, forceFallback = false){
+    function fontSuitableForScript(font, script){
+      if(script === 'en'){
+        return font.freeCommercialCategory === '03' || font.languageGroup === 'en';
+      }
+      if(script === 'zh-hant' && font.freeCommercialCategory === '02') return true;
+      if(script === 'zh-hans' && font.freeCommercialCategory === '01') return true;
+      return font.languageGroup.startsWith('zh');
+    }
+
+    function installedFontByFamily(families){
+      const names = new Set(families.map(family => cleanFamily(family).toLocaleLowerCase('zh-CN')));
+      return state.systemFonts.find(font => names.has(font.family.toLocaleLowerCase('zh-CN'))) || null;
+    }
+
+    function resolveDefaultFace(script, {weight = 400, italic = false} = {}){
+      const normalized = normalizedScript(script);
+      const targetScript = SCRIPT_CATEGORY[normalized] ? normalized : 'zh-hans';
+      const preferred = state.fallbackFonts[targetScript];
+      const common = installedFontByFamily(COMMON_FALLBACK_FAMILIES[targetScript] || []);
+      const suitable = state.systemFonts
+        .filter(font => fontSuitableForScript(font, targetScript))
+        .sort(compareSubgroupFonts)[0] || null;
+      const selected = preferred || common || suitable;
+      if(!selected){
+        const parsedWeight = Number(weight);
+        return {
+          family:'system-ui',
+          faceFamily:'system-ui',
+          styleId:'generic-system-ui',
+          weight:Number.isFinite(parsedWeight) ? Math.max(100, Math.min(900, parsedWeight)) : 400,
+          italic:Boolean(italic),
+          fallback:true,
+        };
+      }
+      const style = nearestStyle(selected.styles, weight, Boolean(italic)) || defaultStyle(selected.family);
+      return {
+        family:selected.family,
+        faceFamily:style.family,
+        styleId:style.id,
+        weight:style.weight,
+        italic:style.italic,
+        fallback:true,
+      };
+    }
+
+    function defaultTextRuns(text, {weight = 400, italic = false} = {}){
+      const characters = Array.from(String(text ?? ''));
+      if(!characters.length) return [];
+      const meaningfulScripts = characters.map(character => {
+        if(CJK_RE.test(character)) return 'zh-hans';
+        if(LATIN_OR_NUMBER_RE.test(character)) return 'en';
+        return '';
+      });
+      const scripts = meaningfulScripts.map((script, index) => {
+        if(script) return script;
+        let before = index - 1;
+        while(before >= 0 && !meaningfulScripts[before]) before -= 1;
+        let after = index + 1;
+        while(after < meaningfulScripts.length && !meaningfulScripts[after]) after += 1;
+        const beforeDistance = before >= 0 ? index - before : Number.POSITIVE_INFINITY;
+        const afterDistance = after < meaningfulScripts.length ? after - index : Number.POSITIVE_INFINITY;
+        return beforeDistance <= afterDistance
+          ? (meaningfulScripts[before] || 'zh-hans')
+          : (meaningfulScripts[after] || 'zh-hans');
+      });
+      const runs = [];
+      scripts.forEach((script, index) => {
+        const previous = runs.at(-1);
+        if(previous?.script === script){
+          previous.end = index + 1;
+          return;
+        }
+        runs.push({
+          start:index,
+          end:index + 1,
+          script,
+          ...resolveDefaultFace(script, {weight, italic}),
+        });
+      });
+      return runs;
+    }
+
+    function matchOcrProfile(profile, category, script, forceFallback = false){
       const requestedStyle = cleanFamily(profile.style).toLowerCase();
       const italic = profile.italic === true || ['italic', 'oblique'].includes(requestedStyle);
       let selected = null;
@@ -609,10 +701,11 @@
         else fallback = true;
       }
 
-      if(!selected) selected = fallbackFont;
-      if(!selected) throw new Error(`未安装必需的回退字体：${fallbackFamily}`);
+      if(!selected){
+        return resolveDefaultFace(script, {weight:profile.weight, italic});
+      }
       const style = nearestStyle(selected.styles, profile.weight, italic);
-      if(!style) throw new Error(`字体 ${selected.family} 没有可用字型`);
+      if(!style) return resolveDefaultFace(script, {weight:profile.weight, italic});
       return {
         family:selected.family,
         faceFamily:style.family,
@@ -630,18 +723,17 @@
       return matchOcrProfile(
         run,
         category,
-        state.fallbackFonts[script],
-        FALLBACK_FAMILIES[script],
+        script,
       );
     }
 
     function matchOcrFont(block = {}){
       const profile = block.font && typeof block.font === 'object' ? block.font : {};
+      const category = categoryForBlock(block);
       return matchOcrProfile(
         profile,
-        categoryForBlock(block),
-        state.fallbackSystemFont,
-        FALLBACK_FAMILY,
+        category,
+        scriptForCategory(category),
         Boolean(profile.artistic),
       );
     }
@@ -734,6 +826,8 @@
       catalogRows,
       matchOcrFont,
       matchOcrRun,
+      resolveDefaultFace,
+      defaultTextRuns,
       stylesFor,
       resolveFamily,
       defaultStyleFor,

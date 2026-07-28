@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,10 +9,26 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const integrationRoot = resolve(scriptDir, '..');
 const projectRoot = resolve(integrationRoot, '..', '..');
 const staticRoot = resolve(projectRoot, 'static');
-const destination = resolve(staticRoot, 'openshop');
+const outputIndex = process.argv.indexOf('--output');
+if (outputIndex >= 0 && (!process.argv[outputIndex + 1] || process.argv.indexOf('--output', outputIndex + 1) >= 0)) {
+  throw new Error('OpenShop build accepts exactly one --output directory');
+}
+const customOutput = outputIndex >= 0 ? resolve(process.argv[outputIndex + 1]) : '';
+const destination = customOutput || resolve(staticRoot, 'openshop');
 
-if(dirname(destination) !== staticRoot){
+function isChildPath(parent, candidate) {
+  const child = relative(parent, candidate);
+  return Boolean(child) && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+}
+
+if (!customOutput && dirname(destination) !== staticRoot) {
   throw new Error(`Unsafe OpenShop build destination: ${destination}`);
+}
+if (customOutput) {
+  const approvedParents = [resolve(projectRoot, 'tmp'), resolve(tmpdir())];
+  if (!approvedParents.some((parent) => isChildPath(parent, destination)) || existsSync(destination)) {
+    throw new Error(`Unsafe or existing OpenShop verification destination: ${destination}`);
+  }
 }
 
 const manifest = JSON.parse(await readFile(resolve(integrationRoot, 'vendor/runtime-manifest.json'), 'utf8'));

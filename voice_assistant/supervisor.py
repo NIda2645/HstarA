@@ -55,6 +55,7 @@ def sanitized_child_env(source: Mapping[str, str]) -> dict[str, str]:
     }
     env.update(
         {
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
             "PYTHONNOUSERSITE": "1",
@@ -74,6 +75,7 @@ def service_command(
 ) -> list[str]:
     command = [
         str(python_executable),
+        "-B",
         "-X",
         "utf8",
         "-m",
@@ -224,6 +226,41 @@ class VoiceServiceSupervisor:
                 self._process.stdout.readline(),
                 timeout=self.readiness_timeout,
             )
+            if not raw_line:
+                stderr_task = asyncio.create_task(
+                    self._read_stderr_tail(
+                        self._process.stderr,
+                        64 * 1024,
+                        max_chunks=256,
+                    )
+                )
+                try:
+                    if self._process.returncode is None:
+                        with contextlib.suppress(ProcessLookupError):
+                            self._process.terminate()
+                    try:
+                        return_code = await asyncio.wait_for(
+                            self._process.wait(), timeout=1.0
+                        )
+                    except asyncio.TimeoutError:
+                        with contextlib.suppress(ProcessLookupError):
+                            self._process.kill()
+                        return_code = await asyncio.wait_for(
+                            self._process.wait(), timeout=1.0
+                        )
+                    stderr_bytes = await asyncio.wait_for(stderr_task, timeout=1.0)
+                except BaseException:
+                    stderr_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await stderr_task
+                    raise
+                diagnostics = stderr_bytes.decode("utf-8", errors="replace").strip()
+                for line in diagnostics.splitlines()[-50:]:
+                    self._diagnostics.append(line)
+                detail = diagnostics[-4000:] or "no child diagnostics"
+                raise RuntimeError(
+                    f"Voice service exited before readiness (code {return_code}): {detail}"
+                )
             payload = json.loads(raw_line.decode("utf-8"))
             if payload.get("type") != "ready" or not int(payload.get("port") or 0):
                 raise RuntimeError(f"Invalid voice service readiness line: {payload!r}")
@@ -241,6 +278,30 @@ class VoiceServiceSupervisor:
             self._last_error = str(error)
             await self._terminate_process()
             raise
+
+    @staticmethod
+    async def _read_stderr_tail(
+        stream,
+        limit: int,
+        *,
+        max_chunks: int | None = None,
+    ) -> bytes:
+        if stream is None:
+            return b""
+        tail = bytearray()
+        chunks_read = 0
+        while True:
+            chunk = await stream.read(8192)
+            if not chunk:
+                break
+            tail.extend(chunk)
+            if len(tail) > limit:
+                del tail[:-limit]
+            chunks_read += 1
+            if max_chunks is not None and chunks_read >= max_chunks:
+                break
+            await asyncio.sleep(0)
+        return bytes(tail)
 
     async def _drain_stderr(self, process) -> None:
         while process.stderr and not process.stderr.at_eof():

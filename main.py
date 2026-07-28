@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Literal
 from threading import Lock, RLock, Thread
 import httpx
@@ -45,13 +46,14 @@ from io import BytesIO
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from openshop_projects import (
     OpenShopNotFound,
     OpenShopOwnershipError,
     OpenShopProjectStore,
+    OpenShopStorageRouter,
     OpenShopReconciliationError,
     OpenShopStoreError,
     OpenShopValidationError,
@@ -86,6 +88,16 @@ from native_file_picker import (
     selected_file_metadata,
 )
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
+from hstar_runtime.api_merge import merge_api_defaults
+from hstar_runtime.atomic import atomic_create_json, atomic_write_bytes, atomic_write_json
+from hstar_runtime.bootstrap import BootstrapStore
+from hstar_runtime.credentials import (
+    create_credential_store,
+    migrate_legacy_env_sources,
+)
+from hstar_runtime.migration import MigrationError, MigrationManager, MigrationState
+from hstar_runtime.paths import RuntimePaths, build_runtime_paths, build_storage_path_map, default_data_root, uses_existing_legacy_storage_layout
+from hstar_runtime.storage_barrier import StorageMutationBarrier, StorageMutationBlocked
 
 
 def configure_process_stdio():
@@ -116,6 +128,15 @@ class QuietAccessLogFilter(logging.Filter):
     def filter(self, record):
         args = record.args if isinstance(record.args, tuple) else ()
         if len(args) >= 3:
+            redacted_path = re.sub(
+                r"(?i)([?&](?:hstar_shell_token|collab_key)=)[^&\s]*",
+                r"\1[redacted]",
+                str(args[2]),
+            )
+            if redacted_path != str(args[2]):
+                mutable_args = list(args)
+                mutable_args[2] = redacted_path
+                record.args = args = tuple(mutable_args)
             path = str(args[2]).split("?", 1)[0]
             status = int(args[4]) if len(args) >= 5 and str(args[4]).isdigit() else 0
             quiet_dynamic = any(path.startswith(prefix) and path.endswith("/meta") for prefix in QUIET_ACCESS_PREFIXES)
@@ -129,6 +150,23 @@ class QuietAccessLogFilter(logging.Filter):
         return True
 
 logging.getLogger("uvicorn.access").addFilter(QuietAccessLogFilter())
+
+SHELL_TOKEN_HEADER = "X-Hstar-Shell-Token"
+SHELL_TOKEN_QUERY = "hstar_shell_token"
+SHELL_SESSION_COOKIE = "hstar_shell_session"
+COLLABORATION_SESSION_COOKIE = "hstar_collaboration_session"
+SHELL_TOKEN = os.environ.get("HSTAR_SHELL_TOKEN", "").strip()
+SHELL_BOOTSTRAP_TOKEN_CONSUMED = False
+SHELL_SESSION_LOCK = Lock()
+ACTIVE_UVICORN_SERVER = None
+DEVELOPMENT_RESTART_TARGET: Optional[Path] = None
+DEVELOPMENT_RESTART_LOCK = Lock()
+SHELL_PUBLIC_PATHS = {"/favicon.ico"}
+SHELL_PUBLIC_PREFIXES = ("/static/", "/assets/", "/output/")
+STORAGE_BARRIER_LIFECYCLE_PATHS = {
+    "/api/runtime/restart",
+    "/api/shell/shutdown",
+}
 
 @asynccontextmanager
 async def app_lifespan(_app):
@@ -238,7 +276,7 @@ GLOBAL_LOOP = None
 COLLABORATION_KEY = secrets.token_urlsafe(24)
 COLLABORATION_LOCK = Lock()
 APP_VERSION = "2026.06.03"
-OPENSHOP_RUNTIME_REVISION = "2026.07.26.1630000001"
+OPENSHOP_RUNTIME_REVISION = "2026.07.27.150100001"
 OPENSHOP_ENTRY_ASSET_URLS = frozenset({
     "/static/css/openshop-host.css",
     "/static/openshop/host/openshop-protocol.js",
@@ -263,29 +301,29 @@ MODELSCOPE_TREE_URL = "https://www.modelscope.ai/api/v1/studio/daniel8152/Infini
 async def startup_event():
     global GLOBAL_LOOP
     GLOBAL_LOOP = asyncio.get_running_loop()
-    VOICE_ASSISTANT.schedule_background_tasks()
+    if MODERN_STORAGE_ACTIVE_ON_STARTUP:
+        VOICE_ASSISTANT.schedule_background_tasks()
     await asyncio.sleep(0)
     await asyncio.to_thread(sync_static_html_versions)
-    # 启动时整理资产库：给所有图片分组（含默认角色/场景）建好文件夹，并把根目录里的旧素材归整进去。
-    try:
-        await asyncio.to_thread(migrate_asset_library_into_dirs)
-    except Exception as exc:
-        print(f"资产库分组整理失败: {exc}")
-    # 修复历史遗留的双重扩展名素材（foo.png.png → foo.png），否则这些卡片无法显示
-    try:
-        await asyncio.to_thread(migrate_double_extension_uploads)
-    except Exception as exc:
-        print(f"修复双重扩展名素材失败: {exc}")
-    # 纠正内容与扩展名不符的图片（如 WebP 内容却叫 .png），否则严格客户端解不出来
-    try:
-        await asyncio.to_thread(migrate_mislabeled_image_extensions)
-    except Exception as exc:
-        print(f"纠正图片扩展名失败: {exc}")
-
-    try:
-        await asyncio.to_thread(reconcile_saved_openshop_projects)
-    except Exception:
-        logging.exception("OpenShop startup reconciliation failed")
+    if not PRESERVE_EXISTING_DATA_ON_STARTUP:
+        # 只在新数据布局中执行自动整理；开发版接入旧 Hstar 缓存时原地读取。
+        try:
+            await asyncio.to_thread(migrate_asset_library_into_dirs)
+        except Exception as exc:
+            print(f"资产库分组整理失败: {exc}")
+        try:
+            await asyncio.to_thread(migrate_double_extension_uploads)
+        except Exception as exc:
+            print(f"修复双重扩展名素材失败: {exc}")
+        try:
+            await asyncio.to_thread(migrate_mislabeled_image_extensions)
+        except Exception as exc:
+            print(f"纠正图片扩展名失败: {exc}")
+    if os.path.isdir(CANVAS_DIR):
+        try:
+            await asyncio.to_thread(reconcile_saved_openshop_projects)
+        except Exception:
+            logging.exception("OpenShop startup reconciliation failed")
 
 @app.websocket("/ws/stats")
 async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
@@ -305,94 +343,333 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
 
 CLIENT_ID = str(uuid.uuid4())
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_APP_DATA_ROOT = os.path.join(os.environ.get("APPDATA") or BASE_DIR, "Hstar")
-APP_DATA_ROOT = os.path.abspath(os.environ.get("HSTAR_DATA_DIR") or DEFAULT_APP_DATA_ROOT)
-WORKFLOW_DIR = os.path.join(BASE_DIR, "workflows")
-WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "Z-Image.json")
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+PROGRAM_ROOT = Path(os.environ.get("HSTAR_PROGRAM_DIR") or BASE_DIR).expanduser().resolve()
+EDITION = os.environ.get("HSTAR_EDITION", "development").strip().lower()
+APPDATA_ROOT = Path(
+    os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming"
+).expanduser().resolve()
+BOOTSTRAP = BootstrapStore(APPDATA_ROOT, EDITION, PROGRAM_ROOT)
+EXPLICIT_DATA_ROOT = os.environ.get("HSTAR_DATA_DIR", "").strip()
+if EXPLICIT_DATA_ROOT:
+    DATA_ROOT = Path(os.path.expandvars(EXPLICIT_DATA_ROOT)).expanduser().resolve()
+else:
+    bootstrap_config = BOOTSTRAP.load()
+    if bootstrap_config is not None:
+        DATA_ROOT = bootstrap_config.resolved_data_root()
+    elif EDITION == "development":
+        DATA_ROOT = default_data_root().resolve()
+    else:
+        DATA_ROOT = BOOTSTRAP.require().resolved_data_root()
+
+RUNTIME_PATHS: RuntimePaths = build_runtime_paths(PROGRAM_ROOT, DATA_ROOT, EDITION)
+PRESERVE_EXISTING_DATA_ON_STARTUP = uses_existing_legacy_storage_layout(RUNTIME_PATHS)
+MODERN_STORAGE_ACTIVE_ON_STARTUP = not PRESERVE_EXISTING_DATA_ON_STARTUP or any(
+    path.is_dir()
+    for path in (
+        RUNTIME_PATHS.config_dir,
+        RUNTIME_PATHS.project_dir,
+        RUNTIME_PATHS.history_dir,
+        RUNTIME_PATHS.output_dir,
+    )
+)
+INITIAL_STORAGE_PATHS = build_storage_path_map(RUNTIME_PATHS)
+LEGACY_STORAGE_PATHS = (
+    build_storage_path_map(RUNTIME_PATHS, prefer_existing_legacy=True)
+    if PRESERVE_EXISTING_DATA_ON_STARTUP
+    else {}
+)
+APP_DATA_ROOT = str(RUNTIME_PATHS.data_root)
+BUILTIN_WORKFLOW_DIR = str(RUNTIME_PATHS.builtin_workflow_dir)
+USER_WORKFLOW_DIR = str(RUNTIME_PATHS.user_workflow_dir)
+WORKFLOW_PATH = os.path.join(BUILTIN_WORKFLOW_DIR, "Z-Image.json")
+STATIC_DIR = str(RUNTIME_PATHS.static_dir)
 STATIC_RUNNINGHUB_DIR = os.path.join(STATIC_DIR, "runninghub")
 STATIC_RUNNINGHUB_THUMBNAIL_DIR = os.path.join(STATIC_RUNNINGHUB_DIR, "thumbnails")
 STATIC_RUNNINGHUB_API_PROVIDERS_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "api_providers.json")
 STATIC_RUNNINGHUB_MODEL_REGISTRY_FILE = os.path.join(STATIC_RUNNINGHUB_DIR, "models_registry.json")
-APP_DATA_DIR = os.path.join(APP_DATA_ROOT, "data")
-APP_SOFTWARE_SETTINGS_FILE = os.path.join(APP_DATA_DIR, "software_settings.json")
+PACKAGED_API_DEFAULTS_FILE = RUNTIME_PATHS.api_defaults_dir / "api-providers.json"
+SOFTWARE_SETTINGS_FILE = str(INITIAL_STORAGE_PATHS["software_settings_file"])
+LEGACY_API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
+TRANSITIONAL_API_ENV_FILE = RUNTIME_PATHS.secrets_dir / "api.env"
+CREDENTIAL_FILE = RUNTIME_PATHS.secrets_dir / "credentials.dpapi"
+CREDENTIAL_STORE = create_credential_store(
+    CREDENTIAL_FILE,
+    edition=EDITION,
+    plaintext_path=TRANSITIONAL_API_ENV_FILE,
+)
+
+
+def shell_request_is_loopback(request: Request) -> bool:
+    host = str(request.client.host if request.client else "").strip()
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def shell_session_value(secret: str, purpose: str) -> str:
+    return hmac.new(
+        secret.encode("utf-8"),
+        purpose.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def shell_secret_matches(candidate: str, expected: str) -> bool:
+    return bool(candidate and expected) and hmac.compare_digest(candidate, expected)
+
+
+def consume_shell_bootstrap_token(candidate: str) -> bool:
+    global SHELL_BOOTSTRAP_TOKEN_CONSUMED
+    if not shell_secret_matches(candidate, SHELL_TOKEN):
+        return False
+    with SHELL_SESSION_LOCK:
+        if SHELL_BOOTSTRAP_TOKEN_CONSUMED:
+            return False
+        SHELL_BOOTSTRAP_TOKEN_CONSUMED = True
+        return True
+
+
+def request_without_secret_query(request: Request, secret_name: str) -> str:
+    query = [
+        (key, value)
+        for key, value in request.query_params.multi_items()
+        if key != secret_name
+    ]
+    encoded = urllib.parse.urlencode(query, doseq=True)
+    return f"{request.url.path}?{encoded}" if encoded else request.url.path
+
+
+def set_private_session_cookie(response: Response, name: str, value: str) -> None:
+    response.set_cookie(
+        name,
+        value,
+        max_age=12 * 60 * 60,
+        httponly=True,
+        secure=False,
+        samesite="strict",
+        path="/",
+    )
+
+
+@app.middleware("http")
+async def packaged_shell_session(request: Request, call_next):
+    if not SHELL_TOKEN:
+        return await call_next(request)
+
+    path = request.url.path
+    loopback = shell_request_is_loopback(request)
+    supplied_header = str(request.headers.get(SHELL_TOKEN_HEADER) or "")
+    if loopback and shell_secret_matches(supplied_header, SHELL_TOKEN):
+        return await call_next(request)
+
+    supplied_bootstrap = str(request.query_params.get(SHELL_TOKEN_QUERY) or "")
+    if loopback and supplied_bootstrap:
+        if (
+            path != "/"
+            or request.method not in {"GET", "HEAD"}
+            or not consume_shell_bootstrap_token(supplied_bootstrap)
+        ):
+            return JSONResponse(status_code=401, content={"detail": "Hstar shell token 无效或已使用"})
+        response = RedirectResponse(
+            request_without_secret_query(request, SHELL_TOKEN_QUERY),
+            status_code=303,
+        )
+        set_private_session_cookie(
+            response,
+            SHELL_SESSION_COOKIE,
+            shell_session_value(SHELL_TOKEN, "shell-session"),
+        )
+        return response
+
+    shell_cookie = str(request.cookies.get(SHELL_SESSION_COOKIE) or "")
+    if loopback and shell_secret_matches(
+        shell_cookie,
+        shell_session_value(SHELL_TOKEN, "shell-session"),
+    ):
+        return await call_next(request)
+
+    collaboration_key = str(request.query_params.get("collab_key") or "")
+    if collaboration_key and shell_secret_matches(collaboration_key, current_collaboration_key()):
+        if path != "/" or request.method not in {"GET", "HEAD"}:
+            return JSONResponse(status_code=401, content={"detail": "Hstar 协作会话无效"})
+        response = RedirectResponse(
+            request_without_secret_query(request, "collab_key"),
+            status_code=303,
+        )
+        set_private_session_cookie(
+            response,
+            COLLABORATION_SESSION_COOKIE,
+            shell_session_value(current_collaboration_key(), "collaboration-session"),
+        )
+        return response
+
+    collaboration_cookie = str(request.cookies.get(COLLABORATION_SESSION_COOKIE) or "")
+    if shell_secret_matches(
+        collaboration_cookie,
+        shell_session_value(current_collaboration_key(), "collaboration-session"),
+    ):
+        return await call_next(request)
+
+    if path in SHELL_PUBLIC_PATHS or any(path.startswith(prefix) for prefix in SHELL_PUBLIC_PREFIXES):
+        return await call_next(request)
+    return JSONResponse(status_code=401, content={"detail": "请从 Hstar 桌面程序打开此页面"})
+
+
+@app.middleware("http")
+async def storage_mutation_barrier(request: Request, call_next):
+    if (
+        request.method not in {"POST", "PUT", "PATCH", "DELETE"}
+        or request.url.path in STORAGE_BARRIER_LIFECYCLE_PATHS
+    ):
+        return await call_next(request)
+    try:
+        mutation = STORAGE_WRITE_BARRIER.mutation()
+        mutation.__enter__()
+    except StorageMutationBlocked as error:
+        code = "STORAGE_SWITCHING" if error.reason == "switching" else "STORAGE_RESTART_REQUIRED"
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "1"},
+            content={"detail": {"code": code, "message": str(error)}},
+        )
+    try:
+        response = await call_next(request)
+    except BaseException as error:
+        mutation.__exit__(type(error), error, error.__traceback__)
+        raise
+
+    body_iterator = getattr(response, "body_iterator", None)
+    if body_iterator is None:
+        mutation.__exit__(None, None, None)
+        return response
+
+    async def guarded_body_iterator():
+        try:
+            async for chunk in body_iterator:
+                yield chunk
+        except BaseException as error:
+            mutation.__exit__(type(error), error, error.__traceback__)
+            raise
+        else:
+            mutation.__exit__(None, None, None)
+
+    response.body_iterator = guarded_body_iterator()
+    return response
 
 def bootstrap_app_software_settings() -> None:
-    legacy_file = os.path.join(BASE_DIR, "data", "software_settings.json")
-    if os.path.abspath(legacy_file) == os.path.abspath(APP_SOFTWARE_SETTINGS_FILE):
+    if PRESERVE_EXISTING_DATA_ON_STARTUP:
         return
-    if os.path.exists(APP_SOFTWARE_SETTINGS_FILE) or not os.path.isfile(legacy_file):
+    if os.path.isfile(SOFTWARE_SETTINGS_FILE):
+        return
+    candidates = (
+        RUNTIME_PATHS.data_root / "data" / "software_settings.json",
+        APPDATA_ROOT / "Hstar" / "data" / "software_settings.json",
+        PROGRAM_ROOT / "data" / "software_settings.json",
+    )
+    for legacy_file in candidates:
+        if not legacy_file.is_file():
+            continue
+        try:
+            Path(SOFTWARE_SETTINGS_FILE).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_file, SOFTWARE_SETTINGS_FILE)
+            return
+        except OSError:
+            continue
+
+
+def bootstrap_legacy_api_env() -> None:
+    if EDITION.startswith("test") or PRESERVE_EXISTING_DATA_ON_STARTUP:
         return
     try:
-        os.makedirs(os.path.dirname(APP_SOFTWARE_SETTINGS_FILE), exist_ok=True)
-        shutil.copy2(legacy_file, APP_SOFTWARE_SETTINGS_FILE)
-    except Exception:
-        pass
+        migrate_legacy_env_sources(
+            [Path(LEGACY_API_ENV_FILE), TRANSITIONAL_API_ENV_FILE],
+            CREDENTIAL_STORE,
+            RUNTIME_PATHS.backup_dir / "api",
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        logging.exception("API 凭据迁移失败，原明文配置已保留")
 
 bootstrap_app_software_settings()
+bootstrap_legacy_api_env()
 
-def runtime_paths_for_storage_root(storage_root: str, software_settings_file: str) -> Dict[str, str]:
-    storage_root = os.path.abspath(storage_root)
-    data_dir = os.path.join(storage_root, "data")
-    assets_dir = os.path.join(storage_root, "assets")
-    return {
-        "storage_root": storage_root,
-        "data_dir": data_dir,
-        "conversation_dir": os.path.join(data_dir, "conversations"),
-        "canvas_dir": os.path.join(data_dir, "canvases"),
-        "openshop_data_dir": os.path.join(data_dir, "openshop"),
-        "media_preview_dir": os.path.join(data_dir, "media_previews"),
-        "asset_library_path": os.path.join(data_dir, "asset_library.json"),
-        "prompt_library_path": os.path.join(data_dir, "prompt_libraries.json"),
-        "api_providers_file": os.path.join(data_dir, "api_providers.json"),
-        "runninghub_workflow_store_file": os.path.join(data_dir, "runninghub_workflows.json"),
-        "shared_folders_file": os.path.join(data_dir, "shared_folders.json"),
-        "software_settings_file": os.path.abspath(software_settings_file),
-        "global_config_file": os.path.join(storage_root, "global_config.json"),
-        "history_file": os.path.join(storage_root, "history.json"),
-        "assets_dir": assets_dir,
-        "output_dir": os.path.join(storage_root, "output"),
-        "output_input_dir": os.path.join(assets_dir, "input"),
-        "output_output_dir": os.path.join(assets_dir, "output"),
-        "asset_library_dir": os.path.join(assets_dir, "library"),
-        "local_upload_dir": os.path.join(assets_dir, "uploads"),
-    }
+def runtime_paths_for_storage_root(
+    storage_root: str,
+    software_settings_file: str = "",
+) -> Dict[str, str]:
+    paths = build_runtime_paths(PROGRAM_ROOT, Path(storage_root), EDITION)
+    resolved = build_storage_path_map(paths)
+    return {key: str(value) for key, value in resolved.items()}
 
-def resolve_runtime_paths(base_dir: str, software_settings_file: str) -> Dict[str, str]:
-    storage_root = base_dir
-    try:
-        with open(software_settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-        configured_root = settings.get("storage_root") if isinstance(settings, dict) else ""
-        if isinstance(configured_root, str) and configured_root.strip():
-            storage_root = os.path.abspath(os.path.expandvars(os.path.expanduser(configured_root.strip().strip('"'))))
-    except Exception:
-        pass
-    return runtime_paths_for_storage_root(storage_root, software_settings_file)
+RUNTIME_STORAGE_PATHS = runtime_paths_for_storage_root(str(RUNTIME_PATHS.data_root))
+STORAGE_ROOT = RUNTIME_STORAGE_PATHS["storage_root"]
+OUTPUT_DIR = RUNTIME_STORAGE_PATHS["output_dir"]
+ASSETS_DIR = RUNTIME_STORAGE_PATHS["assets_dir"]
+OUTPUT_INPUT_DIR = RUNTIME_STORAGE_PATHS["output_input_dir"]
+OUTPUT_OUTPUT_DIR = RUNTIME_STORAGE_PATHS["output_output_dir"]
+ASSET_LIBRARY_DIR = RUNTIME_STORAGE_PATHS["asset_library_dir"]
+LOCAL_UPLOAD_DIR = RUNTIME_STORAGE_PATHS["local_upload_dir"]
+HISTORY_FILE = RUNTIME_STORAGE_PATHS["history_file"]
+DATA_DIR = RUNTIME_STORAGE_PATHS["data_dir"]
+CONVERSATION_DIR = RUNTIME_STORAGE_PATHS["conversation_dir"]
+CANVAS_DIR = RUNTIME_STORAGE_PATHS["canvas_dir"]
+OPENSHOP_DATA_DIR = RUNTIME_STORAGE_PATHS["openshop_data_dir"]
+MEDIA_PREVIEW_DIR = RUNTIME_STORAGE_PATHS["media_preview_dir"]
+ASSET_LIBRARY_PATH = RUNTIME_STORAGE_PATHS["asset_library_path"]
+PROMPT_LIBRARY_PATH = RUNTIME_STORAGE_PATHS["prompt_library_path"]
+API_PROVIDERS_FILE = RUNTIME_STORAGE_PATHS["api_providers_file"]
+RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_STORAGE_PATHS["runninghub_workflow_store_file"]
+SHARED_FOLDERS_FILE = RUNTIME_STORAGE_PATHS["shared_folders_file"]
+GLOBAL_CONFIG_FILE = RUNTIME_STORAGE_PATHS["global_config_file"]
+LEGACY_DATA_DIR = str(LEGACY_STORAGE_PATHS.get("data_dir") or "")
+LEGACY_CONVERSATION_DIR = str(LEGACY_STORAGE_PATHS.get("conversation_dir") or "")
+LEGACY_CANVAS_DIR = str(LEGACY_STORAGE_PATHS.get("canvas_dir") or "")
+LEGACY_OPENSHOP_DATA_DIR = str(LEGACY_STORAGE_PATHS.get("openshop_data_dir") or "")
+LEGACY_MEDIA_PREVIEW_DIR = str(LEGACY_STORAGE_PATHS.get("media_preview_dir") or "")
+LEGACY_ASSET_LIBRARY_PATH = str(LEGACY_STORAGE_PATHS.get("asset_library_path") or "")
+LEGACY_PROMPT_LIBRARY_PATH = str(LEGACY_STORAGE_PATHS.get("prompt_library_path") or "")
+LEGACY_API_PROVIDERS_FILE = str(LEGACY_STORAGE_PATHS.get("api_providers_file") or "")
+LEGACY_RUNNINGHUB_WORKFLOW_STORE_FILE = str(LEGACY_STORAGE_PATHS.get("runninghub_workflow_store_file") or "")
+LEGACY_SHARED_FOLDERS_FILE = str(LEGACY_STORAGE_PATHS.get("shared_folders_file") or "")
+LEGACY_SOFTWARE_SETTINGS_FILE = str(LEGACY_STORAGE_PATHS.get("software_settings_file") or "")
+LEGACY_GLOBAL_CONFIG_FILE = str(LEGACY_STORAGE_PATHS.get("global_config_file") or "")
+LEGACY_HISTORY_FILE = str(LEGACY_STORAGE_PATHS.get("history_file") or "")
+LEGACY_OUTPUT_DIR = str(LEGACY_STORAGE_PATHS.get("output_dir") or "")
 
-RUNTIME_PATHS = resolve_runtime_paths(BASE_DIR, APP_SOFTWARE_SETTINGS_FILE)
-STORAGE_ROOT = RUNTIME_PATHS["storage_root"]
-OUTPUT_DIR = RUNTIME_PATHS["output_dir"]
-ASSETS_DIR = RUNTIME_PATHS["assets_dir"]
-OUTPUT_INPUT_DIR = RUNTIME_PATHS["output_input_dir"]
-OUTPUT_OUTPUT_DIR = RUNTIME_PATHS["output_output_dir"]
-ASSET_LIBRARY_DIR = RUNTIME_PATHS["asset_library_dir"]
-LOCAL_UPLOAD_DIR = RUNTIME_PATHS["local_upload_dir"]
-HISTORY_FILE = RUNTIME_PATHS["history_file"]
-API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
-DATA_DIR = RUNTIME_PATHS["data_dir"]
-CONVERSATION_DIR = RUNTIME_PATHS["conversation_dir"]
-CANVAS_DIR = RUNTIME_PATHS["canvas_dir"]
-OPENSHOP_DATA_DIR = RUNTIME_PATHS["openshop_data_dir"]
-MEDIA_PREVIEW_DIR = RUNTIME_PATHS["media_preview_dir"]
-ASSET_LIBRARY_PATH = RUNTIME_PATHS["asset_library_path"]
-PROMPT_LIBRARY_PATH = RUNTIME_PATHS["prompt_library_path"]
-API_PROVIDERS_FILE = RUNTIME_PATHS["api_providers_file"]
-RUNNINGHUB_WORKFLOW_STORE_FILE = RUNTIME_PATHS["runninghub_workflow_store_file"]
-SHARED_FOLDERS_FILE = RUNTIME_PATHS["shared_folders_file"]
-SOFTWARE_SETTINGS_FILE = RUNTIME_PATHS["software_settings_file"]
-GLOBAL_CONFIG_FILE = RUNTIME_PATHS["global_config_file"]
-OPENSHOP_STORE = OpenShopProjectStore(OPENSHOP_DATA_DIR, canvas_dir=CANVAS_DIR)
+def storage_read_path(primary_path: str, legacy_path: str = "") -> str:
+    if primary_path and os.path.exists(primary_path):
+        return primary_path
+    if legacy_path and os.path.exists(legacy_path):
+        return legacy_path
+    return primary_path
+
+STORAGE_WRITE_BARRIER = StorageMutationBarrier()
+STORAGE_MIGRATIONS = MigrationManager(
+    BOOTSTRAP,
+    PROGRAM_ROOT,
+    switch_guard=STORAGE_WRITE_BARRIER.switch_to_read_only,
+)
+PRIMARY_OPENSHOP_STORE = OpenShopProjectStore(
+    OPENSHOP_DATA_DIR,
+    canvas_dir=CANVAS_DIR,
+    create_directories=MODERN_STORAGE_ACTIVE_ON_STARTUP,
+)
+LEGACY_OPENSHOP_STORE = (
+    OpenShopProjectStore(
+        LEGACY_OPENSHOP_DATA_DIR,
+        canvas_dir=LEGACY_CANVAS_DIR,
+        create_directories=False,
+        migrate_legacy_projects=False,
+    )
+    if LEGACY_OPENSHOP_DATA_DIR and LEGACY_CANVAS_DIR
+    else None
+)
+OPENSHOP_STORE = OpenShopStorageRouter(
+    PRIMARY_OPENSHOP_STORE,
+    LEGACY_OPENSHOP_STORE,
+    primary_canvas_dir=CANVAS_DIR,
+    legacy_canvas_dir=LEGACY_CANVAS_DIR,
+)
 OPENSHOP_AI_TASKS = OpenShopAiTaskRegistry()
 OPENSHOP_PROJECT_LIFECYCLE_LOCK = RLock()
 OPENSHOP_FONTS = OpenShopFontCatalog(
@@ -619,33 +896,28 @@ RUNNINGHUB_DEFAULT_WORKFLOWS = [
 ]
 
 def ensure_runtime_config_files():
-    """首次运行时提前创建配置目录，避免第一次保存 API Key 时才创建目录/文件。"""
-    try:
-        os.makedirs(os.path.dirname(API_ENV_FILE), exist_ok=True)
-        os.makedirs(DATA_DIR, exist_ok=True)
-        if not os.path.exists(API_ENV_FILE):
-            with open(API_ENV_FILE, "a", encoding="utf-8"):
-                pass
-    except Exception as e:
-        print(f"初始化 API 配置目录失败: {e}")
-
-def load_env_file():
-    if not os.path.exists(API_ENV_FILE):
+    """Create writable configuration directories before the first save."""
+    if not MODERN_STORAGE_ACTIVE_ON_STARTUP:
         return
     try:
-        with open(API_ENV_FILE, 'r', encoding='utf-8-sig') as f:
-            for raw_line in f.read().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                os.environ.setdefault(key, value)
+        os.makedirs(RUNTIME_PATHS.secrets_dir, exist_ok=True)
+        os.makedirs(DATA_DIR, exist_ok=True)
     except Exception as e:
-        print(f"加载 API/.env 失败: {e}")
+        logging.error("初始化 API 配置目录失败: %s", e)
+
+CREDENTIAL_VALUES: Dict[str, str] = {}
+
+
+def load_credential_values():
+    try:
+        CREDENTIAL_VALUES.clear()
+        CREDENTIAL_VALUES.update(CREDENTIAL_STORE.load())
+        for key, value in CREDENTIAL_VALUES.items():
+            os.environ.setdefault(key, value)
+    except Exception as e:
+        logging.error("加载 API 凭据失败: %s", e)
 ensure_runtime_config_files()
-load_env_file()
+load_credential_values()
 
 COMFYUI_INSTANCES = [s.strip() for s in os.getenv("COMFYUI_INSTANCES", "127.0.0.1:8188").split(",") if s.strip()]
 COMFYUI_ADDRESS = COMFYUI_INSTANCES[0]
@@ -830,27 +1102,16 @@ def volcengine_access_key_env():
 def volcengine_secret_key_env():
     return "VOLCENGINE_SECRET_ACCESS_KEY"
 
-def read_api_env_value(key: str) -> str:
+def read_api_credential_value(key: str) -> str:
     key = str(key or "").strip()
-    if not key or not os.path.exists(API_ENV_FILE):
+    if not key:
         return ""
-    try:
-        with open(API_ENV_FILE, "r", encoding="utf-8-sig") as f:
-            for raw_line in f.read().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                env_key, value = line.split("=", 1)
-                if env_key.strip() == key:
-                    return value.strip().strip('"').strip("'")
-    except Exception:
-        return ""
-    return ""
+    return CREDENTIAL_VALUES.get(key, "")
 
 def provider_env_key_value(provider_id: str) -> str:
     provider_id = str(provider_id or "").strip().lower()
     env_key = provider_key_env(provider_id)
-    key = os.getenv(env_key, "") or read_api_env_value(env_key)
+    key = os.getenv(env_key, "") or read_api_credential_value(env_key)
     if key:
         return key
     if provider_id == "modelscope":
@@ -859,15 +1120,15 @@ def provider_env_key_value(provider_id: str) -> str:
 
 def runninghub_wallet_key_value() -> str:
     env_key = runninghub_wallet_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_access_key_value() -> str:
     env_key = volcengine_access_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_secret_key_value() -> str:
     env_key = volcengine_secret_key_env()
-    return os.getenv(env_key, "") or read_api_env_value(env_key)
+    return os.getenv(env_key, "") or read_api_credential_value(env_key)
 
 def volcengine_provider_api_key(explicit_key: str = "") -> str:
     explicit_key = str(explicit_key or "").strip()
@@ -948,6 +1209,17 @@ def default_api_providers():
             "volcengine_region": VOLCENGINE_DEFAULT_REGION,
         },
     ]
+
+
+def load_packaged_api_defaults():
+    if not PACKAGED_API_DEFAULTS_FILE.is_file():
+        return None
+    try:
+        document = json.loads(PACKAGED_API_DEFAULTS_FILE.read_text(encoding="utf-8-sig"))
+        return merge_api_defaults([], document)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        logging.error("加载内置 API 默认配置失败: %s", error)
+        return None
 
 def merge_default_api_providers(providers, inject_missing=True):
     merged = [dict(item) for item in providers]
@@ -1449,11 +1721,14 @@ def normalize_provider(item):
     }
 
 def load_api_providers():
-    defaults = default_api_providers()
-    if not os.path.exists(API_PROVIDERS_FILE):
-        return merge_default_api_providers(defaults)
+    defaults = load_packaged_api_defaults() or default_api_providers()
+    path = storage_read_path(API_PROVIDERS_FILE, LEGACY_API_PROVIDERS_FILE)
+    if not os.path.exists(path):
+        providers = merge_default_api_providers(defaults)
+        save_api_providers(providers)
+        return providers
     try:
-        with open(API_PROVIDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         providers = [normalize_provider(item) for item in raw if isinstance(item, dict)]
         return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
@@ -1463,9 +1738,10 @@ def load_api_providers():
 
 def save_api_providers(providers):
     os.makedirs(DATA_DIR, exist_ok=True)
+    safe_providers = merge_api_defaults(providers, [])
+    payload = (json.dumps(safe_providers, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     with GLOBAL_CONFIG_LOCK:
-        with open(API_PROVIDERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(providers, f, ensure_ascii=False, indent=2)
+        atomic_write_bytes(Path(API_PROVIDERS_FILE), payload)
 
 def public_provider(provider):
     if provider.get("id") == "runninghub":
@@ -1564,55 +1840,45 @@ def modelscope_api_root(provider=None):
 def modelscope_image_api_root():
     return MODELSCOPE_CHAT_BASE_URL.rstrip("/")
 
-def env_quote(value):
-    text = str(value or "")
-    if not text or re.search(r"\s|#|['\"]", text):
-        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
-    return text
-
 def update_env_values(updates):
-    os.makedirs(os.path.dirname(API_ENV_FILE), exist_ok=True)
-    lines = []
-    if os.path.exists(API_ENV_FILE):
-        with open(API_ENV_FILE, "r", encoding="utf-8-sig") as f:
-            lines = f.read().splitlines()
-    seen = set()
-    next_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in line:
-            next_lines.append(line)
-            continue
-        key = line.split("=", 1)[0].strip()
-        if key in updates:
-            next_lines.append(f"{key}={env_quote(updates[key])}")
-            os.environ[key] = str(updates[key] or "")
-            seen.add(key)
-        else:
-            next_lines.append(line)
-    for key, value in updates.items():
-        if key not in seen:
-            next_lines.append(f"{key}={env_quote(value)}")
-            os.environ[key] = str(value or "")
-    with open(API_ENV_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(next_lines).rstrip() + "\n")
+    normalized_updates = {
+        str(key): str(value or "")
+        for key, value in updates.items()
+    }
+    merged = CREDENTIAL_STORE.update(normalized_updates)
+    CREDENTIAL_VALUES.clear()
+    CREDENTIAL_VALUES.update(merged)
+    for key, value in normalized_updates.items():
+        os.environ[key] = value
 
 BACKEND_LOCAL_LOAD = {addr: 0 for addr in COMFYUI_INSTANCES}
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(ASSETS_DIR, exist_ok=True)
-os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
-os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
-os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
-os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
-os.makedirs(STATIC_DIR, exist_ok=True)
-os.makedirs(WORKFLOW_DIR, exist_ok=True)
-os.makedirs(CONVERSATION_DIR, exist_ok=True)
-os.makedirs(CANVAS_DIR, exist_ok=True)
+if MODERN_STORAGE_ACTIVE_ON_STARTUP:
+    for writable_path in RUNTIME_PATHS.writable_paths():
+        os.makedirs(writable_path, exist_ok=True)
+    os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
+    os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
+    os.makedirs(CONVERSATION_DIR, exist_ok=True)
+
+class StorageOverlayStaticFiles(StaticFiles):
+    def __init__(self, directories):
+        super().__init__(directory=None, check_dir=False)
+        self.all_directories = [str(path) for path in directories if path]
+
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
-app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+app.mount(
+    "/output",
+    StorageOverlayStaticFiles([OUTPUT_DIR, LEGACY_OUTPUT_DIR]),
+    name="output",
+)
+app.mount(
+    "/assets",
+    StorageOverlayStaticFiles([ASSETS_DIR]),
+    name="assets",
+)
 
 # --- Pydantic 模型 ---
 
@@ -1753,7 +2019,21 @@ def versioned_static_html(html: str) -> str:
         return f"{match.group('prefix')}{url}?v={cache_version}"
     return pattern.sub(replace, html)
 
+def versioned_openshop_runtime_html(html: str) -> str:
+    pattern = re.compile(
+        r'(?P<prefix>(?:src|href)=["\']|@import\s+url\(["\'])'
+        r'(?P<url>\./(?:host|locales)/[^"\')?#]+\.(?:js|css))'
+        r'(?:\?v=[^"\')#]*)?',
+        re.I,
+    )
+    return pattern.sub(
+        lambda match: f"{match.group('prefix')}{match.group('url')}?v={OPENSHOP_RUNTIME_REVISION}",
+        html,
+    )
+
 def sync_static_html_versions():
+    if EDITION != "development":
+        return
     version = current_app_version()
     if not version:
         return
@@ -1771,6 +2051,7 @@ def sync_static_html_versions():
                 if os.path.isfile(path):
                     html_paths.append(path)
         shell_path = os.path.abspath(os.path.join(STATIC_DIR, "index.html"))
+        openshop_entry_path = os.path.abspath(os.path.join(STATIC_DIR, "openshop", "index.html"))
         html_paths.sort(key=lambda path: (os.path.abspath(path) == shell_path, path.lower()))
         for path in html_paths:
             # 单文件容错：某个文件读写失败不应中断整批同步。
@@ -1778,6 +2059,8 @@ def sync_static_html_versions():
                 with open(path, "r", encoding="utf-8") as f:
                     old = f.read()
                 new = versioned_static_html(re.sub(r'([?&]v=)[^"\'`\s<>)]*', rf'\g<1>{safe_version}', old))
+                if os.path.abspath(path) == openshop_entry_path:
+                    new = versioned_openshop_runtime_html(new)
                 if new != old:
                     with open(path, "w", encoding="utf-8", newline="") as f:
                         f.write(new)
@@ -2148,7 +2431,7 @@ def github_bytes(url: str) -> bytes:
 def download_github_update_files(files: List[str], staging_root: str) -> None:
     staging_root_abs = os.path.abspath(staging_root)
     for rel in files:
-        safe_update_target(rel)
+        validate_update_file(rel)
         raw_url = f"{GITHUB_RAW_ROOT}/{urllib.parse.quote(rel, safe='/')}"
         data = github_bytes(raw_url)
         stage_path = os.path.abspath(os.path.join(staging_root_abs, *rel.split("/")))
@@ -2191,7 +2474,7 @@ def download_modelscope_update_files(staging_root: str) -> List[str]:
         raise RuntimeError("ModelScope 未返回 static 文件，已取消更新")
     staging_root_abs = os.path.abspath(staging_root)
     for rel in files:
-        safe_update_target(rel)
+        validate_update_file(rel)
         data = modelscope_file_bytes(rel)
         stage_path = os.path.abspath(os.path.join(staging_root_abs, *rel.split("/")))
         if os.path.commonpath([staging_root_abs, stage_path]) != staging_root_abs:
@@ -2201,97 +2484,11 @@ def download_modelscope_update_files(staging_root: str) -> List[str]:
             f.write(data)
     return files
 
-def safe_update_target(path: str) -> str:
+def validate_update_file(path: str) -> str:
     rel = str(path or "").replace("\\", "/").lstrip("/")
     if not update_allowed_file(rel):
         raise ValueError(f"更新文件不在允许范围：{rel}")
-    target = os.path.abspath(os.path.join(BASE_DIR, *rel.split("/")))
-    base = os.path.abspath(BASE_DIR)
-    if os.path.commonpath([base, target]) != base:
-        raise ValueError(f"更新路径不安全：{rel}")
-    return target
-
-def safe_static_dir() -> str:
-    target = os.path.abspath(STATIC_DIR)
-    expected = os.path.abspath(os.path.join(BASE_DIR, "static"))
-    base = os.path.abspath(BASE_DIR)
-    if target != expected or os.path.commonpath([base, target]) != base:
-        raise RuntimeError(f"static 路径不安全：{target}")
-    return target
-
-def schedule_self_restart(delay_seconds: int = 3) -> bool:
-    """派生脱离父进程的小脚本，等几秒后启动启动服务脚本，并干掉当前 PID。"""
-    delay = max(1, int(delay_seconds or 3))
-    pid = os.getpid()
-    try:
-        if os.name == "nt":
-            launcher = os.path.join(BASE_DIR, "启动服务.bat")
-            if not os.path.exists(launcher):
-                launcher = os.path.join(BASE_DIR, "start.bat")
-            bat_path = os.path.join(BASE_DIR, "_self_restart.bat")
-            log_path = os.path.join(BASE_DIR, "_self_restart.log")
-            script = (
-                "@echo off\r\n"
-                "chcp 65001 >nul\r\n"
-                "setlocal\r\n"
-                f"set \"APP_DIR={BASE_DIR}\"\r\n"
-                f"set \"LAUNCHER={launcher}\"\r\n"
-                f"set \"LOG_FILE={log_path}\"\r\n"
-                "echo [%date% %time%] restart scheduled >> \"%LOG_FILE%\"\r\n"
-                f"timeout /t {delay} /nobreak >nul\r\n"
-                "echo [%date% %time%] stopping old process >> \"%LOG_FILE%\"\r\n"
-                f"taskkill /F /PID {pid} >nul 2>&1\r\n"
-                "timeout /t 2 /nobreak >nul\r\n"
-                "cd /d \"%APP_DIR%\"\r\n"
-                "if exist \"%LAUNCHER%\" (\r\n"
-                "  echo [%date% %time%] starting launcher: %LAUNCHER% >> \"%LOG_FILE%\"\r\n"
-                "  start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k call \"%LAUNCHER%\"\r\n"
-                ") else (\r\n"
-                "  echo [%date% %time%] launcher missing, fallback to python main.py >> \"%LOG_FILE%\"\r\n"
-                "  if exist \"%APP_DIR%\\python\\python.exe\" (\r\n"
-                "    start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k \"\"%APP_DIR%\\python\\python.exe\" main.py\"\r\n"
-                "  ) else (\r\n"
-                "    start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k python main.py\r\n"
-                "  )\r\n"
-                ")\r\n"
-                "del \"%~f0\"\r\n"
-            )
-            with open(bat_path, "w", encoding="utf-8") as f:
-                f.write(script)
-            subprocess.Popen(
-                ["cmd", "/c", bat_path],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
-            )
-        else:
-            launcher = os.path.join(BASE_DIR, "mac-启动服务.command")
-            if not os.path.exists(launcher):
-                launcher = os.path.join(BASE_DIR, "start.sh")
-            sh_path = os.path.join(BASE_DIR, "_self_restart.sh")
-            script = (
-                "#!/bin/sh\n"
-                f"sleep {delay}\n"
-                f"kill -9 {pid} 2>/dev/null\n"
-                f"cd \"{BASE_DIR}\"\n"
-                f"if [ -x \"{launcher}\" ]; then nohup \"{launcher}\" >/dev/null 2>&1 &\n"
-                f"elif [ -f \"{launcher}\" ]; then nohup /bin/sh \"{launcher}\" >/dev/null 2>&1 &\n"
-                "fi\n"
-                "rm -- \"$0\"\n"
-            )
-            with open(sh_path, "w", encoding="utf-8") as f:
-                f.write(script)
-            os.chmod(sh_path, 0o755)
-            subprocess.Popen(
-                ["/bin/sh", sh_path],
-                start_new_session=True,
-                close_fds=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        return True
-    except Exception as exc:
-        logging.exception("schedule_self_restart failed: %s", exc)
-        return False
+    return rel
 
 class UpdateRequest(BaseModel):
     auto_restart: bool = False
@@ -2364,143 +2561,10 @@ def stage_update_from_source(source: str, staging_root: str) -> Tuple[List[str],
 
 @app.post("/api/update-from-github")
 def update_from_github(req: UpdateRequest = UpdateRequest()):
-    if not UPDATE_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="正在更新中，请稍后再试")
-    staging_root = ""
-    requested_source = normalize_update_source(req.source)
-    # 冗余设计：先用用户选择的源，失败后自动切换到另一个源兜底，全部失败才报错
-    source_order = [requested_source]
-    if req.fallback:
-        other = "modelscope" if requested_source == "github" else "github"
-        source_order.append(other)
-    try:
-        backup_root = os.path.join(DATA_DIR, "update_backups", time.strftime("%Y%m%d-%H%M%S"))
-
-        # 下载阶段（带兜底切换），任意源成功即停止
-        source = requested_source
-        root_files = static_files = files = None
-        download_errors: List[str] = []
-        fallback_used = False
-        for idx, candidate in enumerate(source_order):
-            attempt_staging = os.path.join(
-                DATA_DIR, "update_staging",
-                f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{candidate}",
-            )
-            if os.path.isdir(attempt_staging):
-                shutil.rmtree(attempt_staging, ignore_errors=True)
-            label = UPDATE_SOURCE_LABELS.get(candidate, candidate)
-            print(f"[update] 尝试下载源 [{idx + 1}/{len(source_order)}] {label}（{candidate}）→ {attempt_staging}")
-            try:
-                root_files, static_files, files = stage_update_from_source(candidate, attempt_staging)
-                source = candidate
-                staging_root = attempt_staging
-                fallback_used = idx > 0
-                print(f"[update] 下载源 {label} 成功，共 {len(files or [])} 个文件")
-                break
-            except Exception as exc:  # noqa: BLE001 — 记录后尝试下一个源
-                if os.path.isdir(attempt_staging):
-                    shutil.rmtree(attempt_staging, ignore_errors=True)
-                print(f"[update] 下载源 {label} 失败：{exc}")
-                traceback.print_exc()
-                download_errors.append(f"{label}：{exc}")
-        if not staging_root:
-            detail = "；".join(download_errors) or "未知错误"
-            print(f"[update] 所有下载源均失败 → {detail}")
-            raise HTTPException(status_code=502, detail=f"所有下载源均失败 → {detail}")
-
-        updated = []
-        for rel in root_files:
-            target = safe_update_target(rel)
-            if os.path.exists(target):
-                backup_path = os.path.join(backup_root, *rel.split("/"))
-                os.makedirs(os.path.dirname(backup_path), exist_ok=True)
-                shutil.copy2(target, backup_path)
-
-        staged_static_dir = os.path.join(staging_root, "static")
-        if not os.path.isdir(staged_static_dir):
-            raise RuntimeError("GitHub static 暂存目录不存在，已取消更新")
-        static_dir = safe_static_dir()
-        backup_static_dir = os.path.join(backup_root, "static")
-        if os.path.isdir(static_dir):
-            os.makedirs(os.path.dirname(backup_static_dir), exist_ok=True)
-            shutil.copytree(static_dir, backup_static_dir)
-            shutil.rmtree(static_dir)
-        try:
-            shutil.copytree(staged_static_dir, static_dir)
-        except Exception:
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir, ignore_errors=True)
-            if os.path.isdir(backup_static_dir):
-                shutil.copytree(backup_static_dir, static_dir)
-            raise
-        updated.extend(static_files)
-
-        replaced_root_files = []
-        try:
-            for rel in root_files:
-                target = safe_update_target(rel)
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                temp_path = f"{target}.update_tmp"
-                shutil.copy2(os.path.join(staging_root, *rel.split("/")), temp_path)
-                os.replace(temp_path, target)
-                replaced_root_files.append(rel)
-                updated.append(rel)
-        except Exception:
-            for rel in reversed(replaced_root_files):
-                backup_path = os.path.join(backup_root, *rel.split("/"))
-                target = safe_update_target(rel)
-                if os.path.exists(backup_path):
-                    temp_path = f"{target}.rollback_tmp"
-                    shutil.copy2(backup_path, temp_path)
-                    os.replace(temp_path, target)
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir, ignore_errors=True)
-            if os.path.isdir(backup_static_dir):
-                shutil.copytree(backup_static_dir, static_dir)
-            raise
-
-        restart_scheduled = False
-        if req.auto_restart and updated:
-            restart_scheduled = schedule_self_restart(req.restart_delay)
-        new_version = ""
-        try:
-            staged_version = os.path.join(staging_root, "VERSION")
-            if os.path.exists(staged_version):
-                with open(staged_version, "r", encoding="utf-8") as f:
-                    new_version = (f.read().strip().splitlines() or [""])[0].strip()
-        except Exception:
-            new_version = ""
-        notes_file = os.path.join(staging_root, "static", "update-notes.json")
-        update_notes = {}
-        try:
-            if os.path.exists(notes_file):
-                with open(notes_file, "r", encoding="utf-8") as f:
-                    update_notes = safe_update_notes(json.load(f), new_version)
-        except Exception:
-            update_notes = {}
-        return {
-            "ok": True,
-            "source": source,
-            "source_label": UPDATE_SOURCE_LABELS.get(source, source),
-            "requested_source": requested_source,
-            "fallback_used": fallback_used,
-            "download_errors": download_errors,
-            "updated": updated,
-            "count": len(updated),
-            "version": new_version,
-            "update_notes": update_notes,
-            "backup_dir": backup_root if os.path.exists(backup_root) else "",
-            "restart_required": True,
-            "restart_scheduled": restart_scheduled,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"更新失败：{exc}") from exc
-    finally:
-        if staging_root and os.path.isdir(staging_root):
-            shutil.rmtree(staging_root, ignore_errors=True)
-        UPDATE_LOCK.release()
+    raise HTTPException(
+        status_code=409,
+        detail="应用内覆盖更新已停用，请下载并运行新版 Hstar 安装包完成升级。",
+    )
 
 def list_update_backups() -> List[Dict[str, Any]]:
     root = os.path.join(DATA_DIR, "update_backups")
@@ -2536,71 +2600,10 @@ class RollbackRequest(BaseModel):
 
 @app.post("/api/update-rollback")
 def rollback_update(req: RollbackRequest):
-    if not req.name:
-        raise HTTPException(status_code=400, detail="缺少备份名称")
-    if not UPDATE_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="正在更新中，请稍后再试")
-    try:
-        backup_root_abs = os.path.abspath(os.path.join(DATA_DIR, "update_backups"))
-        backup_dir = os.path.abspath(os.path.join(backup_root_abs, req.name))
-        if os.path.commonpath([backup_root_abs, backup_dir]) != backup_root_abs:
-            raise HTTPException(status_code=400, detail="备份路径不安全")
-        if not os.path.isdir(backup_dir):
-            raise HTTPException(status_code=404, detail="备份不存在")
-        restored = []
-        skipped = []
-        backup_static_dir = os.path.join(backup_dir, "static")
-        if os.path.isdir(backup_static_dir):
-            static_dir = safe_static_dir()
-            if os.path.isdir(static_dir):
-                shutil.rmtree(static_dir)
-            try:
-                shutil.copytree(backup_static_dir, static_dir)
-            except Exception:
-                if os.path.isdir(static_dir):
-                    shutil.rmtree(static_dir, ignore_errors=True)
-                raise
-            for dirpath, _, filenames in os.walk(backup_static_dir):
-                for fn in filenames:
-                    src = os.path.join(dirpath, fn)
-                    restored.append(os.path.relpath(src, backup_dir).replace("\\", "/"))
-        for dirpath, _, filenames in os.walk(backup_dir):
-            for fn in filenames:
-                src = os.path.join(dirpath, fn)
-                rel = os.path.relpath(src, backup_dir).replace("\\", "/")
-                if rel.startswith("static/"):
-                    continue
-                if not update_allowed_file(rel):
-                    skipped.append(rel)
-                    continue
-                try:
-                    target = safe_update_target(rel)
-                except ValueError:
-                    skipped.append(rel)
-                    continue
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                temp_path = f"{target}.rollback_tmp"
-                with open(src, "rb") as fin, open(temp_path, "wb") as fout:
-                    shutil.copyfileobj(fin, fout)
-                os.replace(temp_path, target)
-                restored.append(rel)
-        restart_scheduled = False
-        if req.auto_restart and restored:
-            restart_scheduled = schedule_self_restart(req.restart_delay)
-        return {
-            "ok": True,
-            "restored": restored,
-            "skipped": skipped,
-            "count": len(restored),
-            "restart_required": True,
-            "restart_scheduled": restart_scheduled,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"回滚失败：{exc}") from exc
-    finally:
-        UPDATE_LOCK.release()
+    raise HTTPException(
+        status_code=410,
+        detail="应用内程序回滚已停用，请重新运行对应版本的 Hstar 安装包。",
+    )
 
 class GenerateRequest(BaseModel):
     prompt: str = ""
@@ -2938,6 +2941,12 @@ class SaveOutputAsRequest(BaseModel):
 
 class SoftwareStorageRequest(BaseModel):
     storage_root: str = ""
+
+class StorageMigrationRequest(BaseModel):
+    storage_root: str = Field(min_length=1, max_length=1024)
+
+class RuntimeRestartRequest(BaseModel):
+    expected_storage_root: str = Field(min_length=1, max_length=1024)
 
 class VoiceSettingsRequest(BaseModel):
     enabled: bool = True
@@ -3364,19 +3373,34 @@ def comfy_class_is_debug_text(class_type):
     ct = str(class_type or "").lower()
     return bool(ct) and any(h in ct for h in COMFY_DEBUG_TEXT_CLASS_HINTS)
 
+def backup_corrupt_history(read_path: str, error: Exception) -> Path:
+    source = Path(read_path)
+    backup = (
+        Path(HISTORY_FILE).parent
+        / "corrupt"
+        / f"{source.name}.{uuid.uuid4().hex}.corrupt"
+    )
+    atomic_write_bytes(backup, source.read_bytes())
+    print(f"历史文件损坏，已保留原始副本 {backup}: {error}")
+    return backup
+
 def save_to_history(record):
     with HISTORY_LOCK:
         history = []
-        if os.path.exists(HISTORY_FILE):
+        read_path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+        if os.path.exists(read_path):
             try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-            except: pass
+                with open(read_path, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                if not isinstance(loaded, list) or any(not isinstance(item, dict) for item in loaded):
+                    raise ValueError("历史记录根节点必须是对象数组")
+                history = loaded
+            except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+                backup_corrupt_history(read_path, error)
         if "timestamp" not in record:
             record["timestamp"] = time.time()
         history.insert(0, record)
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history[:5000], f, ensure_ascii=False, indent=4)
+        atomic_write_json(Path(HISTORY_FILE), history[:5000])
 
 def get_comfy_history(comfy_address, prompt_id):
     try:
@@ -3394,16 +3418,51 @@ def safe_user_id(user_id, request: Request):
     candidate = re.sub(r"[^a-zA-Z0-9_.-]", "-", candidate)[:80].strip(".-")
     return candidate or "anonymous"
 
-def user_dir(user_id):
-    path = os.path.join(CONVERSATION_DIR, user_id)
-    os.makedirs(path, exist_ok=True)
-    return path
+def conversation_user_dir(root_dir, user_id):
+    return os.path.join(root_dir, user_id) if root_dir else ""
 
-def conversation_path(user_id, conversation_id):
+def primary_conversation_path(user_id, conversation_id):
+    return os.path.join(
+        conversation_user_dir(CONVERSATION_DIR, user_id),
+        f"{cleaned_conversation_id(conversation_id)}.json",
+    )
+
+def legacy_conversation_path(user_id, conversation_id):
+    if not LEGACY_CONVERSATION_DIR:
+        return ""
+    return os.path.join(
+        conversation_user_dir(LEGACY_CONVERSATION_DIR, user_id),
+        f"{cleaned_conversation_id(conversation_id)}.json",
+    )
+
+def cleaned_conversation_id(conversation_id):
     cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", conversation_id or "")
     if not cleaned:
         raise HTTPException(status_code=400, detail="无效的对话 ID")
-    return os.path.join(user_dir(user_id), f"{cleaned}.json")
+    return cleaned
+
+def conversation_path(user_id, conversation_id):
+    primary = primary_conversation_path(user_id, conversation_id)
+    if os.path.isfile(primary):
+        return primary
+    legacy = legacy_conversation_path(user_id, conversation_id)
+    if legacy and os.path.isfile(legacy):
+        return legacy
+    return primary
+
+def conversation_storage_files(user_id):
+    by_name = {}
+    directories = [
+        conversation_user_dir(LEGACY_CONVERSATION_DIR, user_id),
+        conversation_user_dir(CONVERSATION_DIR, user_id),
+    ]
+    for directory in directories:
+        if not directory or not os.path.isdir(directory):
+            continue
+        for filename in os.listdir(directory):
+            if filename.endswith(".json"):
+                by_name[filename] = os.path.join(directory, filename)
+    return [by_name[name] for name in sorted(by_name)]
 
 def now_ms():
     return int(time.time() * 1000)
@@ -3411,8 +3470,7 @@ def now_ms():
 def save_conversation(user_id, conversation):
     with CONVERSATION_LOCK:
         path = conversation_path(user_id, conversation["id"])
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(conversation, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(path), conversation)
 
 def new_conversation(user_id, title="新对话"):
     timestamp = now_ms()
@@ -3435,10 +3493,7 @@ def load_conversation(user_id, conversation_id):
 
 def list_conversations(user_id):
     records = []
-    for filename in os.listdir(user_dir(user_id)):
-        if not filename.endswith(".json"):
-            continue
-        path = os.path.join(user_dir(user_id), filename)
+    for path in conversation_storage_files(user_id):
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -3455,18 +3510,48 @@ def list_conversations(user_id):
         })
     return sorted(records, key=lambda item: item["updated_at"], reverse=True)
 
-def canvas_path(canvas_id):
-    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", canvas_id or "")
-    if not cleaned:
+def cleaned_canvas_id(canvas_id):
+    cleaned = str(canvas_id or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", cleaned):
         raise HTTPException(status_code=400, detail="无效的画布 ID")
-    return os.path.join(CANVAS_DIR, f"{cleaned}.json")
+    return cleaned
+
+def primary_canvas_path(canvas_id):
+    return os.path.join(CANVAS_DIR, f"{cleaned_canvas_id(canvas_id)}.json")
+
+def legacy_canvas_path(canvas_id):
+    if not LEGACY_CANVAS_DIR:
+        return ""
+    return os.path.join(LEGACY_CANVAS_DIR, f"{cleaned_canvas_id(canvas_id)}.json")
+
+def canvas_path(canvas_id):
+    primary = primary_canvas_path(canvas_id)
+    if os.path.isfile(primary):
+        return primary
+    legacy = legacy_canvas_path(canvas_id)
+    if legacy and os.path.isfile(legacy):
+        return legacy
+    return primary
+
+def canvas_storage_files(*, include_legacy=True):
+    by_name = {}
+    directories = []
+    if include_legacy and LEGACY_CANVAS_DIR:
+        directories.append(LEGACY_CANVAS_DIR)
+    directories.append(CANVAS_DIR)
+    for directory in directories:
+        if not os.path.isdir(directory):
+            continue
+        for filename in os.listdir(directory):
+            if filename.endswith(".json"):
+                by_name[filename] = os.path.join(directory, filename)
+    return [by_name[name] for name in sorted(by_name)]
 
 def save_canvas(canvas):
     previous_updated_at = int(canvas.get("updated_at") or 0)
     canvas["updated_at"] = max(now_ms(), previous_updated_at + 1)
     with CANVAS_LOCK:
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(canvas_path(canvas["id"])), canvas)
 
 OPENSHOP_ASSET_URL_PREFIX = "/api/openshop/assets/"
 OPENSHOP_ASSET_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -3490,18 +3575,19 @@ def openshop_asset_refs_from_value(value):
 def openshop_canvas_asset_refs():
     refs = set()
     with CANVAS_LOCK:
-        for filename in os.listdir(CANVAS_DIR):
-            if not filename.endswith(".json"):
-                continue
+        for path in canvas_storage_files():
             try:
-                with open(os.path.join(CANVAS_DIR, filename), "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     refs.update(openshop_asset_refs_from_value(json.load(f)))
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
     return refs
 
-def collect_openshop_garbage():
-    return OPENSHOP_STORE.collect_garbage(openshop_canvas_asset_refs())
+def collect_openshop_garbage(*, include_legacy: bool = False):
+    return OPENSHOP_STORE.collect_garbage(
+        openshop_canvas_asset_refs(),
+        include_legacy=include_legacy,
+    )
 
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
@@ -3537,7 +3623,7 @@ def reconcile_openshop_canvas_projects(canvas):
                 OPENSHOP_AI_TASKS.cancel_project(record["projectId"], record["owner"])
     finally:
         if removed_records:
-            collect_openshop_garbage()
+            collect_openshop_garbage(include_legacy=True)
     if reconciliation_error:
         if reconciliation_error.__cause__ is not None:
             raise reconciliation_error.__cause__
@@ -3595,16 +3681,18 @@ def remove_openshop_projects(project_owners, canvas_type, canvas_id):
         except OpenShopNotFound:
             continue
     if removed:
-        collect_openshop_garbage()
+        collect_openshop_garbage(include_legacy=True)
     return removed
 
 # ===== 项目（按项目分类管理画布）=====
 PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
+LEGACY_PROJECTS_PATH = os.path.join(LEGACY_DATA_DIR, "projects.json") if LEGACY_DATA_DIR else ""
 DEFAULT_PROJECT_ID = "default"
 
 def load_projects():
+    path = storage_read_path(PROJECTS_PATH, LEGACY_PROJECTS_PATH)
     try:
-        with open(PROJECTS_PATH, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         projects = data.get("projects") if isinstance(data, dict) else data
         if isinstance(projects, list):
@@ -3615,8 +3703,7 @@ def load_projects():
 
 def save_projects(projects):
     with CANVAS_LOCK:
-        with open(PROJECTS_PATH, 'w', encoding='utf-8') as f:
-            json.dump({"projects": projects}, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(PROJECTS_PATH), {"projects": projects})
 
 def project_record(p):
     return {
@@ -3627,7 +3714,7 @@ def project_record(p):
         "updated_at": p.get("updated_at", 0),
     }
 
-def ensure_default_project():
+def ensure_default_project(*, persist=True):
     """保证存在一个“默认项目”，并把没有归属项目的画布迁移进去（一次性、幂等）。"""
     projects = load_projects()
     changed = False
@@ -3635,7 +3722,7 @@ def ensure_default_project():
         ts = now_ms()
         projects.insert(0, {"id": DEFAULT_PROJECT_ID, "name": "默认项目", "order": 0, "created_at": ts, "updated_at": ts})
         changed = True
-    if changed:
+    if changed and persist:
         save_projects(projects)
     return projects
 
@@ -3650,7 +3737,7 @@ def new_project(name="新项目"):
     return proj
 
 def list_projects():
-    projects = ensure_default_project()
+    projects = ensure_default_project(persist=not PRESERVE_EXISTING_DATA_ON_STARTUP)
     counts = {}
     for rec in iter_canvas_records(include_deleted=False):
         pid = rec.get("project") or DEFAULT_PROJECT_ID
@@ -3663,27 +3750,10 @@ def list_projects():
     return out
 
 def create_canvas_file(canvas):
-    path = canvas_path(canvas["id"])
-    file_descriptor = os.open(
-        path,
-        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-        0o644,
-    )
-    try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8") as file:
-            file_descriptor = None
-            json.dump(canvas, file, ensure_ascii=False, indent=2)
-    except Exception:
-        if file_descriptor is not None:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
-        raise
+    if os.path.isfile(canvas_path(canvas["id"])):
+        raise FileExistsError(canvas["id"])
+    path = primary_canvas_path(canvas["id"])
+    atomic_create_json(Path(path), canvas)
 
 
 def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None, canvas_id=None):
@@ -3724,21 +3794,36 @@ def new_canvas(title="未命名画布", icon="layers", kind="classic", project=N
     return canvas
 
 def load_canvas(canvas_id):
-    path = canvas_path(canvas_id)
+    normalized_id = cleaned_canvas_id(canvas_id)
+    path = canvas_path(normalized_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="画布不存在")
     with open(path, 'r', encoding='utf-8') as f:
         canvas = json.load(f)
+    if not isinstance(canvas, dict):
+        raise HTTPException(status_code=409, detail="画布记录格式无效")
+    stored_id = str(canvas.get("id") or "")
+    if stored_id and stored_id != normalized_id:
+        raise HTTPException(status_code=409, detail="画布记录 ID 与文件名不一致")
+    canvas.setdefault("id", normalized_id)
     if canvas.get("deleted_at"):
         raise HTTPException(status_code=404, detail="画布已在回收站")
     return canvas
 
 def load_canvas_any(canvas_id):
-    path = canvas_path(canvas_id)
+    normalized_id = cleaned_canvas_id(canvas_id)
+    path = canvas_path(normalized_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="画布不存在")
     with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        canvas = json.load(f)
+    if not isinstance(canvas, dict):
+        raise HTTPException(status_code=409, detail="画布记录格式无效")
+    stored_id = str(canvas.get("id") or "")
+    if stored_id and stored_id != normalized_id:
+        raise HTTPException(status_code=409, detail="画布记录 ID 与文件名不一致")
+    canvas.setdefault("id", normalized_id)
+    return canvas
 
 CANVAS_COLORS = {"", "red", "orange", "amber", "green", "teal", "blue", "violet", "pink", "slate"}
 
@@ -3765,6 +3850,8 @@ def canvas_record(data):
     }
 
 def cleanup_expired_canvas_trash():
+    if not os.path.isdir(CANVAS_DIR):
+        return
     cutoff = now_ms() - CANVAS_TRASH_RETENTION_MS
     removed_projects = False
     with CANVAS_LOCK:
@@ -3793,16 +3880,14 @@ def cleanup_expired_canvas_trash():
             except Exception:
                 continue
     if removed_projects:
-        collect_openshop_garbage()
+        collect_openshop_garbage(include_legacy=True)
 
 def iter_canvas_records(include_deleted=False):
     cleanup_expired_canvas_trash()
     records = []
-    for filename in os.listdir(CANVAS_DIR):
-        if not filename.endswith(".json"):
-            continue
+    for path in canvas_storage_files():
         try:
-            with open(os.path.join(CANVAS_DIR, filename), 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception:
             continue
@@ -3845,7 +3930,7 @@ def purge_canvas_storage(canvas_id: str, *, require_deleted: bool = False) -> bo
                 os.remove(path)
             except FileNotFoundError:
                 return False
-            collect_openshop_garbage()
+            collect_openshop_garbage(include_legacy=True)
         return True
 
 def canvas_asset_url_value(value):
@@ -3958,11 +4043,9 @@ def canvas_assets_index():
     canvas_counts = {"all": 0, "smart": 0, "classic": 0}
     item_counts = {"all": 0, "smart": 0, "classic": 0}
     cleanup_expired_canvas_trash()
-    for filename in os.listdir(CANVAS_DIR):
-        if not filename.endswith(".json"):
-            continue
+    for path in canvas_storage_files():
         try:
-            with open(os.path.join(CANVAS_DIR, filename), "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 canvas = json.load(f)
         except Exception:
             continue
@@ -4064,7 +4147,7 @@ def api_headers(json_body=True, provider=None, model=""):
     else:
         api_key = AI_API_KEY
         if not api_key:
-            raise HTTPException(status_code=400, detail="未配置 COMFLY_API_KEY，请在 API/.env 中填写。")
+            raise HTTPException(status_code=400, detail="未配置 COMFLY_API_KEY，请在 API 设置中填写。")
     if provider and effective_protocol(provider, model) == "gemini" and not is_linapi_provider(provider):
         headers = {"Accept": "application/json", "x-goog-api-key": api_key}
     else:
@@ -4918,7 +5001,7 @@ def is_gemini_cli_provider(provider):
     return provider_protocol(provider) == "gemini-cli"
 
 def codex_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 def codex_cli_executable():
     configured = str(codex_env_value("CODEX_BIN") or "").strip()
@@ -5464,7 +5547,7 @@ async def codex_chat_text(payload, history_messages=None):
                 pass
 
 def gemini_cli_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 GEMINI_CLI_MODELS_TIMEOUT = 20
 GEMINI_CLI_STRING_CONTROL_ESCAPES = {"]", "P", "X", "^", "_"}
@@ -6056,7 +6139,7 @@ def provider_supports_avatar(provider) -> bool:
     return avatar_platform_for_provider(provider) in AVATAR_SUPPORTED_PLATFORMS
 
 def jimeng_env_value(key):
-    return os.getenv(key, "") or read_api_env_value(key)
+    return os.getenv(key, "") or read_api_credential_value(key)
 
 def jimeng_use_wsl():
     value = str(jimeng_env_value("JIMENG_USE_WSL") or "").strip().lower()
@@ -6944,11 +7027,13 @@ async def wait_for_image_task(client, task_id, provider=None):
     raise HTTPException(status_code=504, detail=f"生图任务超时（已等待 {int(timeout)} 秒），task_id={task_id}{extra}")
 
 def output_storage(category="output"):
-    return (OUTPUT_INPUT_DIR, "input") if category == "input" else (OUTPUT_OUTPUT_DIR, "output")
+    if category == "input":
+        return OUTPUT_INPUT_DIR, "/assets/input"
+    return OUTPUT_OUTPUT_DIR, "/output/generated"
 
 def output_url_for(filename, category="output"):
-    _, subdir = output_storage(category)
-    return f"/assets/{subdir}/{filename}"
+    _, url_prefix = output_storage(category)
+    return f"{url_prefix}/{filename}"
 
 def output_path_for(filename, category="output"):
     folder, _ = output_storage(category)
@@ -6969,19 +7054,22 @@ def output_file_from_url(url):
         return None
     clean = urllib.parse.unquote(url.split("?", 1)[0]).replace("\\", "/")
     if clean.startswith("/assets/"):
-        root = ASSETS_DIR
+        roots = [ASSETS_DIR]
         rel = clean[len("/assets/"):]
     else:
-        root = OUTPUT_DIR
+        roots = [OUTPUT_DIR, LEGACY_OUTPUT_DIR]
         rel = clean[len("/output/"):]
     rel = rel.lstrip("/")
     if not rel:
         return None
-    path = os.path.abspath(os.path.join(root, rel))
-    output_root = os.path.abspath(root)
-    if os.path.commonpath([output_root, path]) != output_root or not os.path.exists(path):
-        return None
-    return path
+    for root in roots:
+        if not root:
+            continue
+        path = os.path.abspath(os.path.join(root, rel))
+        output_root = os.path.abspath(root)
+        if os.path.commonpath([output_root, path]) == output_root and os.path.exists(path):
+            return path
+    return None
 
 def image_has_alpha(img: Image.Image) -> bool:
     if img.mode in ("RGBA", "LA"):
@@ -6990,20 +7078,38 @@ def image_has_alpha(img: Image.Image) -> bool:
         return "transparency" in img.info
     return False
 
-def media_preview_cache_paths(path: str, width: int):
+def media_preview_cache_key(path: str, width: int, suffix: str = ""):
     stat = os.stat(path)
-    key = hashlib.sha1(
-        f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}".encode("utf-8", "ignore")
+    return hashlib.sha1(
+        f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}{suffix}".encode(
+            "utf-8", "ignore"
+        )
     ).hexdigest()
+
+def media_preview_cache_paths(path: str, width: int, root_dir: str = ""):
+    key = media_preview_cache_key(path, width)
+    cache_root = root_dir or MEDIA_PREVIEW_DIR
     return (
-        os.path.join(MEDIA_PREVIEW_DIR, f"{key}.webp"),
-        os.path.join(MEDIA_PREVIEW_DIR, f"{key}.png"),
+        os.path.join(cache_root, f"{key}.webp"),
+        os.path.join(cache_root, f"{key}.png"),
     )
+
+def media_preview_read_paths(path: str, width: int):
+    paths = [media_preview_cache_paths(path, width)]
+    if LEGACY_MEDIA_PREVIEW_DIR:
+        paths.append(
+            media_preview_cache_paths(path, width, LEGACY_MEDIA_PREVIEW_DIR)
+        )
+    return paths
 
 def remove_media_preview_cache(path: str, widths=(480,)):
     for width in widths:
         try:
-            cache_paths = media_preview_cache_paths(path, int(width))
+            cache_paths = [
+                candidate
+                for pair in media_preview_read_paths(path, int(width))
+                for candidate in pair
+            ]
         except OSError:
             continue
         for cache_path in cache_paths:
@@ -7052,12 +7158,13 @@ async def media_preview(url: str, w: int = 512):
         raise HTTPException(status_code=404, detail="媒体文件不存在")
 
     width = max(64, min(2048, int(w or 512)))
-    webp_path, png_path = media_preview_cache_paths(path, width)
+    for cached_webp_path, cached_png_path in media_preview_read_paths(path, width):
+        if os.path.exists(cached_webp_path):
+            return FileResponse(cached_webp_path, media_type="image/webp")
+        if os.path.exists(cached_png_path):
+            return FileResponse(cached_png_path, media_type="image/png")
 
-    if os.path.exists(webp_path):
-        return FileResponse(webp_path, media_type="image/webp")
-    if os.path.exists(png_path):
-        return FileResponse(png_path, media_type="image/png")
+    webp_path, png_path = media_preview_cache_paths(path, width)
 
     def _build_preview():
         # 同步 PIL 处理 + 落盘，放到线程里执行，避免阻塞事件循环（几十张首次生成会卡死整个 loop → 缩略图全空白）
@@ -7090,11 +7197,14 @@ async def image_jpeg(url: str, w: int = 0):
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="媒体文件不存在")
     width = max(0, min(4096, int(w or 0)))
-    stat = os.stat(path)
-    key = hashlib.sha1(f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}|jpg".encode("utf-8", "ignore")).hexdigest()
+    key = media_preview_cache_key(path, width, "|jpg")
     cache_path = os.path.join(MEDIA_PREVIEW_DIR, f"{key}.jpg")
-    if os.path.exists(cache_path):
-        return FileResponse(cache_path, media_type="image/jpeg")
+    read_paths = [cache_path]
+    if LEGACY_MEDIA_PREVIEW_DIR:
+        read_paths.append(os.path.join(LEGACY_MEDIA_PREVIEW_DIR, f"{key}.jpg"))
+    for read_path in read_paths:
+        if os.path.exists(read_path):
+            return FileResponse(read_path, media_type="image/jpeg")
 
     def _build():
         os.makedirs(MEDIA_PREVIEW_DIR, exist_ok=True)
@@ -7124,12 +7234,15 @@ def local_media_file_by_basename(name: str):
         return None
     roots = [
         OUTPUT_OUTPUT_DIR,
+        LEGACY_OUTPUT_DIR,
         OUTPUT_INPUT_DIR,
         os.path.join(ASSETS_DIR, "output"),
         os.path.join(ASSETS_DIR, "input"),
         os.path.join(ASSETS_DIR, "library"),
     ]
     for root in roots:
+        if not root:
+            continue
         path = os.path.abspath(os.path.join(root, safe))
         root_abs = os.path.abspath(root)
         if os.path.commonpath([root_abs, path]) == root_abs and os.path.isfile(path):
@@ -7359,12 +7472,13 @@ def migrate_asset_item_registrations(item):
         item.pop(key, None)
 
 def load_asset_library():
-    if not os.path.exists(ASSET_LIBRARY_PATH):
+    path = storage_read_path(ASSET_LIBRARY_PATH, LEGACY_ASSET_LIBRARY_PATH)
+    if not os.path.exists(path):
         lib = default_asset_library()
         save_asset_library(lib)
         return lib
     try:
-        with open(ASSET_LIBRARY_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             lib = json.load(f)
     except Exception:
         lib = default_asset_library()
@@ -7596,8 +7710,7 @@ def _read_local_upload_classification(filename):
 
 def _write_local_upload_classification(filename, classification):
     path = _local_upload_classification_path(filename)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(normalize_asset_classification(classification), f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(path), normalize_asset_classification(classification))
 
 def asset_classification_prompt(extra_prompt=""):
     extra = str(extra_prompt or "").strip()
@@ -7721,9 +7834,7 @@ def save_asset_library(lib):
     lib = normalize_asset_library(lib)
     sort_asset_library_items(lib)
     lib["updated_at"] = now_ms()
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(ASSET_LIBRARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(lib, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(ASSET_LIBRARY_PATH), lib)
     if GLOBAL_LOOP:
         asyncio.run_coroutine_threadsafe(manager.broadcast_asset_library_updated(int(lib["updated_at"])), GLOBAL_LOOP)
 
@@ -7769,8 +7880,9 @@ SHARED_SCAN_MAX_ENTRIES = 8000
 SHARED_FOLDERS_LOCK = Lock()
 
 def shared_folders_load():
+    path = storage_read_path(SHARED_FOLDERS_FILE, LEGACY_SHARED_FOLDERS_FILE)
     try:
-        with open(SHARED_FOLDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         data = {}
@@ -7782,9 +7894,7 @@ def shared_folders_load():
     return {"folders": [f for f in folders if isinstance(f, dict)]}
 
 def shared_folders_save(data):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SHARED_FOLDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(SHARED_FOLDERS_FILE), data)
 
 def shared_folder_by_id(folder_id):
     for entry in shared_folders_load().get("folders", []):
@@ -8034,27 +8144,32 @@ def normalize_prompt_libraries(data):
     return {"active_library_id": active, "libraries": libraries, "updated_at": int(data.get("updated_at") or now_ms())}
 
 def load_prompt_libraries():
-    if not os.path.exists(PROMPT_LIBRARY_PATH):
+    path = storage_read_path(PROMPT_LIBRARY_PATH, LEGACY_PROMPT_LIBRARY_PATH)
+    if not os.path.exists(path):
         data = default_prompt_libraries()
         return save_prompt_libraries(data)
     try:
-        with open(PROMPT_LIBRARY_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         data = default_prompt_libraries()
     if not isinstance(data, dict):
         data = default_prompt_libraries()
     normalized = normalize_prompt_libraries(data)
-    if normalized.get("active_library_id") != data.get("active_library_id") or normalized.get("libraries") != data.get("libraries"):
+    if (
+        path == PROMPT_LIBRARY_PATH
+        and (
+            normalized.get("active_library_id") != data.get("active_library_id")
+            or normalized.get("libraries") != data.get("libraries")
+        )
+    ):
         return save_prompt_libraries(normalized)
     return normalized
 
 def save_prompt_libraries(data):
     data = normalize_prompt_libraries(data)
     data["updated_at"] = now_ms()
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(PROMPT_LIBRARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(PROMPT_LIBRARY_PATH), data)
     return data
 
 def public_prompt_libraries(data=None):
@@ -8160,6 +8275,24 @@ def convert_output_to_jpg(url, quality=88):
     if ext.lower() in [".jpg", ".jpeg"]:
         return url
     jpg_path = f"{root}.jpg"
+    if LEGACY_OUTPUT_DIR:
+        legacy_root = os.path.abspath(LEGACY_OUTPUT_DIR)
+        source_path = os.path.abspath(path)
+        try:
+            is_legacy_output = (
+                os.path.commonpath([legacy_root, source_path]) == legacy_root
+            )
+        except ValueError:
+            is_legacy_output = False
+        if is_legacy_output:
+            os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
+            stem = sanitize_export_filename(os.path.basename(root), "converted")
+            source_key = hashlib.sha1(
+                source_path.encode("utf-8", "ignore")
+            ).hexdigest()[:12]
+            jpg_path = os.path.join(
+                OUTPUT_OUTPUT_DIR, f"{stem}-{source_key}.jpg"
+            )
     try:
         with Image.open(path) as img:
             if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
@@ -8698,13 +8831,12 @@ def apply_trusted_asset_prompt_index(prompt: str, image_count: int, video_count:
     return f"{text}\n{hint}" if text else hint
 
 def public_base_url() -> str:
-    # 实时读 API/.env 且文件优先：公网隧道重启后地址会变，隧道脚本只改 .env；
-    # 启动时 load_env_file 会把旧值复制进 os.environ，若 env 优先会永远读到过期地址
+    # Credential cache wins because process environment values may be stale.
     value = (
-        read_api_env_value("PUBLIC_MEDIA_BASE_URL") or
+        read_api_credential_value("PUBLIC_MEDIA_BASE_URL") or
         os.getenv("PUBLIC_MEDIA_BASE_URL") or
         PUBLIC_MEDIA_BASE_URL or
-        read_api_env_value("PUBLIC_BASE_URL") or
+        read_api_credential_value("PUBLIC_BASE_URL") or
         os.getenv("PUBLIC_BASE_URL") or
         PUBLIC_BASE_URL or
         ""
@@ -8779,7 +8911,7 @@ def apimart_video_reference_error(value: str) -> str:
             return "这是本地画布文件路径，但后端没有找到对应文件，请重新上传视频后再试。"
         return (
             "这是本地画布文件，APIMart 无法访问 127.0.0.1/局域网路径；"
-            "请在 API/.env 配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），"
+            "请在 API 设置中配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），"
             "或改用公网 http/https 视频 URL、审核后的 asset:// 地址。"
         )
     if text.startswith("data:") or text.startswith("blob:") or text.startswith("file:"):
@@ -10844,7 +10976,7 @@ def runninghub_local_asset_path(url):
     elif text.startswith("/assets/output/"):
         clean = urllib.parse.unquote(text.split("?", 1)[0]).replace("\\", "/")
         rel = clean[len("/assets/output/"):]
-        root = OUTPUT_OUTPUT_DIR
+        root = os.path.join(ASSETS_DIR, "output")
     elif text.startswith("/output/") or text.startswith("/assets/"):
         return output_file_from_url(text)
     else:
@@ -12432,6 +12564,55 @@ async def build_chat_text_reply(payload, conversation):
 
 # --- 路由接口 ---
 
+@app.get("/api/health")
+def backend_health():
+    return {
+        "ok": True,
+        "edition": EDITION,
+        "version": current_app_version(),
+        "instance_id": CLIENT_ID,
+        "active_storage_root": STORAGE_ROOT,
+    }
+
+
+@app.post("/api/runtime/restart", status_code=202)
+async def restart_development_runtime(payload: RuntimeRestartRequest, request: Request):
+    global DEVELOPMENT_RESTART_TARGET
+    if EDITION != "development" or not is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="当前环境不允许自动重启 Hstar")
+
+    target = Path(resolve_storage_root(payload.expected_storage_root)).resolve()
+    validate_storage_migration_target(Path(STORAGE_ROOT), target)
+    validate_storage_root_location(str(target))
+    try:
+        persisted = BOOTSTRAP.require().resolved_data_root()
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail="尚未保存可供重启的储存位置") from error
+    if os.path.normcase(str(target)) != os.path.normcase(str(persisted)):
+        raise HTTPException(status_code=409, detail="重启目录与已确认的储存位置不一致")
+
+    server = ACTIVE_UVICORN_SERVER
+    if server is None:
+        raise HTTPException(status_code=503, detail="Hstar 服务尚未进入可重启状态")
+    with DEVELOPMENT_RESTART_LOCK:
+        if DEVELOPMENT_RESTART_TARGET not in (None, target):
+            raise HTTPException(status_code=409, detail="已有其他储存位置正在等待重启")
+        DEVELOPMENT_RESTART_TARGET = target
+    asyncio.get_running_loop().call_soon(setattr, server, "should_exit", True)
+    return {"ok": True, "scheduled": True, "instance_id": CLIENT_ID}
+
+
+@app.post("/api/shell/shutdown")
+async def shutdown_packaged_backend():
+    if not SHELL_TOKEN:
+        raise HTTPException(status_code=403, detail="开发模式不允许远程关闭后端")
+    server = ACTIVE_UVICORN_SERVER
+    if server is None:
+        return {"ok": True, "scheduled": False}
+    asyncio.get_running_loop().call_soon(setattr, server, "should_exit", True)
+    return {"ok": True, "scheduled": True}
+
+
 @app.get("/")
 async def index():
     return static_html_response("index.html")
@@ -12519,75 +12700,54 @@ def normalize_external_app_id(app: str) -> str:
     return value if value in EXTERNAL_APP_IDS else "custom"
 
 def load_software_settings() -> Dict[str, Any]:
-    if not os.path.exists(SOFTWARE_SETTINGS_FILE):
+    path = storage_read_path(SOFTWARE_SETTINGS_FILE, LEGACY_SOFTWARE_SETTINGS_FILE)
+    if not os.path.exists(path):
         return {"external_apps": {}}
     try:
-        with open(SOFTWARE_SETTINGS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {"external_apps": {}}
     except Exception:
         return {"external_apps": {}}
 
 def save_software_settings(settings: Dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(SOFTWARE_SETTINGS_FILE), exist_ok=True)
     safe = settings if isinstance(settings, dict) else {}
-    with open(SOFTWARE_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(safe, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(SOFTWARE_SETTINGS_FILE), safe)
 
-def copy_runtime_file_if_missing(source: str, target: str) -> bool:
-    if not os.path.isfile(source) or os.path.exists(target):
-        return False
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    shutil.copy2(source, target)
-    return True
-
-def copy_runtime_dir_if_missing(source: str, target: str) -> int:
-    if not os.path.isdir(source):
-        return 0
-    copied = 0
-    for root, _, files in os.walk(source):
-        rel_root = os.path.relpath(root, source)
-        dest_root = target if rel_root == "." else os.path.join(target, rel_root)
-        os.makedirs(dest_root, exist_ok=True)
-        for name in files:
-            src_file = os.path.join(root, name)
-            dest_file = os.path.join(dest_root, name)
-            if not os.path.exists(dest_file):
-                shutil.copy2(src_file, dest_file)
-                copied += 1
-    return copied
-
-def migrate_runtime_data_to_storage(storage_root: str) -> Dict[str, Any]:
-    target_paths = runtime_paths_for_storage_root(storage_root, SOFTWARE_SETTINGS_FILE)
-    source_paths = runtime_paths_for_storage_root(STORAGE_ROOT, SOFTWARE_SETTINGS_FILE)
-    copied_files = 0
-    for key in ("canvas_dir", "conversation_dir", "assets_dir", "output_dir"):
-        copied_files += copy_runtime_dir_if_missing(source_paths[key], target_paths[key])
-    for key in ("asset_library_path", "prompt_library_path", "api_providers_file", "runninghub_workflow_store_file", "shared_folders_file", "global_config_file", "history_file"):
-        if copy_runtime_file_if_missing(source_paths[key], target_paths[key]):
-            copied_files += 1
-    for key in ("data_dir", "canvas_dir", "conversation_dir", "assets_dir", "output_dir", "output_input_dir", "output_output_dir", "asset_library_dir", "local_upload_dir"):
-        os.makedirs(target_paths[key], exist_ok=True)
-    return {"copied_files": copied_files, "data_dir": target_paths["data_dir"], "assets_dir": target_paths["assets_dir"], "output_dir": target_paths["output_dir"]}
-
-def normalize_storage_root(value: str) -> str:
+def resolve_storage_root(value: str) -> str:
     raw = os.path.expandvars(os.path.expanduser(str(value or "").strip().strip('"')))
     if not raw:
         raise HTTPException(status_code=400, detail="Storage folder path is required")
-    folder = os.path.abspath(raw)
-    try:
-        os.makedirs(folder, exist_ok=True)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Storage folder cannot be created or opened: {exc}") from exc
-    if not os.path.isdir(folder):
-        raise HTTPException(status_code=400, detail="Storage path must be a folder")
-    for protected in (DATA_DIR, ASSETS_DIR, OUTPUT_DIR):
+    return os.path.abspath(raw)
+
+
+def validate_storage_root_location(folder: str) -> None:
+    for protected in (
+        DATA_DIR,
+        ASSETS_DIR,
+        OUTPUT_DIR,
+        LEGACY_DATA_DIR,
+        LEGACY_OUTPUT_DIR,
+    ):
+        if not protected:
+            continue
         protected_abs = os.path.abspath(protected)
         try:
             if folder != protected_abs and os.path.commonpath([protected_abs, folder]) == protected_abs:
                 raise HTTPException(status_code=400, detail="Storage folder cannot be inside Hstar runtime folders")
         except ValueError:
             continue
+
+
+def normalize_storage_root(value: str) -> str:
+    folder = resolve_storage_root(value)
+    validate_storage_root_location(folder)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Storage folder cannot be created or opened: {exc}") from exc
+    if not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="Storage path must be a folder")
     test_path = os.path.join(folder, ".hstar_write_test")
     try:
         with open(test_path, "w", encoding="utf-8") as f:
@@ -12976,14 +13136,70 @@ def get_software_settings():
     settings = load_software_settings()
     return {"settings": {**settings, "active_storage_root": STORAGE_ROOT, "active_data_dir": DATA_DIR, "active_assets_dir": ASSETS_DIR, "active_output_dir": OUTPUT_DIR}}
 
+def validate_storage_migration_target(source: Path, target: Path) -> None:
+    resolved_source = source.expanduser().resolve()
+    resolved_target = target.expanduser().resolve()
+    if (
+        resolved_source == resolved_target
+        or resolved_source in resolved_target.parents
+        or resolved_target in resolved_source.parents
+    ):
+        raise HTTPException(status_code=400, detail="源目录与目标目录不能互相包含")
+    if resolved_target == PROGRAM_ROOT or PROGRAM_ROOT in resolved_target.parents:
+        raise HTTPException(status_code=400, detail="目标目录不能位于 Hstar 程序目录内")
+
+
+def is_loopback_request(request: Request) -> bool:
+    host = request.client.host if request.client else ""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+def storage_migration_payload(state: MigrationState, request: Request) -> Dict[str, Any]:
+    payload = state.as_dict()
+    payload["restart_required"] = state.status == "completed"
+    if not is_loopback_request(request):
+        payload.pop("source", None)
+    return payload
+
+@app.post("/api/storage-migrations", status_code=202)
+def start_storage_migration(payload: StorageMigrationRequest, request: Request):
+    source = Path(STORAGE_ROOT).expanduser().resolve()
+    target = Path(resolve_storage_root(payload.storage_root))
+    validate_storage_migration_target(source, target)
+    target = Path(normalize_storage_root(str(target)))
+    try:
+        task = STORAGE_MIGRATIONS.switch_storage(source, target)
+    except MigrationError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
+@app.get("/api/storage-migrations/{task_id}")
+def storage_migration_status(task_id: str, request: Request):
+    try:
+        task = STORAGE_MIGRATIONS.status(task_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="未找到数据迁移任务") from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
+@app.delete("/api/storage-migrations/{task_id}")
+def cancel_storage_migration(task_id: str, request: Request):
+    try:
+        task = STORAGE_MIGRATIONS.cancel(task_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="未找到数据迁移任务") from error
+    return {"ok": True, "task": storage_migration_payload(task, request)}
+
 @app.post("/api/software-settings/storage")
 def save_software_storage(payload: SoftwareStorageRequest):
-    settings = load_software_settings()
-    storage_root = normalize_storage_root(payload.storage_root)
-    migration = migrate_runtime_data_to_storage(storage_root)
-    settings["storage_root"] = storage_root
-    save_software_settings(settings)
-    return {"settings": {**settings, "migration": migration, "message": "Storage saved. Restart Hstar to use this folder for canvas, assets, output, and history data."}}
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "message": "同步存储迁移接口已停用，请使用后台迁移任务。",
+            "endpoint": "/api/storage-migrations",
+        },
+    )
 
 def raise_voice_http_error(error: VoiceManagerError):
     status_code = 404 if error.code == "VOICE_TASK_NOT_FOUND" else 409 if error.code == "VOICE_MIC_BUSY" else 400
@@ -14939,9 +15155,10 @@ async def get_global_token():
     saved_token = modelscope_api_key()
     if saved_token:
         return {"token": saved_token}
-    if os.path.exists(GLOBAL_CONFIG_FILE):
+    path = storage_read_path(GLOBAL_CONFIG_FILE, LEGACY_GLOBAL_CONFIG_FILE)
+    if os.path.exists(path):
         try:
-            with open(GLOBAL_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 return {"token": config.get("modelscope_token", "")}
         except:
@@ -15892,7 +16109,7 @@ async def create_canvas_image_task(payload: OnlineImageRequest):
             "provider_id": payload.provider_id,
             "model": payload.model,
         }
-    asyncio.create_task(run_canvas_image_task(task_id, payload))
+    STORAGE_WRITE_BARRIER.create_task(run_canvas_image_task(task_id, payload))
     return {"task_id": task_id, "status": "queued"}
 
 @app.get("/api/canvas-image-tasks/{task_id}")
@@ -15944,7 +16161,7 @@ async def create_canvas_comfy_task(payload: GenerateRequest):
             "error": "",
             "workflow_json": payload.workflow_json,
         }
-    asyncio.create_task(run_canvas_comfy_task(task_id, payload))
+    STORAGE_WRITE_BARRIER.create_task(run_canvas_comfy_task(task_id, payload))
     return {"task_id": task_id, "status": "queued"}
 
 @app.get("/api/canvas-comfy-tasks/{task_id}")
@@ -17474,7 +17691,11 @@ def _decode_openshop_art_font_base64(value: Any) -> bytes:
 
 def _bounded_openshop_art_font_file(path: str) -> bytes:
     resolved = os.path.realpath(path)
-    allowed_roots = (os.path.realpath(ASSETS_DIR), os.path.realpath(OUTPUT_DIR))
+    allowed_roots = tuple(
+        os.path.realpath(root)
+        for root in (ASSETS_DIR, OUTPUT_DIR, LEGACY_OUTPUT_DIR)
+        if root
+    )
     try:
         contained = any(
             os.path.commonpath([resolved, root]) == root for root in allowed_roots
@@ -17771,13 +17992,33 @@ def openshop_text_remove_prompt(mode: str, extra: str = "", output_ratio: str = 
         else "Keep the original aspect ratio and framing. Do not crop, resize, reframe, or stretch the source image. "
     )
     prompt = (
-        "Remove every visible text glyph and punctuation mark from the supplied source layer, including letters, "
-        "numbers, CJK characters, captions, labels, and punctuation associated with text. Restrict editing to the "
-        "vacated text and punctuation pixels, then reconstruct only the underlying background. Preserve all non-text "
-        "visual content exactly, especially lines, borders, dividers, arrows, icons, pictograms, geometric shapes, "
-        "purely graphical symbols, color blocks, patterns, illustrations, objects, logos without text, composition, "
-        "colors, lighting, texture, and image style. Do not erase, move, redraw, recolor, blur, or deform any non-text "
-        f"element. {ratio_requirement}Do not redesign or add new text, letters, numbers, logos, captions, or labels."
+        "Perform a surgical text-only removal edit on the supplied source layer. Remove every visible text glyph and "
+        "punctuation mark in every language and orientation, including letters, numbers, CJK characters, captions, "
+        "labels, watermarks, poster copy, and text-based logos whose visual content is readable text. This is not a "
+        "layout cleanup, simplification, debranding, template reset, or redesign. Remove glyph outlines, strokes, "
+        "shadows, glows, and highlights only where they follow the contours of readable glyphs. Preserve outlines, "
+        "strokes, shadows, and highlights that belong to a container or independent graphic. Preserve every non-text "
+        "carrier or supporting graphic behind, around, beside, or overlapping text, including background plates, "
+        "colored blocks, panels, banners, ribbons, badges, buttons, tickets, speech bubbles, frames, borders, dividers, "
+        "underlines, curves, shapes, patterns, and decorations. A carrier surface is not text and must remain even when "
+        "its only purpose is to hold text. If a colored, outlined, or shaped area extends beyond the glyph contours, "
+        "treat the entire area as a protected non-text element. A non-text element remains protected even when text "
+        "touches, overlaps, sits inside, or is fully surrounded by it. Do not confuse a text container with the text "
+        "itself. Perform reconstruction only inside the areas previously covered by text glyph pixels and glyph-shaped "
+        "effects. Fill only the holes left by the removed glyph pixels, continuing the exact local color, gradient, "
+        "texture, material, edge, lighting, and pattern of the underlying carrier or background through those small "
+        "holes. Never erase, flatten, enlarge, shrink, simplify, or replace an entire container, colored region, badge, "
+        "card, banner, border, line, curve, icon, or decoration merely because it contains or is near text. Preserve all "
+        "non-text visual content exactly, especially lines, borders, dividers, arrows, icons, pictograms, geometric "
+        "shapes, purely graphical symbols, color blocks, patterns, illustrations, people, faces, facial expressions, "
+        "hands, objects, stickers, graphical logos, products, scenery, composition, perspective, colors, gradients, "
+        "lighting, shadows, texture, and image style. Do not erase, move, redraw, recolor, blur, or deform any non-text "
+        f"element. Do not restyle, resize, or otherwise alter any non-text element. {ratio_requirement}Before returning "
+        "the result, compare it with the "
+        "source and restore any non-text feature that was removed or changed. The only intentional visual difference "
+        "should be the absence of readable text glyphs and their glyph-shaped effects. Do not redesign the image. Do not "
+        "add, preserve, or introduce any readable text, pseudo-text, letters, numbers, punctuation, text-based logos, "
+        "captions, or labels. Return only the edited image."
     )
     extra = re.sub(r"[\x00-\x1f\x7f]", " ", str(extra or "")).strip()[:2000]
     return f"{prompt}\nAdditional requirement (must not conflict with the preservation rules above): {extra}" if extra else prompt
@@ -18317,7 +18558,7 @@ def create_and_schedule_openshop_generation(
     )
     for index in snapshot["requestedIndexes"]:
         child = OPENSHOP_AI_TASKS.create_child(parent["taskId"], index)
-        future = asyncio.create_task(run_openshop_generation_child(
+        future = STORAGE_WRITE_BARRIER.create_task(run_openshop_generation_child(
             parent["taskId"],
             child["childTaskId"],
             project_id,
@@ -18407,7 +18648,7 @@ async def run_openshop_ai_task(
             )
             if not OPENSHOP_AI_TASKS.can_complete(task_id):
                 return
-            storage_task = asyncio.create_task(
+            storage_task = STORAGE_WRITE_BARRIER.create_task(
                 store_openshop_ai_png(
                     project_id,
                     owner,
@@ -18615,7 +18856,7 @@ async def delete_openshop_project(
             )
             OPENSHOP_AI_TASKS.cancel_project(project_id, owner)
         if deleted:
-            collect_openshop_garbage()
+            collect_openshop_garbage(include_legacy=True)
         return deleted
 
     try:
@@ -18695,7 +18936,11 @@ def openshop_library_asset_path(item: Dict[str, Any]) -> str:
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="素材库图片文件不存在")
     resolved = os.path.realpath(path)
-    allowed_roots = [os.path.realpath(ASSETS_DIR), os.path.realpath(OUTPUT_DIR)]
+    allowed_roots = [
+        os.path.realpath(root)
+        for root in (ASSETS_DIR, OUTPUT_DIR, LEGACY_OUTPUT_DIR)
+        if root
+    ]
     if not any(
         os.path.commonpath([resolved, root]) == root
         for root in allowed_roots
@@ -18796,7 +19041,7 @@ async def create_openshop_ai_task(
         except OpenShopAiValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if created:
-            future = asyncio.create_task(
+            future = STORAGE_WRITE_BARRIER.create_task(
                 run_openshop_ai_task(record["taskId"], project_id, payload)
             )
             OPENSHOP_AI_TASKS.bind(record["taskId"], future)
@@ -18850,7 +19095,7 @@ async def create_openshop_ai_task(
         raise_openshop_http_error(exc)
     except OpenShopAiValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    future = asyncio.create_task(run_openshop_ai_task(record["taskId"], project_id, payload))
+    future = STORAGE_WRITE_BARRIER.create_task(run_openshop_ai_task(record["taskId"], project_id, payload))
     OPENSHOP_AI_TASKS.bind(record["taskId"], future)
     return {"task_id": record["taskId"], "status": record["status"], "task": record}
 
@@ -18980,10 +19225,7 @@ async def delete_project(project_id: str):
     # 把该项目下的画布迁回默认项目
     moved = 0
     with CANVAS_LOCK:
-        for filename in os.listdir(CANVAS_DIR):
-            if not filename.endswith(".json"):
-                continue
-            path = os.path.join(CANVAS_DIR, filename)
+        for path in canvas_storage_files():
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -18991,8 +19233,7 @@ async def delete_project(project_id: str):
                 continue
             if str(data.get("project") or "") == project_id:
                 data["project"] = DEFAULT_PROJECT_ID
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(Path(path), data)
                 moved += 1
     return {"ok": True, "moved": moved}
 
@@ -19059,8 +19300,7 @@ async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
             canvas["board_x"] = float(payload.board_x)
         if payload.board_y is not None:
             canvas["board_y"] = float(payload.board_y)
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        atomic_write_json(Path(canvas_path(canvas["id"])), canvas)
     return {"canvas": canvas_record(canvas)}
 
 @app.get("/api/canvases/{canvas_id}")
@@ -20639,8 +20879,9 @@ async def get_history_api(type: str = None, paged: bool = False, offset: int = 0
     data = []
     try:
         with HISTORY_LOCK:
-            if os.path.exists(HISTORY_FILE):
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
         if type:
             data = [item for item in data if item.get("type", "zimage") == type]
@@ -20682,11 +20923,12 @@ async def get_queue_status(client_id: str):
 
 @app.post("/api/history/delete")
 async def delete_history(req: DeleteHistoryRequest):
-    if not os.path.exists(HISTORY_FILE):
+    read_path = storage_read_path(HISTORY_FILE, LEGACY_HISTORY_FILE)
+    if not os.path.exists(read_path):
         return {"success": False, "message": "History file not found"}
     try:
         with HISTORY_LOCK:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            with open(read_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
             target_record = None
             new_history = []
@@ -20703,8 +20945,7 @@ async def delete_history(req: DeleteHistoryRequest):
                 else:
                     new_history.append(item)
             if target_record:
-                with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(new_history, f, ensure_ascii=False, indent=4)
+                atomic_write_json(Path(HISTORY_FILE), new_history)
 
         if target_record:
             for img_url in target_record.get("images", []):
@@ -21135,9 +21376,7 @@ def generate(req: GenerateRequest):
                     except Exception as e:
                         print(f"Sync upload failed: {e}")
 
-        workflow_path = os.path.join(WORKFLOW_DIR, req.workflow_json)
-        if not os.path.exists(workflow_path) and req.workflow_json == "Z-Image.json":
-            workflow_path = WORKFLOW_PATH
+        workflow_path = workflow_path_from_name(req.workflow_json)
         if not os.path.exists(workflow_path):
             raise Exception(f"Workflow file not found: {req.workflow_json}")
 
@@ -21341,17 +21580,26 @@ class WorkflowRunRequest(BaseModel):
     config: WorkflowConfig
     client_id: str = ""
 
-def workflow_path_from_name(name: str) -> str:
+def workflow_path_in_root(root: str, name: str) -> str:
     if not WORKFLOW_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid workflow name")
-    path = os.path.abspath(os.path.join(WORKFLOW_DIR, *name.split("/")))
-    workflow_root = os.path.abspath(WORKFLOW_DIR)
+    workflow_root = os.path.abspath(root)
+    path = os.path.abspath(os.path.join(workflow_root, *name.split("/")))
     if os.path.commonpath([workflow_root, path]) != workflow_root:
         raise HTTPException(status_code=400, detail="Invalid workflow name")
     return path
 
-def workflow_config_path(name: str) -> str:
-    return workflow_path_from_name(name).replace(".json", ".config.json")
+def workflow_path_from_name(name: str, *, for_write: bool = False) -> str:
+    user_path = workflow_path_in_root(USER_WORKFLOW_DIR, name)
+    if for_write or os.path.exists(user_path):
+        return user_path
+    return workflow_path_in_root(BUILTIN_WORKFLOW_DIR, name)
+
+def workflow_config_path(name: str, *, for_write: bool = False) -> str:
+    user_config = workflow_path_in_root(USER_WORKFLOW_DIR, name).replace(".json", ".config.json")
+    if for_write or os.path.exists(user_config):
+        return user_config
+    return workflow_path_in_root(BUILTIN_WORKFLOW_DIR, name).replace(".json", ".config.json")
 
 def is_builtin_workflow(name: str) -> bool:
     return "/" not in name and os.path.basename(name) in BUILTIN_WORKFLOWS
@@ -21360,19 +21608,21 @@ def runninghub_workflow_store_path() -> str:
     return RUNNINGHUB_WORKFLOW_STORE_FILE
 
 def load_runninghub_workflow_store():
-    if not os.path.exists(RUNNINGHUB_WORKFLOW_STORE_FILE):
+    path = storage_read_path(
+        RUNNINGHUB_WORKFLOW_STORE_FILE,
+        LEGACY_RUNNINGHUB_WORKFLOW_STORE_FILE,
+    )
+    if not os.path.exists(path):
         return {}
     try:
-        with open(RUNNINGHUB_WORKFLOW_STORE_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 def save_runninghub_workflow_store(store):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(RUNNINGHUB_WORKFLOW_STORE_FILE, "w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=2)
+    atomic_write_json(Path(RUNNINGHUB_WORKFLOW_STORE_FILE), store)
 
 def runninghub_workflow_config_has_payload(cfg):
     if not isinstance(cfg, dict):
@@ -21430,10 +21680,11 @@ def runninghub_workflow_entry_from_config(cfg, fallback=None):
     }, "workflow")
 
 def runninghub_saved_hidden_workflow_ids():
-    if not os.path.exists(API_PROVIDERS_FILE):
+    path = storage_read_path(API_PROVIDERS_FILE, LEGACY_API_PROVIDERS_FILE)
+    if not os.path.exists(path):
         return set()
     try:
-        with open(API_PROVIDERS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except Exception:
         return set()
@@ -21789,32 +22040,36 @@ def save_comfyui_instances(payload: ComfyInstancesPayload):
 
 @app.get("/api/workflows")
 def list_workflows():
-    if not os.path.isdir(WORKFLOW_DIR):
-        return {"workflows": []}
-    items = []
-    for root, dirs, files in os.walk(WORKFLOW_DIR):
-        if os.path.abspath(root) == os.path.abspath(WORKFLOW_DIR):
-            dirs[:] = [d for d in dirs if d in {CUSTOM_WORKFLOW_FOLDER, LEGACY_CUSTOM_WORKFLOW_FOLDER}]
-        for fn in sorted(files):
-            if not fn.endswith(".json") or fn.endswith(".config.json"):
-                continue
-            rel = os.path.relpath(os.path.join(root, fn), WORKFLOW_DIR).replace("\\", "/")
-            if is_builtin_workflow(rel):
-                continue
-            cfg = {}
-            cfg_path = workflow_config_path(rel)
-            if os.path.exists(cfg_path):
-                try:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        cfg = json.load(f) or {}
-                except Exception:
-                    cfg = {}
-            items.append({
-                "name": rel,
-                "title": cfg.get("title") or fn.replace(".json", ""),
-                "builtin": False,
-                "field_count": len(cfg.get("fields") or []),
-            })
+    by_name = {}
+    for workflow_root, builtin in (
+        (BUILTIN_WORKFLOW_DIR, True),
+        (USER_WORKFLOW_DIR, False),
+    ):
+        if not os.path.isdir(workflow_root):
+            continue
+        for root, dirs, files in os.walk(workflow_root):
+            dirs[:] = [directory for directory in dirs if directory not in {"__pycache__", ".git"}]
+            for filename in sorted(files):
+                if not filename.endswith(".json") or filename.endswith(".config.json"):
+                    continue
+                rel = os.path.relpath(os.path.join(root, filename), workflow_root).replace("\\", "/")
+                if not WORKFLOW_NAME_RE.match(rel):
+                    continue
+                config = {}
+                config_path = workflow_config_path(rel)
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, "r", encoding="utf-8") as stream:
+                            config = json.load(stream) or {}
+                    except (OSError, json.JSONDecodeError):
+                        config = {}
+                by_name[rel] = {
+                    "name": rel,
+                    "title": config.get("title") or filename.replace(".json", ""),
+                    "builtin": builtin,
+                    "field_count": len(config.get("fields") or []),
+                }
+    items = list(by_name.values())
     items.sort(key=lambda item: (0 if item["name"].startswith(f"{CUSTOM_WORKFLOW_FOLDER}/") else 1, item["title"]))
     return {"workflows": items}
 
@@ -21850,12 +22105,11 @@ def upload_workflow(payload: WorkflowUploadRequest):
     sample = next(iter(payload.workflow.values()), None)
     if not isinstance(sample, dict) or "class_type" not in sample:
         raise HTTPException(status_code=400, detail="不是有效的 ComfyUI API 工作流 JSON（需包含 class_type）")
-    custom_dir = os.path.join(WORKFLOW_DIR, CUSTOM_WORKFLOW_FOLDER)
+    custom_dir = os.path.join(USER_WORKFLOW_DIR, CUSTOM_WORKFLOW_FOLDER)
     os.makedirs(custom_dir, exist_ok=True)
     stored_name = f"{CUSTOM_WORKFLOW_FOLDER}/{name}"
-    path = workflow_path_from_name(stored_name)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload.workflow, f, ensure_ascii=False, indent=2)
+    path = workflow_path_from_name(stored_name, for_write=True)
+    atomic_write_json(Path(path), payload.workflow)
     return {"name": stored_name}
 
 @app.put("/api/workflows/{name:path}/config")
@@ -21865,19 +22119,19 @@ def save_workflow_config(name: str, payload: WorkflowConfig):
     workflow_path = workflow_path_from_name(name)
     if not os.path.exists(workflow_path):
         raise HTTPException(status_code=404, detail="Workflow not found")
-    cfg_path = workflow_config_path(name)
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        json.dump(payload.dict(), f, ensure_ascii=False, indent=2)
+    cfg_path = workflow_config_path(name, for_write=True)
+    atomic_write_json(Path(cfg_path), payload.dict())
     return {"config": payload.dict()}
 
 @app.delete("/api/workflows/{name:path}")
 def delete_workflow(name: str):
     if not WORKFLOW_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid workflow name")
-    if is_builtin_workflow(name):
+    user_workflow_path = workflow_path_in_root(USER_WORKFLOW_DIR, name)
+    if is_builtin_workflow(name) and not os.path.exists(user_workflow_path):
         raise HTTPException(status_code=400, detail="内置工作流不可删除")
-    workflow_path = workflow_path_from_name(name)
-    cfg_path = workflow_config_path(name)
+    workflow_path = user_workflow_path
+    cfg_path = workflow_config_path(name, for_write=True)
     if not os.path.exists(workflow_path):
         raise HTTPException(status_code=404, detail="Workflow not found")
     os.remove(workflow_path)
@@ -21940,10 +22194,47 @@ def resolve_server_port():
             pass
     return 3000
 
-if __name__ == "__main__":
+
+def resolve_server_host():
+    configured = str(os.getenv("HSTAR_HOST") or "").strip()
+    if configured:
+        return configured
+    return "0.0.0.0" if EDITION == "development" else "127.0.0.1"
+
+
+def run_server():
     import uvicorn
+    global ACTIVE_UVICORN_SERVER
+    config = uvicorn.Config(
+        app,
+        host=resolve_server_host(),
+        port=resolve_server_port(),
+        ws_ping_interval=None,
+        ws_ping_timeout=None,
+    )
+    ACTIVE_UVICORN_SERVER = uvicorn.Server(config)
+    try:
+        ACTIVE_UVICORN_SERVER.run()
+    finally:
+        ACTIVE_UVICORN_SERVER = None
+
+
+def exec_development_restart_if_scheduled() -> bool:
+    target = DEVELOPMENT_RESTART_TARGET
+    if target is None:
+        return False
+    os.environ["HSTAR_DATA_DIR"] = str(target)
+    os.environ["HSTAR_PROGRAM_DIR"] = str(PROGRAM_ROOT)
+    os.environ["HSTAR_EDITION"] = "development"
+    os.environ["HSTAR_HOST"] = resolve_server_host()
+    os.environ["HSTAR_PORT"] = str(resolve_server_port())
+    argv = [sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve())]
+    os.execv(sys.executable, argv)
+    return True
+
+if __name__ == "__main__":
     # 关闭服务端协议级 WebSocket ping：部分客户端（如 PS UXP 面板）不会自动回 pong，
     # 默认 20s ping/20s 超时会把这些连接每隔一会儿就踢掉造成"频繁断连"。
     # 客户端有自己的应用层心跳 + 断线重连兜底，这里禁用协议 ping 更稳。
-    uvicorn.run(app, host="0.0.0.0", port=resolve_server_port(),
-                ws_ping_interval=None, ws_ping_timeout=None)
+    run_server()
+    exec_development_restart_if_scheduled()

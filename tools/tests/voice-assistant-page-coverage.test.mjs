@@ -108,4 +108,16 @@ const directorBuilt = read('static/3d-director/index.html');
 assert.match(directorSource, /\/static\/js\/voice-input-adapter\.js\?v=/, '3D director source loads the shared adapter');
 assert.match(directorBuilt, /\/static\/js\/voice-input-adapter\.js\?v=/, '3D director build retains the shared adapter');
 
+const realVoiceE2e = read('integrations/openshop/tests/hstar-voice-assistant-real.e2e.spec.js');
+assert.match(
+  realVoiceE2e,
+  /HSTAR_REAL_VOICE_PYTHON/,
+  'real browser acceptance can use the packaged Python ABI that owns the voice runtime',
+);
+assert.match(
+  realVoiceE2e,
+  /existsSync\(pythonExecutable\)/,
+  'real browser acceptance rejects a missing Python override before starting',
+);
+
 console.log('voice assistant page coverage checks passed');

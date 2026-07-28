@@ -28,6 +28,12 @@
         .status { margin-top:12px; min-height:20px; color:var(--muted); font-size:12px; line-height:1.5; }
         .status.ok { color:#16a34a; }
         .status.err { color:#dc2626; }
+        .storage-progress-wrap { display:grid; gap:7px; margin-top:12px; }
+        .storage-progress-wrap[hidden] { display:none; }
+        .storage-progress-wrap progress { width:100%; height:7px; accent-color:#2563eb; }
+        .storage-progress-meta { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:11px; }
+        .storage-progress-actions { display:flex; justify-content:flex-end; }
+        .storage-progress-actions button { height:32px; }
         .pill { display:inline-flex; align-items:center; min-height:24px; padding:4px 9px; border-radius:999px; background:var(--soft); color:var(--muted); font-size:11px; font-weight:850; line-height:1.45; }
         .security-note { margin-top:12px; padding:12px 14px; border:1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius:14px; background:color-mix(in srgb, var(--accent) 9%, var(--card)); color:var(--muted); font-size:12px; line-height:1.65; }
         .shortcut-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
@@ -67,9 +73,23 @@
         .voice-confirm-fact span:first-child { color:var(--muted); font-size:10px; font-weight:850; }
         .voice-confirm-fact span:last-child { overflow-wrap:anywhere; font-size:12px; font-weight:750; }
         .voice-confirm-toolbar { display:flex; justify-content:flex-end; gap:8px; }
+        .settings-confirm-dialog { width:min(460px,calc(100vw - 32px)); padding:0; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:8px; box-shadow:0 24px 70px rgba(15,23,42,.24); }
+        .settings-confirm-dialog::backdrop { background:rgba(15,23,42,.38); backdrop-filter:blur(3px); }
+        .settings-confirm-panel { display:grid; gap:14px; padding:20px; }
+        .settings-confirm-panel h2 { margin:0; font-size:17px; }
+        .settings-confirm-copy { margin:0; color:var(--muted); font-size:12px; line-height:1.65; }
+        .settings-confirm-fact { display:grid; gap:5px; padding:10px 0; border-top:1px solid var(--line); }
+        .settings-confirm-fact span:first-child { color:var(--muted); font-size:10px; font-weight:850; }
+        .settings-confirm-fact span:last-child { overflow-wrap:anywhere; font-size:12px; font-weight:750; }
+        .settings-confirm-toolbar { display:flex; justify-content:flex-end; gap:8px; }
+        .storage-restart-overlay { position:fixed; inset:0; z-index:10000; display:grid; place-items:center; padding:24px; background:color-mix(in srgb,var(--bg) 84%,transparent); backdrop-filter:blur(6px); }
+        .storage-restart-overlay[hidden] { display:none; }
+        .storage-restart-state { width:min(420px,100%); display:grid; gap:12px; padding:20px; border:1px solid var(--line); border-radius:8px; background:var(--card); box-shadow:0 24px 70px rgba(15,23,42,.2); }
+        .storage-restart-state strong { font-size:16px; }
+        .storage-restart-state span { color:var(--muted); font-size:12px; line-height:1.6; }
         @media (max-width:700px){ .page{padding:28px 16px 60px}.row{grid-template-columns:1fr}.path-box,.link-box{flex-direction:column;align-items:stretch}.shortcut-grid,.voice-setting-grid,.voice-meta{grid-template-columns:1fr}.voice-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))} }
     </style>
-    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.1630000001.1785052407"></script>
+    <script src="/static/js/voice-input-adapter.js?v=2026.07.26.1630000001.1785141198"></script>
 </head>
 <body>
     <main class="page">
@@ -98,6 +118,16 @@
                         <button id="saveBtn" class="primary" type="button">保存</button>
                     </div>
                     <div id="status" class="status"></div>
+                    <div id="storageProgressWrap" class="storage-progress-wrap" hidden>
+                        <progress id="storageProgress" max="100" aria-label="存储位置应用状态"></progress>
+                        <div class="storage-progress-meta">
+                            <span id="storageProgressStage">准备中</span>
+                            <span id="storageProgressBytes">0 B</span>
+                        </div>
+                        <div class="storage-progress-actions">
+                            <button id="storageCancelBtn" type="button">取消应用</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
@@ -266,6 +296,30 @@
             </div>
         </section>
     </main>
+    <dialog id="storageRestartDialog" class="settings-confirm-dialog">
+        <form class="settings-confirm-panel" method="dialog">
+            <h2>确认重启 Hstar</h2>
+            <p class="settings-confirm-copy">确认后将切换储存位置并自动重启 Hstar。原储存位置中的数据不会被迁移、删除或修改。</p>
+            <div class="settings-confirm-fact">
+                <span>新的储存位置</span>
+                <span id="storageRestartTarget" data-voice-input="off">-</span>
+            </div>
+            <div class="settings-confirm-toolbar">
+                <button id="storageRestartCancel" type="button">取消</button>
+                <button id="storageRestartConfirm" class="primary" type="button">确认并重启</button>
+            </div>
+        </form>
+    </dialog>
+    <div id="storageRestartOverlay" class="storage-restart-overlay" hidden>
+        <div class="storage-restart-state" role="status" aria-live="assertive">
+            <strong>正在重新启动 Hstar</strong>
+            <span id="storageRestartMessage">正在等待新的 Hstar 服务...</span>
+            <div class="settings-confirm-toolbar">
+                <button id="storageRestartDetect" type="button" hidden>重新检测</button>
+                <button id="storageRestartRetry" type="button" hidden>重试重启</button>
+            </div>
+        </div>
+    </div>
     <dialog id="voiceConfirmDialog" class="voice-confirm-dialog">
         <form class="voice-confirm-panel">
             <h2 id="voiceConfirmTitle">确认操作</h2>
@@ -280,12 +334,7 @@
         </form>
     </dialog>
     <script>
-        const currentPath = document.getElementById('currentPath');
-        const storageInput = document.getElementById('storageInput');
-        const statusEl = document.getElementById('status');
         const linkStatus = document.getElementById('linkStatus');
-        const saveBtn = document.getElementById('saveBtn');
-        const browseBtn = document.getElementById('browseBtn');
         const localLink = document.getElementById('localLink');
         const lanLink = document.getElementById('lanLink');
         const refreshLinkBtn = document.getElementById('refreshLinkBtn');
@@ -329,24 +378,9 @@
         try { applyTheme(localStorage.getItem('studio_theme') || localStorage.getItem('canvas_theme') || 'light'); } catch(e) {}
         window.addEventListener('message', event => { if(event.data?.type === 'studio-theme') applyTheme(event.data.theme || 'light'); });
 
-        function setStatus(text, type=''){
-            statusEl.textContent = text || '';
-            statusEl.className = `status ${type}`.trim();
-        }
         function setLinkStatus(text, type=''){
             linkStatus.textContent = text || '';
             linkStatus.className = `status ${type}`.trim();
-        }
-        async function loadSettings(){
-            try {
-                const data = await fetch('/api/software-settings', {cache:'no-store'}).then(r => r.json());
-                const root = data?.settings?.storage_root || '';
-                currentPath.textContent = root || '默认目录';
-                storageInput.value = root;
-            } catch(e) {
-                currentPath.textContent = '读取失败';
-                setStatus('无法读取软件设置。', 'err');
-            }
         }
         async function loadLinks(){
             try {
@@ -528,77 +562,11 @@
             });
         });
         refreshLinkBtn.addEventListener('click', refreshLinks);
-        async function saveStorageRoot(storageRoot, pendingText = '正在验证并保存...'){
-            const storage_root = String(storageRoot || '').trim();
-            if(!storage_root){ setStatus('请输入储存文件夹路径。', 'err'); return false; }
-            saveBtn.disabled = true;
-            browseBtn.disabled = true;
-            setStatus(pendingText, '');
-            try {
-                const res = await fetch('/api/software-settings/storage', {
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({storage_root})
-                });
-                const data = await res.json().catch(() => ({}));
-                if(!res.ok) throw new Error(data.detail || '保存失败');
-                const savedPath = data?.settings?.storage_root || storage_root;
-                currentPath.textContent = savedPath;
-                storageInput.value = savedPath;
-                setStatus(data?.settings?.message || '已迁移并保存。', 'ok');
-                return true;
-            } catch(e) {
-                setStatus(e.message || '保存失败，请确认路径可写。', 'err');
-                return false;
-            } finally {
-                saveBtn.disabled = false;
-                browseBtn.disabled = false;
-            }
-        }
-        browseBtn.onclick = async () => {
-            const api = desktopApi();
-            browseBtn.disabled = true;
-            setStatus('正在打开系统文件夹选择器...', '');
-            try {
-                if(api?.chooseStorageFolder){
-                    const picked = await api.chooseStorageFolder();
-                    if(picked){
-                        storageInput.value = picked;
-                        await saveStorageRoot(picked, '正在迁移数据到所选文件夹...');
-                    } else {
-                        setStatus('已取消选择。', '');
-                    }
-                    return;
-                }
-                const res = await fetch('/api/native/choose-folder', {
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({ initial_dir: storageInput.value.trim(), purpose:'storage' })
-                });
-                const data = await res.json().catch(() => ({}));
-                if(!res.ok) throw new Error(data.detail || '无法打开系统文件夹选择器。');
-                if(data.path){
-                    storageInput.value = data.path;
-                    await saveStorageRoot(data.path, '正在迁移数据到所选文件夹...');
-                } else {
-                    setStatus('已取消选择。', '');
-                }
-            } catch(e) {
-                setStatus(e.message || '无法打开系统文件夹选择器，请手动输入路径。', 'err');
-            } finally {
-                browseBtn.disabled = false;
-            }
-        };
-        saveBtn.onclick = async () => {
-            await saveStorageRoot(storageInput.value.trim());
-        };
-        loadSettings();
         loadLinks();
         loadAppInfo();
         loadShortcuts();
     </script>
+    <script src="/static/js/storage-settings-panel.js?v=2026.07.26.1630000001.1785155942"></script>
     <script src="/static/js/voice-settings-panel.js?v=2026.07.26.1630000001.1785006136"></script>
 </body>
 </html>
-
-

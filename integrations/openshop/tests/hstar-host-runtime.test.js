@@ -130,6 +130,7 @@ describe('Hstar OpenShop editor host runtime', () => {
       'hstarOcrSourceAssetId', 'hstarOcrSourceLayerId', 'hstarOcrBlockId', 'hstarOcrQuad',
       'hstarOcrVisualProfile', 'hstarOcrOriginalText', 'hstarArtFontRequestGeneration',
       'hstarOcrConfidence', 'hstarOcrLanguage', 'hstarOcrFontCandidates',
+      'hstarAutomaticFontPolicy',
     ]));
     expect(customProperties.filter(property => property === 'hstarAiGeneration')).toHaveLength(1);
     expect(html).toContain('window.HstarOpenShopAssetApi');
@@ -478,6 +479,11 @@ describe('Hstar OpenShop editor host runtime', () => {
     window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Move'}}));
     window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Move'}}));
     window.dispatchEvent(new CustomEvent('openshop:project-dirty', {detail:{action:'Move'}}));
+    expect(posted(protocol.TYPES.PROJECT_CHANGED)).toHaveLength(3);
+    expect(posted(protocol.TYPES.PROJECT_CHANGED).at(-1).payload).toMatchObject({
+      reason:'Move',
+      revision:3,
+    });
     await vi.advanceTimersByTimeAsync(1199);
     expect(posted(protocol.TYPES.SAVE_PROJECT)).toHaveLength(0);
 

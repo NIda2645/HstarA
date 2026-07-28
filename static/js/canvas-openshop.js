@@ -443,6 +443,8 @@
         const url = clean(output.url);
         if(!clean(output.assetId) || !url || /^(?:data:image\/|blob:)/i.test(url)) return null;
         if(requestId) appliedOutputRequests.add(requestId);
+        acknowledgeOutput(data, 'accepted');
+        let created = null;
         try {
             hooks().pushUndo?.();
             const existingCount = nodeList().filter(node => node.openshopSourceNodeId === source.id).length;
@@ -466,6 +468,7 @@
                 sourceType:'openshop-layered',
             };
             hooks().addNode?.(image);
+            created = image;
             hooks().addConnection?.({
                 id:hooks().uid?.('c') || `c_${Date.now()}`,
                 from:source.id,
@@ -478,6 +481,10 @@
             acknowledgeOutput(data, 'success', {nodeId:image.id});
             return image;
         } catch(error){
+            if(created?.id) hooks().rollbackImageOutput?.(created.id);
+            hooks().render?.();
+            hooks().scheduleSave?.();
+            if(requestId) appliedOutputRequests.delete(requestId);
             acknowledgeOutput(data, 'error', {message:error?.message || '图文分层输出导入失败'});
             throw error;
         }

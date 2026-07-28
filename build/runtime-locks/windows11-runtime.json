@@ -1,0 +1,352 @@
+{
+    "schemaVersion":  1,
+    "edition":  "windows11",
+    "architecture":  "x64",
+    "pythonAbi":  "cp311",
+    "requirementsFile":  "build/runtime-locks/windows11-requirements.txt",
+    "requirementsSha256":  "2b3706833d985a216f5573094b7c823d2f22234de72b885d43b7217cbb765f1a",
+    "python":  {
+                   "version":  "3.11.9",
+                   "architecture":  "x64",
+                   "abi":  "cp311",
+                   "artifact":  {
+                                    "name":  "python-3.11.9-embed-amd64.zip",
+                                    "url":  "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
+                                    "sha256":  "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b",
+                                    "size":  11249023
+                                }
+               },
+    "webView2":  {
+                     "version":  "150.0.4078.99",
+                     "distribution":  "fixed",
+                     "architecture":  "x64",
+                     "artifact":  {
+                                      "name":  "Microsoft.WebView2.FixedVersionRuntime.150.0.4078.99.x64.cab",
+                                      "url":  "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/1c394b0d-2689-4d8b-af57-2f2018abccf6/Microsoft.WebView2.FixedVersionRuntime.150.0.4078.99.x64.cab",
+                                      "sha256":  "2e69cdc3d304441562c7c2a8c21948c3b8e69dc7629d912ef853e41147220bda",
+                                      "size":  297899501
+                                  }
+                 },
+    "packages":  [
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "annotated-doc",
+                         "version":  "0.0.4",
+                         "filename":  "annotated_doc-0.0.4-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl",
+                         "sha256":  "571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320",
+                         "size":  5303,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.8"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "annotated-types",
+                         "version":  "0.8.0",
+                         "filename":  "annotated_types-0.8.0-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/99/91/8acff4f5e50511b911bbccb72b8628a49c68ce14148cd9f6431094859a90/annotated_types-0.8.0-py3-none-any.whl",
+                         "sha256":  "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0",
+                         "size":  13427,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "anyio",
+                         "version":  "4.14.2",
+                         "filename":  "anyio-4.14.2-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl",
+                         "sha256":  "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494",
+                         "size":  125813,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "certifi",
+                         "version":  "2026.7.22",
+                         "filename":  "certifi-2026.7.22-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/0b/a7/71ac2cff56fec219ed242bb11b8efb69fcc4bec75db06fb7bfe35de520e6/certifi-2026.7.22-py3-none-any.whl",
+                         "sha256":  "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775",
+                         "size":  136983,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.7"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "charset-normalizer",
+                         "version":  "3.4.9",
+                         "filename":  "charset_normalizer-3.4.9-cp311-cp311-win_amd64.whl",
+                         "url":  "https://files.pythonhosted.org/packages/ed/a1/e29995109e455dc8eff8d0fac6ae509be39561318a7cfeac5d33ad029213/charset_normalizer-3.4.9-cp311-cp311-win_amd64.whl",
+                         "sha256":  "6366a16e1a25018694d6a5d784d09b046edc9eac40ea2b54065c3052672516a1",
+                         "size":  161410,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.7"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "click",
+                         "version":  "8.4.2",
+                         "filename":  "click-8.4.2-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/fb/e2/79c688af8b210d232694e31e59da9f6ec747bae31c3f5946e4e9b98860d5/click-8.4.2-py3-none-any.whl",
+                         "sha256":  "e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76",
+                         "size":  119243,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "colorama",
+                         "version":  "0.4.6",
+                         "filename":  "colorama-0.4.6-py2.py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+                         "sha256":  "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+                         "size":  25335,
+                         "requested":  false,
+                         "requiresPython":  "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,\u003e=2.7"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "exceptiongroup",
+                         "version":  "1.3.1",
+                         "filename":  "exceptiongroup-1.3.1-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/8a/0e/97c33bf5009bdbac74fd2beace167cab3f978feb69cc36f1ef79360d6c4e/exceptiongroup-1.3.1-py3-none-any.whl",
+                         "sha256":  "a7a39a3bd276781e98394987d3a5701d0c4edffb633bb7a5144577f82c773598",
+                         "size":  16740,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.7"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "fastapi",
+                         "version":  "0.139.2",
+                         "filename":  "fastapi-0.139.2-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/5f/c7/cb03251d9dfb177246a9809a76f189d21df32dbd4a845951881d11323b7f/fastapi-0.139.2-py3-none-any.whl",
+                         "sha256":  "b9ad015a835173d59865e2f5d8296fbc2b317bf56a2ba1a5bfbdd03de2fd4b1c",
+                         "size":  130234,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "fonttools",
+                         "version":  "4.63.0",
+                         "filename":  "fonttools-4.63.0-cp311-cp311-win_amd64.whl",
+                         "url":  "https://files.pythonhosted.org/packages/08/60/defa5e69641db890a63be281f41345f4c33b157824eaf0b9fad3e08b0dcb/fonttools-4.63.0-cp311-cp311-win_amd64.whl",
+                         "sha256":  "063e08bd17bd5a90127a14123de0d6a952dbc847695fd98b63c043d58057f90c",
+                         "size":  2356389,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "h11",
+                         "version":  "0.16.0",
+                         "filename":  "h11-0.16.0-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl",
+                         "sha256":  "63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86",
+                         "size":  37515,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.8"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "httpcore",
+                         "version":  "1.0.9",
+                         "filename":  "httpcore-1.0.9-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl",
+                         "sha256":  "2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55",
+                         "size":  78784,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.8"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "httpx",
+                         "version":  "0.28.1",
+                         "filename":  "httpx-0.28.1-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl",
+                         "sha256":  "d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad",
+                         "size":  73517,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.8"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "idna",
+                         "version":  "3.18",
+                         "filename":  "idna-3.18-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl",
+                         "sha256":  "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2",
+                         "size":  65455,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.9"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "packaging",
+                         "version":  "26.2",
+                         "filename":  "packaging-26.2-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl",
+                         "sha256":  "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",
+                         "size":  100195,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.8"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "pillow",
+                         "version":  "12.3.0",
+                         "filename":  "pillow-12.3.0-cp311-cp311-win_amd64.whl",
+                         "url":  "https://files.pythonhosted.org/packages/63/c6/4bad1b18d132a50b27e1365e1ab163616f7a5bb56d330f66f9d1d9d4f9d4/pillow-12.3.0-cp311-cp311-win_amd64.whl",
+                         "sha256":  "8e95e1385e4998ae9694eeaa4730ba5457ff61185b3a55e2e7bea0880aef452a",
+                         "size":  7233653,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "pip",
+                         "version":  "26.1.2",
+                         "filename":  "pip-26.1.2-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/5d/95/6b5cb3461ea5673ba0995989746db58eb18b91b54dbf331e72f569540946/pip-26.1.2-py3-none-any.whl",
+                         "sha256":  "382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab",
+                         "size":  1813144,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "pydantic",
+                         "version":  "2.13.4",
+                         "filename":  "pydantic-2.13.4-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/fd/7b/122376b1fd3c62c1ed9dc80c931ace4844b3c55407b6fb2d199377c9736f/pydantic-2.13.4-py3-none-any.whl",
+                         "sha256":  "45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba",
+                         "size":  472262,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.9"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "pydantic-core",
+                         "version":  "2.46.4",
+                         "filename":  "pydantic_core-2.46.4-cp311-cp311-win_amd64.whl",
+                         "url":  "https://files.pythonhosted.org/packages/aa/e6/c505f83dfeda9a2e5c995cfd872949e4d05e12f7feb3dca72f633daefa94/pydantic_core-2.46.4-cp311-cp311-win_amd64.whl",
+                         "sha256":  "6f2eeda33a839975441c86a4119e1383c50b47faf0cbb5176985565c6bb02c33",
+                         "size":  2071114,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.9"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "python-multipart",
+                         "version":  "0.0.32",
+                         "filename":  "python_multipart-0.0.32-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl",
+                         "sha256":  "ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23",
+                         "size":  30042,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "requests",
+                         "version":  "2.34.2",
+                         "filename":  "requests-2.34.2-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl",
+                         "sha256":  "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+                         "size":  73075,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "setuptools",
+                         "version":  "83.0.0",
+                         "filename":  "setuptools-83.0.0-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl",
+                         "sha256":  "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3",
+                         "size":  1008090,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "starlette",
+                         "version":  "1.3.1",
+                         "filename":  "starlette-1.3.1-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl",
+                         "sha256":  "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6",
+                         "size":  73632,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "typing-extensions",
+                         "version":  "4.16.0",
+                         "filename":  "typing_extensions-4.16.0-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+                         "sha256":  "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+                         "size":  45571,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.9"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "typing-inspection",
+                         "version":  "0.4.2",
+                         "filename":  "typing_inspection-0.4.2-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl",
+                         "sha256":  "4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7",
+                         "size":  14611,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.9"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "urllib3",
+                         "version":  "2.7.0",
+                         "filename":  "urllib3-2.7.0-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl",
+                         "sha256":  "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+                         "size":  131087,
+                         "requested":  false,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "uvicorn",
+                         "version":  "0.51.0",
+                         "filename":  "uvicorn-0.51.0-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/45/ec/dbb7e5a6b91f86bfb9eb7d2988a2730907b6a729875b949c7f022e8b88fa/uvicorn-0.51.0-py3-none-any.whl",
+                         "sha256":  "5d38af6cd620f2ae3849fb44fd4879e0890aa1febe8d47eb355fb45d93fe6a5b",
+                         "size":  73219,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "websockets",
+                         "version":  "16.1.1",
+                         "filename":  "websockets-16.1.1-cp311-cp311-win_amd64.whl",
+                         "url":  "https://files.pythonhosted.org/packages/71/b2/e511c1c6f64a95c2f3fc54bffda0e14eaa7e9442be605c29270f7589b918/websockets-16.1.1-cp311-cp311-win_amd64.whl",
+                         "sha256":  "7421fad442de870a8cbf2287d1cad7e706ece0dbfeba5e911df132cbdc1cb56a",
+                         "size":  180239,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.10"
+                     },
+                     {
+                         "kind":  "python-wheel",
+                         "name":  "wheel",
+                         "version":  "0.47.0",
+                         "filename":  "wheel-0.47.0-py3-none-any.whl",
+                         "url":  "https://files.pythonhosted.org/packages/87/1b/9e33c09813d65e248f7f773119148a612516a4bea93e9c6f545f78455b7c/wheel-0.47.0-py3-none-any.whl",
+                         "sha256":  "212281cab4dff978f6cedd499cd893e1f620791ca6ff7107cf270781e587eced",
+                         "size":  32218,
+                         "requested":  true,
+                         "requiresPython":  "\u003e=3.9"
+                     }
+                 ],
+    "totalDownloadBytes":  325846824
+}

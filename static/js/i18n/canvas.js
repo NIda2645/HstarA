@@ -287,7 +287,7 @@
         "canvas.manageLlmModelsTitle": { zh: "管理 LLM 模型", en: "Manage LLM Models" },
         "canvas.manageLlmModelsSub": { zh: "这些模型会出现在 LLM 节点下拉框里。拖动排序，删除或新增后保存。", en: "These models appear in LLM node dropdowns. Drag to reorder, delete, or add new ones." },
         "canvas.manageApiTitle": { zh: "管理 API 平台", en: "Manage API Providers" },
-        "canvas.manageApiSub": { zh: "选择平台后维护 Base URL、Key 和这个平台下的生成模型。Key 会写入 API/.env，页面只显示脱敏状态。", en: "Edit the selected provider Base URL, Key, and generation models. Keys are saved to API/.env and only shown in masked form." },
+        "canvas.manageApiSub": { zh: "选择平台后维护 Base URL、Key 和这个平台下的生成模型。Key 会写入当前用户的加密凭据存储，页面只显示脱敏状态。", en: "Edit the selected provider Base URL, key, and generation models. Keys are saved in the current user's encrypted credential store and only shown in masked form." },
         "canvas.manageVideoModelsTitle": { zh: "管理视频模型", en: "Manage Video Models" },
         "canvas.manageVideoModelsSub": { zh: "这些模型会出现在视频生成节点下拉框里。选择平台后维护该平台的视频模型。", en: "These models appear in video generation node dropdowns. Select a provider to edit its video models." },
         "canvas.keepCurrentKey": { zh: "保持当前", en: "Keep current" },

@@ -18,6 +18,10 @@ python/pyvenv.cfg
 node_modules/
 integrations/storyai-3d-director-desk/node_modules/.vite/
 
+# .NET desktop build caches
+desktop/**/bin/
+desktop/**/obj/
+
 # Local runtime output/cache
 output/
 outputs/
@@ -40,6 +44,9 @@ python/share/
 
 # Installer staging output
 build/installer/stage/
+build/generated/
+build/runtime-cache/
+build/release/
 
 # Optional local voice assistant runtime and model data
 **/.hstar-voice/
@@ -51,6 +58,7 @@ build/installer/stage/
 # OS/editor noise
 .DS_Store
 Thumbs.db
+.superpowers/
 
 # Local isolated development worktrees
 .worktrees/

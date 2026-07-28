@@ -176,6 +176,7 @@ function createHarness(options = {}) {
     catalogRows:vi.fn(() => catalogRows),
     stylesFor:vi.fn(() => [{id:'yahei-400-normal', label:'常规', weight:400, italic:false, localNames:['Microsoft YaHei UI']}]),
     defaultStyleFor:vi.fn(() => null),
+    defaultTextRuns:vi.fn(() => []),
     subscribe:vi.fn(listener => {
       fontSubscriber = listener;
       listener({});
@@ -1041,6 +1042,7 @@ describe('Hstar OpenShop text properties', () => {
       textFontWeight:700,
       textBold:true,
       textItalic:false,
+      textFontAutomatic:false,
     });
     expect(style.value).toBe('creation-bold');
     controller.destroy();
@@ -1134,6 +1136,86 @@ describe('Hstar OpenShop text properties', () => {
       fill:'#ef4444',
     }, 3, 4);
     expect(textObject.set).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+
+  it('applies mixed-script automatic font styles without erasing other character styles', async () => {
+    const {controller, canvas, textObject, fontManager} = createHarness({editing:true});
+    textObject.hstarAutomaticFontPolicy = 'script-default';
+    textObject.text = '中文 Open';
+    textObject.selectionStart = textObject.selectionEnd = textObject.text.length;
+    textObject.styles = {0:{0:{fill:'#ef4444', fontSize:72, underline:true}}};
+    fontManager.defaultTextRuns.mockReturnValue([
+      {start:0, end:3, script:'zh-hans', faceFamily:'阿里巴巴普惠体 3.0', weight:400, italic:false},
+      {start:3, end:7, script:'en', faceFamily:'03免 阿里妈妈灵动体VF', weight:500, italic:false},
+    ]);
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    canvas.fire('text:changed', {target:textObject});
+
+    expect(textObject.styles[0][0]).toMatchObject({
+      fontFamily:'阿里巴巴普惠体 3.0',
+      fontWeight:400,
+      fontStyle:'normal',
+      fill:'#ef4444',
+      fontSize:72,
+      underline:true,
+    });
+    expect(textObject.styles[0][3]).toMatchObject({
+      fontFamily:'03免 阿里妈妈灵动体VF',
+      fontWeight:500,
+      fontStyle:'normal',
+    });
+    expect(textObject.set).toHaveBeenCalledWith(expect.objectContaining({
+      fontFamily:'阿里巴巴普惠体 3.0',
+    }));
+    controller.destroy();
+  });
+
+  it('uses the same automatic font policy for vertical text columns', async () => {
+    const {controller, canvas, textObject, fontManager} = createHarness({editing:true});
+    textObject.type = 'hstar-vertical-text';
+    textObject.hstarWritingMode = 'vertical';
+    textObject.hstarAutomaticFontPolicy = 'script-default';
+    textObject.text = '中文\nOpen';
+    textObject.selectionStart = textObject.selectionEnd = textObject.text.length;
+    textObject.styles = {};
+    fontManager.defaultTextRuns.mockReturnValue([
+      {start:0, end:3, script:'zh-hans', faceFamily:'阿里巴巴普惠体 3.0', weight:400, italic:false},
+      {start:3, end:7, script:'en', faceFamily:'03免 阿里妈妈灵动体VF', weight:400, italic:false},
+    ]);
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    canvas.fire('text:changed', {target:textObject});
+
+    expect(textObject.styles[0][0].fontFamily).toBe('阿里巴巴普惠体 3.0');
+    expect(textObject.styles[1][0].fontFamily).toBe('03免 阿里妈妈灵动体VF');
+    expect(textObject.styles[1][3].fontFamily).toBe('03免 阿里妈妈灵动体VF');
+    controller.destroy();
+  });
+
+  it('disables automatic font replacement after an explicit user font choice', async () => {
+    const {controller, canvas, textObject, fontManager} = createHarness();
+    textObject.hstarAutomaticFontPolicy = 'script-default';
+    textObject.styles = {};
+    fontManager.defaultTextRuns.mockReturnValue([
+      {start:0, end:3, script:'en', faceFamily:'03免 阿里妈妈灵动体VF', weight:400, italic:false},
+    ]);
+    await controller.start();
+    canvas.fire('selection:created', {selected:[textObject]});
+
+    controller.applyProperty('fontFamily', 'Century Gothic');
+
+    expect(textObject.hstarAutomaticFontPolicy).toBeUndefined();
+    expect(textObject.fontFamily).toBe('Century Gothic');
+    textObject.isEditing = true;
+    textObject.text = 'abcX';
+    textObject.selectionStart = textObject.selectionEnd = 4;
+    canvas.fire('text:changed', {target:textObject});
+    expect(textObject.fontFamily).toBe('Century Gothic');
+    expect(fontManager.defaultTextRuns).not.toHaveBeenCalled();
     controller.destroy();
   });
 

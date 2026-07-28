@@ -24,15 +24,19 @@ assert.match(js, /const buttonLeft = \(rect\.left - shellRect\.left - viewport\.
 assert.match(css, /\.smart-text-edit-menu \{[^}]*position:absolute;/, 'text edit dropdown should be positioned in canvas-world coordinates');
 assert.match(js, /const SMART_TEXT_EDIT_PANEL_WIDTH = 280;/, 'text edit panel should use a fixed width constant');
 assert.match(js, /const SMART_TEXT_EDIT_PANEL_HEIGHT = 420;/, 'text edit panel should use a fixed height constant');
+assert.doesNotMatch(js, /SMART_TEXT_GENERATION_PANEL_HEIGHT/, 'generation selector should not use a different height from the text edit panel');
 assert.doesNotMatch(js, /smartTextOverlayHost/, 'text edit panel should not resolve or call a top-level overlay host');
 assert.doesNotMatch(js, /function ensureSmartTextOverlayStyles\(/, 'text edit panel should not inject duplicate top-page overlay styles');
-assert.match(js, /const width = SMART_TEXT_EDIT_PANEL_WIDTH;/, 'text edit panel width should stay fixed in canvas-world units and not follow node resizing');
-assert.match(js, /const height = SMART_TEXT_EDIT_PANEL_HEIGHT;/, 'text edit panel height should stay fixed in canvas-world units and not follow node resizing');
-assert.match(js, /world\.appendChild\(panel\);/, 'text edit panel should be mounted in the smart canvas world so it scales with the canvas view');
+assert.match(js, /const width = SMART_TEXT_EDIT_PANEL_WIDTH;/, 'text edit panel should keep a stable canvas-world width independent of node resizing');
+assert.match(js, /const targetHeight = SMART_TEXT_EDIT_PANEL_HEIGHT;/, 'generation selector and text edit views should use the same canvas-world height');
+assert.match(js, /world\.appendChild\(panel\);/, 'text edit panel should stay mounted in the smart canvas world so it follows and scales with its source node');
 assert.match(js, /panel\.addEventListener\('pointerdown',\s*e => e\.stopPropagation\(\)\);[\s\S]*panel\.addEventListener\('click',\s*e => e\.stopPropagation\(\)\);/, 'text edit panel should keep internal clicks from closing the panel');
 assert.match(js, /function moveNodeElementsDuringDrag\(\)[\s\S]*positionSmartTextEditPanel\(\);[\s\S]*scheduleInteractionLayerRefresh\(\);/, 'text edit panel should reposition while its node is dragged');
 assert.match(js, /function updateNodeElementDuringResize\(node\)[\s\S]*positionSmartTextEditPanel\(\);[\s\S]*scheduleInteractionLayerRefresh\(\);/, 'text edit panel should reposition when its node is resized');
-assert.match(js, /const viewLeft = -viewport\.x \/ viewport\.scale;[\s\S]*const viewRight = viewLeft \+ viewWidth;/, 'text edit panel should clamp position using world-space viewport bounds');
+assert.doesNotMatch(js, /const uiScale = 1 \/ scale;|scale\(\$\{uiScale\}\)/, 'text edit and generation panels should not counter-scale against canvas zoom');
+assert.match(js, /const worldWidth = width;[\s\S]*const worldHeight = height;/, 'panel clamping should use the same canvas-world footprint that scales with the node');
+assert.match(js, /const viewLeft = -viewport\.x \/ scale;[\s\S]*const viewRight = viewLeft \+ viewWidth;/, 'text edit panel should clamp position using world-space viewport bounds');
+assert.match(js, /panel\.style\.transform = '';/, 'panel should clear legacy inverse scaling and inherit the canvas world transform');
 assert.match(css, /\.smart-text-edit-panel \{[^}]*position:absolute;/, 'text edit panel should be positioned in canvas-world coordinates');
 assert.match(css, /\.smart-text-edit-panel \*,\.smart-text-edit-panel button,.smart-text-edit-panel textarea \{[^}]*font-size:10px !important;/, 'all text inside the text edit panel should match the smart toolbar text size');
 assert.match(js, /data-smart-text-panel-action="mode"[\s\S]*data-smart-text-mode="modify"[\s\S]*修改文字[\s\S]*data-smart-text-mode="erase"[\s\S]*消除文字/, 'text edit panel should use clickable modify/erase mode tabs instead of a static title');
@@ -66,7 +70,65 @@ assert.doesNotMatch(js, /function smartTextSourceRatioSettings\(/, 'text erase g
 assert.doesNotMatch(js, /customRatio:\`\$\{size\.w\}:\$\{size\.h\}\`/, 'text erase generation should not inject source image ratio into generation settings');
 assert.doesNotMatch(js, /smartTextEraseRunSettings[\s\S]{0,260}smartTextSourceRatioSettings/, 'text erase settings should come only from the user-selected image API controls');
 assert.match(js, /runSmartImageTextGeneration\(state\.nodeId,\s*state\.imageIndex,\s*smartTextErasePrompt\(\),\s*'消除文字',\s*runSettings\)/, 'apply erase should reuse the downstream text generation path');
-assert.match(js, /runSmartImageTextGeneration\(state\.nodeId,\s*state\.imageIndex,\s*prompt,\s*'修改文字'\)/, 'apply modification should reuse the same downstream image generation path');
+const smartTextErasePromptSource = js.slice(
+  js.indexOf('function smartTextErasePrompt()'),
+  js.indexOf('async function runSmartImageTextGeneration')
+);
+const smartTextErasePromptValue = Function(`"use strict"; ${smartTextErasePromptSource}; return smartTextErasePrompt();`)();
+assert.match(smartTextErasePromptValue, /Remove every visible textual element/i, 'erase prompt should explicitly remove every visible textual element');
+assert.match(smartTextErasePromptValue, /letters, numbers, punctuation/i, 'erase prompt should cover letters, numbers, and punctuation');
+assert.match(smartTextErasePromptValue, /text-based logos/i, 'erase prompt should remove logos made from text without targeting graphical logos');
+assert.match(smartTextErasePromptValue, /people, faces, facial expressions, hands, objects, icons, stickers, illustrations, shapes, lines/i, 'erase prompt should enumerate protected non-text subjects and design elements');
+assert.match(smartTextErasePromptValue, /colors, gradients, lighting, shadows, textures, patterns, composition, perspective/i, 'erase prompt should protect visual styling and composition');
+assert.match(smartTextErasePromptValue, /only inside the areas previously covered by text/i, 'erase prompt should confine background reconstruction to text-covered areas');
+assert.match(smartTextErasePromptValue, /Do not remove, redraw, replace, restyle, move, resize, or alter any non-text visual element/i, 'erase prompt should forbid every common non-text mutation');
+assert.match(smartTextErasePromptValue, /Honor the user-requested output dimensions and aspect ratio/i, 'erase prompt should respect the user-selected target size instead of locking source dimensions');
+assert.match(smartTextErasePromptValue, /Do not generate, preserve, or introduce any readable text/i, 'erase prompt should prevent residual or newly hallucinated text');
+assert.doesNotMatch(smartTextErasePromptValue, /typographic decorations/i, 'erase prompt should not use an ambiguous phrase that can erase independent decorative graphics');
+assert.match(smartTextErasePromptValue, /Remove glyph outlines, strokes, shadows, glows, and highlights only where they follow the contours of readable glyphs/i, 'erase prompt should limit removable effects to glyph-shaped effects');
+assert.match(smartTextErasePromptValue, /Preserve outlines, strokes, shadows, and highlights that belong to a container or independent graphic/i, 'erase prompt should protect effects owned by non-text containers');
+assert.match(smartTextErasePromptValue, /background plates, colored blocks, panels, banners, ribbons, badges, buttons, tickets, speech bubbles, frames, borders, dividers, underlines, curves, shapes, patterns, and decorations/i, 'erase prompt should protect generic text-supporting and decorative graphics');
+assert.match(smartTextErasePromptValue, /If a colored, outlined, or shaped area extends beyond the glyph contours, treat the entire area as a protected non-text element/i, 'erase prompt should classify graphics extending beyond glyphs as protected containers');
+assert.match(smartTextErasePromptValue, /Fill only the holes left by the removed glyph pixels/i, 'erase prompt should repair glyph holes instead of replacing whole containers');
+assert.match(smartTextErasePromptValue, /Never erase, flatten, enlarge, shrink, simplify, or replace an entire container/i, 'erase prompt should forbid deleting or redesigning text-supporting containers');
+assert.match(smartTextErasePromptValue, /A non-text element remains protected even when text touches, overlaps, sits inside, or is fully surrounded by it/i, 'erase prompt should preserve overlapping and enclosing graphics');
+assert.match(smartTextErasePromptValue, /restore any non-text feature that was removed or changed/i, 'erase prompt should require a final non-text consistency check');
+assert.match(js, /data-smart-text-panel-action="selectGeneration"[\s\S]*选择生图模型/, 'modify mode should expose a generation model selector before the cancel action');
+assert.match(js, /smart-text-generation-summary/, 'modify mode should render a dedicated generation settings summary');
+assert.match(js, /未选择生图模型/, 'modify mode should show an explicit default generation settings summary');
+assert.match(js, /data-smart-text-panel-action="confirmGeneration"/, 'the secondary generation settings layer should expose an explicit confirmation action');
+assert.match(js, /data-smart-text-generation-engine/, 'the secondary generation settings layer should expose an image engine selector');
+assert.match(js, /data-smart-text-panel-action="cancelGeneration"[\s\S]*data-lucide="arrow-left"/, 'the secondary generation settings layer should use a return icon instead of a second close icon');
+assert.match(js, /function renderSmartTextResolutionControl\(prefix=''\)/, 'smart text generation should render resolution separately from size');
+assert.match(js, /renderRatioControl\(prefix, includeSource\)[\s\S]*renderSmartTextResolutionControl\(prefix\)/, 'the smart text selector should replace the combined size picker with separate controls');
+assert.match(css, /\.smart-text-generation-head \{[^}]*flex:0 0 34px;/, 'generation selector header should be compact enough to fit the text edit panel height');
+assert.match(css, /\.smart-text-generation-layer \{[^}]*inset:0;/, 'generation selector should cover the full text edit panel so both views have the same height');
+assert.match(css, /\.smart-text-generation-content \{[^}]*padding:6px 10px;[^}]*gap:8px;/, 'generation selector content should preserve even compact spacing');
+assert.match(css, /\.smart-text-generation-fields \{[^}]*flex-direction:column;[^}]*gap:6px;/, 'generation settings should form an evenly spaced compact vertical list');
+assert.match(css, /\.smart-text-generation-fields \.smart-pill \{[^}]*width:100%;[^}]*height:32px;[^}]*border-radius:8px;/, 'every generation setting row should share one compact full-width button box');
+assert.match(css, /\.smart-text-generation-fields \.model-control \.smart-pill \{[^}]*max-width:none;/, 'the model selector should override the compact canvas footer width');
+assert.match(css, /content:attr\(data-smart-text-field-label\)/, 'each full-width row should expose a left-aligned field label');
+assert.match(css, /\.smart-text-generation-fields \.smart-control:not\(\.pinned\) \.smart-popover \{[^}]*opacity:0;[^}]*visibility:hidden;[^}]*pointer-events:none;/, 'generation setting popovers should stay closed until clicked');
+assert.match(css, /\.smart-text-generation-fields \.smart-control\.pinned \.smart-popover \{[^}]*opacity:1;[^}]*visibility:visible;[^}]*pointer-events:auto;/, 'a clicked generation setting should be the only open popover state');
+assert.doesNotMatch(css, /\.smart-text-generation-fields \.smart-control:hover \.smart-popover/, 'hover should not open generation setting popovers');
+assert.doesNotMatch(css, /\.smart-text-generation-fields \.smart-control:focus-within \.smart-popover/, 'focus alone should not open generation setting popovers');
+assert.doesNotMatch(css, /\.smart-text-generation-fields \.smart-control\.interacting \.smart-popover/, 'generation setting popovers should not retain the legacy hover interaction state');
+assert.match(js, /const closePopovers = \(\) => container\.querySelectorAll\('\.smart-control\.pinned'\)/, 'generation popover toggle should close only explicitly pinned controls');
+assert.doesNotMatch(js, /function bindSmartTextGenerationFields\([\s\S]*?control\.onmouseleave = \(\) => control\.classList\.remove\('interacting'\);/, 'generation popover binding should not depend on mouse leave');
+assert.match(js, /class="seg-row smart-text-resolution-options"/, 'resolution options should have their own three-column layout hook');
+assert.match(css, /\.smart-text-generation-fields \.smart-text-resolution-options \{[^}]*grid-template-columns:repeat\(3,minmax\(0,1fr\)\);/, '1K, 2K, and 4K should use three equal columns');
+assert.match(css, /\.smart-text-generation-fields \.seg-row button,\s*\.smart-text-generation-fields \.count-cell \{[^}]*height:30px;[^}]*min-height:30px;/, 'resolution, quality, and count choices should use comfortable click targets');
+assert.match(css, /\.smart-text-edit-actions \.smart-text-generation-trigger \{[^}]*background:var\(--strong\);[^}]*color:var\(--strong-text\);[^}]*border-color:var\(--strong\);/, 'generation selector trigger should share the filled theme-aware recognition button style');
+assert.match(js, /left = Math\.max\(viewLeft \+ inset, Math\.min\(left, viewRight - worldWidth - inset\)\);/, 'the text edit panel should remain horizontally visible when its node leaves the viewport during zoom');
+assert.match(js, /generationSettingsConfirmed/, 'text edit state should distinguish prefilled settings from confirmed settings');
+assert.match(js, /runSmartImageTextGeneration\(state\.nodeId,\s*state\.imageIndex,\s*prompt,\s*'修改文字',\s*runSettings\)/, 'apply modification should pass the confirmed settings to the shared downstream image generation path');
+assert.match(js, /applySmartTextSourceRatioToDraft\(state, prefix\);[\s\S]*splitSmartTextGenerationSizeControl\(state, container, prefix/, 'source ratio should be rebound to the image owned by the text edit panel before rendering the split size controls');
+assert.match(js, /function confirmSmartTextGenerationSelector\(\)[\s\S]*applySmartTextSourceRatioToDraft\(state, prefix\);[\s\S]*confirmSmartTextGenerationSession\(state\);/, 'confirming the selector should refresh the source ratio before storing settings');
+assert.match(js, /const runSettings = cloneSmartTextGenerationSettings\(state\.generationSettings\);[\s\S]*applySmartTextSourceRatioToSettings\(state, runSettings, prefix\);/, 'applying text changes should refresh source ratio immediately before building the request');
+assert.match(js, /splitSmartTextGenerationSizeControl\(state, container, prefix[\s\S]*renderInlineCustomRatioFields\(prefix\)/, 'the split size selector should render editable ratio fields when custom is selected');
+assert.match(css, /\.smart-text-generation-fields > \.inline-fields \{[^}]*width:100%;[^}]*border-radius:8px;/, 'custom ratio inputs should use a visible full-width row in the generation selector');
+assert.match(js, /function explicitRequestOutputSizeForPending\(sourceSettings=settings\)/, 'pending preview sizing should accept the settings for the current run');
+assert.match(js, /const requestSize = explicitRequestOutputSizeForPending\(options\.settings \|\| settings\);/, 'pending preview layout should prefer the current run settings over global canvas settings');
 assert.doesNotMatch(js, /document\.body\.appendChild\(panel\);/, 'text edit panel should not be mounted under body because StudioScale can transform body');
 assert.doesNotMatch(js, /document\.body\.appendChild\(menu\);/, 'text edit dropdown should not be mounted under body because it would drift away from the scaled canvas toolbar');
 assert.doesNotMatch(js, /document\.documentElement\.appendChild\(panel\);|host\.doc\.documentElement\.appendChild\(panel\);/, 'text edit panel should not be mounted in a screen-space document overlay');
@@ -98,7 +160,7 @@ assert.match(js, /data-smart-text-action="modify"[\s\S]*修改文字/, 'text edi
 assert.match(js, /data-smart-text-action="erase"[\s\S]*消除文字/, 'text edit menu should include erase text');
 assert.match(js, /fetch\('\/api\/smart-image\/text\/recognize'/, 'smart text recognition should call the backend OCR endpoint');
 assert.match(js, /generateUrlsForCurrentSettings\([^)]*prompt[^)]*refs[^)]*runSettings/, 'text edit should reuse the smart canvas image generation chain');
-assert.match(js, /createPendingOutputFromSource\(node,[\s\S]*runSettings\.count[\s\S]*meta,[\s\S]*selectOutput:true[\s\S]*refs/, 'text edit modification should create a new downstream output node with the source node image generation settings');
+assert.match(js, /createPendingOutputFromSource\(node,[\s\S]*runSettings\.count[\s\S]*meta,[\s\S]*selectOutput:true[\s\S]*refs[\s\S]*settings:runSettings/, 'text edit modification should create a downstream preview from the confirmed image generation settings');
 assert.match(js, /generateUrlsForCurrentSettings\(outputNode,\s*prompt,\s*refs,\s*runSettings\)/, 'text edit modification should run generation on the new downstream node');
 assert.match(js, /const sourceRef = smartRefWithMarkers\(imageForDisplay\(item\),[\s\S]*const refs = uniqueReferenceImages\(\[sourceRef\]\)\.filter\(ref => ref\?\.url\);/, 'text modification and erase should derive a real source-image reference');
 assert.match(js, /replaceOutputsToNodeWithHistory\(outputNode,\s*additions/, 'text edit results should be written into the downstream node instead of the source image node');
@@ -115,7 +177,10 @@ for (const cls of [
   'smart-text-edit-menu',
   'smart-text-edit-panel',
   'smart-text-edit-field',
-  'smart-text-edit-actions'
+  'smart-text-edit-actions',
+  'smart-text-edit-action-row',
+  'smart-text-generation-layer',
+  'smart-text-generation-summary'
 ]) {
   assert.match(css, new RegExp(`\\.${cls}`), `smart text edit CSS should include ${cls}`);
 }
