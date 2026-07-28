@@ -49,15 +49,16 @@ namespace Hstar.Desktop.Tests;
 public sealed class CanvasThemeTests
 {
     [Theory]
-    [InlineData("true", CanvasTheme.Dark)]
-    [InlineData("false", CanvasTheme.Light)]
-    [InlineData("null", CanvasTheme.Light)]
-    [InlineData("\"true\"", CanvasTheme.Light)]
-    [InlineData("invalid", CanvasTheme.Light)]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("null", false)]
+    [InlineData("\"true\"", false)]
+    [InlineData("invalid", false)]
     public void ParseFallsBackToLightUnlessWebViewReturnsBooleanTrue(
         string json,
-        CanvasTheme expected)
+        bool expectedDark)
     {
+        var expected = expectedDark ? CanvasTheme.Dark : CanvasTheme.Light;
         Assert.Equal(expected, CanvasThemeDetection.ParseResult(json));
     }
 
@@ -187,7 +188,7 @@ using System.Runtime.InteropServices;
 
 namespace Hstar.Desktop.Runtime;
 
-internal static partial class NativeWindowTheme
+internal static class NativeWindowTheme
 {
     private const int DwmwaUseImmersiveDarkMode = 20;
     private const int DwmwaUseImmersiveDarkModeBefore20H1 = 19;
@@ -253,8 +254,8 @@ internal static partial class NativeWindowTheme
         _ = DwmSetWindowAttribute(windowHandle, attribute, ref color, sizeof(int));
     }
 
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmSetWindowAttribute(
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
         nint windowHandle,
         int attribute,
         ref int value,

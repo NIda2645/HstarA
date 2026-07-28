@@ -8,9 +8,34 @@
         MinWidth="960"
         MinHeight="640"
         WindowStartupLocation="CenterScreen"
-        Background="#0A29FF">
-    <Grid Background="#0A29FF" ClipToBounds="True">
-        <wv2:WebView2 x:Name="MainWebView" />
-        <wv2:WebView2 x:Name="StartupWebView" Panel.ZIndex="20" />
+        Background="#000000">
+    <Grid Background="#000000" ClipToBounds="True">
+        <Grid x:Name="NativeStartupSurface"
+              Panel.ZIndex="10"
+              Background="#000000"
+              ClipToBounds="True"
+              IsHitTestVisible="False">
+            <MediaElement x:Name="NativeStartupMedia"
+                          LoadedBehavior="Manual"
+                          UnloadedBehavior="Manual"
+                          IsMuted="True"
+                          Stretch="UniformToFill" />
+            <Image x:Name="NativeStartupPoster"
+                   Stretch="UniformToFill" />
+        </Grid>
+
+        <wv2:WebView2 x:Name="MainWebView"
+                          Width="1"
+                          Height="1"
+                          HorizontalAlignment="Left"
+                          VerticalAlignment="Top"
+                          IsHitTestVisible="False" />
+        <wv2:WebView2 x:Name="StartupWebView"
+                          Width="1"
+                          Height="1"
+                          HorizontalAlignment="Left"
+                          VerticalAlignment="Top"
+                          IsHitTestVisible="False"
+                          Panel.ZIndex="20" />
     </Grid>
 </Window>

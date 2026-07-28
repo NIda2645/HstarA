@@ -21,5 +21,15 @@
     <EmbeddedResource Include="Assets\startup\startup.js" LogicalName="Hstar.Desktop.StartupAssets.startup.js" />
     <EmbeddedResource Include="Assets\startup\ogl.mjs" LogicalName="Hstar.Desktop.StartupAssets.ogl.mjs" />
     <EmbeddedResource Include="Assets\startup\ogl.LICENSE.txt" LogicalName="Hstar.Desktop.StartupAssets.ogl.LICENSE.txt" />
+    <EmbeddedResource Include="Branding\Hstar.svg" LogicalName="Hstar.Desktop.StartupAssets.hstar-logo.svg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\startup\startup-lightfall.mp4"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\startup\startup-lightfall-poster.jpg"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

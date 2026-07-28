@@ -16,6 +16,7 @@ public sealed class EmbeddedStartupRuntime
             ["/startup.js"] = new("startup.js", "text/javascript; charset=utf-8"),
             ["/ogl.mjs"] = new("ogl.mjs", "text/javascript; charset=utf-8"),
             ["/ogl.LICENSE.txt"] = new("ogl.LICENSE.txt", "text/plain; charset=utf-8"),
+            ["/hstar-logo.svg"] = new("hstar-logo.svg", "image/svg+xml"),
         };
 
     private readonly Assembly _assembly;

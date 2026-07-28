@@ -10,32 +10,26 @@
 <body>
   <main id="startup-root">
     <div id="lightfall" class="lightfall-container" aria-hidden="true"></div>
+    <header class="startup-toolbar" aria-hidden="true">
+      <div class="startup-toolbar-brand">
+        <img class="startup-toolbar-logo" src="hstar-logo.svg" alt="">
+        <span>Infinite Canvas</span>
+      </div>
+      <div class="startup-toolbar-links">
+        <span>创意</span>
+        <span>想法</span>
+        <span>无界</span>
+      </div>
+    </header>
     <div class="startup-title" role="status" aria-label="Hstar 正在启动中">
-      <svg viewBox="0 0 700 100" aria-hidden="true" focusable="false">
-        <defs>
-          <mask id="title-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="700" height="100">
-            <rect width="700" height="100" fill="black" />
-            <path fill="white" d="M58 5C61 32 68 40 98 45C68 50 61 58 58 94C55 58 48 50 14 45C48 40 55 32 58 5Z" />
-            <path fill="white" d="M106 9C108 22 112 26 126 29C112 32 108 36 106 51C104 36 100 32 86 29C100 26 104 22 106 9Z" />
-            <path fill="white" d="M112 57C114 69 118 73 132 76C118 79 114 83 112 96C110 83 106 79 92 76C106 73 110 69 112 57Z" />
-            <text x="150" y="67" fill="white">Hstar 正在启动中</text>
-          </mask>
-          <linearGradient id="steel-base" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#d0d4d8" />
-            <stop offset="0.46" stop-color="#838a92" />
-            <stop offset="1" stop-color="#555c64" />
-          </linearGradient>
-          <linearGradient id="cold-shine" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stop-color="#ffffff" stop-opacity="0" />
-            <stop offset="0.46" stop-color="#ffffff" stop-opacity="0.12" />
-            <stop offset="0.5" stop-color="#f4f8ff" stop-opacity="0.98" />
-            <stop offset="0.54" stop-color="#ffffff" stop-opacity="0.12" />
-            <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
-          </linearGradient>
-        </defs>
-        <rect width="700" height="100" fill="url(#steel-base)" mask="url(#title-mask)" />
-        <rect class="title-shine" x="-190" y="0" width="190" height="100" fill="url(#cold-shine)" mask="url(#title-mask)" />
-      </svg>
+      <div class="startup-title-content">
+        <svg class="startup-mark" viewBox="0 0 132 100" aria-hidden="true" focusable="false">
+          <path fill="#ffffff" d="M58 5C61 32 68 40 98 45C68 50 61 58 58 94C55 58 48 50 14 45C48 40 55 32 58 5Z" />
+          <path fill="#ffffff" d="M106 9C108 22 112 26 126 29C112 32 108 36 106 51C104 36 100 32 86 29C100 26 104 22 106 9Z" />
+          <path fill="#ffffff" d="M112 57C114 69 118 73 132 76C118 79 114 83 112 96C110 83 106 79 92 76C106 73 110 69 112 57Z" />
+        </svg>
+        <span class="startup-label">Hstar 正在启动中</span>
+      </div>
     </div>
     <section id="startup-failure" class="startup-failure" aria-live="assertive" hidden>
       <h1>Hstar 暂时无法完成启动</h1>

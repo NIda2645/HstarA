@@ -34,6 +34,8 @@ tmp/
 
 # Local user projects, libraries, and generated catalogs
 assets/
+!desktop/Hstar.Desktop/Assets/
+!desktop/Hstar.Desktop/Assets/startup/
 data/canvases/
 data/media_previews/
 data/openshop/

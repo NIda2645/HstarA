@@ -2,7 +2,7 @@ import { Renderer, Program, Mesh, Triangle } from './ogl.mjs';
 
 const MAX_COLORS = 8;
 const config = Object.freeze({
-  colors: ['#8eb6f9', '#644f9a', '#1d1717'],
+  colors: ['#A6C8FF', '#5227FF', '#FF9FFC'],
   backgroundColor: '#0A29FF',
   speed: 0.5,
   streakCount: 2,
@@ -304,3 +304,7 @@ const hideFailure = () => {
 };
 
 window.hstarStartup = Object.freeze({ dispose, showFailure, hideFailure });
+
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => postShellMessage('hstar-startup:visual-ready'));
+});

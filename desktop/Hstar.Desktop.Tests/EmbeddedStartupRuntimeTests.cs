@@ -12,6 +12,7 @@ public sealed class EmbeddedStartupRuntimeTests
         { "startup.js", "text/javascript; charset=utf-8" },
         { "ogl.mjs", "text/javascript; charset=utf-8" },
         { "ogl.LICENSE.txt", "text/plain; charset=utf-8" },
+        { "hstar-logo.svg", "image/svg+xml" },
     };
 
     [Theory]

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Windows;
+using System.Windows.Threading;
 using Hstar.Desktop.Runtime;
 using Hstar.Desktop.Views;
 
@@ -73,6 +74,7 @@ public partial class App : Application
             MainWindow = window;
             ShutdownMode = ShutdownMode.OnMainWindowClose;
             window.Show();
+            await global::System.Windows.Threading.Dispatcher.Yield(DispatcherPriority.Render);
 
             _startupCancellation = new CancellationTokenSource();
             browserPreparation = window.PrepareBrowserAsync(_startupCancellation.Token);

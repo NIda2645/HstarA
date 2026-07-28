@@ -1,22 +1,23 @@
 <Window x:Class="Hstar.Desktop.Views.ShutdownConfirmationWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="确认关闭 Hstar"
-        Width="430"
-        Height="236"
+        WindowStyle="None"
+        AllowsTransparency="True"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
-        WindowStartupLocation="CenterOwner"
-        Background="#F4F5F7"
-        FontFamily="Segoe UI, Microsoft YaHei UI">
+        WindowStartupLocation="Manual"
+        Background="Transparent"
+        FontFamily="Inter, Segoe UI, Microsoft YaHei UI"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display">
     <Window.Resources>
-        <Style TargetType="Button">
+        <Style x:Key="CanvasDialogButtonStyle" TargetType="Button">
             <Setter Property="Height" Value="38" />
-            <Setter Property="MinWidth" Value="96" />
-            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="MinWidth" Value="104" />
+            <Setter Property="Padding" Value="14,0" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="ExtraBold" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -25,16 +26,58 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="6">
+                                CornerRadius="999">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.86" />
+                                <Setter TargetName="ButtonBorder"
+                                        Property="Opacity"
+                                        Value="0.84" />
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#4E5968" />
+                                <Setter TargetName="ButtonBorder"
+                                        Property="BorderBrush"
+                                        Value="{DynamicResource ShutdownFocusBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder"
+                                        Property="Opacity"
+                                        Value="0.48" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CanvasDialogIconButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource ShutdownMutedTextBrush}" />
+            <Setter Property="FontFamily" Value="Segoe UI Symbol" />
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="IconBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="10">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="IconBorder"
+                                        Property="Background"
+                                        Value="{DynamicResource ShutdownIconHoverBrush}" />
+                                <Setter Property="Foreground"
+                                        Value="{DynamicResource ShutdownTextBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -43,47 +86,99 @@
         </Style>
     </Window.Resources>
 
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*" />
-            <RowDefinition Height="70" />
-        </Grid.RowDefinitions>
-        <StackPanel Margin="30,28,30,22">
-            <TextBlock Text="确认关闭 Hstar"
-                       Foreground="#181B20"
-                       FontSize="20"
-                       FontWeight="Bold" />
-            <TextBlock Margin="0,12,0,0"
-                       Text="关闭后，正在运行的任务将停止。已保存的画布和软件数据不会受到影响。"
-                       Foreground="#5C6470"
-                       FontSize="13"
-                       LineHeight="21"
-                       TextWrapping="Wrap" />
-        </StackPanel>
+    <Border Background="{DynamicResource ShutdownBackdropBrush}">
+        <Grid>
+            <Border Width="440"
+                    Padding="18"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{DynamicResource ShutdownPanelBrush}"
+                    BorderBrush="{DynamicResource ShutdownPanelBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="20">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="42"
+                                      ShadowDepth="18"
+                                      Direction="270"
+                                      Color="#0F172A"
+                                      Opacity="0.24" />
+                </Border.Effect>
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <Border Width="28"
+                                    Height="28"
+                                    Margin="0,0,9,0"
+                                    Background="{DynamicResource ShutdownSoftBrush}"
+                                    BorderBrush="{DynamicResource ShutdownPanelBorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="9">
+                                <TextBlock HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource ShutdownTextBrush}"
+                                           FontSize="15"
+                                           Text="✦" />
+                            </Border>
+                            <TextBlock VerticalAlignment="Center"
+                                       Foreground="{DynamicResource ShutdownTextBrush}"
+                                       FontSize="13"
+                                       FontWeight="Black"
+                                       Text="确认关闭 Hstar" />
+                        </StackPanel>
+                        <Button x:Name="CloseIconButton"
+                                Grid.Column="1"
+                                Style="{StaticResource CanvasDialogIconButtonStyle}"
+                                Content="×"
+                                ToolTip="取消关闭"
+                                Click="CloseIconButton_OnClick" />
+                    </Grid>
 
-        <Border Grid.Row="1"
-                Background="#FFFFFF"
-                BorderBrush="#D9DDE3"
-                BorderThickness="0,1,0,0">
-            <StackPanel Margin="24,0"
-                        HorizontalAlignment="Right"
-                        VerticalAlignment="Center"
-                        Orientation="Horizontal">
-                <Button x:Name="CancelButton"
-                        Margin="0,0,10,0"
-                        Background="#FFFFFF"
-                        BorderBrush="#C9CED6"
-                        Foreground="#252A31"
-                        Content="取消"
-                        IsCancel="True"
-                        IsDefault="True"
-                        Click="CancelButton_OnClick" />
-                <Button Background="#1A1D22"
-                        BorderBrush="#1A1D22"
-                        Foreground="#FFFFFF"
-                        Content="关闭 Hstar"
-                        Click="CloseButton_OnClick" />
-            </StackPanel>
-        </Border>
-    </Grid>
+                    <Border Margin="0,16,0,18"
+                            Padding="14,13"
+                            Background="{DynamicResource ShutdownSoftBrush}"
+                            BorderBrush="{DynamicResource ShutdownPanelBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="14">
+                        <StackPanel>
+                            <TextBlock Foreground="{DynamicResource ShutdownTextBrush}"
+                                       FontSize="12"
+                                       FontWeight="ExtraBold"
+                                       LineHeight="18"
+                                       Text="当前正在运行的任务将停止" />
+                            <TextBlock Margin="0,5,0,0"
+                                       Foreground="{DynamicResource ShutdownMutedTextBrush}"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
+                                       LineHeight="18"
+                                       Text="已保存的画布和软件数据不会受到影响。" />
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel HorizontalAlignment="Right"
+                                Orientation="Horizontal">
+                        <Button x:Name="CancelButton"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource CanvasDialogButtonStyle}"
+                                Background="{DynamicResource ShutdownSecondaryBrush}"
+                                BorderBrush="{DynamicResource ShutdownSecondaryBorderBrush}"
+                                Foreground="{DynamicResource ShutdownMutedTextBrush}"
+                                Content="取消"
+                                IsCancel="True"
+                                Click="CancelButton_OnClick" />
+                        <Button Style="{StaticResource CanvasDialogButtonStyle}"
+                                Background="{DynamicResource ShutdownStrongBrush}"
+                                BorderBrush="{DynamicResource ShutdownStrongBrush}"
+                                Foreground="{DynamicResource ShutdownStrongTextBrush}"
+                                Content="关闭 Hstar"
+                                Click="CloseButton_OnClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Border>
 </Window>

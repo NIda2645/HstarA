@@ -14,17 +14,26 @@ public sealed class StartupAssetTests
         Assert.DoesNotContain("http://", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("https://", html, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Hstar 正在启动中", html);
-        Assert.Contains("#8eb6f9", script, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("#644f9a", script, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("#1d1717", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("#A6C8FF", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("#5227FF", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("#FF9FFC", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("backgroundColor: '#0A29FF'", script);
         Assert.Contains("streakCount: 2", script);
         Assert.Contains("backgroundGlow: 0", script);
         Assert.Contains("mouseStrength: 0.2", script);
         Assert.Contains("window.hstarStartup", script);
+        Assert.Contains("hstar-startup:visual-ready", script);
+        Assert.Contains("requestAnimationFrame", script);
         Assert.Contains("prefers-reduced-motion", css);
         Assert.Contains("startup-title", css);
-        Assert.Contains("title-mask", html);
+        Assert.Contains("animation: title-pulse", css);
+        Assert.Contains("class=\"startup-mark\"", html);
+        Assert.Contains("class=\"startup-label\"", html);
+        Assert.Contains("display: flex", css);
+        Assert.Contains("width: max-content", css);
+        Assert.Contains("color: #ffffff", css);
+        Assert.DoesNotContain("opacity: 0.72", css);
+        Assert.DoesNotContain("title-mask", html);
     }
 
     [Fact]
@@ -36,6 +45,25 @@ public sealed class StartupAssetTests
         Assert.Contains("script-src 'self'", html);
         Assert.Contains("style-src 'self'", html);
         Assert.Contains("connect-src 'none'", html);
+    }
+
+    [Fact]
+    public void StartupPageIncludesTheApprovedGlassToolbar()
+    {
+        var html = File.ReadAllText(Asset("index.html"));
+        var css = File.ReadAllText(Asset("startup.css"));
+
+        Assert.Contains("class=\"startup-toolbar\"", html);
+        Assert.Contains("src=\"hstar-logo.svg\"", html);
+        Assert.Contains("Infinite Canvas", html);
+        Assert.Contains("创意", html);
+        Assert.Contains("想法", html);
+        Assert.Contains("无界", html);
+        Assert.Contains("width: min(88%, 1120px)", css);
+        Assert.Contains("height: 50px", css);
+        Assert.Contains("top: 20px", css);
+        Assert.Contains("backdrop-filter: blur(18px) saturate(130%)", css);
+        Assert.Contains("@media (max-width: 980px)", css);
     }
 
     [Fact]
