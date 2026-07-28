@@ -1,7 +1,4 @@
 using System.IO;
-using System.Net.Http;
-using System.Net.Http.Json;
-using System.Text.Json;
 
 namespace Hstar.Desktop.Runtime;
 
@@ -26,7 +23,6 @@ public sealed class StartupCoordinator : IAsyncDisposable
 
     public async Task<BackendSession> StartAsync(
         AppPaths paths,
-        string pendingMigrationTarget = "",
         CancellationToken cancellationToken = default)
     {
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -41,14 +37,6 @@ public sealed class StartupCoordinator : IAsyncDisposable
             var session = await StartBackendAsync(paths, _requiredPort, cancellationToken).ConfigureAwait(false);
             try
             {
-                if (!string.IsNullOrWhiteSpace(pendingMigrationTarget))
-                {
-                    await MigrateDataAsync(session.Backend, pendingMigrationTarget, cancellationToken).ConfigureAwait(false);
-                    await session.Backend.DisposeAsync().ConfigureAwait(false);
-                    var migratedPaths = LoadRestartPaths(paths, pendingMigrationTarget);
-                    session = await StartBackendAsync(migratedPaths, _requiredPort, cancellationToken).ConfigureAwait(false);
-                }
-
                 Current = session;
                 return session;
             }
@@ -64,8 +52,8 @@ public sealed class StartupCoordinator : IAsyncDisposable
         }
     }
 
-    public async Task<BackendSession> RestartAfterMigrationAsync(
-        string expectedDataRoot,
+    public async Task<BackendSession> RestartWithDataRootAsync(
+        string dataRoot,
         CancellationToken cancellationToken = default)
     {
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -74,10 +62,10 @@ public sealed class StartupCoordinator : IAsyncDisposable
             ThrowIfDisposed();
             var previous = Current
                 ?? throw new InvalidOperationException("Hstar 后端尚未启动，无法切换数据目录。");
-            var migratedPaths = LoadRestartPaths(previous.Paths, expectedDataRoot);
+            var nextPaths = PrepareRestartPaths(previous.Paths, dataRoot);
             Current = null;
             await previous.Backend.DisposeAsync().ConfigureAwait(false);
-            var replacement = await StartBackendAsync(migratedPaths, _requiredPort, cancellationToken).ConfigureAwait(false);
+            var replacement = await StartBackendAsync(nextPaths, _requiredPort, cancellationToken).ConfigureAwait(false);
             Current = replacement;
             return replacement;
         }
@@ -85,6 +73,24 @@ public sealed class StartupCoordinator : IAsyncDisposable
         {
             _lifecycle.Release();
         }
+    }
+
+    public static AppPaths PrepareRestartPaths(AppPaths current, string dataRoot)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        if (!Path.IsPathFullyQualified(dataRoot))
+        {
+            throw new InvalidOperationException("新的 Hstar 数据目录必须是绝对路径。");
+        }
+        var normalizedRoot = Path.GetFullPath(dataRoot);
+        AppPaths.ValidateDataRoot(normalizedRoot, current.ProgramRoot);
+        var next = AppPaths.Create(
+            current.ProgramRoot,
+            normalizedRoot,
+            current.AppDataRoot,
+            current.Edition);
+        next.SaveBootstrap(lastStartedVersion: current.Bootstrap.LastStartedVersion);
+        return next;
     }
 
     public static AppPaths LoadRestartPaths(AppPaths current, string expectedDataRoot)
@@ -151,59 +157,6 @@ public sealed class StartupCoordinator : IAsyncDisposable
         {
             await backend.DisposeAsync().ConfigureAwait(false);
             throw;
-        }
-    }
-
-    private static async Task MigrateDataAsync(
-        BackendProcess backend,
-        string target,
-        CancellationToken cancellationToken)
-    {
-        using var createRequest = new HttpRequestMessage(HttpMethod.Post, "api/storage-migrations")
-        {
-            Content = JsonContent.Create(new { storage_root = target }),
-        };
-        using var createResponse = await backend.SendAuthorizedAsync(createRequest, cancellationToken).ConfigureAwait(false);
-        var createBody = await createResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!createResponse.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Hstar 数据迁移启动失败：{createBody}");
-        }
-
-        using var createJson = JsonDocument.Parse(createBody);
-        var taskId = createJson.RootElement.GetProperty("task").GetProperty("id").GetString();
-        if (string.IsNullOrWhiteSpace(taskId))
-        {
-            throw new InvalidOperationException("Hstar 数据迁移没有返回任务编号。");
-        }
-
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            using var statusRequest = new HttpRequestMessage(
-                HttpMethod.Get,
-                $"api/storage-migrations/{Uri.EscapeDataString(taskId)}");
-            using var statusResponse = await backend.SendAuthorizedAsync(statusRequest, cancellationToken).ConfigureAwait(false);
-            var statusBody = await statusResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (!statusResponse.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException($"Hstar 数据迁移状态读取失败：{statusBody}");
-            }
-            using var statusJson = JsonDocument.Parse(statusBody);
-            var task = statusJson.RootElement.GetProperty("task");
-            var status = task.GetProperty("status").GetString() ?? string.Empty;
-            if (status == "completed")
-            {
-                return;
-            }
-            if (status is "failed" or "cancelled")
-            {
-                var error = task.TryGetProperty("error", out var errorElement)
-                    ? errorElement.GetString()
-                    : string.Empty;
-                throw new InvalidOperationException($"Hstar 数据迁移未完成：{error ?? status}");
-            }
-            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
         }
     }
 

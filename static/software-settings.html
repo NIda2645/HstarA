@@ -40,6 +40,13 @@
         .kbd { display:inline-flex; align-items:center; min-height:26px; padding:4px 9px; border:1px solid var(--line); border-bottom-width:2px; border-radius:8px; background:var(--card); color:var(--text); font-size:12px; font-weight:900; font-family:"Segoe UI", Inter, sans-serif; }
         .about-copy { color:var(--muted); font-size:13px; line-height:1.7; }
         .about-list { display:grid; gap:10px; margin-top:14px; }
+        dialog { width:min(460px,calc(100vw - 32px)); padding:0; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); box-shadow:0 24px 70px rgba(0,0,0,.28); }
+        dialog::backdrop { background:rgba(8,15,28,.58); }
+        .dialog-body { padding:24px; }
+        .dialog-title { margin:0; font-size:18px; line-height:1.35; }
+        .dialog-copy { margin:10px 0 0; color:var(--muted); font-size:13px; line-height:1.65; }
+        .dialog-path { margin:16px 0 0; padding:11px 12px; border:1px solid var(--line); border-radius:6px; background:var(--soft); font:12px/1.55 "Segoe UI",sans-serif; overflow-wrap:anywhere; }
+        .dialog-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:22px; }
         @media (max-width:700px){ .page{padding:28px 16px 60px}.row{grid-template-columns:1fr}.path-box,.link-box{flex-direction:column;align-items:stretch}.shortcut-grid{grid-template-columns:1fr} }
     </style>
 </head>
@@ -124,6 +131,17 @@
             </div>
         </section>
     </main>
+    <dialog id="storageRestartDialog" aria-labelledby="storageRestartTitle">
+        <form method="dialog" class="dialog-body">
+            <h2 id="storageRestartTitle" class="dialog-title">确认重启 Hstar</h2>
+            <p class="dialog-copy">确认后将切换到新的储存位置并自动重启。原位置的数据不会被迁移、覆盖或删除。</p>
+            <div id="storageRestartPath" class="dialog-path"></div>
+            <div class="dialog-actions">
+                <button value="cancel" autofocus>取消</button>
+                <button class="primary" value="confirm">确认并重启</button>
+            </div>
+        </form>
+    </dialog>
     <script>
         const currentPath = document.getElementById('currentPath');
         const storageInput = document.getElementById('storageInput');
@@ -139,6 +157,8 @@
         const saveShortcutBtn = document.getElementById('saveShortcutBtn');
         const resetShortcutBtn = document.getElementById('resetShortcutBtn');
         const aboutVersion = document.getElementById('aboutVersion');
+        const storageRestartDialog = document.getElementById('storageRestartDialog');
+        const storageRestartPath = document.getElementById('storageRestartPath');
         const SHORTCUT_STORAGE_KEY = 'hstar.software.shortcuts';
         const DEFAULT_SHORTCUTS = Object.freeze({
             undo:{label:'撤销', accelerator:'Ctrl+Z'},
@@ -149,6 +169,7 @@
             selectAll:{label:'全选', accelerator:'Ctrl+A'}
         });
         let shortcutState = {};
+        let activeStorageRoot = '';
 
         function cloneShortcuts(shortcuts){
             return Object.fromEntries(Object.entries(shortcuts || {}).map(([key, item]) => [key, {...item}]));
@@ -185,7 +206,8 @@
         async function loadSettings(){
             try {
                 const data = await fetch('/api/software-settings', {cache:'no-store'}).then(r => r.json());
-                const root = data?.settings?.storage_root || '';
+                const root = data?.settings?.active_storage_root || data?.settings?.storage_root || '';
+                activeStorageRoot = root;
                 currentPath.textContent = root || '默认目录';
                 storageInput.value = root;
             } catch(e) {
@@ -373,6 +395,31 @@
             });
         });
         refreshLinkBtn.addEventListener('click', refreshLinks);
+        function confirmStorageRestart(nextRoot){
+            storageRestartPath.textContent = nextRoot;
+            if(typeof storageRestartDialog.showModal !== 'function'){
+                return Promise.resolve(window.confirm(`确认切换储存位置并重启 Hstar？\n\n${nextRoot}`));
+            }
+            storageRestartDialog.returnValue = 'cancel';
+            storageRestartDialog.showModal();
+            return new Promise(resolve => {
+                storageRestartDialog.addEventListener('close', () => {
+                    resolve(storageRestartDialog.returnValue === 'confirm');
+                }, {once:true});
+            });
+        }
+
+        function requestDesktopStorageRestart(dataRoot){
+            const webview = window.chrome?.webview;
+            if(!webview?.postMessage) return false;
+            webview.postMessage({
+                type:'hstar-restart-with-data-root',
+                schemaVersion:1,
+                dataRoot
+            });
+            return true;
+        }
+
         async function saveStorageRoot(storageRoot, pendingText = '正在验证并保存...'){
             const storage_root = String(storageRoot || '').trim();
             if(!storage_root){ setStatus('请输入储存文件夹路径。', 'err'); return false; }
@@ -390,11 +437,11 @@
                 const savedPath = data?.settings?.storage_root || storage_root;
                 currentPath.textContent = savedPath;
                 storageInput.value = savedPath;
-                setStatus(data?.settings?.message || '已迁移并保存。', 'ok');
-                return true;
+                setStatus(data?.settings?.message || '储存位置已保存。', 'ok');
+                return data?.settings || { storage_root: savedPath };
             } catch(e) {
                 setStatus(e.message || '保存失败，请确认路径可写。', 'err');
-                return false;
+                return null;
             } finally {
                 saveBtn.disabled = false;
                 browseBtn.disabled = false;
@@ -409,7 +456,7 @@
                     const picked = await api.chooseStorageFolder();
                     if(picked){
                         storageInput.value = picked;
-                        await saveStorageRoot(picked, '正在迁移数据到所选文件夹...');
+                        setStatus('已选择新位置，点击保存后生效。', '');
                     } else {
                         setStatus('已取消选择。', '');
                     }
@@ -424,7 +471,7 @@
                 if(!res.ok) throw new Error(data.detail || '无法打开系统文件夹选择器。');
                 if(data.path){
                     storageInput.value = data.path;
-                    await saveStorageRoot(data.path, '正在迁移数据到所选文件夹...');
+                    setStatus('已选择新位置，点击保存后生效。', '');
                 } else {
                     setStatus('已取消选择。', '');
                 }
@@ -435,7 +482,24 @@
             }
         };
         saveBtn.onclick = async () => {
-            await saveStorageRoot(storageInput.value.trim());
+            const nextRoot = storageInput.value.trim();
+            if(!nextRoot){ setStatus('请输入储存文件夹路径。', 'err'); return; }
+            if(nextRoot.toLocaleLowerCase() === activeStorageRoot.toLocaleLowerCase()){
+                setStatus('当前已在使用此储存位置。', 'ok');
+                return;
+            }
+            const confirmed = await confirmStorageRestart(nextRoot);
+            if(!confirmed){
+                storageInput.value = activeStorageRoot;
+                setStatus('已取消更改，当前储存位置保持不变。', '');
+                return;
+            }
+            const saved = await saveStorageRoot(nextRoot, '正在保存新的储存位置...');
+            if(!saved) return;
+            activeStorageRoot = saved.storage_root || nextRoot;
+            if(!requestDesktopStorageRestart(activeStorageRoot)){
+                setStatus('储存位置已保存，请重启 Hstar 后使用。', 'ok');
+            }
         };
         loadSettings();
         loadLinks();

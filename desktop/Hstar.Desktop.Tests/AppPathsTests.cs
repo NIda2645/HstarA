@@ -33,6 +33,18 @@ public sealed class AppPathsTests : IDisposable
     }
 
     [Fact]
+    public void DefaultDataRootFallsBackToDDriveBeforeDocuments()
+    {
+        var documents = Path.Combine(_root, "用户文档");
+
+        var selected = AppPaths.SelectDefaultDataRoot(
+            drive => drive == @"D:\",
+            documents);
+
+        Assert.Equal(Path.GetFullPath(@"D:\Hstar缓存"), selected);
+    }
+
+    [Fact]
     public void BootstrapPathsAreIsolatedByEdition()
     {
         var appData = Path.Combine(_root, "AppData");
@@ -109,6 +121,27 @@ public sealed class AppPathsTests : IDisposable
         Assert.Single(Directory.GetFiles(
             Path.GetDirectoryName(bootstrapPath)!,
             "bootstrap.json.corrupt-*"));
+    }
+
+    [Fact]
+    public void DirectRestartPersistsTargetWithoutCopyingOldData()
+    {
+        var programRoot = Path.Combine(_root, "Program");
+        var oldRoot = Path.Combine(_root, "OldData");
+        var nextRoot = Path.Combine(_root, "NextData");
+        var appData = Path.Combine(_root, "AppData");
+        Directory.CreateDirectory(oldRoot);
+        var sentinel = Path.Combine(oldRoot, "keep-existing.txt");
+        File.WriteAllText(sentinel, "unchanged");
+        var current = AppPaths.Create(programRoot, oldRoot, appData);
+        current.SaveBootstrap();
+
+        var next = StartupCoordinator.PrepareRestartPaths(current, nextRoot);
+
+        Assert.Equal(Path.GetFullPath(nextRoot), next.DataRoot);
+        Assert.Equal("unchanged", File.ReadAllText(sentinel));
+        Assert.False(File.Exists(Path.Combine(nextRoot, "keep-existing.txt")));
+        Assert.Equal(next.DataRoot, AppPaths.TryLoad(programRoot, appData)!.DataRoot);
     }
 
     public void Dispose()

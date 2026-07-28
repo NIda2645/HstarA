@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Hstar.Desktop.Runtime;
 using Microsoft.Win32;
 
@@ -8,6 +9,9 @@ namespace Hstar.Desktop.Views;
 
 public partial class StorageSetupWindow : Window
 {
+    private static readonly Brush AvailableBrush = new SolidColorBrush(Color.FromRgb(22, 135, 82));
+    private static readonly Brush UnavailableBrush = new SolidColorBrush(Color.FromRgb(180, 35, 24));
+    private static readonly Brush NeutralBrush = new SolidColorBrush(Color.FromRgb(123, 132, 144));
     private readonly string _programRoot;
     private readonly string _appDataRoot;
 
@@ -23,13 +27,11 @@ public partial class StorageSetupWindow : Window
 
     public AppPaths? SelectedPaths { get; private set; }
 
-    public string PendingMigrationTarget { get; private set; } = string.Empty;
-
     private void BrowseButton_OnClick(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFolderDialog
         {
-            Title = "选择 Hstar 数据目录",
+            Title = "选择 Hstar 数据位置",
             Multiselect = false,
             InitialDirectory = NearestExistingDirectory(DataPathTextBox.Text),
         };
@@ -48,103 +50,40 @@ public partial class StorageSetupWindow : Window
         }
     }
 
-    private void ExistingDataChoice_OnChanged(object sender, RoutedEventArgs e)
-    {
-        if (CopyTargetPanel is null)
-        {
-            return;
-        }
-
-        CopyTargetPanel.Visibility = CopyExistingRadio.IsChecked == true
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        if (CopyExistingRadio.IsChecked == true && string.IsNullOrWhiteSpace(CopyTargetTextBox.Text))
-        {
-            CopyTargetTextBox.Text = AppPaths.SelectDefaultDataRoot();
-        }
-    }
-
-    private void BrowseCopyTargetButton_OnClick(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFolderDialog
-        {
-            Title = "选择新的 Hstar 数据目录",
-            Multiselect = false,
-            InitialDirectory = NearestExistingDirectory(CopyTargetTextBox.Text),
-        };
-        if (dialog.ShowDialog(this) == true)
-        {
-            CopyTargetTextBox.Text = dialog.FolderName;
-            CopyTargetTextBox.CaretIndex = CopyTargetTextBox.Text.Length;
-        }
-    }
-
     private void RefreshPathStatus()
     {
-        HideValidation();
-        var rawPath = DataPathTextBox.Text.Trim();
-        if (rawPath.Length == 0)
+        ValidationText.Visibility = Visibility.Collapsed;
+        var status = StorageSetupModel.Inspect(DataPathTextBox.Text, _programRoot);
+        PathStatusText.Text = status.Message;
+        FreeSpaceText.Text = status.AvailableBytes > 0
+            ? $"可用 {FormatBytes(status.AvailableBytes)}"
+            : string.Empty;
+        ConfirmButton.IsEnabled = status.CanContinue;
+        PathStatusDot.Fill = string.IsNullOrWhiteSpace(DataPathTextBox.Text)
+            ? NeutralBrush
+            : status.CanContinue ? AvailableBrush : UnavailableBrush;
+        if (!status.CanContinue && !string.IsNullOrWhiteSpace(status.Error))
         {
-            PathStatusText.Text = "请输入或选择目录";
-            FreeSpaceText.Text = string.Empty;
-            ExistingDataPanel.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        try
-        {
-            var path = Path.GetFullPath(Environment.ExpandEnvironmentVariables(rawPath));
-            AppPaths.ValidateDataRoot(path, _programRoot);
-            var exists = Directory.Exists(path);
-            PathStatusText.Text = exists ? "目录已存在" : "确认后将自动创建";
-            FreeSpaceText.Text = $"可用 {FormatBytes(AppPaths.GetAvailableBytes(path))}";
-            ExistingDataPanel.Visibility = File.Exists(Path.Combine(path, "data-manifest.json"))
-                ? Visibility.Visible
-                : Visibility.Collapsed;
-            if (ExistingDataPanel.Visibility != Visibility.Visible)
-            {
-                ContinueExistingRadio.IsChecked = true;
-            }
-        }
-        catch (Exception error) when (error is ArgumentException
-            or IOException
-            or UnauthorizedAccessException
-            or NotSupportedException)
-        {
-            PathStatusText.Text = "目录不可用";
-            FreeSpaceText.Text = string.Empty;
-            ExistingDataPanel.Visibility = Visibility.Collapsed;
+            ValidationText.Text = status.Error;
+            ValidationText.Visibility = Visibility.Visible;
         }
     }
 
     private void ConfirmButton_OnClick(object sender, RoutedEventArgs e)
     {
+        var status = StorageSetupModel.Inspect(DataPathTextBox.Text, _programRoot);
+        if (!status.CanContinue)
+        {
+            ValidationText.Text = status.Error.Length > 0 ? status.Error : status.Message;
+            ValidationText.Visibility = Visibility.Visible;
+            return;
+        }
+
         try
         {
-            var dataRoot = Path.GetFullPath(
-                Environment.ExpandEnvironmentVariables(DataPathTextBox.Text.Trim()));
-            AppPaths.ValidateDataRoot(dataRoot, _programRoot);
-            var availableBytes = AppPaths.GetAvailableBytes(dataRoot);
-            if (availableBytes < AppPaths.MinimumDataRootFreeBytes)
-            {
-                throw new InvalidOperationException("所选磁盘可用空间不足 2 GB，请选择其他位置。");
-            }
-
-            Directory.CreateDirectory(dataRoot);
-            var paths = AppPaths.Create(_programRoot, dataRoot, _appDataRoot);
-            var hasExistingData = File.Exists(Path.Combine(dataRoot, "data-manifest.json"));
-            if (hasExistingData && CopyExistingRadio.IsChecked == true)
-            {
-                var target = ValidateMigrationTarget(dataRoot, CopyTargetTextBox.Text);
-                Directory.CreateDirectory(target);
-                paths.SaveBootstrap(migrationStatus: "pending");
-                PendingMigrationTarget = target;
-            }
-            else
-            {
-                paths.SaveBootstrap();
-                PendingMigrationTarget = string.Empty;
-            }
+            Directory.CreateDirectory(status.NormalizedPath);
+            var paths = AppPaths.Create(_programRoot, status.NormalizedPath, _appDataRoot);
+            paths.SaveBootstrap();
             SelectedPaths = paths;
             DialogResult = true;
         }
@@ -154,26 +93,13 @@ public partial class StorageSetupWindow : Window
             or InvalidOperationException
             or NotSupportedException)
         {
-            ShowValidation(error.Message);
+            ValidationText.Text = error.Message;
+            ValidationText.Visibility = Visibility.Visible;
         }
     }
 
-    private void CancelButton_OnClick(object sender, RoutedEventArgs e)
-    {
+    private void CancelButton_OnClick(object sender, RoutedEventArgs e) =>
         DialogResult = false;
-    }
-
-    private void ShowValidation(string message)
-    {
-        ValidationText.Text = message;
-        ValidationText.Visibility = Visibility.Visible;
-    }
-
-    private void HideValidation()
-    {
-        ValidationText.Text = string.Empty;
-        ValidationText.Visibility = Visibility.Collapsed;
-    }
 
     private static string NearestExistingDirectory(string path)
     {
@@ -185,11 +111,13 @@ public partial class StorageSetupWindow : Window
                 var parent = Directory.GetParent(current);
                 if (parent is null)
                 {
-                    return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                    break;
                 }
                 current = parent.FullName;
             }
-            return current;
+            return Directory.Exists(current)
+                ? current
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         }
         catch
         {
@@ -208,33 +136,5 @@ public partial class StorageSetupWindow : Window
             index++;
         }
         return $"{value:0.#} {units[index]}";
-    }
-
-    private string ValidateMigrationTarget(string source, string rawTarget)
-    {
-        if (string.IsNullOrWhiteSpace(rawTarget))
-        {
-            throw new InvalidOperationException("请选择新的数据目录。");
-        }
-
-        var target = Path.GetFullPath(Environment.ExpandEnvironmentVariables(rawTarget.Trim()));
-        AppPaths.ValidateDataRoot(target, _programRoot);
-        var sourceWithSeparator = Path.TrimEndingDirectorySeparator(source) + Path.DirectorySeparatorChar;
-        var targetWithSeparator = Path.TrimEndingDirectorySeparator(target) + Path.DirectorySeparatorChar;
-        if (sourceWithSeparator.StartsWith(targetWithSeparator, StringComparison.OrdinalIgnoreCase)
-            || targetWithSeparator.StartsWith(sourceWithSeparator, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("新旧数据目录不能相同或互相包含。");
-        }
-        if (Directory.Exists(target) && Directory.EnumerateFileSystemEntries(target).Any())
-        {
-            throw new InvalidOperationException("新的数据目录必须为空。");
-        }
-        if (AppPaths.GetAvailableBytes(target) < AppPaths.MinimumDataRootFreeBytes)
-        {
-            throw new InvalidOperationException("新位置可用空间不足 2 GB，请选择其他位置。");
-        }
-
-        return target;
     }
 }

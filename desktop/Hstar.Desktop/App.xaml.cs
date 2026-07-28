@@ -56,7 +56,6 @@ public partial class App : Application
             var programRoot = AppPaths.ResolveProgramRoot();
             var appDataRoot = validationOptions.AppDataRoot ?? AppPaths.ResolveAppDataRoot();
             var paths = AppPaths.TryLoad(programRoot, appDataRoot);
-            var pendingMigrationTarget = string.Empty;
             if (paths is null)
             {
                 var setup = new StorageSetupWindow(programRoot, appDataRoot);
@@ -66,7 +65,6 @@ public partial class App : Application
                     return;
                 }
                 paths = setup.SelectedPaths;
-                pendingMigrationTarget = setup.PendingMigrationTarget;
             }
 
             _startupCoordinator = new StartupCoordinator(validationOptions.RequiredPort);
@@ -76,17 +74,10 @@ public partial class App : Application
             window.Show();
 
             _startupCancellation = new CancellationTokenSource();
-            if (string.IsNullOrWhiteSpace(pendingMigrationTarget))
-            {
-                browserPreparation = window.PrepareBrowserAsync(_startupCancellation.Token);
-            }
-            window.SetStartupStatus(
-                string.IsNullOrWhiteSpace(pendingMigrationTarget)
-                    ? "正在启动本地服务"
-                    : "正在安全复制已有数据");
+            browserPreparation = window.PrepareBrowserAsync(_startupCancellation.Token);
+            window.SetStartupStatus("正在启动本地服务");
             var session = await _startupCoordinator.StartAsync(
                 paths,
-                pendingMigrationTarget,
                 _startupCancellation.Token);
             validationOptions.WriteBackendHealthyMarker(session.Paths.DataRoot, session.Backend.Port);
             await browserPreparation;

@@ -127,7 +127,7 @@ public partial class MainWindow : Window
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _windowCancellation.Token);
-        var session = await _startupCoordinator.RestartAfterMigrationAsync(
+        var session = await _startupCoordinator.RestartWithDataRootAsync(
             dataRoot,
             linkedCancellation.Token);
         BackendSession = session;

@@ -452,7 +452,7 @@ def resolve_runtime_paths(base_dir: str, software_settings_file: str) -> Dict[st
         pass
     return runtime_paths_for_storage_root(storage_root, software_settings_file)
 
-RUNTIME_PATHS = resolve_runtime_paths(BASE_DIR, APP_SOFTWARE_SETTINGS_FILE)
+RUNTIME_PATHS = resolve_runtime_paths(APP_DATA_ROOT, APP_SOFTWARE_SETTINGS_FILE)
 STORAGE_ROOT = RUNTIME_PATHS["storage_root"]
 OUTPUT_DIR = RUNTIME_PATHS["output_dir"]
 ASSETS_DIR = RUNTIME_PATHS["assets_dir"]
@@ -12618,10 +12618,15 @@ def get_software_settings():
 def save_software_storage(payload: SoftwareStorageRequest):
     settings = load_software_settings()
     storage_root = normalize_storage_root(payload.storage_root)
-    migration = migrate_runtime_data_to_storage(storage_root)
     settings["storage_root"] = storage_root
     save_software_settings(settings)
-    return {"settings": {**settings, "migration": migration, "message": "Storage saved. Restart Hstar to use this folder for canvas, assets, output, and history data."}}
+    return {
+        "settings": {
+            **settings,
+            "restart_required": os.path.normcase(storage_root) != os.path.normcase(STORAGE_ROOT),
+            "message": "储存位置已保存，重启 Hstar 后开始使用新位置。",
+        }
+    }
 
 @app.get("/api/collaboration-link")
 def collaboration_link(request: Request):

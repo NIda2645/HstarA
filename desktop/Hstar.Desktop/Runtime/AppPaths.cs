@@ -143,6 +143,10 @@ public sealed class AppPaths
         {
             return Path.GetFullPath(@"E:\Hstar缓存");
         }
+        if (driveExists(@"D:\"))
+        {
+            return Path.GetFullPath(@"D:\Hstar缓存");
+        }
 
         var documents = documentsRoot;
         if (string.IsNullOrWhiteSpace(documents))
