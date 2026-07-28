@@ -115,7 +115,7 @@ $forbidden = @(
     '^tools/tests/',
     '^build/',
     '^data/',
-    '^assets/',
+    '^assets/(?:input|library|output|uploads)(/|$)',
     '^output/',
     '^projects/',
     '^cache/',

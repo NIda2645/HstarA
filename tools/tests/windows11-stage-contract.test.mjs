@@ -86,6 +86,8 @@ assert.match(builder, /Invoke-Native\s+-Command\s+\$embeddedPython\s+-Arguments\
 assert.equal([...validator.matchAll(/Invoke-Native\s+-Command\s+\$python\s+-Arguments\s+@\(\s*'-I',\s*'-B'/gi)].length, 2, 'both validator Python checks are bytecode-free');
 assert.match(validator, /Invoke-Native\s+-Command\s+\$python[\s\S]*'-I'[\s\S]*'-B'[\s\S]*import fastapi,uvicorn,PIL,httpx,websockets,fontTools/i, 'stage validator imports packaged Python modules');
 assert.match(validator, /\.hstar-voice|Fun-ASR-Nano|safetensors/i, 'stage validator rejects optional voice payloads');
+assert.match(validator, /assets\/\(\?:input\|library\|output\|uploads\)/i, 'stage validator rejects only user-data asset directories');
+assert.doesNotMatch(validator, /['"]\^assets\/['"]/i, 'stage validator does not reject the desktop startup assets directory');
 
 if (!existsSync(stageRoot)) {
   console.log('Windows 11 stage scripts contract passed; no generated stage is present');
