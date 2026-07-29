@@ -186,6 +186,39 @@ public sealed class DesktopStartupShellContractTests
         Assert.Contains("ShutdownIntent.SystemShutdown", window);
     }
 
+    [Fact]
+    public void DesktopStartupRequestsTheInfiniteCanvasList()
+    {
+        var source = File.ReadAllText(ProjectFile("desktop", "Hstar.Desktop", "MainWindow.xaml.cs"));
+        Assert.Contains("private const string DesktopStartPageId = \"canvas\";", source);
+        Assert.Contains("window.__HSTAR_START_PAGE__", source);
+        Assert.Contains("serializedStartPageId", source);
+    }
+
+    [Fact]
+    public void DesktopStartupHintIsRemovedAfterTheInitialNavigation()
+    {
+        var source = File.ReadAllText(ProjectFile("desktop", "Hstar.Desktop", "MainWindow.xaml.cs"));
+        var method = SourceMethod(
+            source,
+            "private async Task NavigateMainOnceAsync(",
+            "private Task AcceptInteractiveAsync(");
+        var navigate = method.IndexOf(
+            "await NavigateAsync(core, configuration.StartUri, cancellationToken);",
+            StringComparison.Ordinal);
+        var remove = method.IndexOf(
+            "core.RemoveScriptToExecuteOnDocumentCreated(_navigationScriptId);",
+            navigate + 1,
+            StringComparison.Ordinal);
+        var interactive = method.IndexOf(
+            "await _interactiveCompletion.Task.WaitAsync",
+            StringComparison.Ordinal);
+
+        Assert.True(navigate >= 0);
+        Assert.True(remove > navigate);
+        Assert.True(interactive > remove);
+    }
+
     private static string ProjectFile(params string[] segments)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
