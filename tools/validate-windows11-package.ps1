@@ -40,6 +40,58 @@ function Invoke-Utf8JsonGet {
     }
 }
 
+function Invoke-Utf8JsonPost {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][hashtable]$Data
+    )
+
+    $client = [Net.WebClient]::new()
+    try {
+        $client.Headers.Add('Content-Type', 'application/json; charset=utf-8')
+        $requestJson = $Data | ConvertTo-Json -Depth 5 -Compress
+        $requestBytes = [Text.Encoding]::UTF8.GetBytes($requestJson)
+        $responseBytes = $client.UploadData($Uri, 'POST', $requestBytes)
+        $responseJson = [Text.Encoding]::UTF8.GetString($responseBytes)
+        return $responseJson | ConvertFrom-Json
+    }
+    finally {
+        $client.Dispose()
+    }
+}
+
+function Request-StorageRootSwitch {
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string]$StorageRoot
+    )
+
+    $started = Invoke-Utf8JsonPost -Uri "$BaseUrl/api/storage-migrations" -Data @{
+        storage_root = $StorageRoot
+    }
+    $taskId = [string]$started.task.id
+    if ([string]::IsNullOrWhiteSpace($taskId)) {
+        throw 'Storage-root switch did not return a task identifier.'
+    }
+
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    do {
+        $status = Invoke-Utf8JsonGet -Uri "$BaseUrl/api/storage-migrations/$([Uri]::EscapeDataString($taskId))"
+        if ($status.task.status -eq 'completed') {
+            if (-not $status.task.restart_required) {
+                throw 'Completed storage-root switch did not request a restart.'
+            }
+            return
+        }
+        if ($status.task.status -eq 'failed') {
+            throw "Storage-root switch failed: $($status.task.error)"
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+
+    throw 'Timed out waiting for storage-root switch completion.'
+}
+
 function Wait-ForBackend {
     param(
         [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
@@ -138,6 +190,8 @@ $stdout = Join-Path $dataRoot 'backend.stdout.log'
 $stderr = Join-Path $dataRoot 'backend.stderr.log'
 $restartStdout = Join-Path $dataRoot 'restart.stdout.log'
 $restartStderr = Join-Path $dataRoot 'restart.stderr.log'
+$returnStdout = Join-Path $dataRoot 'return.stdout.log'
+$returnStderr = Join-Path $dataRoot 'return.stderr.log'
 $openShopRoot = Join-Path $repoRoot 'integrations\openshop'
 $playwright = Join-Path $openShopRoot 'node_modules\.bin\playwright.cmd'
 $playwrightConfig = Join-Path $openShopRoot 'playwright.config.js'
@@ -228,9 +282,35 @@ try {
         [StringComparison]::OrdinalIgnoreCase)) {
         throw "Migrated data root was not active after restart. Expected: $expectedStorageRoot; actual: $activeStorageRoot"
     }
-    $providers = Invoke-Utf8JsonGet -Uri "$baseUrl/api/providers"
-    if (-not @($providers.providers | Where-Object { $_.id -eq $providerId })) {
-        throw 'Custom API provider did not survive migrated restart.'
+    $providersInSwitchTarget = Invoke-Utf8JsonGet -Uri "$baseUrl/api/providers"
+    if (@($providersInSwitchTarget.providers | Where-Object { $_.id -eq $providerId })) {
+        throw 'Custom API provider unexpectedly appeared in isolated storage root.'
+    }
+
+    Request-StorageRootSwitch -BaseUrl $baseUrl -StorageRoot $dataRoot
+    Stop-OwnedProcess -Process $server
+    $server = $null
+    $env:HSTAR_EXPECTED_DATA_ROOT = $dataRoot
+    $server = Start-PackagedBackend `
+        -DataRoot $dataRoot `
+        -StandardOutput $returnStdout `
+        -StandardError $returnStderr `
+        -BaseUrl $baseUrl `
+        -Pythonw $pythonw `
+        -ProgramRoot $script:InstallRoot
+
+    $returnedSettings = Invoke-Utf8JsonGet -Uri "$baseUrl/api/software-settings"
+    $expectedOriginalRoot = Get-NormalizedPath -Path $dataRoot
+    $returnedStorageRoot = Get-NormalizedPath -Path ([string]$returnedSettings.settings.active_storage_root)
+    if (-not [string]::Equals(
+        $returnedStorageRoot,
+        $expectedOriginalRoot,
+        [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Original data root was not active after switching back. Expected: $expectedOriginalRoot; actual: $returnedStorageRoot"
+    }
+    $providersInOriginalRoot = Invoke-Utf8JsonGet -Uri "$baseUrl/api/providers"
+    if (-not @($providersInOriginalRoot.providers | Where-Object { $_.id -eq $providerId })) {
+        throw 'Switching back to original storage root did not restore custom API provider.'
     }
 
     $programCacheEntries = @(Get-ChildItem `
@@ -255,9 +335,12 @@ try {
         appDataRoot = $appDataRoot
         port = $Port
         providerId = $providerId
+        switchTargetInheritedProvider = $false
+        originalRootRestoredProvider = $true
         programCacheEntries = $programCacheEntries
         backendLog = $stdout
         restartLog = $restartStdout
+        returnLog = $returnStdout
     }
     $parent = Split-Path -Parent $output
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
@@ -268,7 +351,14 @@ try {
     Write-Host "Windows 11 packaged feature smoke passed: $output"
 }
 catch {
-    foreach ($logPath in @($stdout, $stderr, $restartStdout, $restartStderr)) {
+    foreach ($logPath in @(
+        $stdout,
+        $stderr,
+        $restartStdout,
+        $restartStderr,
+        $returnStdout,
+        $returnStderr
+    )) {
         if (Test-Path -LiteralPath $logPath -PathType Leaf) {
             Write-Host "--- $(Split-Path -Leaf $logPath) ---"
             Get-Content -LiteralPath $logPath -Encoding UTF8 -Tail 100

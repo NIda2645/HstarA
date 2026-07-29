@@ -36,8 +36,28 @@ assert.match(
 );
 assert.match(
   script,
-  /\$settings\s*=\s*Invoke-Utf8JsonGet[\s\S]*\$providers\s*=\s*Invoke-Utf8JsonGet/i,
-  'migrated settings and provider verification use the UTF-8 JSON reader',
+  /\$requestJson\s*=\s*\$Data\s*\|\s*ConvertTo-Json/i,
+  'storage-root switch JSON must put storage_root at the request body top level',
+);
+assert.match(
+  script,
+  /\$settings\s*=\s*Invoke-Utf8JsonGet[\s\S]*\$providersInSwitchTarget\s*=\s*Invoke-Utf8JsonGet/i,
+  'switched-root settings and isolated provider verification use the UTF-8 JSON reader',
+);
+assert.match(
+  script,
+  /Custom API provider unexpectedly appeared in isolated storage root/i,
+  'new storage roots must not inherit provider data from the previous root',
+);
+assert.match(
+  script,
+  /Switching back to original storage root did not restore custom API provider/i,
+  'switching back to the original root must restore that root provider data',
+);
+assert.match(
+  script,
+  /-DataRoot\s+\$dataRoot[\s\S]*\$providersInOriginalRoot/i,
+  'the package smoke restarts back into the original data root and verifies provider restoration',
 );
 assert.doesNotMatch(script, /E:\\Hstar缓存|Fun-ASR-Nano|model\.pt/i, 'package smoke never reads stable or model data');
 
