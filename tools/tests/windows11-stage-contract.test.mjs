@@ -12,6 +12,7 @@ const root = resolve(process.cwd());
 const builderPath = resolve(root, 'build/scripts/New-HstarWindows11Stage.ps1');
 const sourceGatePath = resolve(root, 'build/scripts/Test-HstarSource.ps1');
 const validatorPath = resolve(root, 'build/scripts/Test-HstarWindows11Stage.ps1');
+const attributesPath = resolve(root, '.gitattributes');
 const stageRoot = resolve(root, 'build/installer/stage/windows11');
 
 for (const [path, label] of [
@@ -25,6 +26,10 @@ for (const [path, label] of [
 const builder = readFileSync(builderPath, 'utf8');
 const sourceGate = readFileSync(sourceGatePath, 'utf8');
 const validator = readFileSync(validatorPath, 'utf8');
+const attributes = readFileSync(attributesPath, 'utf8');
+
+assert.match(attributes, /^integrations\/openshop\/index\.html text eol=lf$/m, 'OpenShop source entry point has deterministic LF bytes');
+assert.match(attributes, /^static\/openshop\/index\.html text eol=lf$/m, 'OpenShop runtime mirror entry point has deterministic LF bytes');
 
 assert.match(builder, /\[switch\]\s*\$AllowDirtyForTest/, 'dirty builds require an explicit test-only switch');
 assert.match(builder, /git[\s\S]*status[\s\S]*--porcelain/, 'builder checks the Git worktree state');
