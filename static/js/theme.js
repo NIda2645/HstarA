@@ -192,7 +192,7 @@
         const scale = appliedScale();
         document.querySelectorAll('iframe').forEach(frame => {
             try {
-                frame.contentWindow?.postMessage({ type: 'studio-ui-scale', mode, scale }, '*');
+                frame.contentWindow?.postMessage({ type: 'studio-ui-scale', mode, scale }, window.location.origin);
             } catch(e) {}
         });
     }
@@ -258,6 +258,7 @@
         applyScale(currentScaleMode());
     });
     window.addEventListener('message', event => {
+        if (event.origin !== window.location.origin) return;
         if(event.data?.type === 'studio-theme') applyTheme(event.data.theme);
         if(event.data?.type === 'studio-ui-scale') {
             const incomingScale = normalizeExternalScale(event.data.scale);

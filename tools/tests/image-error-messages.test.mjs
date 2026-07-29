@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execPythonSync } from './python-runner.mjs';
 
 const script = String.raw`
 import json
@@ -35,7 +35,7 @@ print(json.dumps({
 }, ensure_ascii=True))
 `;
 
-const raw = execFileSync('py', ['-3', '-X', 'utf8', '-c', script], { encoding: 'utf8' });
+const raw = execPythonSync(script);
 const result = JSON.parse(raw.trim().split(/\r?\n/).at(-1));
 
 assert.match(result.quota, /insufficient balance|quota|余额|额度|预扣费/i, 'insufficient quota errors should be shown as quota errors');

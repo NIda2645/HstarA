@@ -6965,6 +6965,8 @@ def image_task_fail_reason(payload):
 
 async def httpx_request_with_transient_retries(client, method, url, attempts=2, retry_delay=1.2, **kwargs):
     attempts = max(1, int(attempts or 1))
+    if str(method or "").strip().upper() not in {"GET", "HEAD", "OPTIONS"}:
+        attempts = 1
     last_exc = None
     retry_statuses = {502, 503, 504, 520, 522, 524}
     for attempt in range(attempts):

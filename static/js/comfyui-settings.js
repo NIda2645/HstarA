@@ -248,7 +248,7 @@ async function saveComfyInstances(){
         comfyInstances = data.instances || cleaned;
         renderComfyInstances();
         try { new BroadcastChannel('studio-api').postMessage({ type: 'comfy-instances-changed' }); } catch(e) {}
-        try { window.parent?.postMessage({ type: 'comfy-instances-changed' }, '*'); } catch(e) {}
+        try { window.parent?.postMessage({ type: 'comfy-instances-changed' }, window.location.origin); } catch(e) {}
         setStatus('ComfyUI 后端地址已保存');
     } catch(e){
         alert(e.message || '保存失败');
@@ -1383,6 +1383,7 @@ async function onDelete(){
 }
 
 window.addEventListener('message', event => {
+    if (event.origin !== window.location.origin) return;
     if(event.data?.type === 'studio-theme' && window.StudioTheme) window.StudioTheme.set(event.data.theme);
     if(event.data?.type === 'studio-lang' && window.StudioI18n) window.StudioI18n.set(event.data.lang);
 });
@@ -1394,4 +1395,3 @@ document.addEventListener('DOMContentLoaded', () => {
     loadList();
     loadComfyInstances();
 });
-

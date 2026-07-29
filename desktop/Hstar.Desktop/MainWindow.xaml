@@ -20,10 +20,16 @@
         <wv2:WebView2CompositionControl x:Name="StartupWebView"
                                         Panel.ZIndex="20"
                                         DefaultBackgroundColor="#000018" />
-        <Image x:Name="StartupFirstFrame"
-               Panel.ZIndex="30"
-               Source="/Hstar;component/Assets/startup/startup-first-frame.png"
-               Stretch="UniformToFill"
-               IsHitTestVisible="False" />
+        <Rectangle x:Name="StartupFirstFrame"
+                   Panel.ZIndex="30"
+                   RenderOptions.BitmapScalingMode="HighQuality"
+                   IsHitTestVisible="False">
+            <Rectangle.Fill>
+                <ImageBrush ImageSource="/Hstar;component/Assets/startup/startup-first-frame.png"
+                            Stretch="UniformToFill"
+                            AlignmentX="Center"
+                            AlignmentY="Center" />
+            </Rectangle.Fill>
+        </Rectangle>
     </Grid>
 </Window>

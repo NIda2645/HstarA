@@ -330,7 +330,8 @@
         'ok',
       );
       webview.postMessage({
-        type: 'hstar-restart-with-data-root',
+        type: 'hstar:restart-with-data-root',
+        schemaVersion: 1,
         dataRoot,
       });
       return;

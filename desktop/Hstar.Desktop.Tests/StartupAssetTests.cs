@@ -5,6 +5,28 @@ namespace Hstar.Desktop.Tests;
 public sealed class StartupAssetTests
 {
     [Fact]
+    public void StartupFirstFrameIs4KForMaximizedWindows()
+    {
+        var bytes = File.ReadAllBytes(Asset("startup-first-frame.png"));
+
+        Assert.True(bytes.Length >= 24, "startup-first-frame.png is too small to be a valid PNG.");
+        Assert.Equal(0x89, bytes[0]);
+        Assert.Equal((byte)'P', bytes[1]);
+        Assert.Equal((byte)'N', bytes[2]);
+        Assert.Equal((byte)'G', bytes[3]);
+        Assert.Equal((byte)'I', bytes[12]);
+        Assert.Equal((byte)'H', bytes[13]);
+        Assert.Equal((byte)'D', bytes[14]);
+        Assert.Equal((byte)'R', bytes[15]);
+
+        var width = ReadBigEndianInt32(bytes, 16);
+        var height = ReadBigEndianInt32(bytes, 20);
+
+        Assert.Equal(3840, width);
+        Assert.Equal(2160, height);
+    }
+
+    [Fact]
     public void StartupAssetsAreLocalAndUseApprovedLightfallConfiguration()
     {
         var html = File.ReadAllText(Asset("index.html"));
@@ -149,5 +171,13 @@ public sealed class StartupAssetTests
             directory = directory.Parent;
         }
         throw new FileNotFoundException($"Startup asset not found: {name}");
+    }
+
+    private static int ReadBigEndianInt32(byte[] bytes, int offset)
+    {
+        return (bytes[offset] << 24)
+            | (bytes[offset + 1] << 16)
+            | (bytes[offset + 2] << 8)
+            | bytes[offset + 3];
     }
 }

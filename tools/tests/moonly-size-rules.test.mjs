@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execPythonSync } from './python-runner.mjs';
 import fs from 'node:fs';
 
 const script = String.raw`
@@ -30,7 +30,7 @@ cases = {
 print(json.dumps(cases))
 `;
 
-const raw = execFileSync('py', ['-3', '-X', 'utf8', '-c', script], { encoding: 'utf8' });
+const raw = execPythonSync(script);
 const result = JSON.parse(raw.trim().split(/\r?\n/).at(-1));
 
 assert.equal(result.vip_1k_1_1, true, 'VIP should allow 1K 1:1');

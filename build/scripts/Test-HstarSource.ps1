@@ -1,18 +1,69 @@
 [CmdletBinding()]
 param(
-    [switch]$AllowDirtyForTest
+    [switch]$AllowDirtyForTest,
+    [string]$PythonPath = $env:HSTAR_TEST_PYTHON
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-$engineeringPython = (Get-Command 'python.exe' -ErrorAction Stop).Source
-if ([IO.Path]::GetFullPath($engineeringPython).StartsWith(
-    [IO.Path]::GetFullPath((Join-Path $repoRoot 'python')).TrimEnd('\') + '\',
-    [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'The source gate requires a development Python with the repository root on sys.path.'
+function Repair-ProcessPathEnvironment {
+    $environment = [Environment]::GetEnvironmentVariables('Process')
+    $pathKeys = @($environment.Keys | ForEach-Object { [string]$_ } | Where-Object { $_ -ieq 'Path' })
+    if ($pathKeys.Count -le 1) {
+        return
+    }
+
+    $pathValue = [Environment]::GetEnvironmentVariable('Path', 'Process')
+    if ([string]::IsNullOrWhiteSpace($pathValue)) {
+        $pathValue = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    }
+    foreach ($key in $pathKeys) {
+        [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+    }
+    [Environment]::SetEnvironmentVariable('Path', $pathValue, 'Process')
 }
+
+Repair-ProcessPathEnvironment
+
+function Resolve-HstarTestPython {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [string]$RequestedPath
+    )
+
+    $candidates = [Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        $candidates.Add($RequestedPath)
+    }
+    else {
+        $localPython = Join-Path $RepositoryRoot 'python\python.exe'
+        if (Test-Path -LiteralPath $localPython -PathType Leaf) {
+            $candidates.Add($localPython)
+        }
+        Get-Command 'python.exe' -All -ErrorAction SilentlyContinue |
+            ForEach-Object { $candidates.Add($_.Source) }
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (
+            [string]::IsNullOrWhiteSpace($candidate) -or
+            $candidate -match '[\\/]WindowsApps[\\/]' -or
+            -not (Test-Path -LiteralPath $candidate -PathType Leaf)
+        ) {
+            continue
+        }
+        & $candidate -X utf8 -c 'import requests, fastapi, PIL, uvicorn' 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    throw 'No Hstar-compatible Python was found. Set HSTAR_TEST_PYTHON to an interpreter with the project dependencies installed.'
+}
+$engineeringPython = Resolve-HstarTestPython -RepositoryRoot $repoRoot -RequestedPath $PythonPath
+$env:HSTAR_TEST_PYTHON = $engineeringPython
 $openShopRoot = Join-Path $repoRoot 'integrations\openshop'
 $directorRoot = Join-Path $repoRoot 'integrations\storyai-3d-director-desk'
 $desktopTests = Join-Path $repoRoot 'desktop\Hstar.Desktop.Tests\Hstar.Desktop.Tests.csproj'

@@ -34,7 +34,8 @@ assert.match(panel, /method:\s*'DELETE'/, 'cancel must use the idempotent delete
 assert.match(panel, /copied_bytes/, 'controller must render copied byte progress');
 assert.match(panel, /total_bytes/, 'controller must support determinate progress');
 assert.match(panel, /removeAttribute\('value'\)/, 'unknown totals must remain indeterminate');
-assert.match(panel, /type:\s*'hstar-restart-with-data-root'/, 'completed migration must request a controlled shell restart');
+assert.match(panel, /type:\s*'hstar:restart-with-data-root'/, 'completed migration must use the desktop restart message type');
+assert.match(panel, /schemaVersion:\s*1/, 'desktop restart messages must use the supported schema version');
 assert.match(panel, /'\/api\/runtime\/restart'/, 'browser development mode must request a controlled runtime restart');
 assert.match(panel, /instance_id/, 'browser restart must distinguish the replacement backend instance');
 assert.match(panel, /location\.reload/, 'browser mode must reload only after the replacement backend is verified');
@@ -191,7 +192,8 @@ await window.HstarStorageSettingsPanel.handoffCompletedMigration({
 });
 assert.equal(elements.status.textContent, '存储位置已切换，正在重新启动 Hstar。');
 assert.equal(shellMessages.length, 1);
-assert.equal(shellMessages[0].type, 'hstar-restart-with-data-root');
+assert.equal(shellMessages[0].type, 'hstar:restart-with-data-root');
+assert.equal(shellMessages[0].schemaVersion, 1);
 assert.equal(shellMessages[0].dataRoot, 'X:/Direct Storage');
 
 await window.HstarStorageSettingsPanel.handoffCompletedMigration({
@@ -200,7 +202,8 @@ await window.HstarStorageSettingsPanel.handoffCompletedMigration({
   target: 'D:/Hstar Data',
 });
 assert.equal(shellMessages.length, 2);
-assert.equal(shellMessages[1].type, 'hstar-restart-with-data-root');
+assert.equal(shellMessages[1].type, 'hstar:restart-with-data-root');
+assert.equal(shellMessages[1].schemaVersion, 1);
 assert.equal(shellMessages[1].dataRoot, 'D:/Hstar Data');
 
 await window.HstarStorageSettingsPanel.handoffCompletedMigration({

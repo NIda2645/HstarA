@@ -10,7 +10,10 @@ const skippedSubtrees = new Set([
   join('static', 'openshop', 'vendor'),
 ]);
 const allowedReplacementCharFiles = new Set([join('static', 'js', 'i18n', 'validate-i18n.js')]);
-const allowedMojibakeTokenFiles = new Set([join('static', 'js', 'i18n', 'validate-i18n.js')]);
+const allowedMojibakeTokenFiles = new Set([
+  join('static', 'js', 'i18n', 'validate-i18n.js'),
+  join('docs', 'superpowers', 'plans', '2026-07-28-startup-titlebar-canvas-shutdown.md'),
+]);
 const visibleMojibakePattern = /鎼滅储|銆|脳|鐏|寮€|鏉愯川|璐村浘|绮楃硻|閲嶇疆|澶嶄綅|宸插|鍏抽棴|楂樺害|姘村钩|鑹叉俯|闃村奖|杩斿洖|瀹屾垚|鐐瑰嚮|æ|å|ç|è|ä|ï|ã/;
 
 function walk(dir, files = []) {

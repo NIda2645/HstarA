@@ -17,8 +17,12 @@ public sealed class DesktopStartupShellContractTests
         Assert.DoesNotContain("#0A29FF", xaml, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("x:Name=\"NativeStartupSurface\"", xaml);
         Assert.DoesNotContain("<MediaElement", xaml);
-        Assert.Contains("x:Name=\"StartupFirstFrame\"", xaml);
+        Assert.Contains("<Rectangle x:Name=\"StartupFirstFrame\"", xaml);
         Assert.Contains("startup-first-frame.png", xaml);
+        Assert.Contains("<ImageBrush", xaml);
+        Assert.Contains("AlignmentX=\"Center\"", xaml);
+        Assert.Contains("AlignmentY=\"Center\"", xaml);
+        Assert.Contains("RenderOptions.BitmapScalingMode=\"HighQuality\"", xaml);
         Assert.DoesNotContain("Opacity=\"0.01\"", xaml);
         Assert.DoesNotContain("x:Name=\"StartupBootstrapSurface\"", xaml);
         Assert.DoesNotContain("BootstrapStreak", xaml);

@@ -106,6 +106,11 @@ assert.match(generativeSource, /data-generative-mention-token/, 'OpenShop keeps 
 const directorSource = read('integrations/storyai-3d-director-desk/index.html');
 const directorBuilt = read('static/3d-director/index.html');
 assert.match(directorSource, /\/static\/js\/voice-input-adapter\.js\?v=/, '3D director source loads the shared adapter');
+assert.match(
+  directorSource,
+  /<script\s+vite-ignore\s+src=["']\/static\/js\/voice-input-adapter\.js\?v=/,
+  '3D director leaves the shared classic script outside the Vite module bundle',
+);
 assert.match(directorBuilt, /\/static\/js\/voice-input-adapter\.js\?v=/, '3D director build retains the shared adapter');
 
 const realVoiceE2e = read('integrations/openshop/tests/hstar-voice-assistant-real.e2e.spec.js');

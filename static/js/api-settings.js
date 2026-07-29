@@ -338,8 +338,8 @@ async function readApiJsonResponse(response, fallback='请求失败'){
 function broadcastStudioApiChange(type='providers-changed'){
     const message = { type, updated_at:Date.now() };
     try { new BroadcastChannel('studio-api').postMessage(message); } catch(e) {}
-    try { window.parent?.postMessage(message, '*'); } catch(e) {}
-    try { window.top?.postMessage(message, '*'); } catch(e) {}
+    try { window.parent?.postMessage(message, window.location.origin); } catch(e) {}
+    try { window.top?.postMessage(message, window.location.origin); } catch(e) {}
 }
 function rhEditorSideScrollEl(){
     return rhWorkflowEditorNodeList?.closest?.('.rh-workflow-editor-side') || rhWorkflowEditorNodeList;
@@ -3887,6 +3887,7 @@ function escapeHtml(str){
 }
 function escapeAttr(str){ return escapeHtml(str).replace(/`/g, '&#96;'); }
 window.addEventListener('message', event => {
+    if (event.origin !== window.location.origin) return;
     if(event.data?.type === 'studio-theme' && window.StudioTheme) window.StudioTheme.set(event.data.theme);
     if(event.data?.type === 'studio-lang' && window.StudioI18n) {
         window.StudioI18n.set(event.data.lang);

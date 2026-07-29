@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execPythonSync } from './python-runner.mjs';
 
 const script = String.raw`
 import asyncio
@@ -23,7 +23,7 @@ async def run():
 asyncio.run(run())
 `;
 
-const raw = execFileSync('py', ['-3', '-X', 'utf8', '-c', script], { encoding: 'utf8' });
+const raw = execPythonSync(script);
 const lines = raw.trim().split(/\r?\n/);
 
 assert.equal(lines[0], 'https://public.example/ref-image.png', 'MoonlyAI local image references must be converted to public URLs');
