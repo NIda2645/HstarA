@@ -90,7 +90,7 @@ public sealed class DesktopStartupShellContractTests
     }
 
     [Fact]
-    public void HtmlStartupBecomesVisualBeforeTheMainBrowserIsPrepared()
+    public void MainBrowserControllerIsPreparedBeforeTheCompositionStartupController()
     {
         var source = File.ReadAllText(ProjectFile(
             "desktop",
@@ -101,18 +101,19 @@ public sealed class DesktopStartupShellContractTests
             "private async Task PrepareBrowserCoreAsync()",
             "public async Task<bool> AttachBackendSessionAsync");
 
+        var mainBrowser = preparation.IndexOf(
+            "await MainWebView.EnsureCoreWebView2Async(environment)",
+            StringComparison.Ordinal);
         var startupBrowser = preparation.IndexOf(
             "await StartupWebView.EnsureCoreWebView2Async(environment)",
             StringComparison.Ordinal);
         var visualReady = preparation.IndexOf(
             "await _startupBrowserVisualReady.Task",
             StringComparison.Ordinal);
-        var mainBrowser = preparation.IndexOf(
-            "await MainWebView.EnsureCoreWebView2Async(environment)",
-            StringComparison.Ordinal);
+        Assert.True(mainBrowser >= 0);
         Assert.True(startupBrowser >= 0);
+        Assert.True(startupBrowser > mainBrowser);
         Assert.True(visualReady > startupBrowser);
-        Assert.True(mainBrowser > visualReady);
     }
 
     [Fact]

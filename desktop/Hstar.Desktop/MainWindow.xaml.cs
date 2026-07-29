@@ -105,6 +105,13 @@ public partial class MainWindow : Window
         var environment = await _environmentFactory
             .GetAsync(Paths)
             .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
+
+        // The fixed WebView2 runtime can reject a windowed controller created
+        // after a composition controller in the same WPF window.
+        await MainWebView.EnsureCoreWebView2Async(environment)
+            .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
+        ConfigureBrowserSettings(MainWebView.CoreWebView2);
+
         await StartupWebView.EnsureCoreWebView2Async(environment)
             .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
         ConfigureBrowserSettings(StartupWebView.CoreWebView2);
@@ -121,10 +128,6 @@ public partial class MainWindow : Window
         await _startupBrowserVisualReady.Task
             .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
         _startupState.MarkVisualReady();
-
-        await MainWebView.EnsureCoreWebView2Async(environment)
-            .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
-        ConfigureBrowserSettings(MainWebView.CoreWebView2);
         _browsersPrepared = true;
     }
 
