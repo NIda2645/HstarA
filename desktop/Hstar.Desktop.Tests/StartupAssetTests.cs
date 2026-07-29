@@ -24,16 +24,60 @@ public sealed class StartupAssetTests
         Assert.Contains("window.hstarStartup", script);
         Assert.Contains("hstar-startup:visual-ready", script);
         Assert.Contains("requestAnimationFrame", script);
+        Assert.Contains("renderer.render({ scene: mesh });", script);
+        Assert.Contains("gl.finish();", script);
+        Assert.Contains("onFirstFrame();", script);
+        Assert.True(
+            script.IndexOf("renderer.render({ scene: mesh });", StringComparison.Ordinal)
+            < script.IndexOf("onFirstFrame();", StringComparison.Ordinal));
+        Assert.DoesNotContain("setTimeout(markVisualReady, 0)", script);
+        Assert.DoesNotContain(
+            "requestAnimationFrame(() => postShellMessage('hstar-startup:visual-ready'))",
+            script);
+        Assert.Contains("background: #000018", css);
+        Assert.DoesNotContain("background: #0a29ff", css, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("prefers-reduced-motion", css);
         Assert.Contains("startup-title", css);
-        Assert.Contains("animation: title-pulse", css);
-        Assert.Contains("class=\"startup-mark\"", html);
-        Assert.Contains("class=\"startup-label\"", html);
-        Assert.Contains("display: flex", css);
+        Assert.Contains("animation: title-shiny-sweep 2s linear infinite", css);
+        Assert.Contains("class=\"startup-title-art\"", html);
+        Assert.Contains("class=\"startup-title-clip-text\"", html);
+        Assert.Contains("display: block", css);
         Assert.Contains("width: max-content", css);
-        Assert.Contains("color: #ffffff", css);
+        Assert.Contains("#b5b5b5", html);
+        Assert.Contains("#ffffff", html);
+        Assert.DoesNotContain("title-pulse", css);
         Assert.DoesNotContain("opacity: 0.72", css);
         Assert.DoesNotContain("title-mask", html);
+    }
+
+    [Fact]
+    public void StartupTitleAndMarkUseOneContinuousLeftToRightShine()
+    {
+        var html = File.ReadAllText(Asset("index.html"));
+        var css = File.ReadAllText(Asset("startup.css"));
+        const string animation = "animation: title-shiny-sweep 2s linear infinite";
+
+        Assert.Contains("id=\"startup-title-shape\"", html);
+        Assert.Contains("<text class=\"startup-title-clip-text\"", html);
+        Assert.Contains("clip-path=\"url(#startup-title-shape)\"", html);
+        Assert.Contains("class=\"startup-title-highlight\"", html);
+        Assert.Contains("id=\"startup-title-shine\"", html);
+        Assert.Contains("x1=\"0%\"", html);
+        Assert.Contains("y1=\"0%\"", html);
+        Assert.Contains("x2=\"100%\"", html);
+        Assert.Contains("y2=\"0%\"", html);
+        Assert.DoesNotContain("gradientTransform=", html);
+        Assert.DoesNotContain("class=\"startup-label\"", html);
+        Assert.DoesNotContain("class=\"startup-mark-highlight\"", html);
+        Assert.DoesNotContain("<animate", html);
+        Assert.Contains(animation, css);
+        Assert.Equal(
+            css.IndexOf(animation, StringComparison.Ordinal),
+            css.LastIndexOf(animation, StringComparison.Ordinal));
+        Assert.Contains("transform-box: fill-box", css);
+        Assert.Contains("transform: translateX(150%)", css);
+        Assert.DoesNotContain("@keyframes mark-shiny-sweep", css);
+        Assert.DoesNotContain("@keyframes shiny-sweep", css);
     }
 
     [Fact]
@@ -52,9 +96,13 @@ public sealed class StartupAssetTests
     {
         var html = File.ReadAllText(Asset("index.html"));
         var css = File.ReadAllText(Asset("startup.css"));
+        var logo = File.ReadAllText(Asset("hstar-logo.svg"));
 
         Assert.Contains("class=\"startup-toolbar\"", html);
         Assert.Contains("src=\"hstar-logo.svg\"", html);
+        Assert.Contains("<svg", logo, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("viewBox=\"0 0 512 512\"", logo);
+        Assert.DoesNotContain("<script", logo, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Infinite Canvas", html);
         Assert.Contains("创意", html);
         Assert.Contains("想法", html);

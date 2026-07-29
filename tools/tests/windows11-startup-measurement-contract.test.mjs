@@ -53,8 +53,8 @@ assert.match(
 );
 assert.match(
   mainWindow,
-  /PrepareBrowserAsync[\s\S]*?_environmentFactory[\s\S]*?MainWebView\.EnsureCoreWebView2Async\(environment\)[\s\S]*?StartupWebView\.EnsureCoreWebView2Async\(environment\)/i,
-  'browser preparation shares one fixed-runtime environment across both WebViews',
+  /PrepareBrowserAsync[\s\S]*?_environmentFactory[\s\S]*?StartupWebView\.EnsureCoreWebView2Async\(environment\)[\s\S]*?MainWebView\.EnsureCoreWebView2Async\(environment\)/i,
+  'browser preparation prioritizes the startup animation while sharing one fixed-runtime environment across both WebViews',
 );
 assert.equal(
   [...environmentFactory.matchAll(/CoreWebView2Environment\.CreateAsync/g)].length,

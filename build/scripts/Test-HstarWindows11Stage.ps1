@@ -72,6 +72,8 @@ function Get-PeSubsystem {
 
 $requiredFiles = @(
     'Hstar.exe',
+    'Microsoft.Windows.SDK.NET.dll',
+    'WinRT.Runtime.dll',
     'VERSION',
     'LICENSE',
     'app\main.py',
@@ -85,8 +87,6 @@ $requiredFiles = @(
     'static\openshop\LICENSE',
     'static\3d-director\index.html',
     'static\3d-director\models\ue-mannequin-retopology.glb',
-    'Assets\startup\startup-lightfall.mp4',
-    'Assets\startup\startup-lightfall-poster.jpg',
     'runtime\python\python.exe',
     'runtime\python\pythonw.exe',
     'runtime\python\python311._pth',
@@ -114,7 +114,7 @@ $forbidden = @(
     '^build/',
     '^data/',
     '^assets/(?:input|library|output|uploads)(/|$)',
-    '^assets/startup/(?:index\.html|startup\.css|startup\.js|ogl\.mjs|ogl\.LICENSE\.txt)$',
+    '^assets/startup/',
     '^output/',
     '^projects/',
     '^cache/',

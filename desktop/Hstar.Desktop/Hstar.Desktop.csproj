@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
@@ -21,15 +21,8 @@
     <EmbeddedResource Include="Assets\startup\startup.js" LogicalName="Hstar.Desktop.StartupAssets.startup.js" />
     <EmbeddedResource Include="Assets\startup\ogl.mjs" LogicalName="Hstar.Desktop.StartupAssets.ogl.mjs" />
     <EmbeddedResource Include="Assets\startup\ogl.LICENSE.txt" LogicalName="Hstar.Desktop.StartupAssets.ogl.LICENSE.txt" />
-    <EmbeddedResource Include="Branding\Hstar.svg" LogicalName="Hstar.Desktop.StartupAssets.hstar-logo.svg" />
+    <EmbeddedResource Include="Assets\startup\hstar-logo.svg" LogicalName="Hstar.Desktop.StartupAssets.hstar-logo.svg" />
+    <Resource Include="Assets\startup\startup-first-frame.png" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Content Include="Assets\startup\startup-lightfall.mp4"
-             CopyToOutputDirectory="PreserveNewest"
-             CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="Assets\startup\startup-lightfall-poster.jpg"
-             CopyToOutputDirectory="PreserveNewest"
-             CopyToPublishDirectory="PreserveNewest" />
-  </ItemGroup>
 </Project>

@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <filter id="icon-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#a4b4cb" flood-opacity="0.4" />
+    </filter>
+
+    <filter id="globe-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="20" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <linearGradient id="globe-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2b7bf5" stop-opacity="0.9" />
+      <stop offset="40%" stop-color="#4aa1f7" stop-opacity="0.7" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+
+    <linearGradient id="orbit-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.1" />
+      <stop offset="50%" stop-color="#3b82f6" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.1" />
+    </linearGradient>
+
+    <pattern id="dot-map" x="0" y="0" width="8" height="8" patternUnits="userSpaceOnUse">
+      <circle cx="4" cy="4" r="1.5" fill="#ffffff" fill-opacity="0.7" />
+    </pattern>
+
+    <clipPath id="globe-clip">
+      <path d="M 126 288 C 126 180, 180 130, 256 130 C 332 130, 386 180, 386 288 Z" />
+    </clipPath>
+  </defs>
+
+  <rect x="48" y="48" width="416" height="416" rx="96" fill="#fcfdfe" filter="url(#icon-shadow)" />
+
+  <g font-family="monospace" font-size="10" fill="#a0bce0" fill-opacity="0.4" text-anchor="middle">
+    <text x="100" y="160">1<tspan x="100" dy="16">0</tspan><tspan x="100" dy="16">1</tspan><tspan x="100" dy="16">1</tspan><tspan x="100" dy="16">0</tspan><tspan x="100" dy="16">0</tspan><tspan x="100" dy="16">1</tspan></text>
+    <text x="140" y="320">0<tspan x="140" dy="16">1</tspan><tspan x="140" dy="16">0</tspan><tspan x="140" dy="16">0</tspan><tspan x="140" dy="16">1</tspan></text>
+
+    <text x="420" y="140">1<tspan x="420" dy="16">1</tspan><tspan x="420" dy="16">0</tspan><tspan x="420" dy="16">1</tspan><tspan x="420" dy="16">0</tspan><tspan x="420" dy="16">0</tspan><tspan x="420" dy="16">1</tspan></text>
+    <text x="390" y="280">0<tspan x="390" dy="16">1</tspan><tspan x="390" dy="16">1</tspan><tspan x="390" dy="16">0</tspan><tspan x="390" dy="16">0</tspan><tspan x="390" dy="16">1</tspan></text>
+  </g>
+
+  <circle cx="340" cy="180" r="16" fill="none" stroke="#b3cce6" stroke-width="0.5" />
+  <circle cx="340" cy="180" r="24" fill="none" stroke="#b3cce6" stroke-width="0.5" />
+
+  <circle cx="160" cy="380" r="12" fill="none" stroke="#b3cce6" stroke-width="0.5" />
+  <circle cx="160" cy="380" r="20" fill="none" stroke="#b3cce6" stroke-width="0.5" />
+  <circle cx="160" cy="380" r="28" fill="none" stroke="#b3cce6" stroke-width="0.5" />
+
+  <g filter="url(#globe-glow)">
+    <path d="M 126 288 C 126 180, 180 130, 256 130 C 332 130, 386 180, 386 288 Z" fill="url(#globe-gradient)" />
+
+    <g clip-path="url(#globe-clip)">
+      <rect x="126" y="130" width="260" height="158" fill="url(#dot-map)" opacity="0.3" />
+
+      <path d="M 160 210 Q 180 190 200 210 T 240 230 T 280 200 T 320 220 L 340 260 L 300 280 L 250 260 L 180 270 Z" fill="url(#dot-map)" opacity="0.8" />
+      <path d="M 330 180 Q 350 170 360 190 T 350 230 Z" fill="url(#dot-map)" opacity="0.8" />
+      <path d="M 140 230 Q 150 220 160 240 T 150 260 Z" fill="url(#dot-map)" opacity="0.8" />
+    </g>
+  </g>
+
+  <g fill="none" stroke-width="1.5">
+    <ellipse cx="256" cy="270" rx="160" ry="40" transform="rotate(-12 256 270)" stroke="url(#orbit-gradient)" />
+    <ellipse cx="256" cy="270" rx="170" ry="30" transform="rotate(15 256 270)" stroke="url(#orbit-gradient)" />
+  </g>
+
+  <g fill="#4a90e2">
+    <circle cx="106" cy="235" r="4" />
+    <circle cx="410" cy="305" r="5" />
+
+    <circle cx="95" cy="295" r="4.5" />
+    <circle cx="418" cy="235" r="4" />
+
+    <circle cx="245" cy="296" r="6" fill="#3b82f6" />
+    <circle cx="160" cy="380" r="5" fill="#589cf6" />
+  </g>
+
+  <circle cx="210" cy="110" r="2" fill="#589cf6" opacity="0.6" />
+  <circle cx="380" cy="100" r="1.5" fill="#589cf6" opacity="0.8" />
+  <circle cx="120" cy="400" r="2" fill="#589cf6" opacity="0.5" />
+  <circle cx="280" cy="420" r="1.5" fill="#589cf6" opacity="0.7" />
+  <circle cx="430" cy="360" r="2" fill="#589cf6" opacity="0.6" />
+</svg>

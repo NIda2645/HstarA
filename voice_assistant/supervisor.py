@@ -84,8 +84,7 @@ def service_command(
         str(runtime_site),
         "--model-path",
         str(model_path),
-        "--token",
-        token,
+        f"--token={token}",
     ]
     if parent_pid:
         command.extend(["--parent-pid", str(parent_pid)])

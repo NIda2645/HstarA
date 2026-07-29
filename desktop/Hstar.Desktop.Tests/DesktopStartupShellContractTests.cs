@@ -5,7 +5,7 @@ namespace Hstar.Desktop.Tests;
 public sealed class DesktopStartupShellContractTests
 {
     [Fact]
-    public void MainWindowKeepsUnreadyBrowsersBehindAnImmediateNativeStartupSurface()
+    public void MainWindowUsesTheBundledHtmlStartupSurfaceInsteadOfNativeVideo()
     {
         var xaml = File.ReadAllText(ProjectFile("desktop", "Hstar.Desktop", "MainWindow.xaml"));
         var source = File.ReadAllText(ProjectFile(
@@ -13,37 +13,35 @@ public sealed class DesktopStartupShellContractTests
             "Hstar.Desktop",
             "MainWindow.xaml.cs"));
 
-        Assert.Contains("x:Name=\"NativeStartupSurface\"", xaml);
-        Assert.DoesNotContain("Background=\"#0A29FF\"", xaml);
-        Assert.Contains("<MediaElement x:Name=\"NativeStartupMedia\"", xaml);
-        Assert.Contains("LoadedBehavior=\"Manual\"", xaml);
-        Assert.Contains("IsMuted=\"True\"", xaml);
-        Assert.Contains("<Image x:Name=\"NativeStartupPoster\"", xaml);
-        Assert.Contains("Stretch=\"UniformToFill\"", xaml);
+        Assert.Contains("Background=\"#000018\"", xaml);
+        Assert.DoesNotContain("#0A29FF", xaml, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("x:Name=\"NativeStartupSurface\"", xaml);
+        Assert.DoesNotContain("<MediaElement", xaml);
+        Assert.Contains("x:Name=\"StartupFirstFrame\"", xaml);
+        Assert.Contains("startup-first-frame.png", xaml);
+        Assert.DoesNotContain("Opacity=\"0.01\"", xaml);
+        Assert.DoesNotContain("x:Name=\"StartupBootstrapSurface\"", xaml);
+        Assert.DoesNotContain("BootstrapStreak", xaml);
         Assert.Contains("x:Name=\"MainWebView\"", xaml);
-        Assert.Contains("x:Name=\"MainWebView\"\n                          Width=\"1\"", xaml);
-        Assert.Contains("x:Name=\"StartupWebView\"\n                          Width=\"1\"", xaml);
+        Assert.Contains("x:Name=\"MainWebView\"\n                     Width=\"1\"", xaml);
+        Assert.Contains("x:Name=\"StartupWebView\"", xaml);
+        Assert.Contains("<wv2:WebView2CompositionControl x:Name=\"StartupWebView\"", xaml);
+        Assert.DoesNotContain("x:Name=\"StartupWebView\"\n                          Width=\"1\"", xaml);
         Assert.DoesNotContain("Visibility=\"Hidden\"", xaml);
+        Assert.Contains("DefaultBackgroundColor=\"#000018\"", xaml);
+        Assert.Contains("await StartupWebView.EnsureCoreWebView2Async(environment)", source);
         Assert.Contains("await MainWebView.EnsureCoreWebView2Async(environment)", source);
-        Assert.Contains("EnsureStartupBrowserReadyAsync", source);
-        Assert.DoesNotContain("await StartupWebView.EnsureCoreWebView2Async(environment)",
-            SourceMethod(
-                source,
-                "private async Task PrepareBrowserCoreAsync()",
-                "private Task EnsureStartupBrowserReadyAsync"));
         Assert.DoesNotContain("Task.WhenAll(", source);
         Assert.Contains("case \"hstar-startup:visual-ready\":", source);
-        Assert.Contains("_startupBrowserReady = true;", source);
-        Assert.Contains("if (_nativeStartupFailed)", source);
-        Assert.Contains("RevealStartupBrowser();", source);
+        Assert.Contains("RevealInitialFrame();", source);
+        Assert.DoesNotContain("PositionOutsideVirtualDesktop();", source);
+        Assert.DoesNotContain("SystemParameters.VirtualScreenLeft", source);
+        Assert.Contains("StartupFirstFrame.BeginAnimation(OpacityProperty, animation);", source);
+        Assert.Contains("StartupFirstFrame.Visibility = Visibility.Collapsed;", source);
         Assert.Contains("MinimumStartupDisplay = TimeSpan.FromSeconds(5)", source);
         Assert.Contains("WaitForMinimumStartupDisplayAsync", source);
-        Assert.Contains("InitializeNativeStartupMedia();", source);
-        Assert.Contains("NativeStartupMedia.MediaOpened += OnNativeStartupMediaOpened;", source);
-        Assert.Contains("NativeStartupMedia.MediaEnded += OnNativeStartupMediaEnded;", source);
-        Assert.Contains("NativeStartupMedia.MediaFailed += OnNativeStartupMediaFailed;", source);
-        Assert.Contains("StopNativeStartupMedia();", source);
-        Assert.Contains("NativeStartupSurface.Visibility = Visibility.Collapsed;", source);
+        Assert.DoesNotContain("NativeStartupMedia", source);
+        Assert.DoesNotContain("NativeStartupPoster", source);
         Assert.Contains("RevealMainBrowser();", source);
         Assert.True(
             source.IndexOf("RevealMainBrowser();", StringComparison.Ordinal)
@@ -56,61 +54,61 @@ public sealed class DesktopStartupShellContractTests
     }
 
     [Fact]
-    public void DesktopProjectPublishesTheNativeLightfallVideoAndPoster()
+    public void DesktopProjectEmbedsTheHtmlRuntimeWithoutPublishingStartupVideo()
     {
         var project = File.ReadAllText(ProjectFile(
             "desktop",
             "Hstar.Desktop",
             "Hstar.Desktop.csproj"));
 
-        Assert.Contains("Assets\\startup\\startup-lightfall.mp4", project);
-        Assert.Contains("Assets\\startup\\startup-lightfall-poster.jpg", project);
-        Assert.Contains("CopyToOutputDirectory=\"PreserveNewest\"", project);
-
-        var video = ProjectFile(
-            "desktop",
-            "Hstar.Desktop",
-            "Assets",
-            "startup",
-            "startup-lightfall.mp4");
-        var poster = ProjectFile(
-            "desktop",
-            "Hstar.Desktop",
-            "Assets",
-            "startup",
-            "startup-lightfall-poster.jpg");
-        Assert.True(new FileInfo(video).Length > 100_000);
-        Assert.True(new FileInfo(poster).Length > 10_000);
+        Assert.Contains("EmbeddedResource Include=\"Assets\\startup\\index.html\"", project);
+        Assert.Contains("EmbeddedResource Include=\"Assets\\startup\\startup.css\"", project);
+        Assert.Contains("EmbeddedResource Include=\"Assets\\startup\\startup.js\"", project);
+        Assert.Contains("EmbeddedResource Include=\"Assets\\startup\\ogl.mjs\"", project);
+        Assert.Contains("EmbeddedResource Include=\"Assets\\startup\\hstar-logo.svg\"", project);
+        Assert.Contains("Resource Include=\"Assets\\startup\\startup-first-frame.png\"", project);
+        Assert.DoesNotContain("EmbeddedResource Include=\"Branding\\Hstar.svg\"", project);
+        Assert.DoesNotContain("startup-lightfall.mp4", project);
+        Assert.DoesNotContain("startup-lightfall-poster.jpg", project);
     }
 
     [Fact]
-    public void NativeStartupUsesTheSystemMediaPipelineInsteadOfUiThreadFrameSwaps()
+    public void DesktopTargetsTheWindowsApiBaselineRequiredByCompositionWebView()
+    {
+        var project = File.ReadAllText(ProjectFile(
+            "desktop",
+            "Hstar.Desktop",
+            "Hstar.Desktop.csproj"));
+
+        Assert.Contains(
+            "<TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>",
+            project);
+    }
+
+    [Fact]
+    public void HtmlStartupBecomesVisualBeforeTheMainBrowserIsPrepared()
     {
         var source = File.ReadAllText(ProjectFile(
             "desktop",
             "Hstar.Desktop",
             "MainWindow.xaml.cs"));
-
-        Assert.Contains("BitmapCacheOption.OnLoad", source);
-        Assert.Contains("NativeStartupMedia.Play();", source);
-        Assert.Contains("NativeStartupMedia.Position = TimeSpan.Zero;", source);
-        Assert.DoesNotContain("StartupFrameSequence", source);
-        Assert.DoesNotContain("Channel<BitmapImage>", source);
-    }
-
-    [Fact]
-    public void NativeStartupBeginsPlaybackOnlyFromTheLoadedLifecycle()
-    {
-        var source = File.ReadAllText(ProjectFile(
-            "desktop", "Hstar.Desktop", "MainWindow.xaml.cs"));
-        var opened = SourceMethod(
+        var preparation = SourceMethod(
             source,
-            "private async void OnNativeStartupMediaOpened",
-            "private void OnNativeStartupMediaEnded");
+            "private async Task PrepareBrowserCoreAsync()",
+            "public async Task<bool> AttachBackendSessionAsync");
 
-        Assert.Contains("StartNativeStartupMedia();", source);
-        Assert.Contains("_nativePlaybackStarted", source);
-        Assert.DoesNotContain("NativeStartupMedia.Play();", opened);
+        var startupBrowser = preparation.IndexOf(
+            "await StartupWebView.EnsureCoreWebView2Async(environment)",
+            StringComparison.Ordinal);
+        var visualReady = preparation.IndexOf(
+            "await _startupBrowserVisualReady.Task",
+            StringComparison.Ordinal);
+        var mainBrowser = preparation.IndexOf(
+            "await MainWebView.EnsureCoreWebView2Async(environment)",
+            StringComparison.Ordinal);
+        Assert.True(startupBrowser >= 0);
+        Assert.True(visualReady > startupBrowser);
+        Assert.True(mainBrowser > visualReady);
     }
 
     [Fact]
@@ -125,9 +123,10 @@ public sealed class DesktopStartupShellContractTests
     }
 
     [Fact]
-    public void ApplicationRendersTheNativeStartupFrameBeforeStartingHeavyWork()
+    public void ApplicationShowsTheBundledFirstFrameWhileTheHtmlCompositionRenders()
     {
         var source = File.ReadAllText(ProjectFile("desktop", "Hstar.Desktop", "App.xaml.cs"));
+        var xaml = File.ReadAllText(ProjectFile("desktop", "Hstar.Desktop", "MainWindow.xaml"));
 
         var show = source.IndexOf("window.Show();", StringComparison.Ordinal);
         var firstFrame = source.IndexOf(
@@ -140,6 +139,8 @@ public sealed class DesktopStartupShellContractTests
         Assert.True(show >= 0);
         Assert.True(firstFrame > show);
         Assert.True(browserPreparation > firstFrame);
+        Assert.Contains("x:Name=\"StartupFirstFrame\"", xaml);
+        Assert.DoesNotContain("Opacity=\"0.01\"", xaml);
     }
 
     [Fact]
@@ -165,7 +166,8 @@ public sealed class DesktopStartupShellContractTests
         Assert.Contains("InteractiveTimeout", source);
         Assert.Contains("CoreWebView2Environment.CreateAsync", factory);
         Assert.Contains("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", factory);
-        Assert.Contains("FF0A29FF", factory);
+        Assert.Contains("FF000018", factory);
+        Assert.DoesNotContain("FF0A29FF", factory);
     }
 
     [Fact]

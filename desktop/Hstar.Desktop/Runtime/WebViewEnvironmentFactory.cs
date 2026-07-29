@@ -43,7 +43,7 @@ public sealed class WebViewEnvironmentFactory
             _userDataFolder = userDataFolder;
             Environment.SetEnvironmentVariable(
                 "WEBVIEW2_DEFAULT_BACKGROUND_COLOR",
-                "FF0A29FF",
+                "FF000018",
                 EnvironmentVariableTarget.Process);
             _environment = CoreWebView2Environment.CreateAsync(
                 browserExecutableFolder: browserExecutableFolder,

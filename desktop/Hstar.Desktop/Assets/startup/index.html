@@ -23,12 +23,38 @@
     </header>
     <div class="startup-title" role="status" aria-label="Hstar 正在启动中">
       <div class="startup-title-content">
-        <svg class="startup-mark" viewBox="0 0 132 100" aria-hidden="true" focusable="false">
-          <path fill="#ffffff" d="M58 5C61 32 68 40 98 45C68 50 61 58 58 94C55 58 48 50 14 45C48 40 55 32 58 5Z" />
-          <path fill="#ffffff" d="M106 9C108 22 112 26 126 29C112 32 108 36 106 51C104 36 100 32 86 29C100 26 104 22 106 9Z" />
-          <path fill="#ffffff" d="M112 57C114 69 118 73 132 76C118 79 114 83 112 96C110 83 106 79 92 76C106 73 110 69 112 57Z" />
+        <svg class="startup-title-art"
+             viewBox="0 0 598.73 100"
+             aria-hidden="true"
+             focusable="false">
+          <defs>
+            <clipPath id="startup-title-shape" clipPathUnits="userSpaceOnUse">
+              <path d="M58 5C61 32 68 40 98 45C68 50 61 58 58 94C55 58 48 50 14 45C48 40 55 32 58 5Z" />
+              <path d="M106 9C108 22 112 26 126 29C112 32 108 36 106 51C104 36 100 32 86 29C100 26 104 22 106 9Z" />
+              <path d="M112 57C114 69 118 73 132 76C118 79 114 83 112 96C110 83 106 79 92 76C106 73 110 69 112 57Z" />
+              <text class="startup-title-clip-text" x="155.56" y="50" dy=".35em">Hstar 正在启动中</text>
+            </clipPath>
+            <linearGradient id="startup-title-shine"
+                            x1="0%"
+                            y1="0%"
+                            x2="100%"
+                            y2="0%">
+              <stop offset="0%" stop-color="#b5b5b5" />
+              <stop offset="35%" stop-color="#b5b5b5" />
+              <stop offset="50%" stop-color="#ffffff" />
+              <stop offset="65%" stop-color="#b5b5b5" />
+              <stop offset="100%" stop-color="#b5b5b5" />
+            </linearGradient>
+          </defs>
+          <g clip-path="url(#startup-title-shape)">
+            <rect width="598.73" height="100" fill="#b5b5b5" />
+            <rect class="startup-title-highlight"
+                  x="-1197.46"
+                  width="1197.46"
+                  height="100"
+                  fill="url(#startup-title-shine)" />
+          </g>
         </svg>
-        <span class="startup-label">Hstar 正在启动中</span>
       </div>
     </div>
     <section id="startup-failure" class="startup-failure" aria-live="assertive" hidden>

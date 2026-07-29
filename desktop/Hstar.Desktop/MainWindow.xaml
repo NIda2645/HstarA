@@ -8,34 +8,22 @@
         MinWidth="960"
         MinHeight="640"
         WindowStartupLocation="CenterScreen"
-        Background="#000000">
-    <Grid Background="#000000" ClipToBounds="True">
-        <Grid x:Name="NativeStartupSurface"
-              Panel.ZIndex="10"
-              Background="#000000"
-              ClipToBounds="True"
-              IsHitTestVisible="False">
-            <MediaElement x:Name="NativeStartupMedia"
-                          LoadedBehavior="Manual"
-                          UnloadedBehavior="Manual"
-                          IsMuted="True"
-                          Stretch="UniformToFill" />
-            <Image x:Name="NativeStartupPoster"
-                   Stretch="UniformToFill" />
-        </Grid>
-
+        Background="#000018">
+    <Grid Background="#000018" ClipToBounds="True">
         <wv2:WebView2 x:Name="MainWebView"
-                          Width="1"
-                          Height="1"
-                          HorizontalAlignment="Left"
-                          VerticalAlignment="Top"
-                          IsHitTestVisible="False" />
-        <wv2:WebView2 x:Name="StartupWebView"
-                          Width="1"
-                          Height="1"
-                          HorizontalAlignment="Left"
-                          VerticalAlignment="Top"
-                          IsHitTestVisible="False"
-                          Panel.ZIndex="20" />
+                     Width="1"
+                     Height="1"
+                     HorizontalAlignment="Left"
+                     VerticalAlignment="Top"
+                     DefaultBackgroundColor="#000018"
+                     IsHitTestVisible="False" />
+        <wv2:WebView2CompositionControl x:Name="StartupWebView"
+                                        Panel.ZIndex="20"
+                                        DefaultBackgroundColor="#000018" />
+        <Image x:Name="StartupFirstFrame"
+               Panel.ZIndex="30"
+               Source="/Hstar;component/Assets/startup/startup-first-frame.png"
+               Stretch="UniformToFill"
+               IsHitTestVisible="False" />
     </Grid>
 </Window>

@@ -16,13 +16,6 @@ public partial class ShutdownConfirmationWindow : Window
     private void OnLoaded(object sender, RoutedEventArgs eventArgs)
     {
         Loaded -= OnLoaded;
-        if (Owner is not null)
-        {
-            Left = Owner.Left;
-            Top = Owner.Top;
-            Width = Owner.ActualWidth;
-            Height = Owner.ActualHeight;
-        }
         CancelButton.Focus();
     }
 

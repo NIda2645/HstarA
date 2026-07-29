@@ -86,6 +86,8 @@ assert.match(sourceGate, /3D Director build output drifted/, 'source gate reject
 
 assert.match(validator, /files\.sha256/, 'stage validator verifies the file manifest');
 assert.match(validator, /sbom\.spdx\.json/, 'stage validator verifies the SPDX document');
+assert.match(validator, /['"]Microsoft\.Windows\.SDK\.NET\.dll['"]/, 'stage validator requires the Windows SDK runtime assembly');
+assert.match(validator, /['"]WinRT\.Runtime\.dll['"]/, 'stage validator requires the WinRT runtime assembly');
 assert.match(validator, /\$python\s*=\s*Join-Path[^\r\n]+runtime[\\/]python[\\/]python\.exe/i, 'stage validator binds packaged Python');
 assert.match(builder, /Invoke-Native\s+-Command\s+\$embeddedPython\s+-Arguments\s+@\(\s*'-I',\s*'-B'/i, 'builder runtime import cannot create bytecode');
 assert.equal([...validator.matchAll(/Invoke-Native\s+-Command\s+\$python\s+-Arguments\s+@\(\s*'-I',\s*'-B'/gi)].length, 2, 'both validator Python checks are bytecode-free');
@@ -93,11 +95,8 @@ assert.match(validator, /Invoke-Native\s+-Command\s+\$python[\s\S]*'-I'[\s\S]*'-
 assert.match(validator, /\.hstar-voice|Fun-ASR-Nano|safetensors/i, 'stage validator rejects optional voice payloads');
 assert.match(validator, /assets\/\(\?:input\|library\|output\|uploads\)/i, 'stage validator rejects only user-data asset directories');
 assert.doesNotMatch(validator, /['"]\^assets\/['"]/i, 'stage validator does not reject every program asset directory');
-assert.match(validator, /\^assets\/startup\/\(\?:index/i, 'stage validator rejects only external startup web assets');
-assert.doesNotMatch(validator, /\^assets\/startup\(\//i, 'stage validator permits native startup media');
-assert.match(validator, /Assets\\startup\\startup-lightfall\.mp4/i, 'stage validator requires native startup video');
-assert.match(validator, /Assets\\startup\\startup-lightfall-poster\.jpg/i, 'stage validator requires native startup poster');
-assert.doesNotMatch(validator, /'Assets\\startup\\(?:index\.html|startup\.css|startup\.js|ogl\.mjs)'/i, 'stage validator does not require external startup web assets');
+assert.doesNotMatch(validator, /Require-StageFile[\s\S]*startup-lightfall\.(?:mp4|jpg)/i, 'stage validator does not require startup video assets');
+assert.match(validator, /'\^assets\/startup\/'/i, 'stage validator rejects external startup payloads because HTML is embedded in Hstar');
 
 if (!existsSync(stageRoot)) {
   console.log('Windows 11 stage scripts contract passed; no generated stage is present');
@@ -106,6 +105,8 @@ if (!existsSync(stageRoot)) {
 
 const requiredStageEntries = [
   'Hstar.exe',
+  'Microsoft.Windows.SDK.NET.dll',
+  'WinRT.Runtime.dll',
   'VERSION',
   'LICENSE',
   'app/main.py',
@@ -119,8 +120,6 @@ const requiredStageEntries = [
   'static/openshop/LICENSE',
   'static/3d-director/index.html',
   'static/3d-director/models/ue-mannequin-retopology.glb',
-  'Assets/startup/startup-lightfall.mp4',
-  'Assets/startup/startup-lightfall-poster.jpg',
   'runtime/python/python.exe',
   'runtime/python/pythonw.exe',
   'runtime/python/python311._pth',
@@ -143,7 +142,7 @@ const forbiddenPatterns = [
   /^build\//i,
   /(^|\/)output(\/|$)/i,
   /(^|\/)assets\/(?:input|library|output|uploads)(\/|$)/i,
-  /(^|\/)assets\/startup\/(?:index\.html|startup\.css|startup\.js|ogl\.mjs|ogl\.LICENSE\.txt)$/i,
+  /(^|\/)assets\/startup\//i,
   /(^|\/)projects?(\/|$)/i,
   /(^|\/)cache(\/|$)/i,
   /(^|\/)logs?(\/|$)/i,

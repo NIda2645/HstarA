@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  background: #0a29ff;
+  background: #000018;
 }
 
 * {
@@ -18,7 +18,7 @@ body,
 }
 
 body {
-  background: #0a29ff;
+  background: #000018;
   font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
   user-select: none;
 }
@@ -105,30 +105,28 @@ body {
 }
 
 .startup-title-content {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 18px;
-  transform-origin: center;
-  animation: title-pulse 1.8s ease-in-out infinite;
+  display: block;
+  width: min(431px, calc(100vw - 72px));
 }
 
-.startup-mark {
+.startup-title-art {
   display: block;
-  flex: 0 0 auto;
-  width: 94px;
-  height: 72px;
+  width: 100%;
+  height: auto;
   overflow: visible;
 }
 
-.startup-label {
-  color: #ffffff;
+.startup-title-clip-text {
   font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  font-size: 40px;
+  font-size: 55.56px;
   font-weight: 800;
-  line-height: 1.2;
   letter-spacing: 0;
-  white-space: nowrap;
+}
+
+.startup-title-highlight {
+  transform-box: fill-box;
+  transform-origin: left center;
+  animation: title-shiny-sweep 2s linear infinite;
 }
 
 [hidden] {
@@ -187,14 +185,15 @@ body {
   outline: none;
 }
 
-@keyframes title-pulse {
-  0%, 100% { transform: scale(0.985); }
-  50% { transform: scale(1.015); }
+@keyframes title-shiny-sweep {
+  from { transform: translateX(0); }
+  to { transform: translateX(150%); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .startup-title-content {
+  .startup-title-highlight {
     animation: none;
+    transform: translateX(75%);
   }
 }
 

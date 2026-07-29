@@ -180,7 +180,7 @@ void main() {
 }
 `;
 
-function startLightfall(container) {
+function startLightfall(container, onFirstFrame) {
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const renderer = new Renderer({
     dpr: Math.min(window.devicePixelRatio || 1, 2),
@@ -229,6 +229,7 @@ function startLightfall(container) {
   let previousTime = 0;
   let animationFrame = 0;
   let disposed = false;
+  let firstFrameRendered = false;
 
   const resize = () => {
     const bounds = container.getBoundingClientRect();
@@ -258,6 +259,11 @@ function startLightfall(container) {
     uniforms.iMouse.value[0] += (mouseTarget[0] - uniforms.iMouse.value[0]) * factor;
     uniforms.iMouse.value[1] += (mouseTarget[1] - uniforms.iMouse.value[1]) * factor;
     renderer.render({ scene: mesh });
+    if (!firstFrameRendered) {
+      firstFrameRendered = true;
+      gl.finish();
+      onFirstFrame();
+    }
     if (!reducedMotion) animationFrame = requestAnimationFrame(render);
   };
   render(0);
@@ -281,16 +287,25 @@ const failure = document.getElementById('startup-failure');
 const failureMessage = document.getElementById('startup-failure-message');
 const retryButton = document.getElementById('startup-retry');
 const exitButton = document.getElementById('startup-exit');
-let dispose = () => {};
-try {
-  dispose = startLightfall(container);
-} catch {
-  document.documentElement.classList.add('webgl-unavailable');
-}
-
 const postShellMessage = type => {
   window.chrome?.webview?.postMessage?.({ type, schemaVersion: 1 });
 };
+const uiAssetsReady = Promise.all([
+  document.fonts?.ready ?? Promise.resolve(),
+  ...Array.from(document.images, image => image.decode().catch(() => {}))
+]);
+const markVisualReady = async () => {
+  await uiAssetsReady;
+  postShellMessage('hstar-startup:visual-ready');
+};
+let dispose = () => {};
+try {
+  dispose = startLightfall(container, markVisualReady);
+} catch {
+  document.documentElement.classList.add('webgl-unavailable');
+  markVisualReady();
+}
+
 retryButton.addEventListener('click', () => postShellMessage('hstar-startup:retry'));
 exitButton.addEventListener('click', () => postShellMessage('hstar-startup:exit'));
 
@@ -304,7 +319,3 @@ const hideFailure = () => {
 };
 
 window.hstarStartup = Object.freeze({ dispose, showFailure, hideFailure });
-
-requestAnimationFrame(() => {
-  requestAnimationFrame(() => postShellMessage('hstar-startup:visual-ready'));
-});

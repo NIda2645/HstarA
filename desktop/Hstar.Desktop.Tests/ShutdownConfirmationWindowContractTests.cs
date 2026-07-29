@@ -64,6 +64,24 @@ public sealed class ShutdownConfirmationWindowContractTests
         Assert.DoesNotContain("#6BF8FAFC", source);
     }
 
+    [Fact]
+    public void DialogCentersAgainstTheVisibleOwnerInsteadOfRestoreCoordinates()
+    {
+        var xaml = ReadProjectFile(
+            "desktop", "Hstar.Desktop", "Views", "ShutdownConfirmationWindow.xaml");
+        var dialogSource = ReadProjectFile(
+            "desktop", "Hstar.Desktop", "Views", "ShutdownConfirmationWindow.xaml.cs");
+        var mainWindowSource = ReadProjectFile(
+            "desktop", "Hstar.Desktop", "MainWindow.xaml.cs");
+
+        Assert.Contains("WindowStartupLocation=\"CenterOwner\"", xaml);
+        Assert.DoesNotContain("WindowStartupLocation=\"Manual\"", xaml);
+        Assert.DoesNotContain("Left = Owner.Left;", dialogSource);
+        Assert.DoesNotContain("Top = Owner.Top;", dialogSource);
+        Assert.Contains("Width = ActualWidth", mainWindowSource);
+        Assert.Contains("Height = ActualHeight", mainWindowSource);
+    }
+
     private static string ReadProjectFile(params string[] segments)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

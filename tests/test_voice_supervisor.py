@@ -200,6 +200,17 @@ class VoiceSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
         self.assertIn("-B", command[1 : command.index("-m")])
 
+    def test_service_command_preserves_token_that_starts_with_a_dash(self):
+        command = service_command(
+            sys.executable,
+            self.runtime_site,
+            self.model_path,
+            "-leading-dash-token",
+        )
+
+        self.assertIn("--token=-leading-dash-token", command)
+        self.assertNotIn("--token", command)
+
     def test_service_command_binds_child_lifetime_to_parent(self):
         command = service_command(
             sys.executable,

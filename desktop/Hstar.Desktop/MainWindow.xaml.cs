@@ -5,7 +5,6 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Imaging;
 using Hstar.Desktop.Runtime;
 using Hstar.Desktop.Views;
 using Microsoft.Web.WebView2.Core;
@@ -22,8 +21,7 @@ public partial class MainWindow : Window
     private static readonly TimeSpan EnvironmentTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan InteractiveTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StartupFadeDuration = TimeSpan.FromMilliseconds(220);
-    private static readonly TimeSpan PosterFadeDelay = TimeSpan.FromMilliseconds(120);
-    private static readonly TimeSpan PosterFadeDuration = TimeSpan.FromMilliseconds(120);
+    private static readonly TimeSpan FirstFrameFadeDuration = TimeSpan.FromMilliseconds(120);
     private static readonly TimeSpan MinimumStartupDisplay = TimeSpan.FromSeconds(5);
 
     private readonly StartupCoordinator _startupCoordinator;
@@ -42,17 +40,10 @@ public partial class MainWindow : Window
     private TaskCompletionSource<bool>? _interactiveCompletion;
     private TaskCompletionSource<StartupFailureAction>? _failureAction;
     private Task? _browserPreparationTask;
-    private Task? _startupBrowserPreparationTask;
-    private CoreWebView2Environment? _browserEnvironment;
     private string? _navigationScriptId;
     private bool _browsersPrepared;
     private bool _mainEventsAttached;
     private bool _startupResourceEventsAttached;
-    private bool _startupBrowserReady;
-    private bool _startupBrowserRevealed;
-    private bool _nativeStartupFailed;
-    private bool _nativeMediaOpened;
-    private bool _nativePlaybackStarted;
     private bool _startupDisposed;
     private bool _allowClose;
     private bool _systemShutdownRequested;
@@ -63,12 +54,7 @@ public partial class MainWindow : Window
         Paths = paths;
         _startupCoordinator = startupCoordinator;
         InitializeComponent();
-        NativeStartupMedia.MediaOpened += OnNativeStartupMediaOpened;
-        NativeStartupMedia.MediaEnded += OnNativeStartupMediaEnded;
-        NativeStartupMedia.MediaFailed += OnNativeStartupMediaFailed;
-        NativeStartupSurface.Loaded += OnNativeStartupSurfaceLoaded;
         SourceInitialized += OnSourceInitialized;
-        InitializeNativeStartupMedia();
         _shutdownCoordinator = new ShutdownCoordinator(
             StopOwnedBackendAsync,
             ConfirmUserCloseAsync);
@@ -89,138 +75,6 @@ public partial class MainWindow : Window
 
     private void OnSourceInitialized(object? sender, EventArgs eventArgs) =>
         NativeWindowTheme.TryApplyDarkTitleBar(new WindowInteropHelper(this).Handle);
-
-    private void InitializeNativeStartupMedia()
-    {
-        var startupRoot = Path.Combine(Paths.ProgramRoot, "Assets", "startup");
-        var posterPath = Path.Combine(startupRoot, "startup-lightfall-poster.jpg");
-        var videoPath = Path.Combine(startupRoot, "startup-lightfall.mp4");
-        if (!File.Exists(posterPath) || !File.Exists(videoPath))
-        {
-            throw new FileNotFoundException(
-                "Hstar native startup media is incomplete.",
-                !File.Exists(posterPath) ? posterPath : videoPath);
-        }
-
-        using var posterStream = new FileStream(
-            posterPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 64 * 1024,
-            FileOptions.SequentialScan);
-        var poster = new BitmapImage();
-        poster.BeginInit();
-        poster.CacheOption = BitmapCacheOption.OnLoad;
-        poster.StreamSource = posterStream;
-        poster.EndInit();
-        poster.Freeze();
-
-        NativeStartupPoster.Source = poster;
-        NativeStartupMedia.Source = new Uri(videoPath, UriKind.Absolute);
-        _startupState.MarkVisualReady();
-    }
-
-    private void OnNativeStartupSurfaceLoaded(object sender, RoutedEventArgs eventArgs)
-    {
-        if (!_startupDisplayClock.IsRunning)
-        {
-            _startupDisplayClock.Start();
-        }
-        if (!_nativeStartupFailed)
-        {
-            StartNativeStartupMedia();
-        }
-    }
-
-    private void StartNativeStartupMedia()
-    {
-        if (_nativePlaybackStarted || _nativeStartupFailed || _startupDisposed)
-        {
-            return;
-        }
-
-        _nativePlaybackStarted = true;
-        NativeStartupMedia.Play();
-    }
-
-    private async void OnNativeStartupMediaOpened(object sender, RoutedEventArgs eventArgs)
-    {
-        if (_nativeMediaOpened || _nativeStartupFailed || _startupDisposed)
-        {
-            return;
-        }
-
-        _nativeMediaOpened = true;
-        try
-        {
-            await Task.Delay(PosterFadeDelay, _windowCancellation.Token);
-        }
-        catch (OperationCanceledException) when (_windowCancellation.IsCancellationRequested)
-        {
-            return;
-        }
-        if (_nativeStartupFailed || _startupDisposed)
-        {
-            return;
-        }
-
-        var animation = new DoubleAnimation
-        {
-            From = 1,
-            To = 0,
-            Duration = new Duration(PosterFadeDuration),
-            FillBehavior = FillBehavior.HoldEnd,
-        };
-        NativeStartupPoster.BeginAnimation(OpacityProperty, animation);
-    }
-
-    private void OnNativeStartupMediaEnded(object sender, RoutedEventArgs eventArgs)
-    {
-        if (_nativeStartupFailed || _startupDisposed)
-        {
-            return;
-        }
-        NativeStartupMedia.Position = TimeSpan.Zero;
-        NativeStartupMedia.Play();
-    }
-
-    private async void OnNativeStartupMediaFailed(
-        object? sender,
-        ExceptionRoutedEventArgs eventArgs)
-    {
-        if (_nativeStartupFailed || _startupDisposed)
-        {
-            return;
-        }
-
-        _nativeStartupFailed = true;
-        Debug.WriteLine($"Hstar native startup media failed: {eventArgs.ErrorException}");
-        StopNativeStartupMedia();
-        try
-        {
-            await EnsureStartupBrowserReadyAsync(_windowCancellation.Token);
-            RevealStartupBrowser();
-        }
-        catch (OperationCanceledException) when (_windowCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception error)
-        {
-            Debug.WriteLine($"Hstar startup browser fallback failed: {error}");
-        }
-    }
-
-    private void StopNativeStartupMedia()
-    {
-        try
-        {
-            NativeStartupMedia.Stop();
-        }
-        catch (InvalidOperationException)
-        {
-        }
-    }
 
     public Task PrepareBrowserAsync(CancellationToken cancellationToken = default)
     {
@@ -251,27 +105,8 @@ public partial class MainWindow : Window
         var environment = await _environmentFactory
             .GetAsync(Paths)
             .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
-        _browserEnvironment = environment;
-        await MainWebView.EnsureCoreWebView2Async(environment)
-            .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
-        ConfigureBrowserSettings(MainWebView.CoreWebView2);
-        _browsersPrepared = true;
-    }
-
-    private Task EnsureStartupBrowserReadyAsync(CancellationToken cancellationToken)
-    {
-        _startupBrowserPreparationTask ??= PrepareStartupBrowserCoreAsync();
-        return _startupBrowserPreparationTask.WaitAsync(cancellationToken);
-    }
-
-    private async Task PrepareStartupBrowserCoreAsync()
-    {
-        await PrepareBrowserAsync(_windowCancellation.Token);
-        var environment = _browserEnvironment
-            ?? throw new InvalidOperationException("Hstar startup browser environment is unavailable.");
         await StartupWebView.EnsureCoreWebView2Async(environment)
             .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
-
         ConfigureBrowserSettings(StartupWebView.CoreWebView2);
         StartupWebView.CoreWebView2.AddWebResourceRequestedFilter(
             StartupFilter,
@@ -286,6 +121,11 @@ public partial class MainWindow : Window
         await _startupBrowserVisualReady.Task
             .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
         _startupState.MarkVisualReady();
+
+        await MainWebView.EnsureCoreWebView2Async(environment)
+            .WaitAsync(EnvironmentTimeout, _windowCancellation.Token);
+        ConfigureBrowserSettings(MainWebView.CoreWebView2);
+        _browsersPrepared = true;
     }
 
     public async Task<bool> AttachBackendSessionAsync(
@@ -392,14 +232,13 @@ public partial class MainWindow : Window
         string message,
         CancellationToken cancellationToken)
     {
-        await EnsureStartupBrowserReadyAsync(cancellationToken);
+        await PrepareBrowserAsync(cancellationToken);
         _failureAction = new TaskCompletionSource<StartupFailureAction>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var serializedMessage = JsonSerializer.Serialize(
             string.IsNullOrWhiteSpace(message) ? "Hstar 启动未完成。" : message.Trim());
         await ExecuteStartupScriptAsync(
             $"window.hstarStartup?.showFailure?.({serializedMessage})");
-        RevealStartupBrowser();
         return await _failureAction.Task.WaitAsync(cancellationToken);
     }
 
@@ -413,9 +252,6 @@ public partial class MainWindow : Window
         await WaitForMinimumStartupDisplayAsync();
         RevealMainBrowser();
         await ExecuteStartupScriptAsync("window.hstarStartup?.dispose?.()");
-        var activeStartupVisual = _startupBrowserRevealed
-            ? (FrameworkElement)StartupWebView
-            : NativeStartupSurface;
         var completion = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var animation = new DoubleAnimation
@@ -426,7 +262,7 @@ public partial class MainWindow : Window
             FillBehavior = FillBehavior.Stop,
         };
         animation.Completed += (_, _) => completion.TrySetResult(true);
-        activeStartupVisual.BeginAnimation(OpacityProperty, animation);
+        StartupWebView.BeginAnimation(OpacityProperty, animation);
         await completion.Task;
 
         if (StartupWebView.CoreWebView2 is not null)
@@ -434,8 +270,6 @@ public partial class MainWindow : Window
             StartupWebView.CoreWebView2.WebMessageReceived -= OnStartupWebMessageReceived;
         }
         DetachStartupResourceHandler();
-        StopNativeStartupMedia();
-        NativeStartupSurface.Visibility = Visibility.Collapsed;
         StartupWebView.Visibility = Visibility.Collapsed;
         StartupWebView.Dispose();
         _startupDisposed = true;
@@ -500,6 +334,8 @@ public partial class MainWindow : Window
         var dialog = new ShutdownConfirmationWindow(theme)
         {
             Owner = this,
+            Width = ActualWidth,
+            Height = ActualHeight,
         };
         return dialog.ShowDialog() == true;
     }
@@ -636,12 +472,8 @@ public partial class MainWindow : Window
             switch (type.GetString())
             {
                 case "hstar-startup:visual-ready":
-                    _startupBrowserReady = true;
+                    RevealInitialFrame();
                     _startupBrowserVisualReady.TrySetResult(true);
-                    if (_nativeStartupFailed)
-                    {
-                        RevealStartupBrowser();
-                    }
                     break;
                 case "hstar-startup:retry":
                     _failureAction?.TrySetResult(StartupFailureAction.Retry);
@@ -656,20 +488,26 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RevealStartupBrowser()
+    private void RevealInitialFrame()
     {
-        if (_startupDisposed || !_startupBrowserReady)
+        if (_startupDisposed || StartupFirstFrame.Visibility != Visibility.Visible)
         {
             return;
         }
-        StartupWebView.Width = double.NaN;
-        StartupWebView.Height = double.NaN;
-        StartupWebView.HorizontalAlignment = HorizontalAlignment.Stretch;
-        StartupWebView.VerticalAlignment = VerticalAlignment.Stretch;
-        StartupWebView.IsHitTestVisible = true;
-        _startupBrowserRevealed = true;
-        StopNativeStartupMedia();
-        NativeStartupSurface.Visibility = Visibility.Collapsed;
+
+        _startupDisplayClock.Start();
+        var animation = new DoubleAnimation
+        {
+            From = 1,
+            To = 0,
+            Duration = new Duration(FirstFrameFadeDuration),
+            FillBehavior = FillBehavior.Stop,
+        };
+        animation.Completed += (_, _) =>
+        {
+            StartupFirstFrame.Visibility = Visibility.Collapsed;
+        };
+        StartupFirstFrame.BeginAnimation(OpacityProperty, animation);
     }
 
     private async Task WaitForMinimumStartupDisplayAsync()
@@ -829,11 +667,6 @@ public partial class MainWindow : Window
         Closing -= OnClosing;
         SourceInitialized -= OnSourceInitialized;
         _windowCancellation.Cancel();
-        StopNativeStartupMedia();
-        NativeStartupMedia.MediaOpened -= OnNativeStartupMediaOpened;
-        NativeStartupMedia.MediaEnded -= OnNativeStartupMediaEnded;
-        NativeStartupMedia.MediaFailed -= OnNativeStartupMediaFailed;
-        NativeStartupSurface.Loaded -= OnNativeStartupSurfaceLoaded;
         if (_mainEventsAttached && MainWebView.CoreWebView2 is not null)
         {
             MainWebView.CoreWebView2.NavigationStarting -= OnNavigationStarting;
