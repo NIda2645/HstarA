@@ -1009,7 +1009,7 @@
             /* 在侧栏 DOM 解析完后立即把 active 类移到当前页对应的入口，避免首屏先在文生图上闪一下 */
             (function(){
                 try {
-                    var pageId = localStorage.getItem('studio_active_page');
+                    var pageId = window.__HSTAR_START_PAGE__ ? window.__HSTAR_START_PAGE__ : localStorage.getItem('studio_active_page');
                     if(pageId && pageId !== 'zimage') {
                         document.querySelectorAll('.nav-item.active, .side-pill.active').forEach(function(n){
                             n.classList.remove('active');
@@ -1057,6 +1057,14 @@
         const DEFAULT_PAGE_ID = 'zimage';
         const PAGE_IDS = ['zimage','enhance','klein','angle','online','gpt-chat','canvas','director-desk','asset-manager','api-settings','software-settings','comfyui-settings'];
         const LOCAL_PAGE_IDS = ['zimage','enhance','klein','angle'];
+        function resolveInitialPageId() {
+            const desktopStartPageId = typeof window.__HSTAR_START_PAGE__ === 'string'
+                ? window.__HSTAR_START_PAGE__.trim()
+                : '';
+            if(PAGE_IDS.includes(desktopStartPageId)) return desktopStartPageId;
+            const rememberedPageId = localStorage.getItem(ACTIVE_PAGE_KEY);
+            return PAGE_IDS.includes(rememberedPageId) ? rememberedPageId : DEFAULT_PAGE_ID;
+        }
 function setSidebarPinned(pinned, options = {}) {
             const sidebar = document.getElementById('studioSidebar');
             const logo = document.getElementById('sidebarLogoToggle');
@@ -1189,7 +1197,7 @@ function setSidebarPinned(pinned, options = {}) {
 
         function restoreActivePage() {
             restoreSidebarPinned();
-            const id = PAGE_IDS.includes(localStorage.getItem(ACTIVE_PAGE_KEY)) ? localStorage.getItem(ACTIVE_PAGE_KEY) : DEFAULT_PAGE_ID;
+            const id = resolveInitialPageId();
             restoreLocalNav(id);
             restoreSidebarSettings(id);
             const trigger = document.querySelector(`[onclick*="'${id}'"],[onclick*='"${id}"']`);

@@ -15,6 +15,7 @@ public partial class MainWindow : Window
 {
     private const string StartupHostName = EmbeddedStartupRuntime.HostName;
     private const string StartupFilter = "https://hstar-startup.local/*";
+    private const string DesktopStartPageId = "canvas";
     private static readonly Uri StartupUri = new(
         $"https://{StartupHostName}/index.html",
         UriKind.Absolute);
@@ -212,10 +213,17 @@ public partial class MainWindow : Window
             core.RemoveScriptToExecuteOnDocumentCreated(_navigationScriptId);
         }
         var serializedNavigationId = JsonSerializer.Serialize(navigationId);
+        var serializedStartPageId = JsonSerializer.Serialize(DesktopStartPageId);
         _navigationScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(
-            $"window.__HSTAR_NAVIGATION_ID__ = {serializedNavigationId};");
+            $"window.__HSTAR_NAVIGATION_ID__ = {serializedNavigationId}; "
+            + $"window.__HSTAR_START_PAGE__ = {serializedStartPageId};");
 
         await NavigateAsync(core, configuration.StartUri, cancellationToken);
+        if (_navigationScriptId is not null)
+        {
+            core.RemoveScriptToExecuteOnDocumentCreated(_navigationScriptId);
+            _navigationScriptId = null;
+        }
         await _interactiveCompletion.Task.WaitAsync(InteractiveTimeout, cancellationToken);
     }
 
