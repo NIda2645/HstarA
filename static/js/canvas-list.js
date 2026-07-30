@@ -41,6 +41,7 @@ function renderCanvasIcon(icon, size = 16){
 }
 
 /* ===== DOM refs ===== */
+const workspace = document.getElementById('workspace');
 const board = document.getElementById('board');
 const boardWorld = document.getElementById('boardWorld');
 const boardEmptyHint = document.getElementById('boardEmptyHint');
@@ -81,6 +82,8 @@ let clipboardCanvasId = null;   // 剪切的画布（切到别的项目后粘贴
 // board viewport (mirrors smart-canvas math)
 const viewport = { x: 0, y: 0, scale: 1 };
 const MIN_SCALE = 0.3, MAX_SCALE = 2;
+let viewportUserControlled = false;
+let scheduledViewportReset = 0;
 
 /* ===== Status toast ===== */
 function setStatus(text){
@@ -111,6 +114,19 @@ function boardCenterWorld(){
         y: (board.clientHeight / 2 - viewport.y) / viewport.scale
     };
 }
+function wholeWorkspaceCenterInBoard(){
+    const workspaceRect = workspace.getBoundingClientRect();
+    const boardRect = board.getBoundingClientRect();
+    const visualScaleX = board.clientWidth > 0 ? boardRect.width / board.clientWidth : 1;
+    const visualScaleY = board.clientHeight > 0 ? boardRect.height / board.clientHeight : 1;
+    return {
+        x: (workspaceRect.left + workspaceRect.width / 2 - boardRect.left) / (visualScaleX || 1),
+        y: (workspaceRect.top + workspaceRect.height / 2 - boardRect.top) / (visualScaleY || 1)
+    };
+}
+function clamp(value, min, max){
+    return Math.min(max, Math.max(min, value));
+}
 function resetView(){
     const cards = Array.from(boardWorld.querySelectorAll('.ws-card'));
     if(!cards.length){
@@ -131,13 +147,39 @@ function resetView(){
     const padding = board.clientWidth < 640 ? 20 : 40;
     const width = Math.max(1, bounds.maxX - bounds.minX);
     const height = Math.max(1, bounds.maxY - bounds.minY);
-    const fitScale = Math.min(1, (board.clientWidth - padding * 2) / width, (board.clientHeight - padding * 2) / height);
-    viewport.scale = board.clientWidth < 640 ? 1 : Math.min(MAX_SCALE, Math.max(0.9, fitScale));
-    const fitsX = width * viewport.scale <= board.clientWidth - padding * 2;
-    const fitsY = height * viewport.scale <= board.clientHeight - padding * 2;
-    viewport.x = Math.round((fitsX ? (board.clientWidth - width * viewport.scale) / 2 : padding) - bounds.minX * viewport.scale);
-    viewport.y = Math.round((fitsY ? Math.max(padding, (board.clientHeight - height * viewport.scale) / 2) : padding) - bounds.minY * viewport.scale);
+    const target = wholeWorkspaceCenterInBoard();
+    const targetX = clamp(target.x, padding, Math.max(padding, board.clientWidth - padding));
+    const targetY = clamp(target.y, padding, Math.max(padding, board.clientHeight - padding));
+    const centeredWidth = Math.max(1, 2 * Math.min(targetX - padding, board.clientWidth - padding - targetX));
+    const centeredHeight = Math.max(1, 2 * Math.min(targetY - padding, board.clientHeight - padding - targetY));
+    const fitScale = Math.min(1, centeredWidth / width, centeredHeight / height);
+    viewport.scale = clamp(fitScale, MIN_SCALE, Math.min(1, MAX_SCALE));
+    const scaledWidth = width * viewport.scale;
+    const scaledHeight = height * viewport.scale;
+    const maxLeft = board.clientWidth - padding - scaledWidth;
+    const maxTop = board.clientHeight - padding - scaledHeight;
+    const left = maxLeft >= padding ? clamp(targetX - scaledWidth / 2, padding, maxLeft) : padding;
+    const top = maxTop >= padding ? clamp(targetY - scaledHeight / 2, padding, maxTop) : padding;
+    viewport.x = Math.round(left - bounds.minX * viewport.scale);
+    viewport.y = Math.round(top - bounds.minY * viewport.scale);
     applyViewport();
+}
+function scheduleUntouchedViewportReset(){
+    if(viewportUserControlled) return;
+    if(scheduledViewportReset) cancelAnimationFrame(scheduledViewportReset);
+    scheduledViewportReset = requestAnimationFrame(() => {
+        scheduledViewportReset = requestAnimationFrame(() => {
+            scheduledViewportReset = 0;
+            if(!viewportUserControlled && boardWorld.querySelector('.ws-card')) resetView();
+        });
+    });
+}
+function markViewportUserControlled(){
+    viewportUserControlled = true;
+    if(scheduledViewportReset){
+        cancelAnimationFrame(scheduledViewportReset);
+        scheduledViewportReset = 0;
+    }
 }
 
 /* ===== Board pan & zoom ===== */
@@ -151,6 +193,7 @@ function onBoardPanStart(e){
 }
 function onBoardPanMove(e){
     if(!panState) return;
+    if(e.clientX !== panState.startX || e.clientY !== panState.startY) markViewportUserControlled();
     viewport.x = panState.ox + (e.clientX - panState.startX);
     viewport.y = panState.oy + (e.clientY - panState.startY);
     if(Math.abs(e.clientX - panState.startX) > 3 || Math.abs(e.clientY - panState.startY) > 3) panState.moved = true;
@@ -163,6 +206,7 @@ function onBoardPanEnd(){
 }
 function onBoardWheel(e){
     e.preventDefault();
+    markViewportUserControlled();
     const rect = board.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     // world point under cursor before zoom
@@ -200,6 +244,7 @@ async function loadAll(){
         rememberProjectId(currentProjectId);
         renderProjects();
         renderBoard();
+        viewportUserControlled = false;
         resetView();
         refreshTrashCount();
     } catch(e){
@@ -266,6 +311,7 @@ function selectProject(pid){
     closeTrashView();
     renderProjects();
     renderBoard();
+    viewportUserControlled = false;
     resetView();
 }
 
@@ -1080,7 +1126,10 @@ emptyCreateCanvasBtn?.addEventListener('click', e => {
     openCreateCard(boardCenterWorld());
 });
 boardRefreshBtn.addEventListener('click', loadAll);
-boardResetViewBtn.addEventListener('click', resetView);
+boardResetViewBtn.addEventListener('click', () => {
+    viewportUserControlled = false;
+    resetView();
+});
 pasteCanvasBtn?.addEventListener('click', pasteCanvas);
 
 newProjectBtn.addEventListener('click', openNewProject);
@@ -1137,6 +1186,11 @@ window.addEventListener('message', event => {
         refreshIcons();
     }
 });
+window.addEventListener('studio-ui-scale-change', scheduleUntouchedViewportReset);
+window.addEventListener('resize', scheduleUntouchedViewportReset);
+if(window.ResizeObserver){
+    new ResizeObserver(scheduleUntouchedViewportReset).observe(board);
+}
 
 /* ===== Boot ===== */
 window.StudioI18n?.apply?.();

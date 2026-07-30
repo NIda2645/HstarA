@@ -2050,8 +2050,16 @@ def sync_static_html_versions():
                 path = os.path.join(directory, name)
                 if os.path.isfile(path):
                     html_paths.append(path)
+        integration_entry_paths = (
+            os.path.abspath(os.path.join(PROGRAM_ROOT, "integrations", "openshop", "index.html")),
+            os.path.abspath(os.path.join(PROGRAM_ROOT, "integrations", "storyai-3d-director-desk", "index.html")),
+        )
+        html_paths.extend(path for path in integration_entry_paths if os.path.isfile(path))
         shell_path = os.path.abspath(os.path.join(STATIC_DIR, "index.html"))
-        openshop_entry_path = os.path.abspath(os.path.join(STATIC_DIR, "openshop", "index.html"))
+        openshop_entry_paths = {
+            os.path.abspath(os.path.join(STATIC_DIR, "openshop", "index.html")),
+            integration_entry_paths[0],
+        }
         html_paths.sort(key=lambda path: (os.path.abspath(path) == shell_path, path.lower()))
         for path in html_paths:
             # 单文件容错：某个文件读写失败不应中断整批同步。
@@ -2059,7 +2067,7 @@ def sync_static_html_versions():
                 with open(path, "r", encoding="utf-8") as f:
                     old = f.read()
                 new = versioned_static_html(re.sub(r'([?&]v=)[^"\'`\s<>)]*', rf'\g<1>{safe_version}', old))
-                if os.path.abspath(path) == openshop_entry_path:
+                if os.path.abspath(path) in openshop_entry_paths:
                     new = versioned_openshop_runtime_html(new)
                 if new != old:
                     with open(path, "w", encoding="utf-8", newline="") as f:

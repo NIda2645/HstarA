@@ -55,6 +55,7 @@ class StaticAssetVersioningTests(unittest.TestCase):
             )
 
             with (
+                patch.object(main, "PROGRAM_ROOT", static_dir.parent),
                 patch.object(main, "STATIC_DIR", str(static_dir)),
                 patch.object(main, "EDITION", "development"),
                 patch.object(main, "current_app_version", return_value="2026.07.19"),
@@ -69,6 +70,45 @@ class StaticAssetVersioningTests(unittest.TestCase):
         self.assertIn(f'./host/openshop-font-catalog.js?v={revision}', synchronized)
         self.assertIn(f'./locales/zh-CN.js?v={revision}', synchronized)
         self.assertIn('/static/js/voice-input-adapter.js?v=2026.07.19.1234', synchronized)
+
+    def test_sync_updates_shared_static_references_in_integration_entry_sources(self):
+        with TemporaryDirectory() as directory:
+            program_root = Path(directory)
+            static_dir = program_root / "static"
+            shared_js_dir = static_dir / "js"
+            shared_js_dir.mkdir(parents=True)
+            (shared_js_dir / "voice-input-adapter.js").write_text("", encoding="utf-8")
+            static_index = static_dir / "index.html"
+            static_index.write_text(
+                '<script src="/static/js/voice-input-adapter.js?v=old"></script>',
+                encoding="utf-8",
+            )
+            source_entries = (
+                program_root / "integrations" / "openshop" / "index.html",
+                program_root / "integrations" / "storyai-3d-director-desk" / "index.html",
+            )
+            for source_entry in source_entries:
+                source_entry.parent.mkdir(parents=True)
+                source_entry.write_text(
+                    '<script src="/static/js/voice-input-adapter.js?v=old"></script>',
+                    encoding="utf-8",
+                )
+
+            with (
+                patch.object(main, "PROGRAM_ROOT", program_root),
+                patch.object(main, "STATIC_DIR", str(static_dir)),
+                patch.object(main, "EDITION", "development"),
+                patch.object(main, "current_app_version", return_value="2026.07.19"),
+                patch.object(main.os.path, "getmtime", return_value=1234),
+            ):
+                main.sync_static_html_versions()
+
+            for entry in (static_index, *source_entries):
+                synchronized = entry.read_text(encoding="utf-8")
+                self.assertIn(
+                    '/static/js/voice-input-adapter.js?v=2026.07.19.1234',
+                    synchronized,
+                )
 
 
 if __name__ == "__main__":
