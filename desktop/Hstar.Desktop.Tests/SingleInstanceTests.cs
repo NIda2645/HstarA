@@ -8,8 +8,11 @@ public sealed class SingleInstanceTests
     [Fact]
     public void OnlyTheFirstLeaseOwnsTheWindows11Mutex()
     {
-        using var first = SingleInstance.Acquire();
-        using var second = SingleInstance.Acquire();
+        var runId = Guid.NewGuid().ToString("N");
+        var mutexName = $@"{SingleInstance.MutexName}.Tests.{runId}";
+        var shutdownEventName = $@"{MaintenanceMode.ShutdownEventName}.Tests.{runId}";
+        using var first = SingleInstance.Acquire(mutexName, shutdownEventName);
+        using var second = SingleInstance.Acquire(mutexName, shutdownEventName);
 
         Assert.True(first.IsPrimary);
         Assert.False(second.IsPrimary);

@@ -19,10 +19,12 @@ public sealed class SingleInstance : IDisposable
 
     public bool IsPrimary { get; }
 
-    public static SingleInstance Acquire()
+    public static SingleInstance Acquire(
+        string mutexName = MutexName,
+        string shutdownEventName = MaintenanceMode.ShutdownEventName)
     {
-        var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
-        var shutdownEvent = MaintenanceMode.CreateShutdownListener();
+        var mutex = new Mutex(initiallyOwned: true, mutexName, out var createdNew);
+        var shutdownEvent = MaintenanceMode.CreateShutdownListener(shutdownEventName);
         return new SingleInstance(mutex, shutdownEvent, createdNew);
     }
 

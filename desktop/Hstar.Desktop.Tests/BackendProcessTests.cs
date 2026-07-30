@@ -55,16 +55,35 @@ public sealed class BackendProcessTests : IDisposable
     [Fact]
     public void PortAllocatorSkipsBusyPreferredPortAndKeepsSelectionReserved()
     {
-        using var occupied = new TcpListener(IPAddress.Loopback, 5000);
-        occupied.Server.ExclusiveAddressUse = true;
-        occupied.Start();
+        TcpListener? occupied = null;
+        try
+        {
+            occupied = new TcpListener(IPAddress.Loopback, PortAllocator.PreferredPort);
+            occupied.Server.ExclusiveAddressUse = true;
+            occupied.Start();
+        }
+        catch (SocketException)
+        {
+            occupied?.Dispose();
+            occupied = null;
+        }
 
-        using var reservation = PortAllocator.Reserve();
+        try
+        {
+            using var reservation = PortAllocator.Reserve();
 
-        Assert.InRange(reservation.SelectedPort, 5001, 5099);
-        using var conflict = new TcpListener(IPAddress.Loopback, reservation.SelectedPort);
-        conflict.Server.ExclusiveAddressUse = true;
-        Assert.ThrowsAny<SocketException>(() => conflict.Start());
+            Assert.InRange(
+                reservation.SelectedPort,
+                PortAllocator.PreferredPort + 1,
+                PortAllocator.LastFallbackPort);
+            using var conflict = new TcpListener(IPAddress.Loopback, reservation.SelectedPort);
+            conflict.Server.ExclusiveAddressUse = true;
+            Assert.ThrowsAny<SocketException>(() => conflict.Start());
+        }
+        finally
+        {
+            occupied?.Dispose();
+        }
     }
 
     [Fact]
