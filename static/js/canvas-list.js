@@ -102,9 +102,15 @@ function applyViewport(){
 }
 function screenToWorld(clientX, clientY){
     const rect = board.getBoundingClientRect();
+    const visualScaleX = board.clientWidth > 0 && Number.isFinite(rect.width / board.clientWidth)
+        ? rect.width / board.clientWidth
+        : 1;
+    const visualScaleY = board.clientHeight > 0 && Number.isFinite(rect.height / board.clientHeight)
+        ? rect.height / board.clientHeight
+        : 1;
     return {
-        x: (clientX - rect.left - viewport.x) / viewport.scale,
-        y: (clientY - rect.top - viewport.y) / viewport.scale
+        x: ((clientX - rect.left) / visualScaleX - viewport.x) / viewport.scale,
+        y: ((clientY - rect.top) / visualScaleY - viewport.y) / viewport.scale
     };
 }
 function boardCenterWorld(){

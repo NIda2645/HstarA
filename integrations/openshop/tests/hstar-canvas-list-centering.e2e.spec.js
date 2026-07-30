@@ -112,6 +112,32 @@ test('keeps a user-panned viewport when later scale and resize events arrive', a
   expect(afterLayoutEvents.viewportTransform).toBe(afterPan.viewportTransform);
 });
 
+test('keeps a dragged canvas card under the pointer when the studio UI is scaled down', async ({page}) => {
+  await page.evaluate(() => {
+    window.postMessage({type:'studio-ui-scale', mode:'custom', scale:0.8}, window.location.origin);
+  });
+  await page.waitForFunction(() => getComputedStyle(document.documentElement)
+    .getPropertyValue('--studio-ui-scale').trim() === '0.800');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+  const card = page.locator('.ws-card[data-canvas-id="canvas-list-centering-1"]');
+  const before = await card.boundingBox();
+  const pointerDelta = {x:240, y:120};
+
+  await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    before.x + before.width / 2 + pointerDelta.x,
+    before.y + before.height / 2 + pointerDelta.y,
+    {steps:8},
+  );
+  await page.mouse.up();
+
+  const after = await card.boundingBox();
+  expect(after.x - before.x).toBeCloseTo(pointerDelta.x, 0);
+  expect(after.y - before.y).toBeCloseTo(pointerDelta.y, 0);
+});
+
 test('reset view returns the canvas-card group to the right-board center', async ({page}) => {
   const board = page.locator('#board');
   const rect = await board.boundingBox();
