@@ -2,13 +2,13 @@ import { expect, test } from '@playwright/test';
 
 const baseUrl = process.env.HSTAR_BASE_URL || 'http://127.0.0.1:3010';
 
-const canvases = Array.from({length:12}, (_, index) => ({
+const canvases = Array.from({length:36}, (_, index) => ({
   id:`canvas-list-centering-${index + 1}`,
   title:`Canvas ${index + 1}`,
   kind:index % 5 === 0 ? 'smart' : 'classic',
   project:'default',
-  board_x:40 + (index % 4) * 276,
-  board_y:40 + Math.floor(index / 4) * 176,
+  board_x:40 + (index % 6) * 276,
+  board_y:40 + Math.floor(index / 6) * 176,
   node_count:index + 1,
   created_at:1_700_000_000 + index,
   updated_at:1_700_000_000 + index,
@@ -31,7 +31,7 @@ async function mockCanvasListApi(page){
 
 async function canvasListGeometry(page){
   return page.evaluate(() => {
-    const workspace = document.querySelector('.workspace').getBoundingClientRect();
+    const board = document.querySelector('.ws-board').getBoundingClientRect();
     const cards = Array.from(document.querySelectorAll('.ws-card')).map(card => card.getBoundingClientRect());
     const bounds = cards.reduce((result, rect) => ({
       left:Math.min(result.left, rect.left),
@@ -40,12 +40,24 @@ async function canvasListGeometry(page){
       bottom:Math.max(result.bottom, rect.bottom),
     }), {left:Infinity, top:Infinity, right:-Infinity, bottom:-Infinity});
     return {
-      workspaceCenter:{x:workspace.left + workspace.width / 2, y:workspace.top + workspace.height / 2},
+      boardCenter:{x:board.left + board.width / 2, y:board.top + board.height / 2},
       cardsCenter:{x:(bounds.left + bounds.right) / 2, y:(bounds.top + bounds.bottom) / 2},
       cardsBounds:bounds,
       viewportTransform:document.getElementById('boardWorld').style.transform,
     };
   });
+}
+
+async function arrangeCardGrid(page, {count, columns}){
+  await page.evaluate(({count, columns}) => {
+    const cards = Array.from(document.querySelectorAll('.ws-card'));
+    cards.slice(count).forEach(card => card.remove());
+    cards.slice(0, count).forEach((card, index) => {
+      card.style.left = `${40 + (index % columns) * 276}px`;
+      card.style.top = `${40 + Math.floor(index / columns) * 176}px`;
+    });
+    document.getElementById('boardResetView').click();
+  }, {count, columns});
 }
 
 test.beforeEach(async ({page}) => {
@@ -55,7 +67,7 @@ test.beforeEach(async ({page}) => {
   await expect(page.locator('.ws-card')).toHaveCount(canvases.length);
 });
 
-test('centers the initial canvas-card group in the whole workspace after desktop scale settles', async ({page}) => {
+test('centers the initial 6x6 canvas-card group in the right board after desktop scale settles', async ({page}) => {
   await page.evaluate(() => {
     window.postMessage({type:'studio-ui-scale', mode:'custom', scale:1.2}, window.location.origin);
   });
@@ -64,8 +76,21 @@ test('centers the initial canvas-card group in the whole workspace after desktop
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
   const geometry = await canvasListGeometry(page);
-  expect(Math.abs(geometry.cardsCenter.x - geometry.workspaceCenter.x)).toBeLessThanOrEqual(2);
-  expect(Math.abs(geometry.cardsCenter.y - geometry.workspaceCenter.y)).toBeLessThanOrEqual(2);
+  expect(Math.abs(geometry.cardsCenter.x - geometry.boardCenter.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(geometry.cardsCenter.y - geometry.boardCenter.y)).toBeLessThanOrEqual(2);
+});
+
+test('recenters arbitrary manually arranged canvas-card grids in the right board', async ({page}) => {
+  for(const layout of [
+    {count:35, columns:7},
+    {count:25, columns:5},
+    {count:17, columns:4},
+  ]){
+    await arrangeCardGrid(page, layout);
+    const geometry = await canvasListGeometry(page);
+    expect(Math.abs(geometry.cardsCenter.x - geometry.boardCenter.x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(geometry.cardsCenter.y - geometry.boardCenter.y)).toBeLessThanOrEqual(2);
+  }
 });
 
 test('keeps a user-panned viewport when later scale and resize events arrive', async ({page}) => {
@@ -87,7 +112,7 @@ test('keeps a user-panned viewport when later scale and resize events arrive', a
   expect(afterLayoutEvents.viewportTransform).toBe(afterPan.viewportTransform);
 });
 
-test('reset view returns the canvas-card group to the whole-workspace center', async ({page}) => {
+test('reset view returns the canvas-card group to the right-board center', async ({page}) => {
   const board = page.locator('#board');
   const rect = await board.boundingBox();
   await page.mouse.move(rect.x + 60, rect.y + 60);
@@ -97,6 +122,6 @@ test('reset view returns the canvas-card group to the whole-workspace center', a
 
   await page.locator('#boardResetView').click();
   const geometry = await canvasListGeometry(page);
-  expect(Math.abs(geometry.cardsCenter.x - geometry.workspaceCenter.x)).toBeLessThanOrEqual(2);
-  expect(Math.abs(geometry.cardsCenter.y - geometry.workspaceCenter.y)).toBeLessThanOrEqual(2);
+  expect(Math.abs(geometry.cardsCenter.x - geometry.boardCenter.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(geometry.cardsCenter.y - geometry.boardCenter.y)).toBeLessThanOrEqual(2);
 });

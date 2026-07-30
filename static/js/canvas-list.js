@@ -41,7 +41,6 @@ function renderCanvasIcon(icon, size = 16){
 }
 
 /* ===== DOM refs ===== */
-const workspace = document.getElementById('workspace');
 const board = document.getElementById('board');
 const boardWorld = document.getElementById('boardWorld');
 const boardEmptyHint = document.getElementById('boardEmptyHint');
@@ -114,16 +113,6 @@ function boardCenterWorld(){
         y: (board.clientHeight / 2 - viewport.y) / viewport.scale
     };
 }
-function wholeWorkspaceCenterInBoard(){
-    const workspaceRect = workspace.getBoundingClientRect();
-    const boardRect = board.getBoundingClientRect();
-    const visualScaleX = board.clientWidth > 0 ? boardRect.width / board.clientWidth : 1;
-    const visualScaleY = board.clientHeight > 0 ? boardRect.height / board.clientHeight : 1;
-    return {
-        x: (workspaceRect.left + workspaceRect.width / 2 - boardRect.left) / (visualScaleX || 1),
-        y: (workspaceRect.top + workspaceRect.height / 2 - boardRect.top) / (visualScaleY || 1)
-    };
-}
 function clamp(value, min, max){
     return Math.min(max, Math.max(min, value));
 }
@@ -147,9 +136,8 @@ function resetView(){
     const padding = board.clientWidth < 640 ? 20 : 40;
     const width = Math.max(1, bounds.maxX - bounds.minX);
     const height = Math.max(1, bounds.maxY - bounds.minY);
-    const target = wholeWorkspaceCenterInBoard();
-    const targetX = clamp(target.x, padding, Math.max(padding, board.clientWidth - padding));
-    const targetY = clamp(target.y, padding, Math.max(padding, board.clientHeight - padding));
+    const targetX = board.clientWidth / 2;
+    const targetY = board.clientHeight / 2;
     const centeredWidth = Math.max(1, 2 * Math.min(targetX - padding, board.clientWidth - padding - targetX));
     const centeredHeight = Math.max(1, 2 * Math.min(targetY - padding, board.clientHeight - padding - targetY));
     const fitScale = Math.min(1, centeredWidth / width, centeredHeight / height);
