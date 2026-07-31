@@ -171,6 +171,68 @@ public sealed class WebViewConfigurationTests : IDisposable
     }
 
     [Fact]
+    public async Task DownloadBatchMessageRequiresPlainFileNamesAndTheCurrentOrigin()
+    {
+        var configuration = CreateConfiguration();
+        var accepted = new List<DownloadBatchRequest>();
+        var router = new WebViewMessageRouter(
+            configuration,
+            (_, _) => Task.CompletedTask,
+            (_, _) => Task.CompletedTask,
+            (request, _) =>
+            {
+                accepted.Add(request);
+                return Task.CompletedTask;
+            });
+        string Message(params string[] fileNames) => JsonSerializer.Serialize(new
+        {
+            type = "hstar:download-batch",
+            schemaVersion = 1,
+            requestId = Guid.NewGuid(),
+            fileNames,
+        });
+
+        Assert.True(await router.TryHandleAsync(
+            "http://127.0.0.1:5007/static/canvas.html",
+            Message("第一张.png", "second.webp")));
+        Assert.False(await router.TryHandleAsync(
+            "https://example.com/",
+            Message("foreign.png")));
+        Assert.False(await router.TryHandleAsync(
+            "http://127.0.0.1:5007/",
+            Message("..")));
+        Assert.False(await router.TryHandleAsync(
+            "http://127.0.0.1:5007/",
+            Message("folder/escape.png")));
+
+        Assert.Single(accepted);
+        Assert.Equal(["第一张.png", "second.webp"], accepted[0].FileNames);
+    }
+
+    [Fact]
+    public void MultipleAutomaticDownloadsRequireAPendingBatchFromTheCurrentBackendOrigin()
+    {
+        var configuration = CreateConfiguration();
+
+        Assert.True(WebViewDownloadPermissionPolicy.ShouldAllow(
+            new Uri("http://127.0.0.1:5007/static/canvas.html"),
+            configuration,
+            hasPendingBatch: true));
+        Assert.False(WebViewDownloadPermissionPolicy.ShouldAllow(
+            new Uri("http://127.0.0.1:5007/static/canvas.html"),
+            configuration,
+            hasPendingBatch: false));
+        Assert.False(WebViewDownloadPermissionPolicy.ShouldAllow(
+            new Uri("http://127.0.0.1:5008/static/canvas.html"),
+            configuration,
+            hasPendingBatch: true));
+        Assert.False(WebViewDownloadPermissionPolicy.ShouldAllow(
+            new Uri("https://example.com/download"),
+            configuration,
+            hasPendingBatch: true));
+    }
+
+    [Fact]
     public void RestartPathsMustMatchThePersistedMigrationResult()
     {
         var current = CreatePaths();

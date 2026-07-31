@@ -1,5 +1,7 @@
 # OpenShop Native Export and Send Acknowledgement Implementation Plan
 
+> **Superseded (2026-07-31):** This plan is retained only as implementation history. Do not restore `/api/native/save-output-as` or `/api/native/save-output-batch`. The current desktop path is `HstarDesktopDownloads.saveBatch` in `static/js/desktop-shell-bridge.js`, WebView2 `DownloadStarting` handling in `desktop/Hstar.Desktop/MainWindow.xaml.cs`, and the OpenShop adapter in `integrations/openshop/host/openshop-export-service.js`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add Windows-native local saving for every OpenShop export path and show send success only after the receiving canvas has created and persisted the output node.

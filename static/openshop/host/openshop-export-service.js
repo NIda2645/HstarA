@@ -51,31 +51,47 @@
     return root.btoa(binary);
   }
 
-  async function responseJson(response){
-    const body = await response.json().catch(() => ({}));
-    if(!response.ok){
-      const detail = typeof body?.detail === 'string' ? body.detail : '';
-      throw new Error(detail || `保存失败 (${response.status})`);
-    }
-    return body;
+  function triggerUrlDownload(url, filename){
+    const link = root.document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    root.document.body.appendChild(link);
+    link.click();
+    link.remove();
   }
 
-  function create({generators, fetchImpl = root.fetch?.bind(root), storage = root.localStorage} = {}){
+  async function triggerBlobDownload(blob, filename){
+    const url = root.URL.createObjectURL(blob);
+    try {
+      triggerUrlDownload(url, filename);
+    } finally {
+      root.setTimeout(() => root.URL.revokeObjectURL(url), 5000);
+    }
+  }
+
+  async function triggerArtifactBatch(artifacts){
+    const files = artifacts.map(artifact => ({
+      url:root.URL.createObjectURL(artifact.blob),
+      filename:artifact.filename,
+    }));
+    try {
+      let bridge = null;
+      try { bridge = root.top?.HstarDesktopDownloads; } catch(error) {}
+      if(bridge?.saveBatch) return await bridge.saveBatch(files);
+      files.forEach(file => triggerUrlDownload(file.url, file.filename));
+      return {accepted:true, count:files.length};
+    } finally {
+      root.setTimeout(() => files.forEach(file => root.URL.revokeObjectURL(file.url)), 5000);
+    }
+  }
+
+  function create({
+    generators,
+    downloadImpl = triggerBlobDownload,
+    downloadBatchImpl = triggerArtifactBatch,
+  } = {}){
     if(!generators || typeof generators !== 'object'){
       throw new Error('Export generators are required');
-    }
-    if(typeof fetchImpl !== 'function'){
-      throw new Error('Fetch is unavailable');
-    }
-
-    async function initialFolder(){
-      try {
-        const cached = storage?.getItem?.('hstar.outputDownloadFolder') || '';
-        if(cached) return cached;
-      } catch(error) {}
-      const response = await fetchImpl('/api/output-download-folder');
-      const value = await responseJson(response);
-      return String(value.folder || '');
     }
 
     async function createArtifact(format, options = {}){
@@ -89,20 +105,8 @@
 
     async function saveArtifact(artifact){
       const value = normalizeArtifact(artifact, artifact?.format);
-      const response = await fetchImpl('/api/native/save-output-as', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          name:value.filename,
-          initial_dir:await initialFolder(),
-          content_base64:await blobToBase64(value.blob),
-        }),
-      });
-      const result = await responseJson(response);
-      if(!result.cancelled && result.folder){
-        try { storage?.setItem?.('hstar.outputDownloadFolder', result.folder); } catch(error) {}
-      }
-      return result;
+      await downloadImpl(value.blob, value.filename);
+      return {ok:true, cancelled:false, filename:value.filename};
     }
 
     async function saveFormat(format, options = {}){
@@ -114,23 +118,12 @@
       for(const format of formats){
         artifacts.push(await createArtifact(format, optionsByFormat[format] || {}));
       }
-      const items = [];
-      for(const artifact of artifacts){
-        items.push({
-          name:artifact.filename,
-          content_base64:await blobToBase64(artifact.blob),
-        });
-      }
-      const response = await fetchImpl('/api/native/save-output-batch', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({items, initial_dir:await initialFolder()}),
-      });
-      const result = await responseJson(response);
-      if(!result.cancelled && result.folder){
-        try { storage?.setItem?.('hstar.outputDownloadFolder', result.folder); } catch(error) {}
-      }
-      return result;
+      const result = await downloadBatchImpl(artifacts);
+      return {
+        ok:result?.accepted !== false,
+        cancelled:result?.accepted === false,
+        count:result?.count || artifacts.length,
+      };
     }
 
     return Object.freeze({createArtifact, saveArtifact, saveFormat, saveBatch});

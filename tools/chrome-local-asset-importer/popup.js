@@ -24,9 +24,16 @@ const els = {
   download: document.getElementById('downloadBtn'),
 };
 
+const {
+  discoverHstarServer,
+  displayAddress,
+  normalizeApiBase,
+} = globalThis.HstarExtensionConnection;
+
 let images = [];
 let selected = new Set();
 let providers = [];
+let activeApiBase = '';
 let settingsCollapsed = false;
 let savedSettings = {
   provider: '',
@@ -35,19 +42,12 @@ let savedSettings = {
 let previewItem = null;
 const POPUP_PREVIEW_POPUP_WIDTH = 390;
 const POPUP_PREVIEW_GAP = 16;
+const PAGE_INLINE_MAX_BYTES = 64 * 1024 * 1024;
 const PREVIEW_POSITION_STORAGE_KEY = 'webPreviewPosition';
 const SIDEPANEL_PREVIEW_POSITION_STORAGE_KEY = 'webPreviewPositionSidePanel';
 const isSidePanelView = location.pathname.endsWith('/sidepanel.html');
 function apiBase(){
-  let value = String(els.server.value || '').trim();
-  if(!value) value = '127.0.0.1:8767';
-  if(!/^https?:\/\//i.test(value)) value = `http://${value}`;
-  try {
-    const parsed = new URL(value);
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch {
-    return 'http://127.0.0.1:8767';
-  }
+  return activeApiBase || normalizeApiBase(els.server.value) || 'http://127.0.0.1:5000';
 }
 
 function setStatus(text){
@@ -531,7 +531,7 @@ async function saveSettings(){
 
 function getSettingsPayload(){
   return {
-    server: els.server.value || '127.0.0.1:8767',
+    server: els.server.value || '127.0.0.1:5000',
     folder: els.folder.value || '网页采集',
     classify: Boolean(els.classify.checked),
     autoScroll: Boolean(els.autoScroll.checked),
@@ -545,7 +545,7 @@ function getSettingsPayload(){
 
 async function loadSettings(){
   const data = await chrome.storage.local.get(['server', 'port', 'folder', 'classify', 'autoScroll', 'filterLowRes', 'provider', 'model', 'prompt', 'settingsCollapsed']);
-  els.server.value = data.server || (data.port ? `127.0.0.1:${data.port}` : '127.0.0.1:8767');
+  els.server.value = data.server || (data.port ? `127.0.0.1:${data.port}` : '127.0.0.1:5000');
   els.folder.value = data.folder || '网页采集';
   els.classify.checked = data.classify !== false;
   els.autoScroll.checked = Boolean(data.autoScroll);
@@ -557,19 +557,27 @@ async function loadSettings(){
   updateSettingsUi();
 }
 
-async function loadProviders(){
-  const res = await fetch(`${apiBase()}/api/providers`);
-  if(!res.ok) throw new Error(await res.text());
-  const data = await res.json();
-  providers = Array.isArray(data.providers) ? data.providers : [];
+async function resolveActiveServer({forceProbe = false} = {}){
+  const configuredBase = normalizeApiBase(els.server.value);
+  if(!forceProbe && activeApiBase && configuredBase === activeApiBase) return activeApiBase;
+
+  const result = await discoverHstarServer({configuredAddress: els.server.value});
+  activeApiBase = result.base;
+  els.server.value = displayAddress(result.base);
+  providers = result.providers;
   renderProviders();
+  await saveSettings();
+  return activeApiBase;
 }
 
 async function testConnection(){
-  await saveSettings();
+  const requestedBase = normalizeApiBase(els.server.value);
   setStatus('正在连接本地服务...');
-  await loadProviders();
-  setStatus('连接成功，可以扫描当前页面图片。');
+  const serviceBase = await resolveActiveServer({forceProbe: true});
+  const switched = requestedBase && requestedBase !== serviceBase;
+  setStatus(switched
+    ? `连接成功，已自动切换到 ${displayAddress(serviceBase)}，可以导入 Hstar 素材库。`
+    : `已连接 ${displayAddress(serviceBase)}，可以导入 Hstar 素材库。`);
 }
 
 async function openSidePanel(){
@@ -1002,16 +1010,32 @@ function mergeSniffedMedia(items, sniffed){
 
 // 在网页上下文里把素材读成 base64。blob:/同源带登录态的资源只能在页面里 fetch，
 // 因为这里才同时拥有 blob 访问权和飞书等站点的登录会话。
-function fetchMediaAsBase64(urls){
+function fetchMediaAsBase64(urls, maxBytes){
   const readOne = url => new Promise(resolve => {
     const entry = {url, ok: false, data: '', contentType: '', error: ''};
-    fetch(url, {credentials: 'include'})
+    let parsed;
+    try {
+      parsed = new URL(url, location.href);
+    } catch {
+      entry.error = '地址无效';
+      resolve(entry);
+      return;
+    }
+    if(/^https?:$/i.test(parsed.protocol) && parsed.origin !== location.origin){
+      entry.error = '跨域资源交由 Hstar 下载';
+      resolve(entry);
+      return;
+    }
+    fetch(url, {credentials: 'include', cache: 'no-store'})
       .then(res => {
         if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        const length = Number(res.headers.get('content-length') || 0);
+        if(length > maxBytes) throw new Error('素材超过页面读取大小限制');
         return res.blob();
       })
       .then(blob => {
         if(!blob || !blob.size) throw new Error('内容为空');
+        if(blob.size > maxBytes) throw new Error('素材超过页面读取大小限制');
         entry.contentType = blob.type || '';
         return new Promise((res, rej) => {
           const reader = new FileReader();
@@ -1048,9 +1072,11 @@ async function importSelected(){
   if(!picked.length) return;
   await saveSettings();
   els.import.disabled = true;
+  setStatus('正在确认 Hstar 连接...');
+  const serviceBase = await resolveActiveServer({forceProbe: true});
 
   // blob: 后端无法下载，需在页面里读成 base64；data: 本身就是 base64，直接发送。
-  const needsFetch = picked.filter(item => /^blob:/i.test(item.url));
+  const needsFetch = picked.filter(item => /^(?:blob:|https?:)/i.test(item.url));
   const fetchedByUrl = new Map();
   if(needsFetch.length){
     setStatus(`正在从页面读取 ${needsFetch.length} 个素材...`);
@@ -1059,7 +1085,7 @@ async function importSelected(){
     const results = await chrome.scripting.executeScript({
       target: {tabId, allFrames: true},
       func: fetchMediaAsBase64,
-      args: [needsFetch.map(item => item.url)],
+      args: [needsFetch.map(item => item.url), PAGE_INLINE_MAX_BYTES],
     });
     // 同一个 blob 只有创建它的 frame 能读成功，其余 frame 失败，取第一个成功的。
     (results || []).forEach(frame => {
@@ -1070,8 +1096,6 @@ async function importSelected(){
       });
     });
   }
-  const localFailed = needsFetch.filter(item => !fetchedByUrl.get(item.url)?.ok).length;
-
   setStatus(`正在导入 ${picked.length} 个素材...`);
   const body = {
     folder: els.folder.value || '网页采集',
@@ -1088,15 +1112,25 @@ async function importSelected(){
       return base;
     }),
   };
-  const res = await fetch(`${apiBase()}/api/local-assets/import-urls`, {
+  const res = await fetch(`${serviceBase}/api/local-assets/import-urls`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
   });
-  if(!res.ok) throw new Error(await res.text());
-  const data = await res.json();
-  const failed = (data.items || []).filter(item => !item.ok).length;
-  setStatus(`导入完成：成功 ${data.count || 0} 个${failed ? `，失败 ${failed} 个` : ''}${localFailed ? `，页面读取失败 ${localFailed} 个` : ''}。`);
+  const responseText = await res.text();
+  let data = {};
+  try { data = responseText ? JSON.parse(responseText) : {}; } catch {}
+  if(!res.ok || !data.ok){
+    const firstFailure = (data.items || []).find(item => !item.ok && item.error);
+    throw new Error(data.detail || firstFailure?.error || responseText || '没有素材成功导入');
+  }
+  if(!Array.isArray(data.items) || data.items.length !== picked.length){
+    throw new Error('Hstar 返回的导入结果不完整，请重试');
+  }
+  const failed = Number.isFinite(data.failed_count)
+    ? data.failed_count
+    : data.items.filter(item => !item.ok).length;
+  setStatus(`导入完成：成功 ${data.count || 0} 个${failed ? `，失败 ${failed} 个` : ''}。`);
   els.import.disabled = selected.size === 0;
 }
 
@@ -1150,88 +1184,7 @@ function triggerDownload(options){
   });
 }
 
-function base64ToBytes(b64){
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-function dataUrlToBytes(dataUrl){
-  const comma = String(dataUrl || '').indexOf(',');
-  return base64ToBytes(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
-}
-
-function crc32(bytes){
-  let table = crc32.table;
-  if(!table){
-    table = crc32.table = new Uint32Array(256);
-    for(let n = 0; n < 256; n++){
-      let c = n;
-      for(let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-      table[n] = c >>> 0;
-    }
-  }
-  let crc = 0xFFFFFFFF;
-  for(let i = 0; i < bytes.length; i++) crc = (crc >>> 8) ^ table[(crc ^ bytes[i]) & 0xFF];
-  return (crc ^ 0xFFFFFFFF) >>> 0;
-}
-
-// 在浏览器里直接生成 ZIP（store 无压缩；图片/视频本已压缩，store 足够且快），不依赖第三方库。
-function buildZipBlob(files){
-  const enc = new TextEncoder();
-  const parts = [];
-  const central = [];
-  let offset = 0;
-  const dosTime = 0;
-  const dosDate = 0x21; // 1980-01-01，固定值
-  files.forEach(file => {
-    const nameBytes = enc.encode(file.name);
-    const data = file.bytes;
-    const crc = crc32(data);
-    const size = data.length;
-    const lh = new DataView(new ArrayBuffer(30));
-    lh.setUint32(0, 0x04034b50, true);
-    lh.setUint16(4, 20, true);
-    lh.setUint16(6, 0x0800, true); // UTF-8 文件名
-    lh.setUint16(8, 0, true);      // store
-    lh.setUint16(10, dosTime, true);
-    lh.setUint16(12, dosDate, true);
-    lh.setUint32(14, crc, true);
-    lh.setUint32(18, size, true);
-    lh.setUint32(22, size, true);
-    lh.setUint16(26, nameBytes.length, true);
-    lh.setUint16(28, 0, true);
-    const localHeader = new Uint8Array(lh.buffer);
-    parts.push(localHeader, nameBytes, data);
-    const ch = new DataView(new ArrayBuffer(46));
-    ch.setUint32(0, 0x02014b50, true);
-    ch.setUint16(4, 20, true);
-    ch.setUint16(6, 20, true);
-    ch.setUint16(8, 0x0800, true);
-    ch.setUint16(10, 0, true);
-    ch.setUint16(12, dosTime, true);
-    ch.setUint16(14, dosDate, true);
-    ch.setUint32(16, crc, true);
-    ch.setUint32(20, size, true);
-    ch.setUint32(24, size, true);
-    ch.setUint16(28, nameBytes.length, true);
-    ch.setUint32(42, offset, true);
-    central.push(new Uint8Array(ch.buffer), nameBytes);
-    offset += localHeader.length + nameBytes.length + size;
-  });
-  const centralStart = offset;
-  const centralSize = central.reduce((sum, c) => sum + c.length, 0);
-  const eo = new DataView(new ArrayBuffer(22));
-  eo.setUint32(0, 0x06054b50, true);
-  eo.setUint16(8, files.length, true);
-  eo.setUint16(10, files.length, true);
-  eo.setUint32(12, centralSize, true);
-  eo.setUint32(16, centralStart, true);
-  return new Blob([...parts, ...central, new Uint8Array(eo.buffer)], {type: 'application/zip'});
-}
-
-// 下载到浏览器下载目录，不经过后端——可当独立采集工具使用。单张下原文件，多张打包成一个 zip。
+// 下载到浏览器下载目录，不经过后端；一次操作可保存多个独立原文件。
 async function downloadSelected(){
   const picked = visibleImages().filter(item => selected.has(item.url));
   if(!picked.length) return;
@@ -1261,92 +1214,45 @@ async function downloadSelected(){
     }
   }
 
-  // 单张：直接下原文件，不打包
-  if(picked.length === 1){
-    const objectUrls = [];
-    try {
-      const item = picked[0];
-      let url = '';
-      let contentType = '';
-      if(/^data:/i.test(item.url)){
-        url = await dataUrlToObjectUrl(item.url);
-        objectUrls.push(url);
-        contentType = item.url.match(/^data:([^;,]+)/i)?.[1] || '';
-      } else if(/^blob:/i.test(item.url)){
-        const fetched = fetchedByUrl.get(item.url);
-        if(!fetched?.ok) throw new Error('页面读取失败');
-        url = await dataUrlToObjectUrl(fetched.data);
-        objectUrls.push(url);
-        contentType = fetched.contentType;
-      } else {
-        url = item.url;
-      }
-      await triggerDownload({url, filename: `${folder}/${downloadFileName(item, contentType)}`, conflictAction: 'uniquify', saveAs: false});
-      setStatus(`下载完成：1 个（保存在下载目录的 ${folder} 文件夹）。`);
-    } catch (err) {
-      setStatus(`下载失败：${err?.message || '未知错误'}`);
-    } finally {
-      if(objectUrls.length) setTimeout(() => objectUrls.forEach(u => URL.revokeObjectURL(u)), 60000);
-      els.download.disabled = selected.size === 0;
-    }
-    return;
-  }
-
-  // 多张：取字节后打包成一个 zip
-  const usedNames = new Set();
-  const uniqueName = name => {
-    if(!usedNames.has(name)){ usedNames.add(name); return name; }
-    const dot = name.lastIndexOf('.');
-    const stem = dot > 0 ? name.slice(0, dot) : name;
-    const ext = dot > 0 ? name.slice(dot) : '';
-    let i = 2;
-    let candidate;
-    do { candidate = `${stem}_${i++}${ext}`; } while(usedNames.has(candidate));
-    usedNames.add(candidate);
-    return candidate;
-  };
-  const files = [];
+  const objectUrls = [];
+  let downloaded = 0;
   let failed = 0;
-  for(let i = 0; i < picked.length; i++){
-    const item = picked[i];
-    setStatus(`正在打包 ${i + 1}/${picked.length}...`);
-    try {
-      let bytes;
-      let contentType = '';
-      if(/^data:/i.test(item.url)){
-        contentType = item.url.match(/^data:([^;,]+)/i)?.[1] || '';
-        bytes = dataUrlToBytes(item.url);
-      } else if(/^blob:/i.test(item.url)){
-        const fetched = fetchedByUrl.get(item.url);
-        if(!fetched?.ok) throw new Error('页面读取失败');
-        contentType = fetched.contentType;
-        bytes = dataUrlToBytes(fetched.data);
-      } else {
-        const res = await fetch(item.url);
-        if(!res.ok) throw new Error(`HTTP ${res.status}`);
-        contentType = (res.headers.get('content-type') || '').split(';', 1)[0].trim();
-        bytes = new Uint8Array(await res.arrayBuffer());
-      }
-      if(!bytes.length) throw new Error('空内容');
-      files.push({name: uniqueName(downloadFileName(item, contentType)), bytes});
-    } catch {
-      failed += 1;
-    }
-  }
-  if(!files.length){
-    setStatus(`打包失败：没有可下载的素材${failed ? `（失败 ${failed} 个）` : ''}。`);
-    els.download.disabled = selected.size === 0;
-    return;
-  }
-  setStatus('正在生成压缩包...');
-  const zipUrl = URL.createObjectURL(buildZipBlob(files));
   try {
-    await triggerDownload({url: zipUrl, filename: `${folder}.zip`, conflictAction: 'uniquify', saveAs: false});
-    setStatus(`已打包下载：${files.length} 个素材${failed ? `，失败 ${failed} 个` : ''}（${folder}.zip）。`);
-  } catch (err) {
-    setStatus(`压缩包下载失败：${err?.message || '未知错误'}`);
+    for(let index = 0; index < picked.length; index++){
+      const item = picked[index];
+      setStatus(`正在下载 ${index + 1}/${picked.length}...`);
+      try {
+        let url = '';
+        let contentType = '';
+        if(/^data:/i.test(item.url)){
+          url = await dataUrlToObjectUrl(item.url);
+          objectUrls.push(url);
+          contentType = item.url.match(/^data:([^;,]+)/i)?.[1] || '';
+        } else if(/^blob:/i.test(item.url)){
+          const fetched = fetchedByUrl.get(item.url);
+          if(!fetched?.ok) throw new Error('页面读取失败');
+          url = await dataUrlToObjectUrl(fetched.data);
+          objectUrls.push(url);
+          contentType = fetched.contentType;
+        } else {
+          url = item.url;
+        }
+        await triggerDownload({
+          url,
+          filename: `${folder}/${downloadFileName(item, contentType)}`,
+          conflictAction: 'uniquify',
+          saveAs: false,
+        });
+        downloaded += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    setStatus(downloaded
+      ? `下载完成：${downloaded} 个独立文件${failed ? `，失败 ${failed} 个` : ''}（保存在下载目录的 ${folder} 文件夹）。`
+      : `下载失败：没有可保存的素材${failed ? `（失败 ${failed} 个）` : ''}。`);
   } finally {
-    setTimeout(() => URL.revokeObjectURL(zipUrl), 60000);
+    if(objectUrls.length) setTimeout(() => objectUrls.forEach(url => URL.revokeObjectURL(url)), 60000);
     els.download.disabled = selected.size === 0;
   }
 }
@@ -1395,11 +1301,13 @@ els.filterLowRes?.addEventListener('change', () => {
 });
 [els.server, els.folder, els.classify, els.model, els.prompt].forEach(el => {
   el.addEventListener('change', () => {
+    if(el === els.server) activeApiBase = '';
     if(el === els.model) savedSettings.model = els.model.value || '';
     updateSettingsUi();
     saveSettings();
   });
   el.addEventListener('input', () => {
+    if(el === els.server) activeApiBase = '';
     if(el === els.model) savedSettings.model = els.model.value || '';
     updateSettingsUi();
     saveSettings();
@@ -1418,6 +1326,10 @@ window.addEventListener('keydown', event => {
 
 (async function init(){
   await loadSettings();
-  try { await loadProviders(); setStatus('连接成功，可以扫描当前页面图片。'); }
-  catch { setStatus('请输入服务地址后点击连接，例如 192.168.1.10:3000。'); }
+  try {
+    const serviceBase = await resolveActiveServer({forceProbe: true});
+    setStatus(`已连接 ${displayAddress(serviceBase)}，可以导入 Hstar 素材库。`);
+  } catch (error) {
+    setStatus(error.message || '未找到可连接的 Hstar，请启动 Hstar 后点击连接。');
+  }
 })();

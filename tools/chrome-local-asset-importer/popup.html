@@ -34,20 +34,20 @@
         <section id="settingsPanel" class="settings-panel">
           <div class="settings-head">
             <strong>参数设置</strong>
-            <span id="settingsSummary">127.0.0.1:8767</span>
+            <span id="settingsSummary">127.0.0.1:5000</span>
           </div>
           <div id="settingsBody" class="settings-body">
             <div class="settings-grid">
               <label class="field port-field">
                 <span>服务地址</span>
-                <input id="serverInput" type="text" value="127.0.0.1:8767" placeholder="ip:端口，例如 192.168.1.10:3000">
+                <input id="serverInput" type="text" value="127.0.0.1:5000" placeholder="ip:端口，例如 127.0.0.1:5000">
               </label>
               <label class="field folder-field">
                 <span>文件夹</span>
                 <input id="folderInput" type="text" placeholder="网页采集">
               </label>
               <div class="connect-stack">
-                <span id="statusText" class="connect-hint">请输入服务地址后点击连接，例如 192.168.1.10:3000。</span>
+                <span id="statusText" class="connect-hint">启动 Hstar 后点击连接，插件会自动查找本机服务。</span>
                 <button id="testBtn" class="btn" type="button">连接</button>
               </div>
             </div>
@@ -104,6 +104,7 @@
       </div>
     </section>
   </main>
+  <script src="hstar-connection.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

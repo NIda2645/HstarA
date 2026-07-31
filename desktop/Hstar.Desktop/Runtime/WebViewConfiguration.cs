@@ -13,6 +13,19 @@ public enum WebPopupDisposition
     OpenExternalBrowser,
 }
 
+public sealed record DownloadBatchRequest(
+    string RequestId,
+    IReadOnlyList<string> FileNames);
+
+public static class WebViewDownloadPermissionPolicy
+{
+    public static bool ShouldAllow(
+        Uri? requestUri,
+        WebViewConfiguration configuration,
+        bool hasPendingBatch) =>
+        hasPendingBatch && configuration.IsAllowedNavigation(requestUri);
+}
+
 public sealed class WebViewConfiguration
 {
     private WebViewConfiguration(
@@ -138,15 +151,18 @@ public sealed class WebViewMessageRouter
     private readonly WebViewConfiguration _configuration;
     private readonly Func<string, CancellationToken, Task> _restart;
     private readonly Func<string, CancellationToken, Task> _interactive;
+    private readonly Func<DownloadBatchRequest, CancellationToken, Task> _downloadBatch;
 
     public WebViewMessageRouter(
         WebViewConfiguration configuration,
         Func<string, CancellationToken, Task> restart,
-        Func<string, CancellationToken, Task>? interactive = null)
+        Func<string, CancellationToken, Task>? interactive = null,
+        Func<DownloadBatchRequest, CancellationToken, Task>? downloadBatch = null)
     {
         _configuration = configuration;
         _restart = restart;
         _interactive = interactive ?? ((_, _) => Task.CompletedTask);
+        _downloadBatch = downloadBatch ?? ((_, _) => Task.CompletedTask);
     }
 
     public async Task<bool> TryHandleAsync(
@@ -191,6 +207,45 @@ public sealed class WebViewMessageRouter
                     return false;
                 }
                 await _interactive(navigationId, cancellationToken);
+                return true;
+            }
+
+            if (type == "hstar:download-batch")
+            {
+                if (!root.TryGetProperty("requestId", out var requestElement)
+                    || requestElement.ValueKind != JsonValueKind.String
+                    || !Guid.TryParse(requestElement.GetString(), out _)
+                    || !root.TryGetProperty("fileNames", out var filesElement)
+                    || filesElement.ValueKind != JsonValueKind.Array)
+                {
+                    return false;
+                }
+
+                var fileNames = new List<string>();
+                foreach (var fileElement in filesElement.EnumerateArray())
+                {
+                    if (fileElement.ValueKind != JsonValueKind.String
+                        || fileNames.Count >= 500)
+                    {
+                        return false;
+                    }
+                    var fileName = fileElement.GetString()?.Trim() ?? string.Empty;
+                    if (fileName.Length is < 1 or > 180
+                        || fileName is "." or ".."
+                        || !string.Equals(Path.GetFileName(fileName), fileName, StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                    fileNames.Add(fileName);
+                }
+                if (fileNames.Count == 0)
+                {
+                    return false;
+                }
+
+                await _downloadBatch(
+                    new DownloadBatchRequest(requestElement.GetString()!, fileNames),
+                    cancellationToken);
                 return true;
             }
 

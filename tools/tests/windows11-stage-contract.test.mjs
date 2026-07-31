@@ -47,6 +47,12 @@ assert.match(builder, /core\.quotepath=false[\s\S]*ls-files[\s\S]*-z/i, 'tracked
 assert.match(builder, /StandardOutputEncoding[\s\S]*UTF8/i, 'tracked Git paths are decoded explicitly as UTF-8');
 assert.match(builder, /--cached[\s\S]*--others[\s\S]*--exclude-standard/i, 'test stages include non-ignored current source files');
 assert.match(builder, /\.Split\(@\(\[char\]0\),\s*\[StringSplitOptions\]::RemoveEmptyEntries\)/i, 'PowerShell 5 uses the char-array Split overload without a trailing empty path');
+const trackedFilesFunction = builder.match(/function\s+Get-TrackedFiles\s*\{[\s\S]*?\n\}/i)?.[0] ?? '';
+assert.match(
+  trackedFilesFunction,
+  /if\s*\(\$AllowDirtyForTest\)[\s\S]*Test-Path\s+-LiteralPath\s+\(Join-Path\s+\$repoRoot\s+\$_\)\s+-PathType\s+Leaf/i,
+  'dirty stages exclude tracked files deleted from the current worktree',
+);
 assert.match(builder, /Where-Object\s*\{\s*\$_\.Extension\s*-in\s*@\('\.pyc',\s*'\.pyo'\)\s*\}/i, 'compiled Python cleanup filters exact extensions');
 assert.doesNotMatch(builder, /Get-ChildItem[^\r\n]*-Include[^\r\n]*\*\.pyc/i, 'PowerShell 5 cleanup does not use the unsafe LiteralPath/Include combination');
 assert.match(builder, /Get-ChildItem\s+-LiteralPath\s+\$sitePackages\s+-Recurse\s+-Directory[\s\S]*Where-Object\s*\{\s*\$_\.Name\s*-in\s*@\('test',\s*'tests'\)\s*\}/i, 'third-party wheel test directories are removed from the runtime');

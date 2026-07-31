@@ -68,14 +68,9 @@ describe.skipIf(!serviceExists)('OpenShop export service', () => {
     loadService();
   });
 
-  it('sends raw Base64 and persists the successful folder', async () => {
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ folder: 'C:/exports' }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        ok: true,
-        filename: 'design.png',
-        folder: 'C:/chosen',
-      }), { status: 200 }));
+  it('downloads a generated artifact through the browser channel', async () => {
+    const fetchImpl = vi.fn();
+    const downloadImpl = vi.fn();
     const service = window.HstarOpenShopExportService.create({
       generators: {
         png: vi.fn(async () => ({
@@ -88,31 +83,21 @@ describe.skipIf(!serviceExists)('OpenShop export service', () => {
         })),
       },
       fetchImpl,
+      downloadImpl,
       storage: localStorage,
     });
 
     const result = await service.saveFormat('png');
-    const request = JSON.parse(fetchImpl.mock.calls[1][1].body);
 
-    expect(fetchImpl.mock.calls[0][0]).toBe('/api/output-download-folder');
-    expect(fetchImpl.mock.calls[1][0]).toBe('/api/native/save-output-as');
-    expect(request).toEqual({
-      name: 'design.png',
-      initial_dir: 'C:/exports',
-      content_base64: 'cG5n',
-    });
-    expect(request.content_base64).not.toContain('data:');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(downloadImpl).toHaveBeenCalledWith(expect.any(Blob), 'design.png');
     expect(result.filename).toBe('design.png');
-    expect(localStorage.getItem('hstar.outputDownloadFolder')).toBe('C:/chosen');
+    expect(result.cancelled).toBe(false);
   });
 
-  it('uses the cached folder without loading settings again', async () => {
-    localStorage.setItem('hstar.outputDownloadFolder', 'D:/cached');
-    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      ok: true,
-      filename: 'cached.png',
-      folder: 'D:/cached',
-    }), { status: 200 }));
+  it('does not consult the legacy output-folder setting for one file', async () => {
+    const fetchImpl = vi.fn();
+    const downloadImpl = vi.fn();
     const service = window.HstarOpenShopExportService.create({
       generators: {
         png: async () => ({
@@ -125,45 +110,20 @@ describe.skipIf(!serviceExists)('OpenShop export service', () => {
         }),
       },
       fetchImpl,
+      downloadImpl,
       storage: localStorage,
     });
 
     await service.saveFormat('png');
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).initial_dir).toBe('D:/cached');
-  });
-
-  it('keeps cancellation silent and does not update storage', async () => {
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ folder: '' }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, cancelled: true }), { status: 200 }));
-    const service = window.HstarOpenShopExportService.create({
-      generators: {
-        png: async () => ({
-          blob: new Blob(['x']),
-          filename: 'x.png',
-          mimeType: 'image/png',
-          format: 'png',
-          width: 1,
-          height: 1,
-        }),
-      },
-      fetchImpl,
-      storage: localStorage,
-    });
-
-    expect(await service.saveFormat('png')).toMatchObject({ cancelled: true });
-    expect(localStorage.getItem('hstar.outputDownloadFolder')).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(downloadImpl).toHaveBeenCalledOnce();
   });
 
   it('generates every artifact before making one batch request', async () => {
     const order = [];
-    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      ok: true,
-      count: 2,
-      folder: 'C:/batch',
-    }), { status: 200 }));
+    const fetchImpl = vi.fn();
+    const downloadBatchImpl = vi.fn();
     const service = window.HstarOpenShopExportService.create({
       generators: {
         png: async () => {
@@ -182,20 +142,16 @@ describe.skipIf(!serviceExists)('OpenShop export service', () => {
         },
       },
       fetchImpl,
+      downloadBatchImpl,
       storage: localStorage,
     });
 
     await service.saveBatch(['png', 'pdf']);
-    const request = JSON.parse(fetchImpl.mock.calls.at(-1)[0] === '/api/native/save-output-batch'
-      ? fetchImpl.mock.calls.at(-1)[1].body
-      : '{}');
 
     expect(order).toEqual(['png', 'pdf']);
-    expect(fetchImpl.mock.calls.at(-1)[0]).toBe('/api/native/save-output-batch');
-    expect(request.items).toEqual([
-      { name: 'x.png', content_base64: 'cG5n' },
-      { name: 'x.pdf', content_base64: 'cGRm' },
-    ]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(downloadBatchImpl).toHaveBeenCalledOnce();
+    expect(downloadBatchImpl.mock.calls[0][0].map(item => item.filename)).toEqual(['x.png', 'x.pdf']);
   });
 
   it('makes no request when any batch artifact fails', async () => {
@@ -224,9 +180,7 @@ describe.skipIf(!serviceExists)('OpenShop export service', () => {
     });
     await expect(malformed.createArtifact('png')).rejects.toThrow('did not produce a Blob');
 
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ folder: '' }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'disk failed' }), { status: 500 }));
+    const fetchImpl = vi.fn();
     const service = window.HstarOpenShopExportService.create({
       generators: {
         png: async () => ({
@@ -235,8 +189,10 @@ describe.skipIf(!serviceExists)('OpenShop export service', () => {
         }),
       },
       fetchImpl,
+      downloadImpl:vi.fn(),
+      downloadBatchImpl:vi.fn(async () => { throw new Error('folder failed'); }),
       storage: localStorage,
     });
-    await expect(service.saveFormat('png')).rejects.toThrow('disk failed');
+    await expect(service.saveBatch(['png'])).rejects.toThrow('folder failed');
   });
 });

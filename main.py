@@ -49,6 +49,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
+from browser_plugin_import import (
+    BrowserPluginImportServices,
+    MAX_IMPORT_ITEMS,
+    MAX_REMOTE_MEDIA_BYTES,
+    MAX_REMOTE_REDIRECTS,
+    add_browser_plugin_cors,
+    enforce_browser_plugin_request_size,
+    import_browser_plugin_assets,
+    is_browser_plugin_request,
+    is_local_connector_request,
+    reject_untrusted_plugin_route_origin,
+    validate_public_remote_url,
+)
 from openshop_projects import (
     OpenShopNotFound,
     OpenShopOwnershipError,
@@ -86,6 +99,7 @@ from native_file_picker import (
     NativeFilePickerError,
     choose_open_file_path,
     selected_file_metadata,
+    windows_hidden_subprocess_kwargs,
 )
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
 from hstar_runtime.api_merge import merge_api_defaults
@@ -459,6 +473,8 @@ async def packaged_shell_session(request: Request, call_next):
 
     path = request.url.path
     loopback = shell_request_is_loopback(request)
+    if is_local_connector_request(request):
+        return await call_next(request)
     supplied_header = str(request.headers.get(SHELL_TOKEN_HEADER) or "")
     if loopback and shell_secret_matches(supplied_header, SHELL_TOKEN):
         return await call_next(request)
@@ -556,6 +572,23 @@ async def storage_mutation_barrier(request: Request, call_next):
 
     response.body_iterator = guarded_body_iterator()
     return response
+
+@app.middleware("http")
+async def browser_plugin_cors(request: Request, call_next):
+    if reject_untrusted_plugin_route_origin(request):
+        return JSONResponse(status_code=403, content={"detail": "不允许跨来源调用 Hstar 插件接口"})
+    if not is_browser_plugin_request(request):
+        return await call_next(request)
+    if request.method.upper() == "OPTIONS":
+        response = Response(status_code=204)
+    else:
+        try:
+            await enforce_browser_plugin_request_size(request)
+        except HTTPException as error:
+            response = JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+        else:
+            response = await call_next(request)
+    return add_browser_plugin_cors(response, request)
 
 def bootstrap_app_software_settings() -> None:
     if PRESERVE_EXISTING_DATA_ON_STARTUP:
@@ -1883,7 +1916,7 @@ app.mount(
 # --- Pydantic 模型 ---
 
 def current_app_version():
-    version_file = os.path.join(BASE_DIR, "VERSION")
+    version_file = os.path.join(PROGRAM_ROOT, "VERSION")
     try:
         if os.path.exists(version_file):
             with open(version_file, "r", encoding="utf-8") as f:
@@ -2912,11 +2945,6 @@ class OpenShopAssetImportRequest(BaseModel):
 class CanvasAssetCheckRequest(BaseModel):
     urls: List[str] = []
 
-class CanvasAssetDownloadRequest(BaseModel):
-    urls: List[str] = []
-    items: List[Dict[str, Any]] = []
-    filename: str = "canvas-output-images.zip"
-
 class ImageMarkerIdentifyRequest(BaseModel):
     image_url: str = ""
     thumbnail: str = ""
@@ -2940,12 +2968,6 @@ class ExternalAppSaveRequest(BaseModel):
 class ExternalImageOpenRequest(BaseModel):
     url: str = ""
     app: str = "custom"
-
-class SaveOutputAsRequest(BaseModel):
-    url: str = ""
-    name: str = "output.png"
-    initial_dir: str = ""
-    content_base64: str = ""
 
 class SoftwareStorageRequest(BaseModel):
     storage_root: str = ""
@@ -2992,10 +3014,6 @@ class NativeFolderRequest(BaseModel):
 class NativeOpenFileRequest(BaseModel):
     kind: str = "image"
 
-class SaveOutputBatchRequest(BaseModel):
-    items: List[Dict[str, Any]] = []
-    initial_dir: str = ""
-
 class CanvasWorkflowExportRequest(BaseModel):
     nodes: List[Dict[str, Any]] = []
     connections: List[Dict[str, Any]] = []
@@ -3039,19 +3057,19 @@ class LocalAssetClassifyRequest(BaseModel):
     prompt: str = ""
 
 class LocalAssetUrlImportItem(BaseModel):
-    url: str = ""
-    name: str = ""
+    url: str = Field(default="", max_length=8192)
+    name: str = Field(default="", max_length=255)
     data: str = ""          # 可选：base64 / dataURL，由插件在网页上下文里读取（blob: 等无法服务端下载的素材）
-    content_type: str = ""  # 配合 data 使用，用于推断扩展名
+    content_type: str = Field(default="", max_length=128)  # 配合 data 使用，用于推断扩展名
 
 class LocalAssetUrlImportRequest(BaseModel):
-    items: List[LocalAssetUrlImportItem] = []
-    folder: str = ""
+    items: List[LocalAssetUrlImportItem] = Field(default_factory=list, max_length=MAX_IMPORT_ITEMS)
+    folder: str = Field(default="", max_length=512)
     classify: bool = False
-    provider: str = "comfly"
-    model: str = ""
-    ms_model: str = ""
-    prompt: str = ""
+    provider: str = Field(default="comfly", max_length=128)
+    model: str = Field(default="", max_length=512)
+    ms_model: str = Field(default="", max_length=512)
+    prompt: str = Field(default="", max_length=8000)
 
 class LocalAssetFolderRequest(BaseModel):
     parent: str = ""
@@ -7081,6 +7099,7 @@ def output_file_from_url(url):
             return path
     return None
 
+
 def image_has_alpha(img: Image.Image) -> bool:
     if img.mode in ("RGBA", "LA"):
         return True
@@ -7264,24 +7283,51 @@ def filename_from_media_url(url: str, fallback: str = "download.bin") -> str:
     name = os.path.basename(urllib.parse.unquote(path))
     return sanitize_export_filename(name or fallback, fallback)
 
-def fetch_remote_media_bytes(url: str, timeout: float = 30.0, max_bytes: int = 200 * 1024 * 1024):
-    text = rewrite_runninghub_file_url(str(url or "").strip())
-    parsed = urllib.parse.urlparse(text)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return None
-    with requests.get(text, stream=True, timeout=timeout, headers={"User-Agent": "ComfyUI-API-Modelscope/1.0"}) as response:
-        response.raise_for_status()
-        content_type = response.headers.get("content-type") or "application/octet-stream"
-        chunks = []
-        total = 0
-        for chunk in response.iter_content(chunk_size=1024 * 256):
-            if not chunk:
+def fetch_remote_media_bytes(
+    url: str,
+    timeout: float = 30.0,
+    max_bytes: int = MAX_REMOTE_MEDIA_BYTES,
+    max_redirects: int = MAX_REMOTE_REDIRECTS,
+):
+    current_url = rewrite_runninghub_file_url(str(url or "").strip())
+    headers = {"User-Agent": "ComfyUI-API-Modelscope/1.0"}
+    redirect_statuses = {301, 302, 303, 307, 308}
+    for redirect_count in range(max_redirects + 1):
+        current_url = validate_public_remote_url(current_url)
+        with requests.get(
+            current_url,
+            stream=True,
+            timeout=timeout,
+            headers=headers,
+            allow_redirects=False,
+        ) as response:
+            if response.status_code in redirect_statuses:
+                location = str(response.headers.get("location") or "").strip()
+                if not location or redirect_count >= max_redirects:
+                    raise HTTPException(status_code=400, detail="远程素材重定向无效或次数过多")
+                current_url = urllib.parse.urljoin(current_url, location)
                 continue
-            total += len(chunk)
-            if total > max_bytes:
-                raise HTTPException(status_code=413, detail="文件太大，无法下载")
-            chunks.append(chunk)
-        return b"".join(chunks), content_type
+
+            response.raise_for_status()
+            content_length = str(response.headers.get("content-length") or "").strip()
+            if content_length:
+                try:
+                    if int(content_length) > max_bytes:
+                        raise HTTPException(status_code=413, detail="文件太大，无法下载")
+                except ValueError:
+                    pass
+            content_type = response.headers.get("content-type") or "application/octet-stream"
+            chunks = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=1024 * 256):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=413, detail="文件太大，无法下载")
+                chunks.append(chunk)
+            return b"".join(chunks), content_type
+    raise HTTPException(status_code=400, detail="远程素材重定向次数过多")
 
 def origin_from_url(value):
     parsed = urllib.parse.urlparse(str(value or ""))
@@ -8233,6 +8279,8 @@ def content_type_for_path(path):
         return "image/jpeg"
     if ext == ".webp":
         return "image/webp"
+    if ext == ".avif":
+        return "image/avif"
     if ext == ".txt":
         return "text/plain; charset=utf-8"
     if ext == ".json":
@@ -12909,7 +12957,15 @@ try {{
 }}
 """
     try:
-        completed = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=300)
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", ps],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=300,
+            **windows_hidden_subprocess_kwargs(),
+        )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="Folder picker timed out") from exc
     if completed.returncode != 0:
@@ -12959,7 +13015,15 @@ try {{
 }}
 """
     try:
-        completed = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=300)
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", ps],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=300,
+            **windows_hidden_subprocess_kwargs(),
+        )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="Executable picker timed out") from exc
     if completed.returncode != 0:
@@ -13006,136 +13070,12 @@ def media_bytes_from_url(url: str) -> tuple[bytes, str, str]:
     content, content_type = fetch_remote_media_bytes(text)
     return content, content_type, filename_from_media_url(text, "download.bin")
 
-def save_bytes_to_path(content: bytes, target_path: str) -> str:
-    if not content:
-        raise HTTPException(status_code=400, detail="No file content to save")
-    target_path = os.path.abspath(os.path.expanduser(os.path.expandvars(target_path)))
-    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    with open(target_path, "wb") as f:
-        f.write(content)
-    return target_path
-
 def last_output_download_folder() -> str:
     folder = str(load_software_settings().get("output_download_folder") or "")
     if not folder:
         return ""
     folder = os.path.abspath(os.path.expanduser(os.path.expandvars(folder)))
     return folder if os.path.isdir(folder) else ""
-
-NATIVE_EXPORT_FILTERS = {
-    ".png": "PNG Image (*.png)|*.png",
-    ".jpg": "JPEG Image (*.jpg;*.jpeg)|*.jpg;*.jpeg",
-    ".jpeg": "JPEG Image (*.jpg;*.jpeg)|*.jpg;*.jpeg",
-    ".webp": "WebP Image (*.webp)|*.webp",
-    ".svg": "SVG Image (*.svg)|*.svg",
-    ".pdf": "PDF Document (*.pdf)|*.pdf",
-    ".psd": "Photoshop Document (*.psd)|*.psd",
-}
-
-def require_local_same_origin(request: Request) -> None:
-    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
-    if not is_gemini_cli_loopback_hostname(client_host):
-        raise HTTPException(status_code=403, detail="Native save is available to local requests only")
-    ensure_same_origin_request(request)
-
-def native_export_dialog_filter(suggested_name: str) -> str:
-    extension = os.path.splitext(str(suggested_name or ""))[1].lower()
-    specific = NATIVE_EXPORT_FILTERS.get(extension)
-    return f"{specific}|All Files (*.*)|*.*" if specific else "All Files (*.*)|*.*"
-
-def decode_output_item(item: Dict[str, Any], index: int) -> tuple[bytes, str]:
-    requested = str(item.get("name") or "").strip()
-    encoded = str(item.get("content_base64") or "").strip()
-    url = str(item.get("url") or "").strip()
-    if encoded:
-        try:
-            content = base64.b64decode(encoded, validate=True)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid file content encoding at item {index}") from exc
-        fallback = requested or f"output-{index}.bin"
-    elif url:
-        content, _content_type, source_name = media_bytes_from_url(url)
-        fallback = source_name or requested or f"output-{index}.png"
-    else:
-        raise HTTPException(status_code=400, detail=f"Missing file content at item {index}")
-    name = sanitize_export_filename(os.path.basename(requested) if requested else fallback, fallback)
-    return content, name
-
-def choose_save_output_path(suggested_name: str, initial_dir: str = "") -> tuple[str, str]:
-    suggested_name = sanitize_export_filename(suggested_name or "output.png", "output.png")
-    if os.name != "nt":
-        raise HTTPException(status_code=501, detail="System save dialog is supported on Windows only")
-    initial_dir = os.path.abspath(os.path.expanduser(os.path.expandvars(initial_dir))) if initial_dir else ""
-    if initial_dir and not os.path.isdir(initial_dir):
-        initial_dir = ""
-    if not initial_dir:
-        initial_dir = last_output_download_folder()
-    escaped_name = suggested_name.replace("'", "''")
-    escaped_dir = initial_dir.replace("'", "''")
-    escaped_filter = native_export_dialog_filter(suggested_name).replace("'", "''")
-    ps = f"""
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class HstarNativeWindow {{
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out HstarRect lpRect);
-  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-}}
-public struct HstarRect {{
-  public int Left;
-  public int Top;
-  public int Right;
-  public int Bottom;
-}}
-"@
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$owner = New-Object System.Windows.Forms.Form
-$owner.Text = 'HstarA'
-$owner.StartPosition = 'CenterScreen'
-$owner.Size = New-Object System.Drawing.Size(1, 1)
-$owner.FormBorderStyle = 'None'
-$owner.Opacity = 0
-$owner.ShowInTaskbar = $true
-$owner.TopMost = $true
-$owner.Show()
-$owner.WindowState = 'Normal'
-$null = [HstarNativeWindow]::ShowWindow($owner.Handle, 5)
-$owner.Activate()
-$owner.BringToFront()
-$null = [HstarNativeWindow]::SetForegroundWindow($owner.Handle)
-$dialog = New-Object System.Windows.Forms.SaveFileDialog
-$dialog.Title = 'Save output'
-$dialog.FileName = '{escaped_name}'
-$dialog.Filter = '{escaped_filter}'
-$dialog.OverwritePrompt = $true
-$dialog.AddExtension = $true
-if ('{escaped_dir}') {{ $dialog.InitialDirectory = '{escaped_dir}' }}
-try {{
-  $owner.BringToFront()
-  $result = $dialog.ShowDialog($owner)
-  if ($result -eq [System.Windows.Forms.DialogResult]::OK) {{ Write-Output $dialog.FileName }}
-}} finally {{
-  $owner.Close()
-  $owner.Dispose()
-}}
-"""
-    try:
-        completed = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=300)
-    except subprocess.TimeoutExpired as exc:
-        raise HTTPException(status_code=504, detail="Save dialog timed out") from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "Save dialog failed").strip()
-        raise HTTPException(status_code=500, detail=detail)
-    selected = (completed.stdout or "").strip().splitlines()
-    if not selected:
-        return "", initial_dir
-    target_path = os.path.abspath(selected[-1].strip())
-    return target_path, os.path.dirname(target_path)
 
 @app.post("/api/software-settings/external-app")
 def save_external_app_setting(payload: ExternalAppSaveRequest):
@@ -13450,13 +13390,6 @@ def open_external_image(payload: ExternalImageOpenRequest):
     launch_external_app(executable, image_path)
     return {"ok": True, "app": app_id, "path": executable, "image": image_path}
 
-@app.get("/api/output-download-folder")
-def output_download_folder():
-    folder = str(load_software_settings().get("output_download_folder") or "")
-    if folder and not os.path.isdir(folder):
-        folder = ""
-    return {"folder": folder}
-
 @app.post("/api/native/choose-folder")
 def choose_native_folder(payload: NativeFolderRequest):
     if payload.purpose == "storage":
@@ -13464,60 +13397,6 @@ def choose_native_folder(payload: NativeFolderRequest):
         return {"path": choose_folder_path("Select Hstar data storage folder", initial_dir)}
     initial_dir = payload.initial_dir or last_output_download_folder()
     return {"path": choose_folder_path("Select output folder", initial_dir)}
-
-@app.post("/api/native/save-output-batch")
-def save_output_batch(payload: SaveOutputBatchRequest, request: Request):
-    require_local_same_origin(request)
-    prepared = [
-        decode_output_item(item, index)
-        for index, item in enumerate(payload.items or [], 1)
-        if isinstance(item, dict)
-    ]
-    if not prepared:
-        raise HTTPException(status_code=400, detail="No files to save")
-    folder = choose_folder_path("Select output folder", payload.initial_dir or last_output_download_folder())
-    if not folder:
-        return {"ok": False, "cancelled": True, "count": 0}
-    os.makedirs(folder, exist_ok=True)
-    saved = []
-    used = set()
-    for index, (content, name) in enumerate(prepared, 1):
-        stem, ext = os.path.splitext(name)
-        if not ext:
-            ext = ".bin"
-        candidate = f"{stem or 'output'}{ext}"
-        n = 2
-        while candidate.lower() in used or os.path.exists(os.path.join(folder, candidate)):
-            candidate = f"{stem or 'output'}-{n}{ext}"
-            n += 1
-        used.add(candidate.lower())
-        saved_path = save_bytes_to_path(content, os.path.join(folder, candidate))
-        saved.append({"path": saved_path, "filename": candidate})
-    settings = load_software_settings()
-    settings["output_download_folder"] = folder
-    save_software_settings(settings)
-    return {"ok": True, "cancelled": False, "folder": folder, "count": len(saved), "files": saved}
-
-@app.post("/api/native/save-output-as")
-def save_output_as(payload: SaveOutputAsRequest, request: Request):
-    require_local_same_origin(request)
-    if payload.content_base64:
-        try:
-            content = base64.b64decode(payload.content_base64, validate=True)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="Invalid file content encoding") from exc
-        source_name = payload.name or "download.bin"
-    else:
-        content, _content_type, source_name = media_bytes_from_url(payload.url)
-    suggested_name = sanitize_export_filename(payload.name or source_name, source_name or "output.png")
-    target_path, folder = choose_save_output_path(suggested_name, payload.initial_dir)
-    if not target_path:
-        return {"ok": False, "cancelled": True}
-    saved_path = save_bytes_to_path(content, target_path)
-    settings = load_software_settings()
-    settings["output_download_folder"] = folder or os.path.dirname(saved_path)
-    save_software_settings(settings)
-    return {"ok": True, "cancelled": False, "path": saved_path, "folder": os.path.dirname(saved_path), "filename": os.path.basename(saved_path)}
 
 @app.post("/api/upload")
 async def upload_image(files: List[UploadFile] = File(...)):
@@ -13550,7 +13429,7 @@ async def upload_image(files: List[UploadFile] = File(...)):
 @app.post("/api/ai/upload")
 async def upload_ai_reference(files: List[UploadFile] = File(...)):
     uploaded = []
-    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
     video_exts = {".mp4", ".webm", ".mov", ".m4v", ".flv"}
     audio_exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
     doc_exts = {".pdf", ".txt", ".md", ".markdown", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".json", ".zip", ".yaml", ".yml", ".log"}
@@ -13575,7 +13454,7 @@ async def upload_ai_reference(files: List[UploadFile] = File(...)):
         elif ext in image_exts or content_type.startswith("image/"):
             kind = "image"
             if ext not in image_exts:
-                ext = ".jpg" if "jpeg" in content_type else ".webp" if "webp" in content_type else ".gif" if "gif" in content_type else ".png"
+                ext = ".jpg" if "jpeg" in content_type else ".webp" if "webp" in content_type else ".avif" if "avif" in content_type else ".gif" if "gif" in content_type else ".png"
         elif ext in doc_exts or content_type.startswith(("text/", "application/")):
             kind = "file"
             if not ext:
@@ -13654,7 +13533,7 @@ async def upload_comfyui_base64(payload: Base64UploadRequest):
     return {"name": comfy_name}
 
 def _local_upload_kind_ext(filename, content_type):
-    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
     video_exts = {".mp4", ".webm", ".mov", ".m4v", ".flv"}
     audio_exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
     ext = os.path.splitext(filename or "")[1].lower()
@@ -13669,7 +13548,7 @@ def _local_upload_kind_ext(filename, content_type):
         return "audio", ext
     if ext in image_exts or ct.startswith("image/"):
         if ext not in image_exts:
-            ext = ".jpg" if "jpeg" in ct else ".webp" if "webp" in ct else ".gif" if "gif" in ct else ".png"
+            ext = ".jpg" if "jpeg" in ct else ".webp" if "webp" in ct else ".avif" if "avif" in ct else ".gif" if "gif" in ct else ".png"
         return "image", ext
     return None, ext
 
@@ -13872,6 +13751,8 @@ def _sniff_image_ext_bytes(head):
         return ".png"
     if head.startswith(b"\xff\xd8\xff"):
         return ".jpg"
+    if len(head) >= 12 and head[4:8] == b"ftyp" and b"avif" in head[8:32]:
+        return ".avif"
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return ".webp"
     if head[:6] in (b"GIF87a", b"GIF89a"):
@@ -13892,7 +13773,7 @@ def migrate_mislabeled_image_extensions():
     严格的客户端（PS UXP）解不出来。这里按真实魔数纠正扩展名，并同步重命名 caption/classification 旁车。"""
     if not os.path.isdir(LOCAL_UPLOAD_DIR):
         return
-    img_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+    img_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"}
     fixed = 0
     for current, _dirs, files in os.walk(LOCAL_UPLOAD_DIR):
         for name in files:
@@ -13954,80 +13835,24 @@ async def upload_local_assets(files: List[UploadFile] = File(...), folder: str =
         uploaded.append(_local_upload_item(rel_name))
     return {"files": uploaded}
 
+
 @app.post("/api/local-assets/import-urls")
 async def import_local_assets_from_urls(payload: LocalAssetUrlImportRequest):
-    uploaded = []
-    results = []
-    folder_rel, folder_abs = _local_upload_safe_folder(payload.folder)
-    os.makedirs(folder_abs, exist_ok=True)
-    timeout = httpx.Timeout(connect=20.0, read=120.0, write=30.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": "Infinite-Canvas-Asset-Importer/1.0"}) as client:
-        for entry in (payload.items or [])[:200]:
-            src_url = str(entry.url or "").strip()
-            inline_data = str(entry.data or "").strip()
-            result = {"url": src_url, "ok": False, "file": "", "error": ""}
-            if not inline_data and not src_url.startswith(("http://", "https://")):
-                result["error"] = "仅支持 http(s) 素材地址"
-                results.append(result)
-                continue
-            try:
-                if inline_data:
-                    # 插件已在网页上下文里把字节读成 base64（dataURL 形如 data:<ct>;base64,<payload>）
-                    content_type = str(entry.content_type or "").split(";", 1)[0].strip().lower()
-                    b64 = inline_data
-                    if inline_data.startswith("data:"):
-                        header, _, b64 = inline_data.partition(",")
-                        if not content_type:
-                            content_type = header[5:].split(";", 1)[0].strip().lower()
-                    try:
-                        content = base64.b64decode(b64, validate=False)
-                    except Exception:
-                        raise HTTPException(status_code=400, detail="素材数据无法解码")
-                    name_path = urllib.parse.urlparse(src_url).path
-                else:
-                    response = await client.get(src_url)
-                    response.raise_for_status()
-                    content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-                    content = response.content
-                    name_path = urllib.parse.urlparse(src_url).path
-                kind, ext = _local_upload_kind_ext(name_path, content_type)
-                if kind == "image":
-                    real = _sniff_image_ext_bytes(content[:16])   # 以真实内容为准，避免 webp 被叫成 .png 等
-                    if real and not (real == ".jpg" and ext == ".jpeg"):
-                        ext = real
-                if kind not in ("image", "video"):
-                    raise HTTPException(status_code=400, detail=f"不是图片或视频资源：{content_type or src_url}")
-                if not content:
-                    raise HTTPException(status_code=400, detail="素材内容为空")
-                # entry.name 可能自带扩展名（采集器常传完整文件名），先 splitext 去掉，否则会和下面拼接的 ext 叠成 .png.png
-                if entry.name:
-                    base = os.path.splitext(entry.name)[0]
-                else:
-                    base = os.path.splitext(os.path.basename(urllib.parse.unquote(name_path)))[0]
-                base = base or ("web-video" if kind == "video" else "web-image")
-                base = re.sub(r"[^0-9A-Za-z一-鿿._-]+", "_", base).strip("_") or ("web-video" if kind == "video" else "web-image")
-                base = base[:60]
-                # 兜底：若 base 末尾已是同一扩展名，去掉一层再拼，杜绝重复后缀
-                if ext and base.lower().endswith(ext.lower()):
-                    base = base[:-len(ext)].rstrip(".") or ("web-video" if kind == "video" else "web-image")
-                filename = f"up_{uuid.uuid4().hex[:12]}_{base}{ext}"
-                rel_name = f"{folder_rel}/{filename}".lstrip("/")
-                path = os.path.join(folder_abs, filename)
-                with open(path, "wb") as f:
-                    f.write(content)
-                if payload.classify and kind == "image":
-                    classification = await classify_asset_image_best_effort(path, payload.provider, payload.model, payload.ms_model, payload.prompt)
-                    if classification:
-                        _write_local_upload_classification(rel_name, classification)
-                item = _local_upload_item(rel_name)
-                uploaded.append(item)
-                result.update({"ok": True, "file": rel_name, "item": item})
-            except HTTPException as exc:
-                result["error"] = str(exc.detail or "导入失败")
-            except Exception as exc:
-                result["error"] = str(exc) or "导入失败"
-            results.append(result)
-    return {"ok": True, "count": len(uploaded), "files": uploaded, "items": results}
+    services = BrowserPluginImportServices(
+        upload_root=lambda: Path(LOCAL_UPLOAD_DIR),
+        safe_folder=lambda value: _local_upload_safe_folder(value),
+        safe_file_stem=lambda value: _local_upload_safe_file_stem(value or "asset"),
+        kind_and_extension=_local_upload_kind_ext,
+        build_item=_local_upload_item,
+        classify_image=classify_asset_image_best_effort,
+        write_classification=_write_local_upload_classification,
+        output_file_from_url=output_file_from_url,
+        fetch_remote_media_bytes=fetch_remote_media_bytes,
+    )
+    result = await import_browser_plugin_assets(payload, services)
+    if not result["ok"]:
+        return JSONResponse(status_code=422, content=result)
+    return result
 
 @app.get("/api/local-assets")
 async def list_local_assets():
@@ -19367,63 +19192,6 @@ async def check_canvas_assets(payload: CanvasAssetCheckRequest):
             result[text] = True
     return {"exists": result}
 
-@app.post("/api/canvas-assets/download")
-async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
-    buffer = BytesIO()
-    used_names = set()
-    count = 0
-    raw_items = payload.items or [{"url": url} for url in payload.urls]
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for raw in raw_items[:1000]:
-            if isinstance(raw, dict):
-                text = str(raw.get("url") or "").strip()
-                requested_name = str(raw.get("name") or "").strip()
-            else:
-                text = str(raw or "").strip()
-                requested_name = ""
-            if not text:
-                continue
-            path = output_file_from_url(text)
-            content = None
-            content_type = ""
-            if path and os.path.isfile(path):
-                base = sanitize_export_filename(requested_name or os.path.basename(path), os.path.basename(path) or f"image-{count + 1}.png")
-            else:
-                local_by_name = local_media_file_by_basename(filename_from_media_url(text, ""))
-                if local_by_name and os.path.isfile(local_by_name):
-                    path = local_by_name
-                    base = sanitize_export_filename(requested_name or os.path.basename(path), os.path.basename(path) or f"image-{count + 1}.png")
-                else:
-                    try:
-                        remote = fetch_remote_media_bytes(text)
-                    except Exception:
-                        remote = None
-                    if not remote:
-                        continue
-                    content, content_type = remote
-                    base = sanitize_export_filename(requested_name or filename_from_media_url(text, f"image-{count + 1}.bin"), f"image-{count + 1}.bin")
-            name, ext = os.path.splitext(base)
-            archive_name = base
-            suffix = 2
-            while archive_name in used_names:
-                archive_name = f"{name}-{suffix}{ext}"
-                suffix += 1
-            used_names.add(archive_name)
-            if path and os.path.isfile(path):
-                zf.write(path, archive_name)
-            else:
-                zf.writestr(archive_name, content)
-            count += 1
-    if count <= 0:
-        raise HTTPException(status_code=404, detail="没有可下载的本地图片")
-    buffer.seek(0)
-    filename = re.sub(r'[\\/:*?"<>|]+', "_", payload.filename or "canvas-output-images.zip")
-    if not filename.lower().endswith(".zip"):
-        filename += ".zip"
-    encoded = urllib.parse.quote(filename)
-    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"}
-    return Response(buffer.getvalue(), media_type="application/zip", headers=headers)
-
 def sanitize_export_filename(name: str, fallback: str) -> str:
     base = os.path.basename(str(name or "").strip()) or fallback
     base = re.sub(r'[\\/:*?"<>|]+', "_", base)
@@ -22219,7 +21987,7 @@ def resolve_server_host():
     configured = str(os.getenv("HSTAR_HOST") or "").strip()
     if configured:
         return configured
-    return "0.0.0.0" if EDITION == "development" else "127.0.0.1"
+    return "127.0.0.1"
 
 
 def run_server():

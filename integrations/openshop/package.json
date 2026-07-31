@@ -26,15 +26,13 @@
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "acorn": "8.15.0",
-    "jsdom": "^27.2.0",
-    "vitest": "^4.0.15",
-    "vitest-canvas-mock": "^0.3.3"
-  },
-  "dependencies": {
     "@huggingface/transformers": "4.0.0",
     "@silvia-odwyer/photon": "0.3.3",
     "ag-psd": "22.0.2",
     "gif.js": "0.2.0",
-    "jspdf": "4.2.1"
+    "jspdf": "4.2.1",
+    "jsdom": "^27.2.0",
+    "vitest": "^4.0.15",
+    "vitest-canvas-mock": "^0.3.3"
   }
 }

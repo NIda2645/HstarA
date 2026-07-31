@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { createTestCanvasCleanup } from './hstar-test-canvas-cleanup.js';
 
 const baseUrl = process.env.HSTAR_BASE_URL || 'http://127.0.0.1:3010';
@@ -942,27 +943,8 @@ test('classic canvas preserves isolated projects, ordered sources, updates, clon
   expect(pageErrors).toEqual([]);
 });
 
-test('native export preserves document dimensions and routes all formats through native save', async ({page, request}) => {
+test('export preserves document dimensions and emits separate browser downloads', async ({page, request}) => {
   test.setTimeout(180000);
-  const singleRequests = [];
-  const batchRequests = [];
-  await page.route('**/api/native/save-output-as', async route => {
-    singleRequests.push(route.request().postDataJSON());
-    await route.fulfill({
-      status:200,
-      contentType:'application/json',
-      body:JSON.stringify({ok:true, cancelled:false, filename:'native-export.png', folder:'C:/test-output'}),
-    });
-  });
-  await page.route('**/api/native/save-output-batch', async route => {
-    const body = route.request().postDataJSON();
-    batchRequests.push(body);
-    await route.fulfill({
-      status:200,
-      contentType:'application/json',
-      body:JSON.stringify({ok:true, cancelled:false, count:body.items?.length || 0, folder:'C:/test-output'}),
-    });
-  });
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const node = {
@@ -979,12 +961,15 @@ test('native export preserves document dimensions and routes all formats through
   });
   await expect(editor.locator('#welcome-overlay')).toBeHidden();
 
-  await page.locator('[data-openshop-download]').click();
-  await expect.poll(() => singleRequests.length).toBe(1);
-  await expect(page.locator('[data-openshop-notice]')).toHaveText('已保存：native-export.png');
+  const [pngDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('[data-openshop-download]').click(),
+  ]);
+  await expect(page.locator('[data-openshop-notice]')).toHaveText(/^已保存：.*\.png$/);
 
-  const pngRequest = singleRequests[0];
-  const png = Buffer.from(pngRequest.content_base64, 'base64');
+  const pngPath = await pngDownload.path();
+  expect(pngPath).not.toBeNull();
+  const png = await readFile(pngPath);
   expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
   expect(png.readUInt32BE(16)).toBe(1600);
   expect(png.readUInt32BE(20)).toBe(900);
@@ -1002,23 +987,33 @@ test('native export preserves document dimensions and routes all formats through
   const exportSubmenu = fileMenu.locator('.dd-sub').first();
   const exportItems = exportSubmenu.locator(':scope > .menu-dropdown > .dd-item');
   await expect(exportItems).toHaveCount(6);
+  const singleDownloads = [];
   for(let index = 0; index < 6; index += 1){
-    const before = singleRequests.length;
     await fileMenu.hover();
     await exportSubmenu.hover();
-    await exportItems.nth(index).click();
-    await expect.poll(() => singleRequests.length).toBe(before + 1);
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      exportItems.nth(index).click(),
+    ]);
+    singleDownloads.push(download);
   }
 
-  const singleNames = singleRequests.map(item => item.name);
+  const singleNames = singleDownloads.map(download => download.suggestedFilename());
   for(const extension of ['.png', '.jpg', '.webp', '.svg', '.pdf', '.psd']){
     expect(singleNames.some(name => name.endsWith(extension))).toBe(true);
   }
 
-  await editor.evaluate(() => OS._saveBatchFormats(['png', 'jpeg', 'webp', 'svg', 'pdf', 'psd']));
-  expect(batchRequests).toHaveLength(1);
-  expect(batchRequests[0].items).toHaveLength(6);
-  expect(batchRequests[0].items.map(item => item.name)).toEqual(expect.arrayContaining([
+  const batchDownloads = [];
+  const collectBatchDownload = download => batchDownloads.push(download);
+  page.on('download', collectBatchDownload);
+  try {
+    await editor.evaluate(() => OS._saveBatchFormats(['png', 'jpeg', 'webp', 'svg', 'pdf', 'psd']));
+    await expect.poll(() => batchDownloads.length).toBe(6);
+  } finally {
+    page.off('download', collectBatchDownload);
+  }
+  const batchNames = batchDownloads.map(download => download.suggestedFilename());
+  expect(batchNames).toEqual(expect.arrayContaining([
     expect.stringMatching(/\.png$/),
     expect.stringMatching(/\.jpg$/),
     expect.stringMatching(/\.webp$/),
@@ -1026,6 +1021,7 @@ test('native export preserves document dimensions and routes all formats through
     expect.stringMatching(/\.pdf$/),
     expect.stringMatching(/\.psd$/),
   ]));
+  expect(batchNames.some(name => name.endsWith('.zip'))).toBe(false);
 });
 
 test('classic and smart canvases receive every OpenShop output as new image nodes', async ({page, request}) => {

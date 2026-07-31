@@ -1,9 +1,27 @@
 import logging
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import httpx
 
 import main
+
+
+class ApplicationVersionTests(unittest.TestCase):
+    def test_packaged_layout_reads_version_from_program_root(self):
+        with TemporaryDirectory() as temp_dir:
+            program_root = Path(temp_dir) / "program"
+            app_root = program_root / "app"
+            app_root.mkdir(parents=True)
+            (program_root / "VERSION").write_text("2026.07.30.7\n", encoding="utf-8")
+
+            with (
+                patch.object(main, "PROGRAM_ROOT", program_root),
+                patch.object(main, "BASE_DIR", str(app_root)),
+            ):
+                self.assertEqual(main.current_app_version(), "2026.07.30.7")
 
 
 class ShellSessionMiddlewareTests(unittest.IsolatedAsyncioTestCase):
@@ -42,41 +60,43 @@ class ShellSessionMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         main.SHELL_TOKEN = self.original_token
         main.SHELL_BOOTSTRAP_TOKEN_CONSUMED = self.original_consumed
 
-    async def test_static_assets_are_public_but_api_requires_shell_session(self):
+    async def test_static_assets_and_loopback_apis_are_public_but_root_requires_session(self):
         transport = httpx.ASGITransport(app=main.app, client=("127.0.0.1", 51000))
         async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             static_response = await client.get("/static/index.html")
-            protected_response = await client.get("/api/canvases")
+            api_response = await client.get("/api/canvases")
+            root_response = await client.get("/")
 
         self.assertEqual(static_response.status_code, 200)
-        self.assertEqual(protected_response.status_code, 401)
+        self.assertEqual(api_response.status_code, 200)
+        self.assertEqual(root_response.status_code, 401)
 
-    async def test_health_accepts_shell_header(self):
+    async def test_loopback_health_is_available_with_or_without_shell_header(self):
         transport = httpx.ASGITransport(app=main.app, client=("127.0.0.1", 51001))
         async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-            denied = await client.get("/api/health")
-            accepted = await client.get(
+            open_response = await client.get("/api/health")
+            header_response = await client.get(
                 "/api/health",
                 headers={main.SHELL_TOKEN_HEADER: main.SHELL_TOKEN},
             )
 
-        self.assertEqual(denied.status_code, 401)
-        self.assertEqual(accepted.status_code, 200)
-        self.assertEqual(accepted.json()["edition"], main.EDITION)
+        self.assertEqual(open_response.status_code, 200)
+        self.assertEqual(header_response.status_code, 200)
+        self.assertEqual(open_response.json()["edition"], main.EDITION)
 
     async def test_shell_health_reports_interactive_startup_readiness(self):
         transport = httpx.ASGITransport(app=main.app, client=("127.0.0.1", 51006))
         async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-            denied = await client.get("/api/shell/health")
-            accepted = await client.get(
+            open_response = await client.get("/api/shell/health")
+            header_response = await client.get(
                 "/api/shell/health",
                 headers={main.SHELL_TOKEN_HEADER: main.SHELL_TOKEN},
             )
 
-        self.assertEqual(denied.status_code, 401)
-        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(open_response.status_code, 200)
+        self.assertEqual(header_response.status_code, 200)
         self.assertEqual(
-            accepted.json(),
+            open_response.json(),
             {"ready": True, "edition": main.EDITION, "version": main.current_app_version()},
         )
 
@@ -105,7 +125,7 @@ class ShellSessionMiddlewareTests(unittest.IsolatedAsyncioTestCase):
             reused = await second_client.get(f"/?hstar_shell_token={main.SHELL_TOKEN}")
         self.assertEqual(reused.status_code, 401)
 
-    async def test_query_token_is_accepted_only_for_root_navigation(self):
+    async def test_query_token_does_not_gate_or_consume_loopback_api_access(self):
         transport = httpx.ASGITransport(app=main.app, client=("127.0.0.1", 51005))
         async with httpx.AsyncClient(
             transport=transport,
@@ -116,7 +136,7 @@ class ShellSessionMiddlewareTests(unittest.IsolatedAsyncioTestCase):
                 f"/api/canvases?hstar_shell_token={main.SHELL_TOKEN}"
             )
 
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 200)
         self.assertFalse(main.SHELL_BOOTSTRAP_TOKEN_CONSUMED)
 
     async def test_authorized_collaboration_query_establishes_its_own_session(self):

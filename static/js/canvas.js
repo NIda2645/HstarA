@@ -3851,23 +3851,12 @@ async function downloadOutputNodeImages(nodeId){
         return;
     }
     try {
-        const res = await fetch('/api/canvas-assets/download', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                urls,
-                filename:`${(canvas?.title || 'canvas-output').slice(0, 48)}-${node.id}.zip`
-            })
+        const files = urls.map((url, index) => {
+            const fallback = `canvas-output-${String(index + 1).padStart(2, '0')}.png`;
+            const filename = safeDownloadFileName(canvasFileNameFromUrl(url) || fallback, fallback);
+            return {url:canvasDownloadHref(url, filename), filename};
         });
-        if(!res.ok) throw new Error(await responseErrorMessage(res, tr('canvas.outputDownloadEmpty')));
-        const blob = await res.blob();
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${(canvas?.title || 'canvas-output').slice(0, 48)}-${node.id}.zip`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        await downloadCanvasFileBatch(files);
     } catch(err) {
         alert(err.message || tr('canvas.outputDownloadEmpty'));
     }
@@ -3879,30 +3868,24 @@ async function downloadGroupNodeImages(groupId){
         alert(tr('canvas.outputDownloadEmpty'));
         return;
     }
-    const filename = safeDownloadFileName(`${canvas?.title || 'canvas-group'}-${group.id}.zip`, 'canvas-group.zip');
     try {
-        const res = await fetch('/api/canvas-assets/download', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                filename,
-                urls:items.map(item => item.url).filter(Boolean),
-                items:items.map((item, index) => ({url:item.url, name:downloadNameForGroupImage(item, index)}))
-            })
+        const files = items.map((item, index) => {
+            const filename = downloadNameForGroupImage(item, index);
+            return {url:canvasDownloadHref(item.url, filename), filename};
         });
-        if(!res.ok) throw new Error(await responseErrorMessage(res, tr('canvas.outputDownloadEmpty')));
-        const blob = await res.blob();
-        const href = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = href;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(href), 1200);
+        await downloadCanvasFileBatch(files);
     } catch(err) {
         alert(err.message || tr('canvas.outputDownloadEmpty'));
     }
+}
+
+async function downloadCanvasFileBatch(files){
+    const list = (files || []).filter(file => file?.url && file?.filename);
+    if(!list.length) return {accepted:false, count:0};
+    const bridge = window.top?.HstarDesktopDownloads;
+    if(bridge?.saveBatch) return bridge.saveBatch(list);
+    list.forEach(file => downloadUrl(file.url, file.filename));
+    return {accepted:true, count:list.length};
 }
 function createLinkedNode(type){
     const state = linkCreateState;
@@ -15543,36 +15526,14 @@ function outputDownloadName(url){
     const ext = clean.includes('.') ? clean.split('.').pop() : 'png';
     return `canvas-output-${Date.now()}.${ext || 'png'}`;
 }
-async function outputDownloadInitialFolder(){
-    try {
-        const cached = localStorage.getItem('hstar.outputDownloadFolder') || '';
-        if(cached) return cached;
-    } catch(_) {}
-    try {
-        const res = await fetch('/api/output-download-folder');
-        const data = await res.json().catch(() => ({}));
-        if(res.ok && data.folder){
-            try { localStorage.setItem('hstar.outputDownloadFolder', data.folder); } catch(_) {}
-            return data.folder;
-        }
-    } catch(_) {}
-    return '';
-}
-async function saveOutputAsNativeFile(url, filename){
-    if(!url) return null;
+function saveOutputAsNativeFile(url, filename){
+    if(!url) return Promise.resolve({cancelled:true});
     const name = filename || outputDownloadName(url);
-    const initial = await outputDownloadInitialFolder();
-    const res = await fetch('/api/native/save-output-as', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({url, name, initial_dir:initial})
-    });
-    const data = await res.json().catch(() => ({}));
-    if(!res.ok) throw new Error(data.detail || '无法启动系统另存为窗口');
-    if(data.folder) {
-        try { localStorage.setItem('hstar.outputDownloadFolder', data.folder); } catch(_) {}
-    }
-    return data;
+    return downloadUrl(url, name).then(started => ({
+        ok:Boolean(started),
+        cancelled:!started,
+        filename:name,
+    }));
 }
 function externalAppLabel(app){
     return app === 'photoshop' ? 'Photoshop' : (app === 'illustrator' ? 'Illustrator' : '自定义软件');
@@ -16945,8 +16906,10 @@ assetManagerModal?.addEventListener('click', async event => {
             const item = items[0];
             downloadUrl(item.url, `${item.name || 'workflow'}${String(item.url).toLowerCase().endsWith('.json') ? '.json' : '.zip'}`);
         } else if(items.length > 1) {
-            const res = await fetch('/api/canvas-assets/download', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:'workflows.zip', items:items.map(item => ({url:item.url, name:item.name || 'workflow'}))})});
-            if(res.ok) downloadBlob(await res.blob(), 'workflows.zip');
+            await downloadCanvasFileBatch(items.map(item => {
+                const filename = `${item.name || 'workflow'}${String(item.url).toLowerCase().endsWith('.json') ? '.json' : '.zip'}`;
+                return {url:canvasDownloadHref(item.url, filename), filename};
+            }));
         }
         return;
     }
@@ -17189,7 +17152,7 @@ function openOutputLightbox(url, out){
             e.stopPropagation();
             try {
                 const saved = await saveOutputAsNativeFile(url, outputDownloadName(url));
-                if(!saved?.cancelled) setStatus(`已保存：${saved?.filename || outputDownloadName(url)}`);
+                if(!saved?.cancelled) setStatus(`请选择保存位置：${saved?.filename || outputDownloadName(url)}`);
             } catch(err) {
                 alert(err.message || '下载失败');
             }
@@ -17218,7 +17181,7 @@ function openOutputLightbox(url, out){
         e.stopPropagation();
         try {
             const saved = await saveOutputAsNativeFile(url, outputDownloadName(url));
-            if(!saved?.cancelled) setStatus(`已保存：${saved?.filename || outputDownloadName(url)}`);
+            if(!saved?.cancelled) setStatus(`请选择保存位置：${saved?.filename || outputDownloadName(url)}`);
         } catch(err) {
             alert(err.message || '下载失败');
         }
@@ -17768,18 +17731,20 @@ function downloadBlob(blob, filename){
 }
 function downloadUrl(url, filename='download'){
     if(!url) return Promise.resolve(false);
-    const raw = canvasOriginalMediaUrl(url);
-    const href = (raw.startsWith('data:') || raw.startsWith('blob:') || raw.startsWith('/api/download-output'))
-        ? raw
-        : `/api/download-output?url=${encodeURIComponent(raw)}&name=${encodeURIComponent(filename || outputDownloadName(raw))}`;
     const link = document.createElement('a');
-    link.href = href;
+    link.href = canvasDownloadHref(url, filename);
     link.download = filename || '';
     link.target = '_blank';
     document.body.appendChild(link);
     link.click();
     link.remove();
     return Promise.resolve(true);
+}
+function canvasDownloadHref(url, filename='download'){
+    const raw = canvasOriginalMediaUrl(url);
+    return (raw.startsWith('data:') || raw.startsWith('blob:') || raw.startsWith('/api/download-output'))
+        ? raw
+        : `/api/download-output?url=${encodeURIComponent(raw)}&name=${encodeURIComponent(filename || outputDownloadName(raw))}`;
 }
 function openWorkflowTransferModal(){
     if(!canvas){ setStatus(tr('canvas.needCanvas')); return; }

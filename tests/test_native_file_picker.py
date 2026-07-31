@@ -40,6 +40,14 @@ class NativeFilePickerTests(unittest.TestCase):
             self.assertEqual(calls[0][0][:4], ["powershell", "-NoProfile", "-STA", "-Command"])
             self.assertIn("*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp", calls[0][0][4])
             self.assertEqual(calls[0][1]["timeout"], 300)
+            self.assertTrue(
+                calls[0][1]["creationflags"]
+                & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            )
+            self.assertEqual(
+                calls[0][1]["startupinfo"].wShowWindow,
+                getattr(subprocess, "SW_HIDE", 0),
+            )
             self.assertEqual(metadata["name"], "sample.png")
             self.assertEqual(metadata["mime"], "image/png")
             self.assertNotIn(folder, metadata["name"])
@@ -109,6 +117,35 @@ class NativeFilePickerTests(unittest.TestCase):
         with self.assertRaises(NativeFilePickerError) as timeout:
             choose_open_file_path("image", runner=timed_out, platform="nt")
         self.assertEqual(timeout.exception.status_code, 504)
+
+
+class NativeWindowsPickerVisibilityTests(unittest.TestCase):
+    def test_external_application_and_folder_pickers_hide_the_powershell_process(self):
+        import main
+
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(main, "load_software_settings", return_value={}), patch.object(
+            main.subprocess, "run", side_effect=runner
+        ):
+            self.assertEqual(main.choose_external_executable_path("custom"), "")
+            self.assertEqual(main.choose_folder_path("Choose folder"), "")
+
+        self.assertEqual(len(calls), 2)
+        for command, kwargs in calls:
+            self.assertEqual(command[:4], ["powershell", "-NoProfile", "-STA", "-Command"])
+            self.assertTrue(
+                kwargs["creationflags"]
+                & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            )
+            self.assertEqual(
+                kwargs["startupinfo"].wShowWindow,
+                getattr(subprocess, "SW_HIDE", 0),
+            )
 
 
 class NativeOpenFileEndpointTests(unittest.TestCase):

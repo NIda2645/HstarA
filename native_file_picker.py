@@ -21,6 +21,22 @@ class NativeFilePickerError(Exception):
         self.detail = detail
 
 
+def windows_hidden_subprocess_kwargs(platform: str = None) -> Dict[str, Any]:
+    current_platform = os.name if platform is None else platform
+    if current_platform != "nt":
+        return {}
+    kwargs: Dict[str, Any] = {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    }
+    startup_info_factory = getattr(subprocess, "STARTUPINFO", None)
+    if callable(startup_info_factory):
+        startup_info = startup_info_factory()
+        startup_info.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+        startup_info.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startup_info
+    return kwargs
+
+
 def normalize_kind(value: Any) -> str:
     kind = str(value or "").strip().lower()
     if kind not in MAX_BYTES:
@@ -125,6 +141,7 @@ def choose_open_file_path(
                 encoding="utf-8",
                 errors="ignore",
                 timeout=300,
+                **windows_hidden_subprocess_kwargs(current_platform),
             )
     except subprocess.TimeoutExpired as exc:
         raise NativeFilePickerError(504, "Native local file picker timed out") from exc

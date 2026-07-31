@@ -344,6 +344,7 @@ body.smart-node-resize .smart-node-floating-menu,
 .smart-text-edit-menu button { height:24px; padding:0 9px; border:0; border-radius:9px; display:flex; align-items:center; gap:5px; background:transparent; color:var(--text); font-size:10px; line-height:1; font-weight:400; text-align:left; cursor:pointer; }
 .smart-text-edit-menu button:hover { background:var(--soft); color:var(--strong); }
 .smart-text-edit-menu button i,.smart-text-edit-menu button svg { width:12px; height:12px; stroke-width:2.2; flex:0 0 auto; }
+.smart-external-open-menu { min-width:158px; }
 .smart-text-edit-panel { position:absolute; z-index:119; display:none; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--text); box-shadow:0 16px 38px var(--shadow); backdrop-filter:blur(18px); overflow:hidden; }
 .smart-text-edit-panel.open { display:flex; flex-direction:column; }
 .smart-text-edit-panel *,.smart-text-edit-panel button,.smart-text-edit-panel textarea { font-size:10px !important; }

@@ -1,5 +1,7 @@
 # OpenShop 原生导出与发送成功提示设计
 
+> **已被取代（2026-07-31）：** 本文保留为历史设计记录，不再代表当前实现。请勿重新引入 `/api/native/save-output-as` 或 `/api/native/save-output-batch`。当前桌面下载由 `static/js/desktop-shell-bridge.js` 的 `HstarDesktopDownloads.saveBatch` 统一协调，并由 `desktop/Hstar.Desktop/MainWindow.xaml.cs` 的 WebView2 `DownloadStarting` 处理单文件 Windows 11 保存窗口；OpenShop 使用 `integrations/openshop/host/openshop-export-service.js` 接入该通道。
+
 ## 1. 目标
 
 为 HstarA 内嵌 OpenShop 增加统一的本地保存体验：

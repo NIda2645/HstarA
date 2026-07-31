@@ -49,6 +49,7 @@ public partial class MainWindow : Window
     private bool _allowClose;
     private bool _systemShutdownRequested;
     private int _closeRequestActive;
+    private PendingDownloadBatch? _pendingDownloadBatch;
 
     public MainWindow(AppPaths paths, StartupCoordinator startupCoordinator)
     {
@@ -203,7 +204,8 @@ public partial class MainWindow : Window
         _messageRouter = new WebViewMessageRouter(
             configuration,
             RequestFullRestartWithDataRootAsync,
-            AcceptInteractiveAsync);
+            AcceptInteractiveAsync,
+            PrepareDownloadBatchAsync);
         _interactiveCompletion = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -236,6 +238,25 @@ public partial class MainWindow : Window
         {
             _interactiveCompletion?.TrySetResult(true);
         }
+        return Task.CompletedTask;
+    }
+
+    private Task PrepareDownloadBatchAsync(
+        DownloadBatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var accepted = NativeDownloadDialog.TryChooseFolder(this, out var folder);
+        _pendingDownloadBatch = accepted
+            ? new PendingDownloadBatch(folder, request.FileNames)
+            : null;
+        MainWebView.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(new
+        {
+            type = "hstar:download-batch-ready",
+            schemaVersion = 1,
+            requestId = request.RequestId,
+            accepted,
+        }));
         return Task.CompletedTask;
     }
 
@@ -381,6 +402,8 @@ public partial class MainWindow : Window
         core.NavigationStarting += OnNavigationStarting;
         core.NewWindowRequested += OnNewWindowRequested;
         core.WebMessageReceived += OnMainWebMessageReceived;
+        core.DownloadStarting += OnMainDownloadStarting;
+        core.PermissionRequested += OnMainPermissionRequested;
         _mainEventsAttached = true;
     }
 
@@ -497,6 +520,101 @@ public partial class MainWindow : Window
         catch (JsonException)
         {
         }
+    }
+
+    private void OnMainDownloadStarting(
+        object? sender,
+        CoreWebView2DownloadStartingEventArgs eventArgs)
+    {
+        eventArgs.Handled = true;
+        try
+        {
+            if (TryUsePendingDownloadBatch(eventArgs.ResultFilePath, out var batchPath))
+            {
+                eventArgs.ResultFilePath = batchPath;
+                return;
+            }
+            if (NativeDownloadDialog.TryChoosePath(
+                this,
+                eventArgs.ResultFilePath,
+                out var selectedPath))
+            {
+                eventArgs.ResultFilePath = selectedPath;
+                return;
+            }
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(
+                $"无法打开保存窗口。\n\n{error.Message}",
+                "Hstar",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+
+        eventArgs.Cancel = true;
+    }
+
+    private void OnMainPermissionRequested(
+        object? sender,
+        CoreWebView2PermissionRequestedEventArgs eventArgs)
+    {
+        if (eventArgs.PermissionKind != CoreWebView2PermissionKind.MultipleAutomaticDownloads)
+        {
+            return;
+        }
+
+        var batch = _pendingDownloadBatch;
+        var hasPendingBatch = batch is not null
+            && batch.ExpiresAt > DateTimeOffset.UtcNow
+            && batch.FileNames.Count > 0;
+        var requestUri = Uri.TryCreate(eventArgs.Uri, UriKind.Absolute, out var parsedUri)
+            ? parsedUri
+            : null;
+
+        eventArgs.SavesInProfile = false;
+        eventArgs.State = _configuration is not null
+            && WebViewDownloadPermissionPolicy.ShouldAllow(
+                requestUri,
+                _configuration,
+                hasPendingBatch)
+            ? CoreWebView2PermissionState.Allow
+            : CoreWebView2PermissionState.Deny;
+        eventArgs.Handled = true;
+    }
+
+    private bool TryUsePendingDownloadBatch(
+        string? suggestedPath,
+        out string selectedPath)
+    {
+        var batch = _pendingDownloadBatch;
+        if (batch is null || batch.ExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            _pendingDownloadBatch = null;
+            selectedPath = string.Empty;
+            return false;
+        }
+
+        var suggestedName = NativeDownloadDialog.SafeFileName(suggestedPath);
+        var fileIndex = batch.FileNames.FindIndex(fileName =>
+            string.Equals(fileName, suggestedName, StringComparison.OrdinalIgnoreCase));
+        if (fileIndex < 0)
+        {
+            selectedPath = string.Empty;
+            return false;
+        }
+
+        var fileName = batch.FileNames[fileIndex];
+        batch.FileNames.RemoveAt(fileIndex);
+        selectedPath = NativeDownloadDialog.UniqueFilePath(
+            batch.Folder,
+            fileName,
+            batch.ReservedPaths);
+        if (batch.FileNames.Count == 0)
+        {
+            _pendingDownloadBatch = null;
+        }
+        return true;
     }
 
     private void RevealInitialFrame()
@@ -683,6 +801,8 @@ public partial class MainWindow : Window
             MainWebView.CoreWebView2.NavigationStarting -= OnNavigationStarting;
             MainWebView.CoreWebView2.NewWindowRequested -= OnNewWindowRequested;
             MainWebView.CoreWebView2.WebMessageReceived -= OnMainWebMessageReceived;
+            MainWebView.CoreWebView2.DownloadStarting -= OnMainDownloadStarting;
+            MainWebView.CoreWebView2.PermissionRequested -= OnMainPermissionRequested;
         }
         if (!_startupDisposed && StartupWebView.CoreWebView2 is not null)
         {
@@ -702,5 +822,22 @@ public partial class MainWindow : Window
     {
         Retry,
         Exit,
+    }
+
+    private sealed class PendingDownloadBatch
+    {
+        public PendingDownloadBatch(string folder, IEnumerable<string> fileNames)
+        {
+            Folder = folder;
+            FileNames = [.. fileNames];
+        }
+
+        public string Folder { get; }
+
+        public List<string> FileNames { get; }
+
+        public HashSet<string> ReservedPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public DateTimeOffset ExpiresAt { get; } = DateTimeOffset.UtcNow.AddMinutes(2);
     }
 }

@@ -129,7 +129,13 @@ function Get-TrackedFiles {
     if ($exitCode -ne 0) {
         throw "Unable to list tracked files for ${RelativeRoot}: $errorOutput"
     }
-    return @($output.Split(@([char]0), [StringSplitOptions]::RemoveEmptyEntries))
+    $files = @($output.Split(@([char]0), [StringSplitOptions]::RemoveEmptyEntries))
+    if ($AllowDirtyForTest) {
+        $files = @($files | Where-Object {
+            Test-Path -LiteralPath (Join-Path $repoRoot $_) -PathType Leaf
+        })
+    }
+    return $files
 }
 
 function Copy-TrackedRoot {
@@ -351,6 +357,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $webViewRoot 'msedgewebview2.exe') -
 }
 
 $applicationFiles = @(
+    'browser_plugin_import.py',
     'main.py',
     'native_file_picker.py',
     'openshop_ai.py',

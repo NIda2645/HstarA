@@ -218,6 +218,7 @@ let activeControllerPanelNodeId = '';
 let controllerPanelIgnoreOutsideUntil = 0;
 let materialCardClickMemory = {nodeId:'', materialId:'', time:0};
 let smartTextEditMenuState = null;
+let smartExternalOpenMenuState = null;
 let smartTextEditPanelState = null;
 const SMART_TEXT_EDIT_PANEL_WIDTH = 280;
 const SMART_TEXT_EDIT_PANEL_HEIGHT = 420;
@@ -2388,6 +2389,7 @@ function applyViewport(){
     shell.style.backgroundPosition = '0 0';
     renderMinimap();
     positionSmartTextEditMenu();
+    positionSmartExternalOpenMenu();
     positionSmartTextEditPanel();
 }
 function screenToWorld(event){
@@ -7681,34 +7683,27 @@ function downloadNameForMediaItem(item, fallbackPrefix='canvas-output'){
     if(!/\.[a-z0-9]{2,8}$/i.test(name)) name += ext;
     return name;
 }
-async function smartOutputDownloadInitialFolder(){
-    let initial = '';
-    try { initial = localStorage.getItem('hstar.outputDownloadFolder') || ''; } catch(_) {}
-    if(initial) return initial;
-    try {
-        const res = await fetch('/api/output-download-folder');
-        const data = await res.json().catch(() => ({}));
-        if(res.ok && data.folder){
-            try { localStorage.setItem('hstar.outputDownloadFolder', data.folder); } catch(_) {}
-            return data.folder;
-        }
-    } catch(_) {}
-    return '';
+function smartDownloadHref(url, filename='download'){
+    const raw = smartOriginalMediaUrl(url);
+    return (raw.startsWith('data:') || raw.startsWith('blob:') || raw.startsWith('/api/download-output'))
+        ? raw
+        : `/api/download-output?url=${encodeURIComponent(raw)}&name=${encodeURIComponent(filename)}`;
 }
-async function saveSmartOutputAsNativeFile(item, fallbackPrefix='output'){
-    if(!item?.url) return;
+function triggerSmartDownload(url, filename){
+    if(!url) return false;
+    const link = document.createElement('a');
+    link.href = smartDownloadHref(url, filename);
+    link.download = filename || 'download';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    return true;
+}
+function saveSmartOutputAsNativeFile(item, fallbackPrefix='output'){
+    if(!item?.url) return Promise.resolve({cancelled:true});
     const name = downloadNameForMediaItem(item, fallbackPrefix);
-    const initial = await smartOutputDownloadInitialFolder();
-    const res = await fetch('/api/native/save-output-as', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({url:item.url, name, initial_dir:initial})
-    });
-    const data = await res.json().catch(() => ({}));
-    if(!res.ok) throw new Error(data.detail || '无法启动系统另存为窗口');
-    if(data.cancelled) return data;
-    if(data.folder) localStorage.setItem('hstar.outputDownloadFolder', data.folder);
-    return data;
+    const started = triggerSmartDownload(item.url, name);
+    return Promise.resolve({ok:started, cancelled:!started, filename:name});
 }
 async function downloadPreviewImage(){
     const node = nodes.find(n => n.id === previewNavState.nodeId);
@@ -7717,7 +7712,7 @@ async function downloadPreviewImage(){
     try {
         const saved = await saveSmartOutputAsNativeFile(image, 'image');
         if(saved?.cancelled) return;
-        toast(`已保存：${saved?.filename || downloadNameForMediaItem(image, 'image')}`);
+        toast(`请选择保存位置：${saved?.filename || downloadNameForMediaItem(image, 'image')}`);
     } catch(e) {
         toast((e.message || '保存失败').slice(0, 160));
     }
@@ -7727,7 +7722,7 @@ async function downloadPreviewFile(item){
     try {
         const saved = await saveSmartOutputAsNativeFile(item, 'output');
         if(saved?.cancelled) return;
-        toast(`已保存：${saved?.filename || downloadNameForMediaItem(item, 'output')}`);
+        toast(`请选择保存位置：${saved?.filename || downloadNameForMediaItem(item, 'output')}`);
     } catch(e) {
         toast((e.message || '保存失败').slice(0, 160));
     }
@@ -7750,27 +7745,7 @@ async function downloadPreviewGroup(){
     const node = nodes.find(n => n.id === previewNavState.nodeId);
     const items = previewDownloadGroupItems();
     if(!items.length) return;
-    try {
-        const filename = safeExportFileName(`${node?.title || 'image-group'}.zip`, 'image-group.zip');
-        const initial = await smartOutputDownloadInitialFolder();
-        const response = await fetch('/api/native/save-output-batch', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                filename,
-                initial_dir:initial,
-                urls:items.map(item => item.url).filter(Boolean),
-                items:items.map((item, index) => ({url:item.url, name:downloadNameForMediaItem(item, `image-${String(index + 1).padStart(2, '0')}`)}))
-            })
-        });
-        const data = await response.json().catch(() => ({}));
-        if(!response.ok) throw new Error(data.detail || '批量保存失败');
-        if(data.cancelled) return;
-        if(data.folder) localStorage.setItem('hstar.outputDownloadFolder', data.folder);
-        toast(`已保存 ${data.count || items.length} 个文件`);
-    } catch(e) {
-        toast((e.message || '批量保存失败').slice(0, 160));
-    }
+    return downloadSmartImageItems(node?.title, items);
 }
 function smartRunPlatformLabel(run){
     const s = run?.settings || {};
@@ -9851,6 +9826,7 @@ function moveNodeElementsDuringDrag(){
     if(active && (dragState.group || [{id:dragState.id}]).some(item => item.id === active.id)){
         positionComposerForNode(active);
     }
+    positionSmartExternalOpenMenu();
     positionSmartTextEditPanel();
     scheduleInteractionLayerRefresh();
 }
@@ -9914,6 +9890,7 @@ function updateNodeElementDuringResize(node){
     }
     const active = selectedNode();
     if(active?.id === node.id) positionComposerForNode(active);
+    positionSmartExternalOpenMenu();
     positionSmartTextEditPanel();
     scheduleInteractionLayerRefresh();
 }
@@ -10303,7 +10280,7 @@ async function downloadPreviewImage(){
     try {
         const saved = await saveSmartOutputAsNativeFile(image, 'image');
         if(saved?.cancelled) return;
-        toast(`已保存：${saved?.filename || downloadNameForMediaItem(image, 'image')}`);
+        toast(`请选择保存位置：${saved?.filename || downloadNameForMediaItem(image, 'image')}`);
     } catch(e) {
         toast((e.message || '保存失败').slice(0, 160));
     }
@@ -10313,7 +10290,7 @@ async function downloadPreviewFile(item){
     try {
         const saved = await saveSmartOutputAsNativeFile(item, 'output');
         if(saved?.cancelled) return;
-        toast(`已保存：${saved?.filename || downloadNameForMediaItem(item, 'output')}`);
+        toast(`请选择保存位置：${saved?.filename || downloadNameForMediaItem(item, 'output')}`);
     } catch(e) {
         toast((e.message || '保存失败').slice(0, 160));
     }
@@ -10337,28 +10314,20 @@ function previewDownloadGroupItems(){
             return colDiff || a.__index - b.__index;
         });
 }
-// 把一组图片打包成 zip 下载（预览“下载全部”和分组小菜单“批量下载”共用）。
-async function zipDownloadImageItems(title, items){
+// 批量保存只选择一次文件夹，每张图片保持为独立原文件。
+async function downloadSmartImageItems(title, items){
     const list = (items || []).filter(item => item?.url);
     if(!list.length) return;
     try {
-        const filename = safeExportFileName(`${title || 'image-group'}.zip`, 'image-group.zip');
-        const initial = await smartOutputDownloadInitialFolder();
-        const response = await fetch('/api/native/save-output-batch', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                filename,
-                initial_dir:initial,
-                urls:list.map(item => item.url).filter(Boolean),
-                items:list.map((item, index) => ({url:item.url, name:downloadNameForMediaItem(item, `image-${String(index + 1).padStart(2, '0')}`)}))
-            })
+        const files = list.map((item, index) => {
+            const filename = downloadNameForMediaItem(item, `image-${String(index + 1).padStart(2, '0')}`);
+            return {url:smartDownloadHref(item.url, filename), filename};
         });
-        const data = await response.json().catch(() => ({}));
-        if(!response.ok) throw new Error(data.detail || '批量保存失败');
-        if(data.cancelled) return;
-        if(data.folder) localStorage.setItem('hstar.outputDownloadFolder', data.folder);
-        toast(`已保存 ${data.count || list.length} 个文件`);
+        const bridge = window.top?.HstarDesktopDownloads;
+        const result = bridge?.saveBatch
+            ? await bridge.saveBatch(files)
+            : (files.forEach(file => triggerSmartDownload(file.url, file.filename)), {accepted:true, count:files.length});
+        if(result?.accepted !== false) toast(`请选择批量保存位置，共 ${result?.count || files.length} 个文件`);
     } catch(e) {
         toast((e.message || '批量保存失败').slice(0, 160));
     }
@@ -10366,11 +10335,11 @@ async function zipDownloadImageItems(title, items){
 async function downloadPreviewGroup(){
     const group = previewNavState.groupId ? nodes.find(n => n.id === previewNavState.groupId) : null;
     const owner = group || nodes.find(n => n.id === previewNavState.nodeId);
-    return zipDownloadImageItems(owner?.title, previewDownloadGroupItems());
+    return downloadSmartImageItems(owner?.title, previewDownloadGroupItems());
 }
 function downloadSmartGroupImages(group){
     if(!isSmartGroupNode(group)) return;
-    return zipDownloadImageItems(group?.title, smartGroupImageRefs(group).map(r => r.item));
+    return downloadSmartImageItems(group?.title, smartGroupImageRefs(group).map(r => r.item));
 }
 function smartRunPlatformLabel(run){
     const s = run?.settings || {};
@@ -10921,6 +10890,7 @@ function smartNodeToolbarHtml(node){
         {key:'mask', icon:'brush', label:'遮罩', enabled:canEditImage},
         {key:'brush', icon:'paintbrush', label:'画笔', enabled:canEditImage},
         {key:'grid', icon:'grid-3x3', label:gridLabel, enabled:canEditImage},
+        {key:'externalOpen', icon:'external-link', label:'外部打开', enabled:canEditImage, dropdown:true},
         {key:'download', icon:'download', label:'下载', enabled:true}
     ];
     return `<div class="smart-node-floating-menu" data-smart-node-menu="1">${actions.map(action => `
@@ -10971,6 +10941,10 @@ function runSmartNodeToolbarAction(nodeId, action){
     }
     if(action === 'textEdit'){
         openSmartTextEditMenu(nodeId, index);
+        return;
+    }
+    if(action === 'externalOpen'){
+        openSmartExternalOpenMenu(nodeId, index);
         return;
     }
     const modeMap = {marker:'marker', crop:'crop', outpaint:'outpaint', mask:'mask', brush:'brush', grid:'grid'};
@@ -11040,6 +11014,7 @@ function closeSmartTextEditMenu(){
 function openSmartTextEditMenu(nodeId, imageIndex=0){
     const subject = smartTextEditSubject(nodeId, imageIndex);
     if(!subject || mediaKindForItem(subject.item) !== 'image'){ toast('当前素材不支持编辑文字'); return; }
+    closeSmartExternalOpenMenu();
     const menu = ensureSmartTextEditMenu();
     if(smartTextEditMenuState?.nodeId === nodeId && Number(smartTextEditMenuState?.imageIndex || 0) === Number(imageIndex || 0) && menu.classList.contains('open')){
         closeSmartTextEditMenu();
@@ -11051,6 +11026,135 @@ function openSmartTextEditMenu(nodeId, imageIndex=0){
         <button type="button" data-smart-text-action="erase"><i data-lucide="eraser"></i><span>消除文字</span></button>`;
     menu.classList.add('open');
     positionSmartTextEditMenu();
+    refreshIcons();
+}
+function smartExternalOpenSubject(nodeId, imageIndex=0){
+    const node = nodes.find(n => n.id === nodeId);
+    const index = Math.max(0, Number(imageIndex) || 0);
+    const image = node?.images?.[index];
+    const item = imageForDisplay(image);
+    if(!node || !item?.url || mediaKindForItem(item) !== 'image') return null;
+    return {node, index, image, item};
+}
+function smartExternalAppLabel(app){
+    return app === 'photoshop' ? 'Photoshop' : (app === 'illustrator' ? 'Illustrator' : '自定义软件');
+}
+async function requestSmartExternalImageOpen(url, app){
+    const response = await fetch('/api/open-external-image', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({url, app})
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.detail || '启动外部程序失败');
+    return data;
+}
+async function chooseSmartExternalExecutable(app){
+    const response = await fetch('/api/native/choose-executable', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({app, force:true})
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.detail || '无法打开程序选择器');
+    return String(data.path || '').trim();
+}
+async function saveSmartExternalExecutable(app, path){
+    const response = await fetch('/api/software-settings/external-app', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({app, path})
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.detail || '保存软件位置失败');
+}
+async function openSmartImageInExternalApp(url, app){
+    const label = smartExternalAppLabel(app);
+    try {
+        await requestSmartExternalImageOpen(url, app);
+        toast(`已发送到 ${label}`);
+        return;
+    } catch(initialError){
+        try {
+            const path = await chooseSmartExternalExecutable(app);
+            if(!path){
+                toast('已取消选择外部软件');
+                return;
+            }
+            await saveSmartExternalExecutable(app, path);
+            await requestSmartExternalImageOpen(url, app);
+            toast(`已发送到 ${label}`);
+        } catch(error){
+            console.error(error);
+            toast(error?.message || initialError?.message || '启动外部程序失败');
+        }
+    }
+}
+function ensureSmartExternalOpenMenu(){
+    let menu = document.getElementById('smartExternalOpenMenu');
+    if(menu){
+        if(menu.parentElement !== world) world.appendChild(menu);
+        return menu;
+    }
+    menu = document.createElement('div');
+    menu.id = 'smartExternalOpenMenu';
+    menu.className = 'smart-text-edit-menu smart-external-open-menu';
+    world.appendChild(menu);
+    menu.addEventListener('mousedown', event => event.stopPropagation());
+    menu.addEventListener('click', event => {
+        const button = event.target.closest('[data-smart-external-app]');
+        if(!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const state = smartExternalOpenMenuState;
+        const app = button.dataset.smartExternalApp;
+        closeSmartExternalOpenMenu();
+        if(!state?.url || !app) return;
+        openSmartImageInExternalApp(state.url, app);
+    });
+    return menu;
+}
+function positionSmartExternalOpenMenu(){
+    const menu = document.getElementById('smartExternalOpenMenu');
+    const state = smartExternalOpenMenuState;
+    if(!menu || !state || !menu.classList.contains('open')) return;
+    const button = world.querySelector(`.image-node[data-id="${CSS.escape(state.nodeId)}"] [data-smart-node-action="externalOpen"]`);
+    const rect = button?.getBoundingClientRect();
+    if(!rect){ closeSmartExternalOpenMenu(); return; }
+    const shellRect = shell.getBoundingClientRect();
+    const worldRect = world.getBoundingClientRect();
+    const renderedScale = Math.max(0.001, world.offsetWidth ? worldRect.width / world.offsetWidth : 1);
+    const buttonLeft = (rect.left - worldRect.left) / renderedScale;
+    const buttonTop = (rect.top - worldRect.top) / renderedScale;
+    const buttonHeight = rect.height / renderedScale;
+    const menuWidth = Math.max(158, menu.offsetWidth || 158);
+    const viewLeft = (shellRect.left - worldRect.left) / renderedScale;
+    const viewWidth = shell.clientWidth / renderedScale;
+    const maxLeft = viewLeft + viewWidth - menuWidth - 12;
+    const left = Math.max(viewLeft + 12, Math.min(buttonLeft, maxLeft));
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(buttonTop + buttonHeight + 6)}px`;
+}
+function closeSmartExternalOpenMenu(){
+    document.getElementById('smartExternalOpenMenu')?.classList.remove('open');
+    smartExternalOpenMenuState = null;
+}
+function openSmartExternalOpenMenu(nodeId, imageIndex=0){
+    const subject = smartExternalOpenSubject(nodeId, imageIndex);
+    if(!subject){ toast('当前素材不支持外部打开'); return; }
+    const menu = ensureSmartExternalOpenMenu();
+    if(smartExternalOpenMenuState?.nodeId === nodeId && Number(smartExternalOpenMenuState?.imageIndex || 0) === Number(imageIndex || 0) && menu.classList.contains('open')){
+        closeSmartExternalOpenMenu();
+        return;
+    }
+    closeSmartTextEditMenu();
+    smartExternalOpenMenuState = {nodeId, imageIndex:subject.index, url:subject.item.url};
+    menu.innerHTML = `
+        <button type="button" data-smart-external-app="photoshop"><i data-lucide="image"></i><span>用 Photoshop 打开</span></button>
+        <button type="button" data-smart-external-app="illustrator"><i data-lucide="pen-tool"></i><span>用 Illustrator 打开</span></button>
+        <button type="button" data-smart-external-app="custom"><i data-lucide="external-link"></i><span>用自定义软件打开</span></button>`;
+    menu.classList.add('open');
+    positionSmartExternalOpenMenu();
     refreshIcons();
 }
 function removeLegacySmartTextOverlayPanel(){
@@ -12137,7 +12241,7 @@ function runSmartGroupToolbarAction(nodeId, action){
         openImagePreview(nodeId, Math.max(0, first));
         return;
     }
-    if(action === 'download'){ zipDownloadImageItems(group.title, (group.images || []).map(imageForDisplay)); return; }
+    if(action === 'download'){ downloadSmartImageItems(group.title, (group.images || []).map(imageForDisplay)); return; }
     if(action === 'grid'){
         if(imageCount <= 1){ toast('分组至少需要 2 张图片才能宫格拼接'); return; }
         const first = (group.images || []).findIndex(img => img?.url);
@@ -12200,6 +12304,7 @@ function rememberInlineVideoActivations(){
     });
 }
 function render(){
+    closeSmartExternalOpenMenu();
     if(smartWorkflowTransferModal?.classList.contains('open')) updateSmartWorkflowTransferMeta();
     rememberInlineVideoActivations();
     world.classList.toggle('smart-multi-selected', selectedNodeIds().length > 1);
@@ -21422,7 +21527,10 @@ shell.addEventListener('click', e => {
 }, true);
 shell.onmousedown = e => {
     if(zoomPreviewState && e.button === 0 && !e.target.closest('.composer,.smart-back,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.log-modal,.shortcut-modal,.image-edit-modal,.create-menu,.smart-minimap')) return;
-    if(!e.target.closest('.smart-text-edit-menu')) closeSmartTextEditMenu();
+    if(!e.target.closest('.smart-text-edit-menu')){
+        closeSmartTextEditMenu();
+        closeSmartExternalOpenMenu();
+    }
     if(!e.target.closest('.smart-text-edit-panel')) closeSmartTextModifyPanel();
     if(e.target.closest('.image-node,.composer,.smart-back,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.log-modal,.shortcut-modal,.create-menu,.smart-minimap,.smart-text-edit-menu,.smart-text-edit-panel')) return;
     closeCreateMenu();
@@ -22590,7 +22698,7 @@ document.addEventListener('click', event => {
     if(!event.target.closest('.prompt-template-panel') && !event.target.closest('.prompt-preset-edit') && !event.target.closest('#composerTemplateBtn')) closePromptTemplatePanel();
 });
 document.addEventListener('keydown', event => {
-    if(event.key === 'Escape') { closeSmartLogLightbox(); closeAllSmartPopovers(); closeCreateMenu(); closeSmartCanvasLog(); closeSmartCanvasShortcuts(); closePromptPresetPanel(); closePromptTemplatePanel(); }
+    if(event.key === 'Escape') { closeSmartLogLightbox(); closeAllSmartPopovers(); closeCreateMenu(); closeSmartCanvasLog(); closeSmartCanvasShortcuts(); closePromptPresetPanel(); closePromptTemplatePanel(); closeSmartExternalOpenMenu(); }
 });
 function cropDragModeFromPointer(event){
     const explicit = event.target.closest?.('[data-crop-handle]')?.dataset?.cropHandle;
@@ -22853,6 +22961,7 @@ window.addEventListener('resize', () => {
     if(cropState) syncImageEditOverflow();
     if(panoramaState.enabled) resizePanoramaViewer();
     positionSmartTextEditMenu();
+    positionSmartExternalOpenMenu();
     positionSmartTextEditPanel();
 });
 window.addEventListener('studio-theme-change', event => applyTheme(event.detail?.theme || 'light'));
