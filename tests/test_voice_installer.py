@@ -4,12 +4,17 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from voice_assistant.installer import (
     InstallCancelled,
+    InstallCommandError,
+    RUNTIME_MARKER_SCHEMA,
     VoiceInstaller,
     activate_directory,
     build_pip_install_command,
+    build_runtime_probe_command,
     migrate_voice_root,
     uninstall_voice_data,
 )
@@ -27,6 +32,17 @@ class BlockingRunner:
         while not cancel_event.wait(0.01):
             on_tick()
         raise InstallCancelled()
+
+
+class RecordingRunner:
+    def __init__(self, *, fail_probe=False):
+        self.commands = []
+        self.fail_probe = fail_probe
+
+    def __call__(self, command, *, env, cancel_event, on_tick):
+        self.commands.append(command)
+        if self.fail_probe and len(self.commands) == 2:
+            raise InstallCommandError(1, "numpy import failed")
 
 
 class VoiceInstallerTests(unittest.TestCase):
@@ -74,6 +90,36 @@ class VoiceInstallerTests(unittest.TestCase):
         self.assertNotIn("--user", command)
         self.assertNotIn("venv", " ".join(command))
 
+    def test_runtime_probe_uses_isolated_python_and_target_site(self):
+        runtime_site = Path("E:/Speech/.hstar-voice/runtime/site-packages")
+
+        command = build_runtime_probe_command(
+            python_executable="C:/Hstar/python/python.exe",
+            runtime_site=runtime_site,
+        )
+
+        self.assertEqual(command[:4], [
+            "C:/Hstar/python/python.exe",
+            "-I",
+            "-X",
+            "utf8",
+        ])
+        probe = command[-1]
+        self.assertIn(str(runtime_site.resolve()), probe)
+        for package in ("numpy", "torch", "torchaudio", "modelscope", "funasr"):
+            self.assertIn(package, probe)
+
+    def test_runtime_probe_supports_a_target_path_with_an_apostrophe(self):
+        runtime_site = Path("E:/Creator's Speech/runtime/site-packages")
+
+        command = build_runtime_probe_command(
+            python_executable="C:/Hstar/python/python.exe",
+            runtime_site=runtime_site,
+        )
+
+        compile(command[-1], "<voice-runtime-probe>", "exec")
+        self.assertIn(str(runtime_site.resolve()), command[-1])
+
     def test_repeated_install_returns_same_active_task(self):
         first = self.installer.start_install(profile="cpu")
         self.assertTrue(self.runner.started.wait(1))
@@ -112,6 +158,20 @@ class VoiceInstallerTests(unittest.TestCase):
 
         self.assertEqual(
             self.installer.runtime_status(),
+            {"ready": False, "profile": ""},
+        )
+
+        marker.write_text(
+            json.dumps({
+                "schema_version": RUNTIME_MARKER_SCHEMA,
+                "python": manifest["python"],
+                "profile": "cpu",
+                "packages": manifest["packages"],
+            }),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.installer.runtime_status(),
             {"ready": True, "profile": "cpu"},
         )
 
@@ -123,6 +183,55 @@ class VoiceInstallerTests(unittest.TestCase):
             self.installer.runtime_status(),
             {"ready": False, "profile": ""},
         )
+
+    def test_runtime_manifest_pins_numpy_for_reproducible_repairs(self):
+        manifest = self.installer._load_runtime_manifest()
+
+        self.assertIn("numpy==1.26.4", manifest["packages"])
+
+    def test_runtime_install_probes_dependencies_before_marking_ready(self):
+        runner = RecordingRunner()
+        installer = VoiceInstaller(
+            self.paths,
+            runner=runner,
+            python_executable=sys.executable,
+            hardware_probe=lambda: "cpu",
+        )
+        installer._resolve_model_manifest = lambda: ("master", ())
+
+        with patch(
+            "voice_assistant.installer.ModelRegistry.detect",
+            return_value=SimpleNamespace(ready=True),
+        ):
+            task = installer.start_install(profile="cpu")
+            state = installer.wait(task.task_id, timeout=2)
+
+        self.assertEqual(state.status, "completed")
+        self.assertEqual(len(runner.commands), 2)
+        self.assertIn("pip", runner.commands[0])
+        self.assertIn("-I", runner.commands[1])
+        marker = json.loads(
+            (self.paths["state"] / "runtime-install.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(marker["schema_version"], RUNTIME_MARKER_SCHEMA)
+        self.assertEqual(installer.runtime_status(), {"ready": True, "profile": "cpu"})
+
+    def test_failed_runtime_probe_does_not_activate_or_mark_runtime(self):
+        runner = RecordingRunner(fail_probe=True)
+        installer = VoiceInstaller(
+            self.paths,
+            runner=runner,
+            python_executable=sys.executable,
+            hardware_probe=lambda: "cpu",
+        )
+
+        task = installer.start_install(profile="cpu")
+        state = installer.wait(task.task_id, timeout=2)
+
+        self.assertEqual(state.status, "failed")
+        self.assertIn("numpy import failed", state.error_message)
+        self.assertFalse(self.paths["runtime_site"].exists())
+        self.assertFalse((self.paths["state"] / "runtime-install.json").exists())
 
     def test_cancelled_partial_download_is_resumable_not_ready(self):
         task = self.installer.start_install(profile="cpu")

@@ -559,6 +559,20 @@ public partial class MainWindow : Window
         object? sender,
         CoreWebView2PermissionRequestedEventArgs eventArgs)
     {
+        var requestUri = Uri.TryCreate(eventArgs.Uri, UriKind.Absolute, out var parsedUri)
+            ? parsedUri
+            : null;
+        if (eventArgs.PermissionKind == CoreWebView2PermissionKind.Microphone)
+        {
+            eventArgs.SavesInProfile = false;
+            eventArgs.State = _configuration is not null
+                && WebViewMicrophonePermissionPolicy.ShouldAllow(requestUri, _configuration)
+                ? CoreWebView2PermissionState.Allow
+                : CoreWebView2PermissionState.Deny;
+            eventArgs.Handled = true;
+            return;
+        }
+
         if (eventArgs.PermissionKind != CoreWebView2PermissionKind.MultipleAutomaticDownloads)
         {
             return;
@@ -568,9 +582,6 @@ public partial class MainWindow : Window
         var hasPendingBatch = batch is not null
             && batch.ExpiresAt > DateTimeOffset.UtcNow
             && batch.FileNames.Count > 0;
-        var requestUri = Uri.TryCreate(eventArgs.Uri, UriKind.Absolute, out var parsedUri)
-            ? parsedUri
-            : null;
 
         eventArgs.SavesInProfile = false;
         eventArgs.State = _configuration is not null

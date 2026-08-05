@@ -60,6 +60,18 @@ public sealed class DesktopDownloadContractTests
         Assert.DoesNotContain(".zip", bridge, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void MainWebViewHandlesMicrophonePermissionForTheCurrentBackendOrigin()
+    {
+        var mainWindow = File.ReadAllText(ProjectFile(
+            "desktop", "Hstar.Desktop", "MainWindow.xaml.cs"));
+
+        Assert.Contains("CoreWebView2PermissionKind.Microphone", mainWindow);
+        Assert.Contains("WebViewMicrophonePermissionPolicy.ShouldAllow", mainWindow);
+        Assert.Contains("eventArgs.SavesInProfile = false;", mainWindow);
+        Assert.Contains("eventArgs.Handled = true;", mainWindow);
+    }
+
     private static string ProjectFile(params string[] segments)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

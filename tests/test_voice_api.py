@@ -2,7 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
@@ -145,6 +145,9 @@ class VoiceApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_client_does_not_duplicate_shared_model_prewarm(self):
         manager = object.__new__(VoiceAssistantManager)
+        manager.installer = SimpleNamespace(
+            runtime_status=lambda: {"ready": True, "profile": "cpu"},
+        )
         manager.supervisor = DeferredPrewarmSupervisor()
         manager._prewarm_task = None
 
@@ -162,6 +165,30 @@ class VoiceApiTests(unittest.IsolatedAsyncioTestCase):
         status = await second
         self.assertEqual(status["model_state"], "loaded")
         self.assertEqual(manager.supervisor.calls, 1)
+
+    async def test_start_service_rejects_an_unvalidated_runtime_before_prewarm(self):
+        manager = object.__new__(VoiceAssistantManager)
+        manager.installer = SimpleNamespace(
+            runtime_status=lambda: {"ready": False, "profile": ""},
+        )
+        manager.supervisor = SimpleNamespace(
+            status=lambda: VoiceSupervisorStatus(
+                process_state="stopped",
+                model_state="unloaded",
+                process_id=0,
+                port=0,
+                active_sessions=0,
+                last_error="",
+            ),
+            prewarm=AsyncMock(),
+        )
+        manager._prewarm_task = None
+
+        with self.assertRaises(VoiceManagerError) as error:
+            await manager.start_service("auto")
+
+        self.assertEqual(error.exception.code, "VOICE_RUNTIME_MISSING")
+        manager.supervisor.prewarm.assert_not_awaited()
 
 
 if __name__ == "__main__":

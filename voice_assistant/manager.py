@@ -225,6 +225,12 @@ class VoiceAssistantManager:
             await self.supervisor.session_finished()
 
     async def start_service(self, device: str = "auto") -> dict[str, Any]:
+        runtime = self.installer.runtime_status()
+        if not runtime["ready"]:
+            raise VoiceManagerError(
+                "VOICE_RUNTIME_MISSING",
+                "Voice runtime is not installed or failed validation",
+            )
         status = self.supervisor.status()
         if status.model_state != "loaded":
             task = self._prewarm_task

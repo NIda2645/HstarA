@@ -21,6 +21,7 @@ from .settings import MODEL_ID
 
 
 TERMINAL_STATES = frozenset({"completed", "cancelled", "failed"})
+RUNTIME_MARKER_SCHEMA = 1
 
 
 class InstallCancelled(RuntimeError):
@@ -84,6 +85,33 @@ def build_pip_install_command(
         "--extra-index-url",
         extra_index_url,
         *packages,
+    ]
+
+
+def build_runtime_probe_command(
+    *,
+    python_executable: str,
+    runtime_site: Path,
+) -> list[str]:
+    resolved_site = str(Path(runtime_site).resolve())
+    if "'" not in resolved_site:
+        site_literal = f"r'{resolved_site}'"
+    elif '\"\"\"' not in resolved_site:
+        site_literal = f'r\"\"\"{resolved_site}\"\"\"'
+    else:
+        site_literal = repr(resolved_site)
+    probe = (
+        "import sys; "
+        f"sys.path.insert(0, {site_literal}); "
+        "import numpy, torch, torchaudio, modelscope, funasr"
+    )
+    return [
+        str(python_executable),
+        "-I",
+        "-X",
+        "utf8",
+        "-c",
+        probe,
     ]
 
 
@@ -294,10 +322,7 @@ class VoiceInstaller:
         except (OSError, ValueError, TypeError):
             return {"ready": False, "profile": ""}
         profile = str(installed.get("profile") or "")
-        ready = (
-            profile in manifest.get("profiles", {})
-            and installed.get("packages") == manifest.get("packages")
-        )
+        ready = self._runtime_marker_matches(installed, manifest, profile)
         return {"ready": ready, "profile": profile if ready else ""}
 
     def status(self, task_id: str) -> InstallTaskState:
@@ -405,28 +430,31 @@ class VoiceInstaller:
             return False
         try:
             current = json.loads(marker.read_text(encoding="utf-8"))
-            return (
-                current.get("profile") == profile
-                and current.get("packages") == manifest.get("packages")
-            )
+            return self._runtime_marker_matches(current, manifest, profile)
         except (OSError, ValueError, TypeError):
             return False
+
+    @staticmethod
+    def _runtime_marker_matches(marker: dict, manifest: dict, profile: str) -> bool:
+        return (
+            marker.get("schema_version") == RUNTIME_MARKER_SCHEMA
+            and marker.get("python") == manifest.get("python")
+            and profile in manifest.get("profiles", {})
+            and marker.get("profile") == profile
+            and marker.get("packages") == manifest.get("packages")
+        )
 
     def _install_runtime(self, task_id: str, manifest: dict, profile: str) -> None:
         self._update(task_id, stage="installing-runtime")
         candidate_root = self.paths["downloads"] / f"runtime-{profile}.partial"
         candidate_manifest = {
+            "schema_version": RUNTIME_MARKER_SCHEMA,
+            "python": manifest["python"],
             "profile": profile,
             "packages": manifest["packages"],
         }
         partial_marker = candidate_root / ".runtime-manifest.json"
-        if partial_marker.is_file():
-            try:
-                previous = json.loads(partial_marker.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
-                previous = None
-            if previous != candidate_manifest:
-                _remove_path(candidate_root)
+        _remove_path(candidate_root)
         candidate_site = candidate_root / "site-packages"
         candidate_site.mkdir(parents=True, exist_ok=True)
         self._write_json_atomic(partial_marker, candidate_manifest)
@@ -444,10 +472,19 @@ class VoiceInstaller:
             cancel_event=self._tasks[task_id].cancel_event,
             on_tick=lambda: self._check_cancel(task_id),
         )
+        self.runner(
+            build_runtime_probe_command(
+                python_executable=self.python_executable,
+                runtime_site=candidate_site,
+            ),
+            env=self._child_environment(),
+            cancel_event=self._tasks[task_id].cancel_event,
+            on_tick=lambda: self._check_cancel(task_id),
+        )
         activate_directory(candidate_root, self.paths["managed"] / "runtime")
         self._write_json_atomic(
             self.paths["state"] / "runtime-install.json",
-            {"profile": profile, "packages": manifest["packages"]},
+            candidate_manifest,
         )
 
     def _resolve_model_manifest(self):

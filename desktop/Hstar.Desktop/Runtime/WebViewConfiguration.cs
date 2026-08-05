@@ -26,6 +26,14 @@ public static class WebViewDownloadPermissionPolicy
         hasPendingBatch && configuration.IsAllowedNavigation(requestUri);
 }
 
+public static class WebViewMicrophonePermissionPolicy
+{
+    public static bool ShouldAllow(
+        Uri? requestUri,
+        WebViewConfiguration configuration) =>
+        configuration.IsAllowedNavigation(requestUri);
+}
+
 public sealed class WebViewConfiguration
 {
     private WebViewConfiguration(

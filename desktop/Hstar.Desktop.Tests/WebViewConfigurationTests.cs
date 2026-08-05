@@ -233,6 +233,28 @@ public sealed class WebViewConfigurationTests : IDisposable
     }
 
     [Fact]
+    public void MicrophonePermissionIsLimitedToTheCurrentBackendOrigin()
+    {
+        var configuration = CreateConfiguration();
+
+        Assert.True(WebViewMicrophonePermissionPolicy.ShouldAllow(
+            new Uri("http://127.0.0.1:5007/static/canvas.html"),
+            configuration));
+        Assert.False(WebViewMicrophonePermissionPolicy.ShouldAllow(
+            new Uri("http://127.0.0.1:5008/static/canvas.html"),
+            configuration));
+        Assert.False(WebViewMicrophonePermissionPolicy.ShouldAllow(
+            new Uri("http://localhost:5007/static/canvas.html"),
+            configuration));
+        Assert.False(WebViewMicrophonePermissionPolicy.ShouldAllow(
+            new Uri("https://example.com/voice"),
+            configuration));
+        Assert.False(WebViewMicrophonePermissionPolicy.ShouldAllow(
+            null,
+            configuration));
+    }
+
+    [Fact]
     public void RestartPathsMustMatchThePersistedMigrationResult()
     {
         var current = CreatePaths();
