@@ -42,6 +42,8 @@ assert.match(builder, /dotnet[\s\S]*publish[\s\S]*--self-contained[\s\S]*true/i,
 assert.match(builder, /PublishSingleFile=false/i, 'desktop shell keeps complete runtime files');
 assert.match(builder, /PublishTrimmed=false/i, 'desktop shell disables trimming for runtime completeness');
 assert.match(builder, /python311\._pth/, 'embedded Python path configuration is deterministic');
+assert.match(builder, /runtime[\\/]voice-python/i, 'builder creates an independent voice Python runtime');
+assert.match(builder, /python310\._pth/, 'voice Python path configuration is deterministic');
 assert.match(builder, /--no-index[\s\S]*--find-links/i, 'embedded Python dependencies install offline');
 assert.match(builder, /core\.quotepath=false[\s\S]*ls-files[\s\S]*-z/i, 'tracked UTF-8 paths use an unambiguous NUL-delimited Git inventory');
 assert.match(builder, /StandardOutputEncoding[\s\S]*UTF8/i, 'tracked Git paths are decoded explicitly as UTF-8');
@@ -95,6 +97,7 @@ assert.match(validator, /sbom\.spdx\.json/, 'stage validator verifies the SPDX d
 assert.match(validator, /['"]Microsoft\.Windows\.SDK\.NET\.dll['"]/, 'stage validator requires the Windows SDK runtime assembly');
 assert.match(validator, /['"]WinRT\.Runtime\.dll['"]/, 'stage validator requires the WinRT runtime assembly');
 assert.match(validator, /\$python\s*=\s*Join-Path[^\r\n]+runtime[\\/]python[\\/]python\.exe/i, 'stage validator binds packaged Python');
+assert.match(validator, /runtime[\\/]voice-python[\\/]python\.exe/i, 'stage validator binds packaged voice Python');
 assert.match(builder, /Invoke-Native\s+-Command\s+\$embeddedPython\s+-Arguments\s+@\(\s*'-I',\s*'-B'/i, 'builder runtime import cannot create bytecode');
 assert.equal([...validator.matchAll(/Invoke-Native\s+-Command\s+\$python\s+-Arguments\s+@\(\s*'-I',\s*'-B'/gi)].length, 2, 'both validator Python checks are bytecode-free');
 assert.match(validator, /Invoke-Native\s+-Command\s+\$python[\s\S]*'-I'[\s\S]*'-B'[\s\S]*import fastapi,uvicorn,PIL,httpx,websockets,fontTools/i, 'stage validator imports packaged Python modules');
@@ -130,6 +133,10 @@ const requiredStageEntries = [
   'runtime/python/pythonw.exe',
   'runtime/python/python311._pth',
   'runtime/python/Lib/site-packages/fastapi/__init__.py',
+  'runtime/voice-python/python.exe',
+  'runtime/voice-python/pythonw.exe',
+  'runtime/voice-python/python310._pth',
+  'runtime/voice-python/Lib/site-packages/pip/__init__.py',
   'runtime/browser/WebView2/msedgewebview2.exe',
   'manifests/windows11-runtime.json',
   'manifests/files.sha256',
@@ -215,7 +222,7 @@ assert.equal(sbom.spdxVersion, 'SPDX-2.3');
 assert.equal(sbom.dataLicense, 'CC0-1.0');
 assert.ok(Array.isArray(sbom.packages) && sbom.packages.length > runtimeLock.packages.length);
 const packageNames = new Set(sbom.packages.map(pkg => pkg.name));
-for (const name of ['Hstar', 'Hstar.Desktop', 'Python', 'Microsoft Edge WebView2', 'OpenShop', 'StoryAI 3D Director']) {
+for (const name of ['Hstar', 'Hstar.Desktop', 'Python', 'Hstar Voice Python', 'Microsoft Edge WebView2', 'OpenShop', 'StoryAI 3D Director']) {
   assert.ok(packageNames.has(name), `SBOM identifies ${name}`);
 }
 for (const dependency of runtimeLock.packages) {

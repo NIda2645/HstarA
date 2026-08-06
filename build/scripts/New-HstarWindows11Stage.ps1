@@ -217,6 +217,7 @@ if ($runtimeLock.schemaVersion -ne 1 -or $runtimeLock.edition -ne 'windows11' -o
 }
 
 $pythonArchive = Get-ArtifactPath -Artifact $runtimeLock.python.artifact
+$voicePythonArchive = Get-ArtifactPath -Artifact $runtimeLock.voicePython.artifact
 $webViewArchive = Get-ArtifactPath -Artifact $runtimeLock.webView2.artifact
 $wheelPaths = @()
 foreach ($package in $runtimeLock.packages) {
@@ -274,6 +275,27 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::ExtractToDirectory(
     (Join-Path $cacheRoot ([string]$pipPackage.filename)),
     $sitePackages)
+
+$voicePythonRoot = Join-Path $stageRoot 'runtime\voice-python'
+New-Item -ItemType Directory -Path $voicePythonRoot -Force | Out-Null
+Expand-Archive -LiteralPath $voicePythonArchive -DestinationPath $voicePythonRoot -Force
+$voicePythonPathFile = Join-Path $voicePythonRoot 'python310._pth'
+$voicePythonPathContent = @(
+    'python310.zip',
+    '.',
+    '',
+    'Lib\site-packages',
+    '..\..\app',
+    'import site',
+    ''
+) -join "`n"
+Write-Utf8NoBom -Path $voicePythonPathFile -Content $voicePythonPathContent
+$voiceSitePackages = Join-Path $voicePythonRoot 'Lib\site-packages'
+New-Item -ItemType Directory -Path $voiceSitePackages -Force | Out-Null
+[IO.Compression.ZipFile]::ExtractToDirectory(
+    (Join-Path $cacheRoot ([string]$pipPackage.filename)),
+    $voiceSitePackages)
+$voicePython = Join-Path $voicePythonRoot 'python.exe'
 
 $embeddedPython = Join-Path $pythonRoot 'python.exe'
 $pipTemp = Join-Path $stageRoot '.pip-temp'
@@ -418,6 +440,12 @@ Invoke-Native -Command $embeddedPython -Arguments @(
     '-c',
     "import fastapi,uvicorn,PIL,httpx,websockets,fontTools; print('runtime-ok')"
 )
+Invoke-Native -Command $voicePython -Arguments @(
+    '-I',
+    '-B',
+    '-c',
+    "import sys, pip, voice_assistant.service; assert sys.version_info[:2] == (3, 10); print('voice-runtime-ok')"
+)
 
 $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw -Encoding UTF8).Trim()
 $sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
@@ -453,6 +481,13 @@ $spdxPackages += New-SpdxPackage `
     -License 'PSF-2.0' `
     -DownloadLocation ([string]$runtimeLock.python.artifact.url) `
     -Checksums @((New-Sha256Checksum -Value ([string]$runtimeLock.python.artifact.sha256)))
+$spdxPackages += New-SpdxPackage `
+    -Id 'Hstar-Voice-Python' `
+    -Name 'Hstar Voice Python' `
+    -Version ([string]$runtimeLock.voicePython.version) `
+    -License 'PSF-2.0' `
+    -DownloadLocation ([string]$runtimeLock.voicePython.artifact.url) `
+    -Checksums @((New-Sha256Checksum -Value ([string]$runtimeLock.voicePython.artifact.sha256)))
 $spdxPackages += New-SpdxPackage `
     -Id 'WebView2' `
     -Name 'Microsoft Edge WebView2' `

@@ -15,6 +15,24 @@ from .settings import VoiceSettings, normalize_voice_settings, voice_paths
 from .supervisor import VoiceServiceConnection, VoiceServiceSupervisor
 
 
+def resolve_voice_python_executable(
+    program_root: str | os.PathLike[str],
+    fallback: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    environment = os.environ if environ is None else environ
+    configured = str(environment.get("HSTAR_VOICE_PYTHON") or "").strip()
+    candidates = [
+        Path(configured).expanduser() if configured else None,
+        Path(program_root) / "runtime" / "voice-python" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.is_file():
+            return str(candidate.resolve())
+    return str(fallback)
+
+
 class VoiceManagerError(RuntimeError):
     def __init__(self, code: str, message: str = ""):
         self.code = code

@@ -80,8 +80,10 @@ function Receive-Artifact {
 }
 
 $pythonUrl = 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip'
+$voicePythonUrl = 'https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip'
 $webViewUrl = 'https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/1c394b0d-2689-4d8b-af57-2f2018abccf6/Microsoft.WebView2.FixedVersionRuntime.150.0.4078.99.x64.cab'
 $pythonArtifact = Receive-Artifact -Url $pythonUrl
+$voicePythonArtifact = Receive-Artifact -Url $voicePythonUrl
 $webViewArtifact = Receive-Artifact -Url $webViewUrl
 
 $resolverPython = if ($env:HSTAR_LOCK_PYTHON) {
@@ -152,7 +154,7 @@ if ($packages.Count -eq 0) {
 }
 
 $requirementsHash = Get-Sha256 -Path $requirementsPath
-$totalDownloadBytes = [long]$pythonArtifact.size + [long]$webViewArtifact.size
+$totalDownloadBytes = [long]$pythonArtifact.size + [long]$voicePythonArtifact.size + [long]$webViewArtifact.size
 foreach ($package in $packages) {
     $totalDownloadBytes += [long]$package.size
 }
@@ -169,6 +171,12 @@ $lock = [ordered]@{
         architecture = 'x64'
         abi = 'cp311'
         artifact = $pythonArtifact
+    }
+    voicePython = [ordered]@{
+        version = '3.10.11'
+        architecture = 'x64'
+        abi = 'cp310'
+        artifact = $voicePythonArtifact
     }
     webView2 = [ordered]@{
         version = '150.0.4078.99'

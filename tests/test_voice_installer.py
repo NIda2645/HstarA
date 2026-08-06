@@ -187,6 +187,7 @@ class VoiceInstallerTests(unittest.TestCase):
     def test_runtime_manifest_pins_numpy_for_reproducible_repairs(self):
         manifest = self.installer._load_runtime_manifest()
 
+        self.assertEqual(manifest["python"], "3.10")
         self.assertIn("numpy==1.26.4", manifest["packages"])
 
     def test_existing_legacy_runtime_is_probe_validated_without_reinstalling(self):

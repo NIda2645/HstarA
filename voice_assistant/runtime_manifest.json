@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "python": "3.11",
+  "python": "3.10",
   "packages": [
     "numpy==1.26.4",
     "modelscope==1.38.1",

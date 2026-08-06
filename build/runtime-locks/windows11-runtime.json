@@ -16,6 +16,17 @@
                                     "size":  11249023
                                 }
                },
+    "voicePython":  {
+                        "version":  "3.10.11",
+                        "architecture":  "x64",
+                        "abi":  "cp310",
+                        "artifact":  {
+                                         "name":  "python-3.10.11-embed-amd64.zip",
+                                         "url":  "https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip",
+                                         "sha256":  "608619f8619075629c9c69f361352a0da6ed7e62f83a0e19c63e0ea32eb7629d",
+                                         "size":  8629277
+                                     }
+                    },
     "webView2":  {
                      "version":  "150.0.4078.99",
                      "distribution":  "fixed",
@@ -348,5 +359,5 @@
                          "requiresPython":  "\u003e=3.9"
                      }
                  ],
-    "totalDownloadBytes":  325846824
+    "totalDownloadBytes":  334476101
 }

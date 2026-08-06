@@ -67,6 +67,16 @@ assert.equal(
 );
 assertArtifact(lock.python.artifact, 'embedded Python');
 
+assert.equal(lock.voicePython.version, '3.10.11');
+assert.equal(lock.voicePython.architecture, 'x64');
+assert.equal(lock.voicePython.abi, 'cp310');
+assert.equal(lock.voicePython.artifact.name, 'python-3.10.11-embed-amd64.zip');
+assert.equal(
+  lock.voicePython.artifact.url,
+  'https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip',
+);
+assertArtifact(lock.voicePython.artifact, 'voice Python');
+
 assert.equal(lock.webView2.version, '150.0.4078.99');
 assert.equal(lock.webView2.distribution, 'fixed');
 assert.equal(lock.webView2.architecture, 'x64');
@@ -78,7 +88,7 @@ assertArtifact(lock.webView2.artifact, 'fixed WebView2');
 
 assert.ok(Array.isArray(lock.packages) && lock.packages.length >= expectedDirect.size, 'resolved wheel list is complete');
 const packageNames = new Set();
-let expectedTotal = lock.python.artifact.size + lock.webView2.artifact.size;
+let expectedTotal = lock.python.artifact.size + lock.voicePython.artifact.size + lock.webView2.artifact.size;
 for (const entry of lock.packages) {
   assert.match(entry.name, /^[A-Za-z0-9_.-]+$/, 'package name is normalized text');
   assert.match(entry.version, /^[^<>=!~*\s]+$/, `${entry.name} has an exact version`);

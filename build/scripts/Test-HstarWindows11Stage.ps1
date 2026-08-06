@@ -91,6 +91,10 @@ $requiredFiles = @(
     'runtime\python\pythonw.exe',
     'runtime\python\python311._pth',
     'runtime\python\Lib\site-packages\fastapi\__init__.py',
+    'runtime\voice-python\python.exe',
+    'runtime\voice-python\pythonw.exe',
+    'runtime\voice-python\python310._pth',
+    'runtime\voice-python\Lib\site-packages\pip\__init__.py',
     'runtime\browser\WebView2\msedgewebview2.exe',
     'manifests\windows11-runtime.json',
     'manifests\files.sha256',
@@ -203,7 +207,7 @@ if ($sbom.spdxVersion -ne 'SPDX-2.3' -or $sbom.dataLicense -ne 'CC0-1.0') {
     throw 'SPDX document metadata is invalid.'
 }
 $sbomNames = @($sbom.packages | ForEach-Object { [string]$_.name })
-foreach ($requiredName in @('Hstar', 'Hstar.Desktop', 'Python', 'Microsoft Edge WebView2', 'OpenShop', 'StoryAI 3D Director')) {
+foreach ($requiredName in @('Hstar', 'Hstar.Desktop', 'Python', 'Hstar Voice Python', 'Microsoft Edge WebView2', 'OpenShop', 'StoryAI 3D Director')) {
     if ($requiredName -notin $sbomNames) {
         throw "SPDX document is missing package: $requiredName"
     }
@@ -232,6 +236,13 @@ Invoke-Native -Command $python -Arguments @(
     '-B',
     '-c',
     "import fastapi,uvicorn,PIL,httpx,websockets,fontTools; print('runtime-ok')"
+)
+$voicePython = Join-Path $stageRoot 'runtime\voice-python\python.exe'
+Invoke-Native -Command $voicePython -Arguments @(
+    '-I',
+    '-B',
+    '-c',
+    "import sys, pip, voice_assistant.service; assert sys.version_info[:2] == (3, 10); print('voice-runtime-ok')"
 )
 
 $validationParent = Join-Path $repoRoot 'tmp\windows11-stage-validation'

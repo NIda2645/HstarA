@@ -101,7 +101,11 @@ from native_file_picker import (
     selected_file_metadata,
     windows_hidden_subprocess_kwargs,
 )
-from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
+from voice_assistant.manager import (
+    VoiceAssistantManager,
+    VoiceManagerError,
+    resolve_voice_python_executable,
+)
 from hstar_runtime.api_merge import merge_api_defaults
 from hstar_runtime.atomic import atomic_create_json, atomic_write_bytes, atomic_write_json
 from hstar_runtime.bootstrap import BootstrapStore
@@ -12829,7 +12833,7 @@ VOICE_ASSISTANT = VoiceAssistantManager(
     load_settings=load_software_settings,
     save_settings=save_software_settings,
     path_validator=normalize_storage_root,
-    python_executable=sys.executable,
+    python_executable=resolve_voice_python_executable(PROGRAM_ROOT, sys.executable),
     test_mode=os.environ.get("HSTAR_VOICE_TEST_MODE") == "1",
 )
 
