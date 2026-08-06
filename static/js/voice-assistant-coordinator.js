@@ -289,16 +289,15 @@
           this._showFirstUse();
           return false;
         }
+        let serviceStarted = false;
         if (status.runtime?.ready === false) {
-          this._lockedTarget = null;
-          this._setState(STATES.MISSING, {code: 'VOICE_RUNTIME_MISSING'});
-          this._showFirstUse();
-          return false;
+          await this._startService(signal);
+          serviceStarted = true;
         }
 
         await this._acquireMicrophone(generation);
         await this._prepareAudioCapture(generation);
-        await this._startService(signal);
+        if (!serviceStarted) await this._startService(signal);
         if (generation !== this._startGeneration) return false;
         await this._connectBrowserSession(generation);
         if (generation !== this._startGeneration) return false;
@@ -314,14 +313,15 @@
           this._lockedTarget = null;
           return false;
         }
-        const missing = code.includes('RUNTIME_MISSING') || code.includes('MODEL_MISSING');
+        const missingModel = code.includes('MODEL_MISSING');
+        const missingRuntime = code.includes('RUNTIME_MISSING');
         await this._releaseResources();
         this._lockedTarget = null;
-        this._setState(missing ? STATES.MISSING : STATES.ERROR, {
+        this._setState(missingModel || missingRuntime ? STATES.MISSING : STATES.ERROR, {
           code,
           message: String(error?.message || ''),
         });
-        if (missing) this._showFirstUse();
+        if (missingModel) this._showFirstUse();
         return false;
       }
     }

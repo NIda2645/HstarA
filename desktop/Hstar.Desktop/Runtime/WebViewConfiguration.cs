@@ -30,8 +30,21 @@ public static class WebViewMicrophonePermissionPolicy
 {
     public static bool ShouldAllow(
         Uri? requestUri,
-        WebViewConfiguration configuration) =>
-        configuration.IsAllowedNavigation(requestUri);
+        WebViewConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return requestUri is not null
+            && requestUri.IsAbsoluteUri
+            && requestUri.IsLoopback
+            && (string.Equals(
+                    requestUri.Scheme,
+                    Uri.UriSchemeHttp,
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(
+                    requestUri.Scheme,
+                    Uri.UriSchemeHttps,
+                    StringComparison.OrdinalIgnoreCase));
+    }
 }
 
 public sealed class WebViewConfiguration

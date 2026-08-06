@@ -75,7 +75,7 @@ class VoiceAssistantManager:
 
     def status(self) -> dict[str, Any]:
         selected = self.settings.model_path or str(self.paths["root"])
-        detection = self.registry.detect(selected)
+        detection = self.registry.detect(selected, include_size=False)
         active = self.installer.active_task()
         return {
             "settings": asdict(self.settings),
@@ -227,6 +227,10 @@ class VoiceAssistantManager:
     async def start_service(self, device: str = "auto") -> dict[str, Any]:
         runtime = self.installer.runtime_status()
         if not runtime["ready"]:
+            runtime = await asyncio.to_thread(
+                self.installer.validate_existing_runtime,
+            )
+        if not runtime["ready"]:
             raise VoiceManagerError(
                 "VOICE_RUNTIME_MISSING",
                 "Voice runtime is not installed or failed validation",
@@ -249,9 +253,11 @@ class VoiceAssistantManager:
             self._reaper_task = asyncio.create_task(self._reaper_loop())
         if self.settings.enabled and self.settings.prewarm_on_startup:
             detection = self.registry.detect(
-                self.settings.model_path or str(self.paths["root"])
+                self.settings.model_path or str(self.paths["root"]),
+                include_size=False,
             )
-            if detection.ready and (
+            runtime = self.installer.runtime_status()
+            if detection.ready and runtime["ready"] and (
                 self._prewarm_task is None or self._prewarm_task.done()
             ):
                 self._prewarm_task = asyncio.create_task(self.supervisor.prewarm())

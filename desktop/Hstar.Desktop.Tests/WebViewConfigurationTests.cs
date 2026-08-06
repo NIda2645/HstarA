@@ -233,17 +233,17 @@ public sealed class WebViewConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void MicrophonePermissionIsLimitedToTheCurrentBackendOrigin()
+    public void MicrophonePermissionAllowsEveryLoopbackHstarOrigin()
     {
         var configuration = CreateConfiguration();
 
         Assert.True(WebViewMicrophonePermissionPolicy.ShouldAllow(
             new Uri("http://127.0.0.1:5007/static/canvas.html"),
             configuration));
-        Assert.False(WebViewMicrophonePermissionPolicy.ShouldAllow(
+        Assert.True(WebViewMicrophonePermissionPolicy.ShouldAllow(
             new Uri("http://127.0.0.1:5008/static/canvas.html"),
             configuration));
-        Assert.False(WebViewMicrophonePermissionPolicy.ShouldAllow(
+        Assert.True(WebViewMicrophonePermissionPolicy.ShouldAllow(
             new Uri("http://localhost:5007/static/canvas.html"),
             configuration));
         Assert.False(WebViewMicrophonePermissionPolicy.ShouldAllow(

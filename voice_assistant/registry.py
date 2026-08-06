@@ -193,7 +193,12 @@ def load_cached_manifest(cache_path: Path) -> tuple[str, tuple[ManifestFile, ...
 
 
 class ModelRegistry:
-    def detect(self, selected: str | Path) -> ModelDetection:
+    def detect(
+        self,
+        selected: str | Path,
+        *,
+        include_size: bool = True,
+    ) -> ModelDetection:
         best: ModelDetection | None = None
         for candidate in candidate_model_dirs(Path(selected)):
             missing = tuple(
@@ -204,7 +209,11 @@ class ModelRegistry:
                 model_path=str(candidate),
                 revision=self._read_revision(candidate),
                 missing=missing,
-                size_bytes=self._size(candidate) if candidate.is_dir() else 0,
+                size_bytes=(
+                    self._size(candidate)
+                    if include_size and candidate.is_dir()
+                    else 0
+                ),
                 source=(
                     "managed"
                     if (candidate / ".hstar-model.json").is_file()

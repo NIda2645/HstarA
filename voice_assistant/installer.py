@@ -325,6 +325,53 @@ class VoiceInstaller:
         ready = self._runtime_marker_matches(installed, manifest, profile)
         return {"ready": ready, "profile": profile if ready else ""}
 
+    def validate_existing_runtime(self) -> dict[str, object]:
+        current_status = self.runtime_status()
+        if current_status["ready"]:
+            return current_status
+        if not self.paths["runtime_site"].is_dir():
+            return {"ready": False, "profile": ""}
+
+        marker_path = self.paths["state"] / "runtime-install.json"
+        installed: dict = {}
+        if marker_path.is_file():
+            try:
+                payload = json.loads(marker_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    installed = payload
+            except (OSError, ValueError, TypeError):
+                pass
+
+        manifest = self._load_runtime_manifest()
+        profile = str(installed.get("profile") or "")
+        if profile not in manifest.get("profiles", {}):
+            profile = self._resolve_profile("auto")
+
+        try:
+            self.runner(
+                build_runtime_probe_command(
+                    python_executable=self.python_executable,
+                    runtime_site=self.paths["runtime_site"],
+                ),
+                env=self._child_environment(),
+                cancel_event=threading.Event(),
+                on_tick=lambda: None,
+            )
+        except Exception:
+            return {"ready": False, "profile": ""}
+
+        packages = installed.get("packages")
+        migrated_marker = {
+            "schema_version": RUNTIME_MARKER_SCHEMA,
+            "python": manifest["python"],
+            "profile": profile,
+            "packages": packages if isinstance(packages, list) else [],
+            "validation": "probe_validated",
+        }
+        self.paths["state"].mkdir(parents=True, exist_ok=True)
+        self._write_json_atomic(marker_path, migrated_marker)
+        return self.runtime_status()
+
     def status(self, task_id: str) -> InstallTaskState:
         with self._lock:
             record = self._tasks.get(task_id)
@@ -436,13 +483,17 @@ class VoiceInstaller:
 
     @staticmethod
     def _runtime_marker_matches(marker: dict, manifest: dict, profile: str) -> bool:
-        return (
+        compatible_identity = (
             marker.get("schema_version") == RUNTIME_MARKER_SCHEMA
             and marker.get("python") == manifest.get("python")
             and profile in manifest.get("profiles", {})
             and marker.get("profile") == profile
-            and marker.get("packages") == manifest.get("packages")
         )
+        if not compatible_identity:
+            return False
+        if marker.get("validation") == "probe_validated":
+            return True
+        return marker.get("packages") == manifest.get("packages")
 
     def _install_runtime(self, task_id: str, manifest: dict, profile: str) -> None:
         self._update(task_id, stage="installing-runtime")
@@ -452,6 +503,7 @@ class VoiceInstaller:
             "python": manifest["python"],
             "profile": profile,
             "packages": manifest["packages"],
+            "validation": "manifest_exact",
         }
         partial_marker = candidate_root / ".runtime-manifest.json"
         _remove_path(candidate_root)

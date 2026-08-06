@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 from voice_assistant.registry import (
     REQUIRED_PATHS,
@@ -71,6 +72,19 @@ class VoiceRegistryTests(unittest.TestCase):
 
         self.assertTrue(result.ready)
         self.assertEqual(result.model_path, str(model.resolve()))
+
+    def test_lightweight_detection_skips_recursive_size_scan(self):
+        make_model(self.root)
+
+        with patch.object(
+            ModelRegistry,
+            "_size",
+            side_effect=AssertionError("status detection must not scan model size"),
+        ):
+            result = ModelRegistry().detect(self.root, include_size=False)
+
+        self.assertTrue(result.ready)
+        self.assertEqual(result.size_bytes, 0)
 
     def test_rejects_missing_weights_without_recursive_disk_scan(self):
         make_model(self.root)

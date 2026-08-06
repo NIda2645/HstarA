@@ -41,7 +41,7 @@ class RecordingRunner:
 
     def __call__(self, command, *, env, cancel_event, on_tick):
         self.commands.append(command)
-        if self.fail_probe and len(self.commands) == 2:
+        if self.fail_probe and "-I" in command:
             raise InstallCommandError(1, "numpy import failed")
 
 
@@ -188,6 +188,52 @@ class VoiceInstallerTests(unittest.TestCase):
         manifest = self.installer._load_runtime_manifest()
 
         self.assertIn("numpy==1.26.4", manifest["packages"])
+
+    def test_existing_legacy_runtime_is_probe_validated_without_reinstalling(self):
+        runner = RecordingRunner()
+        installer = VoiceInstaller(
+            self.paths,
+            runner=runner,
+            python_executable=sys.executable,
+            hardware_probe=lambda: "cpu",
+        )
+        self.paths["runtime_site"].mkdir(parents=True)
+        self.paths["state"].mkdir(parents=True, exist_ok=True)
+        marker = self.paths["state"] / "runtime-install.json"
+        legacy_packages = ["funasr==1.3.29", "torch==2.9.1"]
+        marker.write_text(
+            json.dumps({"profile": "cpu", "packages": legacy_packages}),
+            encoding="utf-8",
+        )
+
+        status = installer.validate_existing_runtime()
+
+        self.assertEqual(status, {"ready": True, "profile": "cpu"})
+        self.assertEqual(len(runner.commands), 1)
+        self.assertIn("-I", runner.commands[0])
+        migrated = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], RUNTIME_MARKER_SCHEMA)
+        self.assertEqual(migrated["validation"], "probe_validated")
+        self.assertEqual(migrated["packages"], legacy_packages)
+
+    def test_failed_legacy_runtime_probe_preserves_existing_marker(self):
+        runner = RecordingRunner(fail_probe=True)
+        installer = VoiceInstaller(
+            self.paths,
+            runner=runner,
+            python_executable=sys.executable,
+            hardware_probe=lambda: "cpu",
+        )
+        self.paths["runtime_site"].mkdir(parents=True)
+        self.paths["state"].mkdir(parents=True, exist_ok=True)
+        marker = self.paths["state"] / "runtime-install.json"
+        original = {"profile": "cpu", "packages": ["legacy==1"]}
+        marker.write_text(json.dumps(original), encoding="utf-8")
+
+        status = installer.validate_existing_runtime()
+
+        self.assertEqual(status, {"ready": False, "profile": ""})
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), original)
 
     def test_runtime_install_probes_dependencies_before_marking_ready(self):
         runner = RecordingRunner()

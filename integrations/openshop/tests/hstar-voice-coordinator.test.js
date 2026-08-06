@@ -248,11 +248,19 @@ describe('Hstar global voice coordinator', () => {
     expect(harness.fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('never requests microphone permission while the runtime is missing', async () => {
+  it('validates a stale runtime before requesting microphone permission', async () => {
     const status = readyStatus();
     status.status.runtime = {ready: false, profile: ''};
     const fetchOverride = vi.fn(async (url) => {
       if (String(url).endsWith('/status')) return response(status);
+      if (String(url).endsWith('/service/start')) {
+        return response({
+          detail: {
+            code: 'VOICE_RUNTIME_MISSING',
+            message: 'Voice runtime is unavailable',
+          },
+        }, false);
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     const harness = makeHarness({status, fetchOverride});
@@ -262,7 +270,7 @@ describe('Hstar global voice coordinator', () => {
 
     expect(harness.coordinator.state).toBe('missing');
     expect(harness.mediaDevices.getUserMedia).not.toHaveBeenCalled();
-    expect(fetchOverride).toHaveBeenCalledTimes(1);
+    expect(fetchOverride).toHaveBeenCalledTimes(2);
   });
 
   it('makes stop idempotent and cancels uncommitted partial text', async () => {

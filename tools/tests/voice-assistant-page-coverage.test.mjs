@@ -53,6 +53,26 @@ assert.match(adapter, /framePath/, 'adapter relays nested iframe target routes')
 const coordinator = read('static/js/voice-assistant-coordinator.js');
 assert.match(coordinator, /attachFrame\(/, 'coordinator attaches direct child frames');
 assert.match(coordinator, /getTargetById/, 'coordinator resolves child target handles');
+assert.doesNotMatch(
+  coordinator,
+  /status\.runtime\?\.ready\s*===\s*false[\s\S]{0,240}_showFirstUse\(/,
+  'an existing model never opens the model dialog only because runtime validation is stale',
+);
+assert.doesNotMatch(
+  coordinator,
+  /code\.includes\('RUNTIME_MISSING'\)\s*\|\|\s*code\.includes\('MODEL_MISSING'\)/,
+  'runtime repair failures do not open the first-use model dialog',
+);
+assert.match(
+  coordinator,
+  /status\.runtime\?\.ready\s*===\s*false[\s\S]{0,160}await this\._startService\(signal\)/,
+  'stale runtimes are validated before microphone capture starts',
+);
+assert.match(
+  coordinator,
+  /if \(missingModel\) this\._showFirstUse\(\)/,
+  'only a missing model opens the first-use model dialog',
+);
 
 const sensitivePattern = /(api.?key|secret|token|endpoint|base.?url|model.?id|file.?path|folder|directory|output.?path|shortcut|accelerator|width|height|port)/i;
 const excludedTypes = new Set(['password', 'number', 'range', 'color', 'date', 'datetime-local', 'hidden', 'file', 'checkbox', 'radio']);

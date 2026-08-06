@@ -2,12 +2,13 @@ import asyncio
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException
 
 import main
 from voice_assistant.manager import VoiceAssistantManager, VoiceManagerError
+from voice_assistant.registry import ModelDetection
 from voice_assistant.supervisor import VoiceSupervisorStatus
 
 
@@ -110,6 +111,30 @@ class VoiceApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["runtime"], {"ready": False, "profile": ""})
         self.assertEqual(status["service"]["process_state"], "stopped")
 
+    async def test_manager_status_uses_lightweight_model_detection(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = VoiceAssistantManager(
+                app_data_root=root,
+                load_settings=lambda: {},
+                save_settings=lambda value: None,
+                test_mode=True,
+            )
+            manager.registry.detect = Mock(return_value=ModelDetection(
+                ready=False,
+                model_path="",
+                revision="",
+                missing=(),
+                size_bytes=0,
+                source="external",
+            ))
+
+            manager.status()
+
+        manager.registry.detect.assert_called_once_with(
+            manager.settings.model_path or str(manager.paths["root"]),
+            include_size=False,
+        )
+
     async def test_repeated_install_is_idempotent(self):
         request = main.VoiceInstallRequest(profile="cpu")
         with patch.object(main, "VOICE_ASSISTANT", self.fake_manager):
@@ -170,6 +195,9 @@ class VoiceApiTests(unittest.IsolatedAsyncioTestCase):
         manager = object.__new__(VoiceAssistantManager)
         manager.installer = SimpleNamespace(
             runtime_status=lambda: {"ready": False, "profile": ""},
+            validate_existing_runtime=Mock(
+                return_value={"ready": False, "profile": ""},
+            ),
         )
         manager.supervisor = SimpleNamespace(
             status=lambda: VoiceSupervisorStatus(
@@ -188,7 +216,59 @@ class VoiceApiTests(unittest.IsolatedAsyncioTestCase):
             await manager.start_service("auto")
 
         self.assertEqual(error.exception.code, "VOICE_RUNTIME_MISSING")
+        manager.installer.validate_existing_runtime.assert_called_once_with()
         manager.supervisor.prewarm.assert_not_awaited()
+
+    async def test_start_service_probe_validates_a_legacy_runtime_before_prewarm(self):
+        manager = object.__new__(VoiceAssistantManager)
+        manager.installer = SimpleNamespace(
+            runtime_status=lambda: {"ready": False, "profile": ""},
+            validate_existing_runtime=Mock(
+                return_value={"ready": True, "profile": "cpu"},
+            ),
+        )
+        manager.supervisor = DeferredPrewarmSupervisor()
+        manager._prewarm_task = None
+        manager.supervisor.release.set()
+
+        status = await manager.start_service("auto")
+
+        self.assertEqual(status["model_state"], "loaded")
+        manager.installer.validate_existing_runtime.assert_called_once_with()
+
+    async def test_startup_prewarm_skips_an_unvalidated_runtime(self):
+        manager = object.__new__(VoiceAssistantManager)
+        manager.settings = SimpleNamespace(
+            enabled=True,
+            prewarm_on_startup=True,
+            model_path="E:/Speech/model",
+        )
+        manager.paths = {"root": "E:/Speech"}
+        manager.registry = SimpleNamespace(
+            detect=Mock(return_value=ModelDetection(
+                ready=True,
+                model_path="E:/Speech/model",
+                revision="",
+                missing=(),
+                size_bytes=0,
+                source="external",
+            )),
+        )
+        manager.installer = SimpleNamespace(
+            runtime_status=Mock(return_value={"ready": False, "profile": ""}),
+        )
+        manager.supervisor = SimpleNamespace(prewarm=AsyncMock())
+        manager._reaper_task = asyncio.create_task(asyncio.sleep(30))
+        manager._prewarm_task = None
+        try:
+            manager.schedule_background_tasks()
+            await asyncio.sleep(0)
+
+            self.assertIsNone(manager._prewarm_task)
+            manager.supervisor.prewarm.assert_not_awaited()
+        finally:
+            manager._reaper_task.cancel()
+            await asyncio.gather(manager._reaper_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
